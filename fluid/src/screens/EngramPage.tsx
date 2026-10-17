@@ -42,10 +42,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, Download, FolderInput, Link2 } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 
 import { discardChanges, refusalSentence } from "../api/admin";
+import { conflictOf, saveEngram } from "../api/writes";
 import { ApiProblem, problemDetail } from "../api/client";
 import { domainTreeKey } from "../api/domain";
 import { DOMAINS_QUERY_KEY, fetchDomains } from "../api/domains";
@@ -117,6 +118,7 @@ import {
 } from "../paths";
 import { PREFETCH, prefetchEngramEditor } from "../prefetch";
 import { engramFacts } from "../printSheet";
+import { tickAt } from "../taskTick";
 import type { WikilinkResolver } from "../wikilinks";
 import { buildWikilinkResolver, innerOf, referenceState } from "../wikilinks";
 
@@ -268,6 +270,63 @@ export default function EngramPage() {
    * is an engram for the actions to act on.
    */
   const loaded = detail.data;
+  /*
+   * A task box ticked on this page: the whole file with three characters
+   * changed, saved like any engram save (If-Match on the checksum this page
+   * read), and it lands where that save lands, a review-mode draft
+   * included. The ticked text shows while the save is out; a refusal puts
+   * the stored text back, and a conflict reads the engram again.
+   */
+  const [tickProblem, setTickProblem] = useState<string | null>(null);
+  const tick = useMutation({
+    mutationFn: ({ content, at }: { content: string; at: EngramDetail }) =>
+      saveEngram(at.domain, at.permalink, content, at.checksum ?? ""),
+    onMutate: () => {
+      setTickProblem(null);
+    },
+    onSuccess: (saved) => {
+      queryClient.setQueryData(
+        engramDetailKey(saved.domain, saved.permalink),
+        saved,
+      );
+    },
+    onError: (error: Error, { at }) => {
+      if (conflictOf(error) !== null) {
+        // The editor's own words for a conflict, which its dialog titles.
+        setTickProblem("Someone else saved this engram first. Try again.");
+        void queryClient.invalidateQueries({
+          queryKey: engramDetailKey(at.domain, at.permalink),
+        });
+        return;
+      }
+      setTickProblem(problemDetail(error));
+    },
+  });
+  const { mutate: saveTick } = tick;
+  const onTick = useCallback(
+    (offset: number, next: "[ ]" | "[x]") => {
+      if (loaded === undefined) {
+        return;
+      }
+      const content = tickAt(loaded.content, offset, next);
+      if (content === null) {
+        // The box is not where the page drew it: the text moved.
+        void queryClient.invalidateQueries({
+          queryKey: engramDetailKey(loaded.domain, loaded.permalink),
+        });
+        return;
+      }
+      saveTick({ content, at: loaded });
+    },
+    [loaded, queryClient, saveTick],
+  );
+  const canTick: boolean | string = capabilities.anonymous
+    ? "Sign in to change this page"
+    : !canWrite
+      ? "You can read this page but not change it"
+      : tick.isPending
+        ? "Saving the last change"
+        : true;
   /*
    * What this copy holds that the team's copy does not, in the server's own
    * word. The detail payload carries it for a team domain, computed there
@@ -802,8 +861,18 @@ export default function EngramPage() {
               body's own opening `# Title` folds away rather than repeating
               it.
             */}
+            {tickProblem !== null && (
+              <p
+                role="alert"
+                className="mb-3 rounded bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-950 dark:text-red-200"
+              >
+                {tickProblem}
+              </p>
+            )}
             <Markdown
-              source={engram.content}
+              source={tick.isPending ? tick.variables.content : engram.content}
+              onTick={onTick}
+              canTick={canTick}
               wikilinks={wikilinks}
               foldTitle={engram.title}
               // What a relative `assets/` target is relative to: without it an

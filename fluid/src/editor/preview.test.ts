@@ -146,3 +146,28 @@ describe("live preview", () => {
     }
   });
 });
+
+describe("the not-applicable task state", () => {
+  it("draws [~] as a struck box that does not toggle", () => {
+    const doc = "# Doc\n\n- [~] skipped\n- [ ] open\n";
+    const view = editor(doc, 0);
+    const box = view.dom.querySelector<HTMLElement>(".cm-task-na");
+    expect(box).not.toBeNull();
+    expect(box?.getAttribute("aria-label")).toBe("Not applicable");
+    expect(box?.tagName).not.toBe("INPUT");
+    expect(view.contentDOM.textContent).not.toContain("[~]");
+    box?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    expect(docText(view.state)).toBe(doc);
+    // The open task keeps its own checkbox.
+    expect(view.dom.querySelectorAll("input.cm-task-toggle").length).toBe(1);
+    view.destroy();
+  });
+
+  it("shows [~] as written on the line the cursor is on", () => {
+    const doc = "# Doc\n\n- [~] skipped\n";
+    const view = editor(doc, doc.indexOf("skipped"));
+    expect(view.dom.querySelector(".cm-task-na")).toBeNull();
+    expect(view.contentDOM.textContent).toContain("- [~] skipped");
+    view.destroy();
+  });
+});

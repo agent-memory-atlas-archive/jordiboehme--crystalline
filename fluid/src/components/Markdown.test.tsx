@@ -1284,3 +1284,137 @@ describe("footnotes and code copy", () => {
     expect(screen.queryByRole("button", { name: "Copy code" })).toBeNull();
   });
 });
+
+describe("task boxes", () => {
+  /** Render with the tick props a reading page passes. */
+  async function renderTasks(
+    source: string,
+    tick: {
+      onTick?: (offset: number, next: "[ ]" | "[x]") => void;
+      canTick?: boolean | string;
+      foldTitle?: string;
+      sourceSpans?: boolean;
+    },
+  ) {
+    const result = render(
+      <MemoryRouter>
+        <ThemeProvider>
+          <Markdown source={source} {...tick} />
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("status", { name: "Loading the text" }),
+      ).toBeNull();
+    });
+    return result;
+  }
+
+  it("draws a not-applicable item as a struck box that is no checkbox", async () => {
+    const onTick = vi.fn<(offset: number, next: "[ ]" | "[x]") => void>();
+    await renderTasks("- [~] skipped\n- [ ] open\n", { onTick, canTick: true });
+    const box = screen.getByRole("img", { name: "Not applicable: skipped" });
+    expect(box).toBeVisible();
+    expect(screen.queryByRole("checkbox", { name: /skipped/ })).toBeNull();
+    expect(screen.queryByText(/\[~\]/)).toBeNull();
+    expect(screen.getByText("skipped")).toBeVisible();
+    await userEvent.click(box);
+    expect(onTick).not.toHaveBeenCalled();
+  });
+
+  it("ticks an open box through onTick with the offset of its bracket", async () => {
+    const onTick = vi.fn<(offset: number, next: "[ ]" | "[x]") => void>();
+    await renderTasks("- [ ] a\n- [x] b\n", { onTick, canTick: true });
+    const open = screen.getByRole("checkbox", { name: "a" });
+    expect(open).toBeEnabled();
+    expect(open).not.toBeChecked();
+    await userEvent.click(open);
+    expect(onTick).toHaveBeenCalledWith(2, "[x]");
+    await userEvent.click(screen.getByRole("checkbox", { name: "b" }));
+    expect(onTick).toHaveBeenLastCalledWith(10, "[ ]");
+  });
+
+  it("counts the offset into the whole file, frontmatter and folded title included", async () => {
+    const source = [
+      "---",
+      "title: Alpha",
+      "---",
+      "",
+      "# Alpha",
+      "",
+      "- [ ] first",
+      "  - [ ] nested",
+      "10. [ ] numbered",
+      "",
+    ].join("\n");
+    const onTick = vi.fn<(offset: number, next: "[ ]" | "[x]") => void>();
+    await renderTasks(source, { onTick, canTick: true, foldTitle: "Alpha" });
+    await userEvent.click(screen.getByRole("checkbox", { name: "first" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "nested" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "numbered" }));
+    expect(onTick.mock.calls.map(([at]) => source.slice(at, at + 4))).toEqual([
+      "[ ] ",
+      "[ ] ",
+      "[ ] ",
+    ]);
+    expect(onTick.mock.calls.map(([at]) => at)).toEqual([
+      source.indexOf("[ ] first"),
+      source.indexOf("[ ] nested"),
+      source.indexOf("[ ] numbered"),
+    ]);
+  });
+
+  it("finds the box in a loose list and in a quote", async () => {
+    const source = "- [ ] loose one\n\n- [x] loose two\n\n> - [ ] quoted\n";
+    const onTick = vi.fn<(offset: number, next: "[ ]" | "[x]") => void>();
+    await renderTasks(source, { onTick, canTick: true });
+    await userEvent.click(screen.getByRole("checkbox", { name: "loose one" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "loose two" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "quoted" }));
+    expect(onTick.mock.calls).toEqual([
+      [source.indexOf("[ ] loose"), "[x]"],
+      [source.indexOf("[x] loose"), "[ ]"],
+      [source.indexOf("[ ] quoted"), "[x]"],
+    ]);
+  });
+
+  it("disables the box with the reason when the reader may not change the page", async () => {
+    const onTick = vi.fn<(offset: number, next: "[ ]" | "[x]") => void>();
+    await renderTasks("- [ ] a\n", {
+      onTick,
+      canTick: "You can read this page but not change it",
+    });
+    const box = screen.getByRole("checkbox", { name: "a" });
+    expect(box).toBeDisabled();
+    expect(box.closest("[title]")).toHaveAttribute(
+      "title",
+      "You can read this page but not change it",
+    );
+    expect(box).toHaveAccessibleDescription(
+      "You can read this page but not change it",
+    );
+  });
+
+  it("keeps source spans reading the source on a not-applicable item", async () => {
+    const source = "- [~] skipped here\n";
+    const { container } = render(
+      <MemoryRouter>
+        <ThemeProvider>
+          <Markdown source={source} sourceSpans />
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(screen.getByText("skipped here")).toBeVisible();
+    });
+    const stamped = container.querySelectorAll("[data-src]");
+    expect(stamped.length).toBeGreaterThan(0);
+    for (const span of stamped) {
+      const at = Number(span.getAttribute("data-src"));
+      expect(source.slice(at, at + (span.textContent ?? "").length)).toBe(
+        span.textContent,
+      );
+    }
+  });
+});

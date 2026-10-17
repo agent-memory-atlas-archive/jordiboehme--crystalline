@@ -74,6 +74,13 @@ export interface MarkdownProps {
   titleNote?: string;
   /** A control at the right end of the first heading, outside the text. */
   headingAside?: HeadingAside;
+  /**
+   * Flip one task box: the offset of its `[` in `source`, and what it
+   * becomes. Absent, the boxes only show their state.
+   */
+  onTick?: (offset: number, next: "[ ]" | "[x]") => void;
+  /** Whether the boxes tick, or a sentence saying why not. */
+  canTick?: boolean | string;
 }
 
 export function Markdown(props: MarkdownProps) {

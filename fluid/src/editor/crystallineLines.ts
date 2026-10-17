@@ -30,7 +30,11 @@ import { CODE_CONTEXTS, inCompletableProse } from "./prose";
 // to keep this regex's own greediness from eating into the `[[` delimiter;
 // the server's `content.find("[[")` has no such need because it searches
 // rather than matching greedily.
-export const OBSERVATION_LINE = /^- \[([^\]\s][^\]]*)\]\s/;
+//
+// A task box is never a category: `[x]`, `[X]` and `[~]` (and `[ ]`, which
+// the first character class already refuses) are a task line, as the core
+// reads them.
+export const OBSERVATION_LINE = /^- \[(?![ xX~]\])([^\]\s][^\]]*)\]\s/;
 export const RELATION_LINE = /^- ("[^"]*"|[^\s"[]+)\s*\[\[/;
 const TRAILING_TAG = /#[\w-]+/g;
 

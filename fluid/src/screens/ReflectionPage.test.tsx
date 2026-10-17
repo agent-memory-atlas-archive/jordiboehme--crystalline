@@ -11,6 +11,8 @@ import { clearDraft, readDraft, writeDraft } from "../editor/drafts";
 import type { Answer } from "../test/harness";
 import {
   answersFor,
+  defaultPolicyRows,
+  manifestSectionsResponse,
   meResponse,
   renderApp,
   userFixture,
@@ -1177,5 +1179,188 @@ describe("the reflection page while somebody is selecting", () => {
   it("keeps the passage and the selection when only the threads changed", async () => {
     const seen = await refetchUnderSelection(() => doc({ threads: [thread] }));
     expect(seen).toEqual({ removed: 0, selected: "Deploys" });
+  });
+});
+
+describe("task boxes on a reflection page", () => {
+  const TASK_PAGE = [
+    "---",
+    "title: Checks",
+    "reflection:",
+    "  aaaa1111:",
+    "    sources: []",
+    "---",
+    "",
+    "# Checks",
+    "",
+    "## One",
+    "<!-- r:aaaa1111 -->",
+    "",
+    "- [ ] check",
+    "",
+    "## Two",
+    "<!-- r:bbbb2222 -->",
+    "",
+    "- [ ] check",
+    "- [~] not this time",
+    "",
+  ].join("\n");
+  const PAGE_PATH = "/domains/eng/reflections/guides/deploying.md";
+
+  function taskDoc() {
+    return doc({
+      title: "Checks",
+      markdown: TASK_PAGE,
+      sections: [
+        { id: "aaaa1111", heading: "One", line: 10, changed: false },
+        { id: "bbbb2222", heading: "Two", line: 15, changed: false },
+      ],
+    });
+  }
+
+  /** Every PUT body the mock has seen. */
+  function puts(): Record<string, unknown>[] {
+    return apiMock.mock.calls
+      .filter(([, init]) => init?.method === "PUT")
+      .map(
+        ([, init]) =>
+          JSON.parse(init?.body as string) as Record<string, unknown>,
+      );
+  }
+
+  function reads(): number {
+    return apiMock.mock.calls.filter(
+      ([path, init]) => path === PAGE_PATH && init?.method !== "PUT",
+    ).length;
+  }
+
+  /** The box in section Two, whose text is the same as the one in One. */
+  async function secondBox(): Promise<HTMLElement> {
+    const article = await screen.findByRole("article");
+    const two = await waitFor(() => {
+      const found = article.querySelector<HTMLElement>("#s-bbbb2222");
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
+    });
+    return within(two).findByRole("checkbox", { name: "check" });
+  }
+
+  it("saves the whole page with the box in the second section ticked", async () => {
+    serve("edit", true, {
+      [PAGE_PATH]: (_path, init) =>
+        init?.method === "PUT"
+          ? { checksum: "c2", landed: "live", present: ["ann"] }
+          : taskDoc(),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const box = await secondBox();
+    expect(box).toBeEnabled();
+    await userEvent.click(box);
+    const at = TASK_PAGE.lastIndexOf("- [ ] check") + 2;
+    await waitFor(() => {
+      expect(puts()).toEqual([
+        {
+          markdown: `${TASK_PAGE.slice(0, at)}[x]${TASK_PAGE.slice(at + 3)}`,
+          expected_checksum: "c1",
+        },
+      ]);
+    });
+    // The receipt landed in the live room: the page is read again.
+    await waitFor(() => {
+      expect(reads()).toBeGreaterThanOrEqual(2);
+    });
+    expect(
+      screen.getByRole("img", { name: "Not applicable: not this time" }),
+    ).toBeVisible();
+  });
+
+  it("reads the page again and says so when it changed underneath", async () => {
+    serve("edit", true, {
+      [PAGE_PATH]: (_path, init) => {
+        if (init?.method === "PUT") {
+          throw new ApiProblem(
+            409,
+            "conflict",
+            "stale edit: the page changed since it was read",
+          );
+        }
+        return taskDoc();
+      },
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await userEvent.click(await secondBox());
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The page changed. Try again.",
+    );
+    await waitFor(() => {
+      expect(reads()).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  it("shows the server's words for any other refusal", async () => {
+    serve("edit", true, {
+      [PAGE_PATH]: (_path, init) => {
+        if (init?.method === "PUT") {
+          throw new ApiProblem(
+            409,
+            "conflict",
+            "this Reflection moved to another host; edit it there",
+          );
+        }
+        return taskDoc();
+      },
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await userEvent.click(await secondBox());
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "this Reflection moved to another host; edit it there",
+    );
+  });
+
+  it("disables the box for a reader who may not edit the page", async () => {
+    serve("read", true, { [PAGE_PATH]: () => taskDoc() });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const box = await secondBox();
+    expect(box).toBeDisabled();
+    expect(box).toHaveAccessibleDescription(
+      "You can read this page but not change it",
+    );
+  });
+
+  it("disables the box for the anonymous viewer and says why", async () => {
+    serve("read", true, {
+      "/auth/me": () => meResponse({ anonymous: true }),
+      [PAGE_PATH]: () => taskDoc(),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const box = await secondBox();
+    expect(box).toBeDisabled();
+    expect(box).toHaveAccessibleDescription("Sign in to change this page");
+  });
+
+  it("disables the box in a read-only domain", async () => {
+    serve("edit", true, {
+      "/domains/eng/manifest": () => ({
+        domain: "eng",
+        markdown: "",
+        sections: manifestSectionsResponse({
+          policies: defaultPolicyRows().map((row) =>
+            row.key === "read_only"
+              ? { ...row, declared: "on", effective: "on" }
+              : row,
+          ),
+        }),
+      }),
+      [PAGE_PATH]: () => taskDoc(),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const box = await secondBox();
+    await waitFor(() => {
+      expect(box).toBeDisabled();
+    });
+    expect(box).toHaveAccessibleDescription(
+      "You can read this page but not change it",
+    );
+    expect(puts()).toEqual([]);
   });
 });

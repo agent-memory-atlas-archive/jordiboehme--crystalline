@@ -116,6 +116,33 @@ class CheckboxWidget extends WidgetType {
 }
 
 /**
+ * The not-applicable marker `[~]`, drawn as a struck box. It is no checkbox
+ * and toggles nothing: the third state is written by hand, and a click is a
+ * click into the text, which puts the cursor on the line and shows `[~]` as
+ * written.
+ */
+class NotApplicableWidget extends WidgetType {
+  override eq(): boolean {
+    return true;
+  }
+
+  override toDOM(): HTMLElement {
+    const box = document.createElement("span");
+    box.className = "cm-task-na";
+    box.setAttribute("role", "img");
+    box.setAttribute("aria-label", "Not applicable");
+    return box;
+  }
+
+  override ignoreEvent(): boolean {
+    return false;
+  }
+}
+
+/** `[~]` after a list mark and its space, as the reading page reads it. */
+const NOT_APPLICABLE = /^[ \t]\[~\](?:[ \t]|$)/;
+
+/**
  * A fenced code block's own delimiter line, which stays visible.
  *
  * `CodeMark` is both an inline backtick and a fence, and folding the fence
@@ -179,6 +206,22 @@ function buildDecorations(view: EditorView): DecorationSet {
           return;
         }
         if (active.has(doc.lineAt(node.from).number)) {
+          return;
+        }
+        if (
+          node.name === "ListMark" &&
+          NOT_APPLICABLE.test(doc.sliceString(node.to, node.to + 5))
+        ) {
+          const key = `na:${node.to}`;
+          if (!placed.has(key)) {
+            placed.add(key);
+            decorations.push(
+              Decoration.replace({ widget: new NotApplicableWidget() }).range(
+                node.to + 1,
+                node.to + 4,
+              ),
+            );
+          }
           return;
         }
         const isMark = FOLDING_MARKS.has(node.name) && !isFence(node);
@@ -278,6 +321,18 @@ const frontmatterTint = ViewPlugin.fromClass(
 const previewTheme = EditorView.baseTheme({
   ".cm-frontmatter": { color: "var(--color-slate-500)", fontSize: "0.85em" },
   ".cm-task-toggle": { verticalAlign: "middle", margin: "0 0.15em" },
+  // A box the size of the checkbox beside it, struck through once.
+  ".cm-task-na": {
+    display: "inline-block",
+    width: "0.8em",
+    height: "0.8em",
+    margin: "0 0.2em",
+    verticalAlign: "-0.05em",
+    border: "1px solid var(--color-slate-400)",
+    borderRadius: "2px",
+    background:
+      "linear-gradient(var(--color-slate-500), var(--color-slate-500)) center / 100% 1px no-repeat",
+  },
 });
 
 /** The whole layer, handed to the caller's on/off compartment. */

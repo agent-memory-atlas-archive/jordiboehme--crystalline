@@ -2515,3 +2515,109 @@ describe("the printed engram", () => {
     ).toContain("print:hidden");
   });
 });
+
+describe("task boxes on the engram page", () => {
+  const TASKS = `${BODY}\n- [ ] ship it\n- [x] write it\n`;
+
+  /** Every PUT the mock has seen, as body and If-Match pairs. */
+  function puts(): { content: string; ifMatch: string | undefined }[] {
+    return apiMock.mock.calls
+      .filter(([, init]) => init?.method === "PUT")
+      .map(([, init]) => ({
+        content: (JSON.parse(init?.body as string) as { content: string })
+          .content,
+        ifMatch: (init?.headers as Record<string, string> | undefined)?.[
+          "If-Match"
+        ],
+      }));
+  }
+
+  /** How many times the detail was read. */
+  function reads(): number {
+    return apiMock.mock.calls.filter(
+      ([path, init]) =>
+        path === "/domains/eng/engrams/alpha" && init?.method !== "PUT",
+    ).length;
+  }
+
+  it("ticks a box and saves the whole file with the page's checksum", async () => {
+    const ticked = TASKS.replace("- [ ] ship it", "- [x] ship it");
+    serve({
+      "/domains/eng/engrams/alpha": (_path, init) =>
+        init?.method === "PUT"
+          ? detailResponse({ content: ticked, checksum: "c2" })
+          : detailResponse({ content: TASKS }),
+    });
+    renderApp("/d/eng/e/alpha");
+    const box = await screen.findByRole("checkbox", { name: "ship it" });
+    expect(box).toBeEnabled();
+    await userEvent.click(box);
+    await waitFor(() => {
+      expect(puts()).toEqual([{ content: ticked, ifMatch: '"3f8a1c05e2"' }]);
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("checkbox", { name: "ship it" })).toBeChecked();
+    });
+    // The page shows the frontmatter-free body still: nothing else moved.
+    expect(screen.getByRole("checkbox", { name: "write it" })).toBeChecked();
+  });
+
+  it("says so and reads the engram again when it changed underneath", async () => {
+    serve({
+      "/domains/eng/engrams/alpha": (_path, init) => {
+        if (init?.method === "PUT") {
+          throw new ApiProblem(
+            412,
+            "precondition failed",
+            "stale edit: engram changed since it was read",
+            { current_etag: '"srv9"', current_content: TASKS },
+          );
+        }
+        return detailResponse({ content: TASKS });
+      },
+    });
+    renderApp("/d/eng/e/alpha");
+    await userEvent.click(
+      await screen.findByRole("checkbox", { name: "ship it" }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Someone else saved this engram first. Try again.",
+    );
+    await waitFor(() => {
+      expect(reads()).toBeGreaterThanOrEqual(2);
+    });
+    expect(screen.getByRole("checkbox", { name: "ship it" })).not.toBeChecked();
+  });
+
+  it("disables the box with the reason in a domain this reader may not change", async () => {
+    serve({
+      "/domains": () => ({
+        ...domainsResponse(),
+        domains: [{ ...domainsResponse().domains[0], read_only: true }],
+      }),
+      "/domains/eng/engrams/alpha": () => detailResponse({ content: TASKS }),
+    });
+    renderApp("/d/eng/e/alpha");
+    const box = await screen.findByRole("checkbox", { name: "ship it" });
+    await waitFor(() => {
+      expect(box).toBeDisabled();
+    });
+    expect(box).toHaveAccessibleDescription(
+      "You can read this page but not change it",
+    );
+  });
+
+  it("disables the box for the anonymous viewer and says why", async () => {
+    serve({
+      "/auth/me": () => meResponse({ anonymous: true }),
+      "/domains/eng/engrams/alpha": () => detailResponse({ content: TASKS }),
+    });
+    renderApp("/d/eng/e/alpha");
+    const box = await screen.findByRole("checkbox", { name: "ship it" });
+    await waitFor(() => {
+      expect(box).toBeDisabled();
+    });
+    expect(box).toHaveAccessibleDescription("Sign in to change this page");
+    expect(puts()).toEqual([]);
+  });
+});

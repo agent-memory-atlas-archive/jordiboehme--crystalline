@@ -13,6 +13,7 @@ import {
   isIdLine,
   locateQuote,
   occurrenceAt,
+  pageOffset,
   sectionTexts,
   stripIdLines,
   stripProvenance,
@@ -199,5 +200,69 @@ describe("firstTitle", () => {
     expect(firstTitle("```\n# not a title\n```\n\n# Real\n")).toBe("Real");
     expect(firstTitle("~~~\n# never closed\n")).toBeNull();
     expect(firstTitle("## Only a section\n")).toBeNull();
+  });
+});
+
+describe("pageOffset", () => {
+  const PAGE = [
+    "---",
+    "title: Checks",
+    "---",
+    "",
+    "# Checks",
+    "",
+    "Intro.",
+    "",
+    "## One",
+    "<!-- r:aaaa1111 -->",
+    "",
+    "- [ ] check",
+    "",
+    "## Two",
+    "<!-- r:bbbb2222 -->",
+    "",
+    "- [ ] check",
+    "",
+  ].join("\n");
+  const SECTIONS = [
+    { id: "aaaa1111", heading: "One", line: 9 },
+    { id: "bbbb2222", heading: "Two", line: 14 },
+  ];
+
+  it("maps an offset in a section's text back to the page, id lines and frontmatter included", () => {
+    const [top, one, two] = sectionTexts(PAGE, SECTIONS);
+    if (top === undefined || one === undefined || two === undefined) {
+      throw new Error("three sections expected");
+    }
+    expect(pageOffset(PAGE, SECTIONS, 2, two.text.indexOf("[ ]"))).toBe(
+      PAGE.lastIndexOf("[ ]"),
+    );
+    expect(pageOffset(PAGE, SECTIONS, 1, one.text.indexOf("[ ]"))).toBe(
+      PAGE.indexOf("[ ]"),
+    );
+    expect(pageOffset(PAGE, SECTIONS, 0, top.text.indexOf("Intro"))).toBe(
+      PAGE.indexOf("Intro"),
+    );
+  });
+
+  it("maps through CRLF line endings", () => {
+    const crlf = PAGE.replace(/\n/g, "\r\n");
+    const two = sectionTexts(crlf, SECTIONS)[2];
+    if (two === undefined) {
+      throw new Error("section Two expected");
+    }
+    expect(pageOffset(crlf, SECTIONS, 2, two.text.indexOf("[ ]"))).toBe(
+      crlf.lastIndexOf("[ ]"),
+    );
+  });
+
+  it("answers null for an offset outside the section", () => {
+    const two = sectionTexts(PAGE, SECTIONS)[2];
+    if (two === undefined) {
+      throw new Error("section Two expected");
+    }
+    expect(pageOffset(PAGE, SECTIONS, 2, -1)).toBeNull();
+    expect(pageOffset(PAGE, SECTIONS, 2, two.text.length + 1)).toBeNull();
+    expect(pageOffset(PAGE, SECTIONS, 3, 0)).toBeNull();
   });
 });

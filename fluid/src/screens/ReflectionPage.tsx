@@ -17,7 +17,14 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { KeyboardEvent, ReactElement } from "react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { FolderInput, Layers, Trash2 } from "lucide-react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 
@@ -32,6 +39,7 @@ import {
   reflectionAssetHome,
   reflectionAssetsKey,
   reflectionDocKey,
+  saveReflection,
 } from "../api/reflection";
 import type { ReflectionRight } from "../api/reflectionDomains";
 import {
@@ -76,11 +84,21 @@ import { assetRefsIn } from "../editor/imageFormat";
 import { FOCUS_HEADING, useHeadingFocusRequest } from "../focusHeading";
 import { lazyChunk } from "../lazyChunk";
 import { discardPageDrafts } from "../reflectionPageDrafts";
+import { useDomainWritable } from "../domainWritable";
+import { tickAt } from "../taskTick";
 import { printNotes } from "../printNotes";
 import { reflectionFacts } from "../printSheet";
 import { SECTION_ATTR } from "../reflectionQuotes";
 import type { SectionText } from "../reflectionText";
-import { TOP_SECTION, hasOwnTitle, sectionTexts } from "../reflectionText";
+import {
+  TOP_SECTION,
+  hasOwnTitle,
+  pageOffset,
+  sectionTexts,
+} from "../reflectionText";
+
+/** What a tick on a page that moved underneath says. */
+const PAGE_CHANGED = "The page changed. Try again.";
 
 const MoveReflectionDialog = lazyChunk(() =>
   import("../components/MoveReflectionDialog").then((m) => ({
@@ -300,10 +318,84 @@ function PageBody({
     },
   });
   const articleRef = useRef<HTMLElement | null>(null);
+  /*
+   * A task box ticked on the page: the whole page as the GET answered it
+   * (frontmatter and id lines included) with three characters changed,
+   * saved against the checksum it was read at. There is no draft path for
+   * a Reflection: the save lands on disk or in the open live room, and the
+   * page is read again either way, so the next tick has the new checksum.
+   * The ticked text shows until that read lands. A tick alone is no
+   * feedback for the reflect queue (the core leaves it out).
+   */
+  const { capabilities } = useAuth();
+  const { domainLocked } = useDomainWritable(domain);
+  const [tickProblem, setTickProblem] = useState<string | null>(null);
+  const tick = useMutation({
+    mutationFn: ({
+      markdown,
+      checksum,
+    }: {
+      markdown: string;
+      checksum: string;
+    }) =>
+      saveReflection(domain, path, markdown, { expectedChecksum: checksum }),
+    onMutate: () => {
+      setTickProblem(null);
+    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: reflectionDocKey(domain, path),
+      }),
+    onError: (error: Error) => {
+      // Only a stale checksum is "the page changed": a 409 also says the
+      // Reflection lives elsewhere now, in words that name the remedy.
+      const stale =
+        error instanceof ApiProblem &&
+        error.status === 409 &&
+        error.detail.startsWith("stale edit");
+      setTickProblem(stale ? PAGE_CHANGED : problemDetail(error));
+      void queryClient.invalidateQueries({
+        queryKey: reflectionDocKey(domain, path),
+      });
+    },
+  });
+  const markdown = tick.isPending
+    ? tick.variables.markdown
+    : doc.data?.markdown;
   const sections = useMemo<SectionText[]>(
-    () => (doc.data ? sectionTexts(doc.data.markdown, doc.data.sections) : []),
-    [doc.data],
+    () =>
+      doc.data && markdown !== undefined
+        ? sectionTexts(markdown, doc.data.sections)
+        : [],
+    [doc.data, markdown],
   );
+  const { mutate: saveTick } = tick;
+  const onSectionTick = useCallback(
+    (index: number, offset: number, next: "[ ]" | "[x]") => {
+      const page = doc.data;
+      if (page === undefined) {
+        return;
+      }
+      const at = pageOffset(page.markdown, page.sections, index, offset);
+      const ticked = at === null ? null : tickAt(page.markdown, at, next);
+      if (ticked === null) {
+        setTickProblem(PAGE_CHANGED);
+        void queryClient.invalidateQueries({
+          queryKey: reflectionDocKey(domain, path),
+        });
+        return;
+      }
+      saveTick({ markdown: ticked, checksum: page.checksum });
+    },
+    [doc.data, domain, path, queryClient, saveTick],
+  );
+  const canTick: boolean | string = capabilities.anonymous
+    ? "Sign in to change this page"
+    : !mayEditPage(right, path) || capabilities.readOnly || domainLocked
+      ? "You can read this page but not change it"
+      : tick.isPending
+        ? "Saving the last change"
+        : true;
   // The open threads as printed notes, numbered the way the threads column
   // numbers them in the text while the page prints.
   const notes = useMemo(
@@ -524,6 +616,14 @@ function PageBody({
             </p>
           )}
         </header>
+        {tickProblem !== null && (
+          <p
+            role="alert"
+            className="rounded bg-red-50 px-3 py-2 text-sm text-red-800 print:hidden dark:bg-red-950 dark:text-red-200"
+          >
+            {tickProblem}
+          </p>
+        )}
         <article
           ref={articleRef}
           className="flex flex-col gap-4"
@@ -547,6 +647,8 @@ function PageBody({
               // carries its own title; every other section starts with one.
               headed={section.id !== TOP_SECTION || ownTitle}
               engramsVisible={engramsVisible}
+              onTick={onSectionTick}
+              canTick={canTick}
               view={
                 page.sections.find(
                   (s) => s.id === section.id && s.heading === section.heading,
@@ -603,7 +705,13 @@ function PageSection({
   engramsVisible,
   view,
   titleNote,
+  onTick,
+  canTick,
 }: {
+  /** Flip a task box at `offset` into this section's text (`index` names the section). */
+  onTick: (index: number, offset: number, next: "[ ]" | "[x]") => void;
+  /** Whether the boxes tick, or why not. */
+  canTick: boolean | string;
   /** Whether the section's text starts with a heading to carry its sources. */
   headed: boolean;
   /** A line under the section's first `# Title`, outside its text. */
@@ -627,6 +735,12 @@ function PageSection({
       ? view.sources
       : [];
   const aside = useSources(domain, section.heading, sources);
+  const onSectionTick = useCallback(
+    (offset: number, next: "[ ]" | "[x]") => {
+      onTick(index, offset, next);
+    },
+    [onTick, index],
+  );
   return (
     <section
       id={domId}
@@ -654,6 +768,8 @@ function PageSection({
         source={section.text}
         assets={assets}
         sourceSpans
+        onTick={onSectionTick}
+        canTick={canTick}
         {...(titleNote === undefined ? {} : { titleNote })}
         {...(aside !== null && headed ? { headingAside: aside } : {})}
       />

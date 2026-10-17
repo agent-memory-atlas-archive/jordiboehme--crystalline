@@ -74,6 +74,7 @@ import {
   remarkStatusSyntax,
 } from "../markdown/directives";
 import { colourOf } from "../markdown/swatch";
+import { remarkTaskState } from "../markdown/taskState";
 import { printUrl } from "../printUrl";
 import { SOURCE_ATTR, spanPieces } from "../reflectionQuotes";
 import { isIdLine } from "../reflectionText";
@@ -92,6 +93,7 @@ import {
 } from "../markdown/math";
 import { Chip, FOCUS_RING } from "./primitives";
 import StatusLabel from "./StatusLabel";
+import { NotApplicableBox, TaskBox } from "./TaskBox";
 import { useSaid } from "./useSaid";
 
 const MermaidDiagram = lazyPart(() => import("./MermaidDiagram"));
@@ -488,6 +490,130 @@ function markFirstTitle() {
   };
 }
 
+/** The offset of a task box's `[` in `shown`, as `remarkTaskState` stamps it. */
+const TASK_AT = "data-task-at";
+/** The words a task box is named by, as {@link taskBoxes} copies them. */
+const TASK_LABEL = "data-task-label";
+/** The element {@link taskBoxes} adds where a not-applicable box is drawn. */
+const TASK_NA_BOX = "data-task-box";
+
+/** An item's own words: its text without the lists nested in it. */
+function itemWords(node: HastNode): string {
+  return (node.children ?? [])
+    .map((child) =>
+      child.type === "element" &&
+      (child.tagName === "ul" || child.tagName === "ol")
+        ? ""
+        : child.type === "element" && child.tagName === "p"
+          ? itemWords(child)
+          : textOf(child),
+    )
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Hand every task box what it is drawn from: the item's words, which name
+ * it, and the offset `remarkTaskState` found for its `[`. The checkbox is
+ * GitHub's own `input`, which the converter puts first in the item, or first
+ * in the item's paragraph when the list is loose; a not-applicable item gets
+ * an element of its own in the same place. First in the chain, before the
+ * stamp wraps the words in spans.
+ */
+function taskBoxes() {
+  return function transform(tree: unknown) {
+    const walk = (node: HastNode): void => {
+      if (node.type === "element" && node.tagName === "li") {
+        const at = node.properties?.[TASK_AT];
+        const na = node.properties?.["data-task"] === "na";
+        if (na || isTaskItem(node)) {
+          const first = node.children?.find(
+            (child) => child.type === "element",
+          );
+          const holder = first?.tagName === "p" ? first : node;
+          const label = itemWords(node);
+          if (na) {
+            holder.children = [
+              {
+                type: "element",
+                tagName: "span",
+                properties: { [TASK_NA_BOX]: "na", [TASK_LABEL]: label },
+                children: [],
+              },
+              ...(holder.children ?? []),
+            ];
+          } else {
+            const input = (holder.children ?? []).find(
+              (child) => child.type === "element" && child.tagName === "input",
+            );
+            if (input !== undefined) {
+              input.properties = {
+                ...input.properties,
+                [TASK_LABEL]: label,
+                ...(typeof at === "string" ? { [TASK_AT]: at } : {}),
+              };
+            }
+          }
+        }
+      }
+      for (const child of node.children ?? []) {
+        walk(child);
+      }
+    };
+    walk(tree as HastNode);
+  };
+}
+
+/** Whether remark-gfm made this item a task item. */
+function isTaskItem(node: HastNode): boolean {
+  const names = node.properties?.className;
+  return Array.isArray(names) && names.includes("task-list-item");
+}
+
+/**
+ * What a task box may do here, handed down by context rather than through
+ * the component map, for the same reason as `TitleNoteContext`: a page's
+ * changing callback must not remount the document. Undefined, a box only
+ * shows its state, as it always did.
+ */
+interface TaskTick {
+  /** Flip the box whose `[` is at this offset into `shown`. Absent, nothing ticks. */
+  tick?: (at: number, next: "[ ]" | "[x]") => void;
+  /** Why nothing ticks, shown with every box. */
+  reason?: string;
+}
+
+const TaskTickContext = createContext<TaskTick | undefined>(undefined);
+
+/** One GitHub task box, wired to what the page allows. */
+function TaskInput({
+  checked,
+  at,
+  label,
+}: {
+  checked: boolean;
+  at: number | null;
+  label: string;
+}) {
+  const task = useContext(TaskTickContext);
+  const tick = task?.tick;
+  return (
+    <TaskBox
+      checked={checked}
+      label={label}
+      reason={task?.reason}
+      onToggle={
+        tick === undefined || at === null
+          ? undefined
+          : () => {
+              tick(at, checked ? "[ ]" : "[x]");
+            }
+      }
+    />
+  );
+}
+
 /** The source offset a stamped span carries, or undefined for any other span. */
 function sourceStamp(node: unknown): string | undefined {
   const value = (node as HastNode | undefined)?.properties?.[SOURCE_ATTR];
@@ -658,12 +784,37 @@ const components: Components = {
   ol: ({ children }) => (
     <ol className="my-3 list-decimal pl-6 leading-relaxed">{children}</ol>
   ),
-  // The id is what a footnote reference jumps to.
-  li: ({ children, id }) => (
-    <li id={id} className="my-1">
+  // The id is what a footnote reference jumps to. A task item draws its
+  // box where the bullet would be, so it has no bullet of its own.
+  li: ({ children, id, className, ...props }) => (
+    <li
+      id={id}
+      className={
+        className?.includes("task-list-item") === true ||
+        (props as Record<string, unknown>)["data-task"] === "na"
+          ? "my-1 list-none"
+          : "my-1"
+      }
+    >
       {structuredBullet(children)}
     </li>
   ),
+  // Only GitHub's task boxes make an input here: raw HTML stays text.
+  input: ({ checked, type, ...props }) => {
+    if (type !== "checkbox") {
+      return null;
+    }
+    const extra = props as Record<string, unknown>;
+    const at = extra[TASK_AT];
+    const label = extra[TASK_LABEL];
+    return (
+      <TaskInput
+        checked={checked === true}
+        at={typeof at === "string" ? Number(at) : null}
+        label={typeof label === "string" ? label : ""}
+      />
+    );
+  },
   span: ({ children, className, node, ...props }) => {
     // Four sources make spans in this tree, all plugin-generated rather than
     // raw HTML an engram could write: the wikilink rewrite's own markers,
@@ -677,6 +828,12 @@ const components: Components = {
     // text color. A stamp keeps its offset, and a span without one renders
     // exactly as before, because an undefined attribute is never written.
     const status = (props as Record<string, unknown>)["data-status"];
+    if ((props as Record<string, unknown>)[TASK_NA_BOX] === "na") {
+      const label = (props as Record<string, unknown>)[TASK_LABEL];
+      return (
+        <NotApplicableBox label={typeof label === "string" ? label : ""} />
+      );
+    }
     if (isStatusColour(status)) {
       return <StatusLabel colour={status}>{children}</StatusLabel>;
     }
@@ -1461,8 +1618,21 @@ export default function MarkdownBody({
   sourceSpans,
   titleNote,
   headingAside,
+  onTick,
+  canTick,
 }: {
   source: string;
+  /**
+   * Flip one task box: `offset` is the `[` of its `[ ]` or `[x]` in
+   * `source` (the whole file, frontmatter and folded title counted), `next`
+   * what it becomes. Absent, a box only shows its state.
+   */
+  onTick?: (offset: number, next: "[ ]" | "[x]") => void;
+  /**
+   * Whether the boxes tick: true, or a sentence saying why not, shown with
+   * every box. Absent or false, they do not tick and say nothing.
+   */
+  canTick?: boolean | string;
   /**
    * A small control drawn at the right end of the document's first heading
    * and counted as no part of it (see `HeadingAsideContext`).
@@ -1511,6 +1681,22 @@ export default function MarkdownBody({
   const noteScope = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   // What the parser is handed, and so what every stamped offset counts into.
   const shown = foldLeadingTitle(source.replace(FRONTMATTER, ""), foldTitle);
+  // Both cuts above take a prefix and nothing else (each is anchored at the
+  // start), so an offset into `shown` is this much short of one into `source`.
+  const dropped = source.length - shown.length;
+  const taskTick = useMemo<TaskTick | undefined>(() => {
+    if (onTick === undefined) {
+      return undefined;
+    }
+    if (canTick === true) {
+      return {
+        tick: (at, next) => {
+          onTick(at + dropped, next);
+        },
+      };
+    }
+    return typeof canTick === "string" ? { reason: canTick } : {};
+  }, [onTick, canTick, dropped]);
   const rootRef = useRef<HTMLDivElement>(null);
   const { hash } = useLocation();
   // Memoized on its inputs so the component map below is too: a new map
@@ -1551,6 +1737,7 @@ export default function MarkdownBody({
       [remarkMath, remarkMathOptions],
       remarkGithubMath,
       remarkCallouts,
+      remarkTaskState,
     ],
     [shown],
   );
@@ -1560,6 +1747,8 @@ export default function MarkdownBody({
       // Always, so the plugin chain never depends on the note's text: a
       // changing note re-renders its own line and remounts nothing.
       markFirstTitle,
+      // Before the stamp, so it reads the item's words as plain text.
+      taskBoxes,
       ...(sourceSpans ? [sourceSpanStamp(shown)] : []),
       // `plainText` keeps the highlighter's hands off a mermaid fence, whose
       // text this file reads back out to draw the diagram from.
@@ -1684,14 +1873,16 @@ export default function MarkdownBody({
     <div ref={rootRef} className="measured text-body">
       <TitleNoteContext.Provider value={titleNote}>
         <HeadingAsideContext.Provider value={headingAside}>
-          {anchors ? (
-            <SectionAnchorProvider pageUrl={anchors.pageUrl}>
-              {rendered}
-              <SectionLinkStatus />
-            </SectionAnchorProvider>
-          ) : (
-            rendered
-          )}
+          <TaskTickContext.Provider value={taskTick}>
+            {anchors ? (
+              <SectionAnchorProvider pageUrl={anchors.pageUrl}>
+                {rendered}
+                <SectionLinkStatus />
+              </SectionAnchorProvider>
+            ) : (
+              rendered
+            )}
+          </TaskTickContext.Provider>
         </HeadingAsideContext.Provider>
       </TitleNoteContext.Provider>
     </div>
