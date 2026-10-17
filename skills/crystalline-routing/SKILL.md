@@ -156,3 +156,4 @@ Folders are not a navigation tree - search and the routing lines stay primary. A
 - Before writing anything, switch to the `crystalline-capture` skill.
 - Domain has a team origin (`origin_status` says so) -> switch to the `crystalline-collaboration` skill for status, sharing and conflicts.
 - Set up or change what a domain ships -> the `crystalline-provisioning` skill.
+- Write or update a reflection -> the `crystalline-presentation` skill (read it with the `skills` tool if it is not installed).

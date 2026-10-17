@@ -722,6 +722,12 @@ async fn the_descriptions_of_the_call_time_gated_tools_state_their_condition() {
         write.contains("replace_section") && write.contains("insert_after_section"),
         "{write}"
     );
+    // A novel skill is found through the text that points to it: the write
+    // names the presentation skill and how to read it without an install.
+    assert!(
+        write.contains("crystalline-presentation") && write.contains("skills tool"),
+        "{write}"
+    );
     // Discuss teaches the conventional comment shape.
     let discuss = description("discuss");
     assert!(

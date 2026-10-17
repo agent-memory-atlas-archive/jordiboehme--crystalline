@@ -3,7 +3,7 @@
 //! A skill is a folder under `skills/` with a `SKILL.md` playbook teaching one
 //! kind of Crystalline work: routing to a domain, capturing what was learned,
 //! modelling a schema, collaborating with a team, provisioning what a domain
-//! ships. `include_str!` bakes each one
+//! ships, presenting a page to people. `include_str!` bakes each one
 //! into the binary, so an install from a downloaded release carries exactly the
 //! skills a clone would.
 //!
@@ -20,7 +20,7 @@
 //! `crystalline-intelligence` is the single consolidated skill for Claude
 //! Desktop, which has no hooks and installs one skill at a time, so it ships
 //! only as its own zip and is never copied into a harness skills folder beside
-//! the five topical skills - installing both would teach the same lessons twice.
+//! the six topical skills - installing both would teach the same lessons twice.
 //! It is still served over MCP like any other: a remote client reading the
 //! skills should see everything this binary knows how to teach.
 //!
@@ -66,8 +66,8 @@ impl SkillAsset {
 
 /// Every skill this binary ships, in the order a reader should meet them:
 /// route to a domain, capture what was learned, model a schema, collaborate
-/// with a team, provision what a domain ships, and the consolidated Claude
-/// Desktop skill last.
+/// with a team, provision what a domain ships, present a page to people, and
+/// the consolidated Claude Desktop skill last.
 pub const SKILL_ASSETS: &[SkillAsset] = &[
     SkillAsset {
         name: "crystalline-routing",
@@ -98,6 +98,12 @@ pub const SKILL_ASSETS: &[SkillAsset] = &[
         content: include_str!("../../../skills/crystalline-provisioning/SKILL.md"),
         install_managed: true,
         since: "0.22.1",
+    },
+    SkillAsset {
+        name: "crystalline-presentation",
+        content: include_str!("../../../skills/crystalline-presentation/SKILL.md"),
+        install_managed: true,
+        since: "0.28.0",
     },
     SkillAsset {
         name: "crystalline-intelligence",
@@ -185,7 +191,7 @@ mod tests {
     }
 
     #[test]
-    fn six_skills_ship_with_five_installed_into_harnesses() {
+    fn seven_skills_ship_with_six_installed_into_harnesses() {
         let names: Vec<&str> = SKILL_ASSETS.iter().map(|s| s.name).collect();
         assert_eq!(
             names,
@@ -195,6 +201,7 @@ mod tests {
                 "crystalline-schema",
                 "crystalline-collaboration",
                 "crystalline-provisioning",
+                "crystalline-presentation",
                 "crystalline-intelligence",
             ]
         );
@@ -211,6 +218,7 @@ mod tests {
                 "crystalline-schema",
                 "crystalline-collaboration",
                 "crystalline-provisioning",
+                "crystalline-presentation",
             ]
         );
         assert_eq!(
@@ -218,6 +226,35 @@ mod tests {
             Some(false),
             "the consolidated Desktop skill is served but never installed"
         );
+    }
+
+    /// The presentation skill teaches restraint, puts the PACT first and
+    /// carries the syntax sheet, and the two skills an agent writes with
+    /// point to it (a novel skill is found through skill text, AGENTS.md).
+    #[test]
+    fn the_presentation_skill_teaches_restraint_the_pact_and_the_dialect() {
+        let p = skill("crystalline-presentation").unwrap().content;
+        for needle in [
+            "## Presentation",
+            "When in doubt, prose",
+            "[!WARNING]",
+            "[!DETAILS]-",
+            ":status[",
+            "grey, blue, green, yellow, red, purple",
+            "$`",
+            "```math",
+            "sequenceDiagram",
+            "never inside a callout",
+            "same section",
+            "markdown_findings",
+        ] {
+            assert!(p.contains(needle), "presentation skill lacks {needle}");
+        }
+        assert_eq!(skill("crystalline-presentation").unwrap().since, "0.28.0");
+        let i = skill("crystalline-intelligence").unwrap().content;
+        assert!(i.contains("`crystalline-presentation`"));
+        let c = skill("crystalline-capture").unwrap().content;
+        assert!(c.contains("`crystalline-presentation`"));
     }
 
     #[test]

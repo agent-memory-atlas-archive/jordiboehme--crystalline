@@ -120,7 +120,7 @@
 //! The shipped agent skills are served here too, so a remote client that never
 //! runs `crystalline install` can still learn how to use Crystalline well:
 //! the `skills` tool (an index with no arguments, one skill's full `SKILL.md`
-//! with `name`), five `skill://<name>/SKILL.md` resources and two prompts,
+//! with `name`), one `skill://<name>/SKILL.md` resource per skill and two prompts,
 //! `onboarding` (the live routing block) and `connector` (the static snippet
 //! that teaches a client to onboard itself). The whole surface shares one
 //! gate, the live `skills.serve` setting; when it hides the surface the tool,
@@ -129,7 +129,7 @@
 //!
 //! That gate is tri-state. `true` and `false` force always and never, and
 //! `auto`, the default, withholds the surface from a session whose spawning
-//! harness already has the five skills on disk. **That answer is resolved
+//! harness already has the six managed skills on disk. **That answer is resolved
 //! before the session starts and is fixed for the serving process's life**:
 //! `crystalline install` registers the server as `crystalline mcp --harness
 //! <name>`, the spawned process asks this machine's install receipt whether
@@ -713,7 +713,7 @@ fn skill_for_uri(uri: &str) -> Option<&'static crystalline_core::SkillAsset> {
     crystalline_core::skill(name)
 }
 
-/// The five shipped skill names, comma separated, for an error that names
+/// Every shipped skill name, comma separated, for an error that names
 /// what the caller could have asked for instead.
 fn skill_names() -> String {
     SKILL_ASSETS
@@ -723,7 +723,7 @@ fn skill_names() -> String {
         .join(", ")
 }
 
-/// The six skill resource uris, comma separated, for the same reason.
+/// Every skill resource uri, comma separated, for the same reason.
 fn skill_uris() -> String {
     SKILL_ASSETS
         .iter()
@@ -777,7 +777,7 @@ const REFLECTION_ASSET_TEMPLATE_DESCRIPTION: &str = "A file a person added to a 
 /// endpoint "MUST NOT vary per-connection" - so the client's identity is gone
 /// from here. What replaces it is the same fact learned from the deployment
 /// instead of from the wire: the harness that spawned this process already has
-/// the five skills on disk and is onboarded by its own session hook, so
+/// the six managed skills on disk and is onboarded by its own session hook, so
 /// serving them again spends the tokens twice.
 ///
 /// **A hook in the receipt is not enough.** The surface is hidden only when
@@ -3338,7 +3338,7 @@ impl McpServer {
     #[tool(
         name = "read_reflection",
         title = "Read reflection",
-        description = "Read a domain's Reflection - its documents for people under reflections/, where the MANIFEST says reflection: on. Without path: the tree of reflections with titles, section counts and open thread counts, and PACT.md, the agreement on audience, level of detail and structure. With path: one reflection's markdown with every section's hidden id (the <!-- r:... --> line under its ## heading), whether its text changed since it was last reflected, the engrams it was built from and its open threads. With query: search the reflections by words and meaning (search_type hybrid by default, text or semantic) and get the matching sections, best first, each with its page, title, section id, heading and a snippet (at most 100 hits per page); pass path or query, not both. Files the reflection shows (under reflections/assets/) come back as resource links; fetch one with resources/read when the file itself matters. A page from a domain served by another machine carries them too and resources/read fetches them from that server, which needs Crystalline 0.27 or newer on that server. Read before write_reflection or discuss, and pass the checksum back as expected_checksum. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server.",
+        description = "Read a domain's Reflection - its documents for people under reflections/, where the MANIFEST says reflection: on. Without path: the tree of reflections with titles, section counts and open thread counts, and PACT.md, the agreement on audience, level of detail, presentation and structure. With path: one reflection's markdown with every section's hidden id (the <!-- r:... --> line under its ## heading), whether its text changed since it was last reflected, the engrams it was built from and its open threads. With query: search the reflections by words and meaning (search_type hybrid by default, text or semantic) and get the matching sections, best first, each with its page, title, section id, heading and a snippet (at most 100 hits per page); pass path or query, not both. Files the reflection shows (under reflections/assets/) come back as resource links; fetch one with resources/read when the file itself matters. A page from a domain served by another machine carries them too and resources/read fetches them from that server, which needs Crystalline 0.27 or newer on that server. Read before write_reflection or discuss, and pass the checksum back as expected_checksum. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn read_reflection(
@@ -3374,7 +3374,7 @@ impl McpServer {
     #[tool(
         name = "write_reflection",
         title = "Write reflection",
-        description = "Create, change, move or delete a reflection - a document for people under reflections/, where the domain's MANIFEST says reflection: on - or edit PACT.md, the domain's agreement on audience, level of detail and structure (PACT.md and every write with sources need curate access, which everyone who edits the engrams holds; anyone else proposes a PACT.md change with discuss). Write at the level PACT.md describes. action write (the default) takes the whole markdown: keep each ## heading's <!-- r:... --> id line as it is; new headings get one. To change one section instead, pass operation replace_section, insert_before_section or insert_after_section with section (the heading path, for example ## Night deploys) and content, exactly as edit_engram does; the section keeps its id line. Pass sources (section id or heading to engram permalinks in this domain) for every section you built from engrams: that curates the section and records what it reflects. Without sources a write is an ordinary edit, and a person's change stays a feedback item in reflect. action settle with sections and outcome kept (the person's text stands, sources stay) or taken_in (you changed the engrams to match) settles feedback items. action move carries the reflection's threads and baseline and rewrites relative links to it (a page open in a co-editing room is saved first, and the room is closed and told the new path), and its receipt carries links_failed when a page that links it could not be rewritten; delete takes both along. action move_asset (path and to) or delete_asset (path) moves or removes a file under reflections/assets/ and needs curate access; a move rewrites every link to the file, and its receipt carries links_failed (pages whose link could not be rewritten) or note (the file moved and its index row did not follow) when that happened. A page that embeds an engram attachment is refused (copy the file into reflections/assets/ first, which a person does). When a person has the page open in a co-editing room, the receipt says landed live (the room took your text in) or landed file with room (conflict or waiting) and room_note: tell the person what room_note says. Needs edit access; sources and settle need curate access. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server. The receipt carries markdown_findings (code, severity, message, line) when the text has a status colour or callout kind Crystalline does not know: fix them.",
+        description = "Create, change, move or delete a reflection - a document for people under reflections/, where the domain's MANIFEST says reflection: on - or edit PACT.md, the domain's agreement on audience, level of detail, presentation and structure (PACT.md and every write with sources need curate access, which everyone who edits the engrams holds; anyone else proposes a PACT.md change with discuss). Write at the level PACT.md describes. action write (the default) takes the whole markdown: keep each ## heading's <!-- r:... --> id line as it is; new headings get one. To change one section instead, pass operation replace_section, insert_before_section or insert_after_section with section (the heading path, for example ## Night deploys) and content, exactly as edit_engram does; the section keeps its id line. Pass sources (section id or heading to engram permalinks in this domain) for every section you built from engrams: that curates the section and records what it reflects. Without sources a write is an ordinary edit, and a person's change stays a feedback item in reflect. action settle with sections and outcome kept (the person's text stands, sources stay) or taken_in (you changed the engrams to match) settles feedback items. action move carries the reflection's threads and baseline and rewrites relative links to it (a page open in a co-editing room is saved first, and the room is closed and told the new path), and its receipt carries links_failed when a page that links it could not be rewritten; delete takes both along. action move_asset (path and to) or delete_asset (path) moves or removes a file under reflections/assets/ and needs curate access; a move rewrites every link to the file, and its receipt carries links_failed (pages whose link could not be rewritten) or note (the file moved and its index row did not follow) when that happened. A page that embeds an engram attachment is refused (copy the file into reflections/assets/ first, which a person does). When a person has the page open in a co-editing room, the receipt says landed live (the room took your text in) or landed file with room (conflict or waiting) and room_note: tell the person what room_note says. Needs edit access; sources and settle need curate access. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server. The receipt carries markdown_findings (code, severity, message, line) when the text has a status colour or callout kind Crystalline does not know: fix them. Present the page with the crystalline-presentation skill (callouts, status labels, diagrams, tables, math) where they serve the reader; read it with the skills tool if it is not installed.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,

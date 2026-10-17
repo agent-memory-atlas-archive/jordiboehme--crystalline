@@ -71,6 +71,24 @@ pub async fn curated_with_a_feedback_item() -> Fx {
     fx
 }
 
+/// Every queue tells the agent how to present what it writes: the guidance
+/// names the presentation skill and where an agent without an install reads
+/// it.
+#[tokio::test]
+async fn the_queue_guidance_points_to_the_presentation_skill() {
+    let fx = curated_with_a_feedback_item().await;
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    let guidance = queue["guidance"].as_str().unwrap();
+    assert!(
+        guidance.contains("crystalline-presentation") && guidance.contains("skills tool"),
+        "{guidance}"
+    );
+}
+
 fn age_file(fx: &Fx, rel: &str, days: u64) {
     let file = std::fs::File::options()
         .write(true)

@@ -284,14 +284,14 @@ pub(crate) fn screen_home(after: &str, facts: &SwitchFacts) -> Result<()> {
     Ok(())
 }
 
-/// The PACT a freshly switched-on Reflection starts with: the three things
+/// The PACT a freshly switched-on Reflection starts with: the four things
 /// the pact agrees on, as headings for people and the agent to fill in. Each
 /// heading carries its section id line, the page marker that keeps an
 /// unedited pact the Reflection's: read as an engram it would hold the
 /// switch pending after a rebuild or a switch-off and on again (R48).
 pub(crate) fn pact_starter(domain: &str) -> String {
     let text = format!(
-        "---\ntitle: How we write about {domain}\n---\n\n# How we write about {domain}\n\nThis is the agreement between the people and the agents who work on this domain's Reflection. Change it like any page; the agent reads every change.\n\n## Audience\n\n- Who reads these pages, and what they already know.\n\n## Level of detail\n\n- How deep the pages go, and what they leave to the engrams.\n\n## Structure\n\n- *.md\n"
+        "---\ntitle: How we write about {domain}\n---\n\n# How we write about {domain}\n\nThis is the agreement between the people and the agents who work on this domain's Reflection. Change it like any page; the agent reads every change.\n\n## Audience\n\n- Who reads these pages, and what they already know.\n\n## Level of detail\n\n- How deep the pages go, and what they leave to the engrams.\n\n## Presentation\n\n- Which diagrams, callouts and tables help these readers, and what to avoid.\n\n## Structure\n\n- *.md\n"
     );
     let (with_ids, _) = crystalline_core::reflection::assign_ids(
         &text,
@@ -3022,7 +3022,9 @@ mod tests {
     }
 
     /// The seeded pact carries a section id line under every heading, so an
-    /// unedited pact is a marked page and never holds the switch pending.
+    /// unedited pact is a marked page and never holds the switch pending. Its
+    /// four sections come in a fixed order, Structure last, so the globs
+    /// still read from the end of the page.
     #[test]
     fn the_seeded_pact_is_a_marked_page() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3038,12 +3040,19 @@ mod tests {
             ),
             "{pact}"
         );
-        let ids = crystalline_core::reflection::split_sections(&pact)
+        let sections = crystalline_core::reflection::split_sections(&pact);
+        let headings: Vec<&str> = sections
             .iter()
             .skip(1)
-            .filter(|s| s.id.is_some())
-            .count();
-        assert_eq!(ids, 3, "{pact}");
+            .map(|s| s.heading.as_str())
+            .collect();
+        assert_eq!(
+            headings,
+            ["Audience", "Level of detail", "Presentation", "Structure"],
+            "{pact}"
+        );
+        let ids = sections.iter().skip(1).filter(|s| s.id.is_some()).count();
+        assert_eq!(ids, 4, "{pact}");
         assert_eq!(
             crystalline_core::reflection::structure_globs(&pact),
             vec!["*.md".to_string()]

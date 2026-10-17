@@ -355,7 +355,9 @@ async fn a_local_domain_switches_on_with_no_home_key_and_seeds_its_pact() {
     );
     let pact = std::fs::read_to_string(fx.root.join("reflections/PACT.md")).unwrap();
     assert!(
-        pact.contains("## Audience") && pact.contains("## Structure"),
+        pact.contains("## Audience")
+            && pact.contains("## Presentation")
+            && pact.contains("## Structure"),
         "{pact}"
     );
     // The seeded pact carries its section ids, so an unedited pact never

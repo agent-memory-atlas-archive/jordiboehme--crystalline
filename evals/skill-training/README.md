@@ -23,6 +23,7 @@ The optimizer model runs over the local Claude CLI login (`claude_chat` drives `
 ## Layout
 
 - `train.py` / `eval_only.py` - thin entrypoints that register the env and delegate to SkillOpt's own CLIs
+- `seed.py` - writes each shipped skill's body without its frontmatter to `outputs/seed_<name>.md` (`seed_presentation.md` for `crystalline-presentation`, `seed_memory.md` for `crystalline-intelligence`), the documents the configs train and evaluate
 - `envs/crystalline_routing/` - dataloader, sandboxed rollout and scoring
 - `configs/routing.yaml` - the pilot training config (self-contained)
 - `fixtures/generate.py` - builds the fixture workspaces with the real binary; `fixtures/workspaces/` is the committed result

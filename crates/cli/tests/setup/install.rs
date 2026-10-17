@@ -404,13 +404,14 @@ fn install_into_an_empty_home_writes_the_exact_managed_shape() {
          named so the server can resolve its own skill surface: {logged}"
     );
 
-    // All five managed skills land, and only those five.
+    // All six managed skills land, and only those six.
     for name in [
         "crystalline-routing",
         "crystalline-capture",
         "crystalline-schema",
         "crystalline-collaboration",
         "crystalline-provisioning",
+        "crystalline-presentation",
     ] {
         assert!(claude_skill(&home, name).exists(), "skill {name} installed");
     }
@@ -746,13 +747,14 @@ fn copilot_writes_an_owned_hooks_file_and_copilot_skills() {
     let hooks = read_json(&copilot_hooks_file(&home));
     assert_eq!(hooks, copilot_managed_hooks(), "crystalline.json shape");
 
-    // All five managed skills land under ~/.copilot/skills.
+    // All six managed skills land under ~/.copilot/skills.
     for name in [
         "crystalline-routing",
         "crystalline-capture",
         "crystalline-schema",
         "crystalline-collaboration",
         "crystalline-provisioning",
+        "crystalline-presentation",
     ] {
         assert!(
             copilot_skill(&home, name).exists(),
@@ -1346,7 +1348,7 @@ fn install_writes_a_receipt_and_uninstall_removes_its_entry() {
         json!({ "mcp": true, "hooks": true, "skills": true })
     );
     let skills = entry["skills"].as_array().unwrap();
-    assert_eq!(skills.len(), 5, "all five managed skills recorded");
+    assert_eq!(skills.len(), 6, "all six managed skills recorded");
     for s in skills {
         let hash = s["sha256"].as_str().unwrap();
         assert_eq!(hash.len(), 64, "a full sha256 hex digest per skill");
@@ -1388,7 +1390,7 @@ fn a_skip_run_after_a_full_install_keeps_the_recorded_knowledge() {
         entry["parts"],
         json!({ "mcp": true, "hooks": true, "skills": true })
     );
-    assert_eq!(entry["skills"].as_array().unwrap().len(), 5);
+    assert_eq!(entry["skills"].as_array().unwrap().len(), 6);
 }
 
 #[test]
@@ -1852,8 +1854,8 @@ fn copilot_receipt_entry_records_harness_copilot() {
     );
     assert_eq!(
         entry["skills"].as_array().unwrap().len(),
-        5,
-        "all five managed skills recorded"
+        6,
+        "all six managed skills recorded"
     );
 
     install_cmd(&home, &bin_dir)
