@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  cleanClipboardHtml,
-  htmlToMarkdown,
-  prefersPlainText,
-} from "./htmlToMarkdown";
+import { cleanClipboardHtml } from "./clipboardHtml";
+import { htmlToMarkdown, prefersPlainText } from "./htmlToMarkdown";
 
 /**
  * The clipboard samples in `fixtures/paste/`, hand-built in the shape those
@@ -72,8 +69,8 @@ describe("htmlToMarkdown", () => {
     expect(md).toContain("1. Call the vendor\n2. Sign the offer");
     expect(md).not.toContain("·");
     expect(md).toContain("| **Risk** | **Owner** |\n| --- | --- |");
-    // A pipe and an underscore in a cell keep one escape each.
-    expect(md).toContain("| a\\|b and snake\\_case | Ana |");
+    // A pipe in a cell is escaped once; an underscore inside a word is not.
+    expect(md).toContain("| a\\|b and snake_case | Ana |");
     expect(md).not.toContain("p.MsoNormal");
   });
 
@@ -124,6 +121,9 @@ describe("htmlToMarkdown", () => {
     "data:text/html,<b>x</b>",
     "vbscript:x",
     "file:///etc/passwd",
+    "&amp;#106;avascript:alert(1)",
+    "javascript&amp;colon;alert(1)",
+    "java&amp;Tab;script:alert(1)",
   ])("keeps the text of a link to %j and drops the link", (href) => {
     const md = htmlToMarkdown(`<p><a href="${href}">Click</a></p>`);
     expect(md.trim()).toBe("Click");
@@ -140,6 +140,54 @@ describe("htmlToMarkdown", () => {
     expect(htmlToMarkdown(`<p><a href="${href}">a</a></p>`).trim()).toBe(
       expected,
     );
+  });
+
+  it("drops an image whose source is a script, however it is encoded", () => {
+    expect(
+      htmlToMarkdown(
+        '<p><img src="&amp;#106;avascript:alert(1)" alt="i1"></p>',
+      ).trim(),
+    ).toBe("i1");
+  });
+
+  it("writes an & in a link so it reads back as the same URL", () => {
+    expect(
+      htmlToMarkdown(
+        '<p><a href="https://x.y/?a=1&amp;copy=2&amp;b=\\3">a</a></p>',
+      ).trim(),
+    ).toBe("[a](https://x.y/?a=1\\&copy=2\\&b=\\\\3)");
+  });
+
+  it.each([
+    ["&lt;script&gt;alert(1)&lt;/script&gt;", "\\<script>alert(1)\\</script>"],
+    [
+      '&lt;a href="javascript:alert(1)"&gt;x&lt;/a&gt;',
+      '\\<a href="javascript:alert(1)">x\\</a>',
+    ],
+    ["&lt;!-- r:deadbeef --&gt;", "\\<!-- r:deadbeef -->"],
+    ["&lt;?php", "\\<?php"],
+    ["a &lt; b and 1&lt;2", "a < b and 1<2"],
+    ["snake_case and __init__", "snake_case and \\_\\_init\\_\\_"],
+    ["_word_", "\\_word\\_"],
+    ["a &amp;copy; b &amp; c", "a \\&copy; b & c"],
+    ["~~gone~~ and $$x$$", "\\~\\~gone\\~\\~ and \\$\\$x\\$\\$"],
+    ["*a* `b` [c]", "\\*a\\* \\`b\\` \\[c\\]"],
+    ["# not a heading", "\\# not a heading"],
+  ])("writes the visible text %j as text", (html, expected) => {
+    expect(htmlToMarkdown(`<p>${html}</p>`).trim()).toBe(expected);
+  });
+
+  it("escapes a status label and a callout title like any text", () => {
+    expect(
+      htmlToMarkdown(
+        '<p><span data-macro-name="status">a\\ *b* &lt;i&gt;</span></p>',
+      ).trim(),
+    ).toBe(":status[a\\\\ \\*b\\* \\<i>]{grey}");
+    expect(
+      htmlToMarkdown(
+        '<div data-node-type="expand" data-title="T ] [!X] *y*"><p>Body</p></div>',
+      ),
+    ).toBe("> [!DETAILS]- T \\] \\[!X\\] \\*y\\*\n> Body");
   });
 
   it("turns an image into a link and drops a data URL image to its alt text", () => {

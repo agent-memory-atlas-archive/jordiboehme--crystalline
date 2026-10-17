@@ -17,6 +17,7 @@ import { gfm } from "@truto/turndown-plugin-gfm";
 import TurndownService from "turndown";
 
 import type { CalloutKind } from "../markdown/callouts";
+import { cleanClipboardHtml, decodeEntities } from "./clipboardHtml";
 import type { StatusColour } from "../markdown/directives";
 import { isStatusColour } from "../markdown/directives";
 
@@ -72,44 +73,6 @@ const WIKI = {
   taskList: "ul.inline-task-list > li",
 };
 
-/** Elements removed with everything inside them before any conversion. */
-const REMOVED = [
-  "script",
-  "style",
-  "iframe",
-  "frame",
-  "frameset",
-  "object",
-  "embed",
-  "applet",
-  "link",
-  "meta",
-  "base",
-  "noscript",
-  "template",
-  "title",
-];
-
-/**
- * The clipboard HTML parsed into an inert document, with active elements and
- * every `on*` attribute removed. Exported so the cleaning can be checked on
- * its own: an event attribute never shows in the Markdown either way.
- */
-export function cleanClipboardHtml(html: string): Document {
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  for (const el of Array.from(doc.querySelectorAll(REMOVED.join(",")))) {
-    el.remove();
-  }
-  for (const el of Array.from(doc.querySelectorAll("*"))) {
-    for (const name of el.getAttributeNames()) {
-      if (name.toLowerCase().startsWith("on")) {
-        el.removeAttribute(name);
-      }
-    }
-  }
-  return doc;
-}
-
 /**
  * Whether the plain text is the better paste: a code editor copies its text
  * as `white-space: pre` lines with coloured spans, and turndown would fold
@@ -146,8 +109,9 @@ const CALLOUT_TITLE = "data-paste-title";
 const STATUS = "data-paste-status";
 
 function rewrite(doc: Document): void {
-  links(doc);
+  // Images first: the links an image becomes are checked with the rest.
   images(doc);
+  links(doc);
   callouts(doc);
   statuses(doc);
   styledSpans(doc);
@@ -163,14 +127,26 @@ const IMAGE_SCHEMES = ["http", "https"];
 
 /**
  * Whether `raw` is a relative URL or names one of `schemes`. Read the way a
- * browser reads it: control characters and whitespace do not count, and the
- * scheme is matched without regard to case.
+ * browser and a Markdown renderer read it: character references decoded
+ * (however often they were encoded), control characters and whitespace not
+ * counted, the scheme matched without regard to case.
  */
 function isSafeUrl(raw: string, schemes: string[]): boolean {
-  // eslint-disable-next-line no-control-regex
-  const probe = raw.replace(/[\u0000- \u007f-\u009f]/g, "").toLowerCase();
+  const probe = decodeEntities(raw)
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0020\u007f-\u009f]/g, "")
+    .toLowerCase();
   const scheme = /^([a-z][a-z0-9+.-]*):/.exec(probe)?.[1];
   return scheme === undefined || schemes.includes(scheme);
+}
+
+/**
+ * A URL as a Markdown link destination that reads back as the same URL: a
+ * backslash and an `&` are escaped, so no character reference in it is
+ * decoded (turndown escapes the parentheses).
+ */
+function destination(url: string): string {
+  return url.trim().replace(/[\\&]/g, "\\$&");
 }
 
 function unwrap(el: Element): void {
@@ -183,7 +159,7 @@ function links(doc: Document): void {
     if (href === null || !isSafeUrl(href, LINK_SCHEMES)) {
       unwrap(a);
     } else {
-      a.setAttribute("href", href.trim());
+      a.setAttribute("href", destination(href));
     }
   }
 }
@@ -498,6 +474,7 @@ function service(): TurndownService {
     emDelimiter: "*",
     strongDelimiter: "**",
   });
+  td.escape = escapeText;
   td.use(gfm);
   // After the plugin, so these replace its cell rule.
   td.addRule("tableCell", { filter: ["th", "td"], replacement: tableCell });
@@ -509,7 +486,9 @@ function service(): TurndownService {
   td.addRule("status", {
     filter: (node) => node.hasAttribute(STATUS),
     replacement: (_content, node) => {
-      const text = oneLine(node.textContent).replace(/[[\]]/g, "");
+      // The brackets go: a label ends at its first `]`, for the core's lint
+      // as much as for the renderer. The rest is escaped like any text.
+      const text = escapeText(oneLine(node.textContent).replace(/[[\]]/g, ""));
       return text === ""
         ? ""
         : `:status[${text}]{${node.getAttribute(STATUS)}}`;
@@ -570,8 +549,42 @@ function callout(content: string, node: TurndownService.Node): string {
   const kind = el.getAttribute(CALLOUT) ?? "note";
   const title = el.getAttribute(CALLOUT_TITLE) ?? "";
   const fold = kind === "details" ? "-" : "";
-  const head = `[!${kind.toUpperCase()}]${fold}${title === "" ? "" : ` ${title}`}`;
+  const head = `[!${kind.toUpperCase()}]${fold}${title === "" ? "" : ` ${escapeText(title)}`}`;
   const body = content.replace(/^\n+/, "").replace(/\n+$/, "");
   const lines = [head, ...(body === "" ? [] : body.split("\n"))];
   return `\n\n${lines.map((line) => (line.trim() === "" ? ">" : `> ${line}`)).join("\n")}\n\n`;
+}
+
+/** A letter or a digit in any script: what an intraword `_` sits between. */
+const WORD_CHAR = /[\p{L}\p{N}]/u;
+
+/**
+ * Pasted text as Markdown text that reads back as the same text.
+ *
+ * Replaces turndown's own escape for two reasons. It never escaped `<`, so
+ * visible text such as `<script>` or `<!-- r:... -->` became raw HTML (or a
+ * hidden comment, or a forged section id) in the source. And it escaped
+ * every `_`, so `snake_case` read `snake\_case`. Only what changes meaning is
+ * escaped here: a `<` that would open a tag or a comment, an `&` that would
+ * start a character reference, a `_` at the edge of a word, and what starts
+ * a block at the start of the text.
+ */
+export function escapeText(text: string): string {
+  return text
+    .replace(/[\\*`[\]]/g, "\\$&")
+    .replace(/<(?=[A-Za-z!/?])/g, "\\<")
+    .replace(/&(?=#?[A-Za-z0-9]+;)/g, "\\&")
+    .replace(/~~/g, "\\~\\~")
+    .replace(/\$\$/g, () => "\\$\\$")
+    .replace(/_/g, (underscore: string, at: number, all: string) =>
+      WORD_CHAR.test(all.charAt(at - 1)) && WORD_CHAR.test(all.charAt(at + 1))
+        ? underscore
+        : "\\_",
+    )
+    .replace(/^-/, "\\-")
+    .replace(/^\+ /, "\\+ ")
+    .replace(/^(=+)/, "\\$1")
+    .replace(/^(#{1,6}) /, "\\$1 ")
+    .replace(/^>/, "\\>")
+    .replace(/^(\d+)\. /, "$1\\. ");
 }

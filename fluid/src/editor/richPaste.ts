@@ -12,15 +12,19 @@
  *
  * The editor's own paste keeps everything else: a clipboard with no HTML, a
  * plain paste (Mod-Shift-V), a paste into a code fence, a read-only buffer,
- * and a paste of files, which the uploads take whichever handler runs first.
+ * and a paste of files, which the uploads take. One exception: a word
+ * processor puts a picture of the copied text next to its HTML, so HTML that
+ * holds text with only images beside it is converted, not uploaded. The
+ * handler runs before the uploads (`Prec.high`) to be asked first.
  */
 
 import { syntaxTree } from "@codemirror/language";
 import type { EditorState, Extension } from "@codemirror/state";
-import { Text } from "@codemirror/state";
+import { Prec, Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 
 import { transferFiles } from "./attachments";
+import { carriesText } from "./clipboardHtml";
 
 type Converter = typeof import("./htmlToMarkdown");
 
@@ -108,45 +112,65 @@ function insert(view: EditorView, text: string): void {
   });
 }
 
+/**
+ * Whether the files on the clipboard are the upload: any file that is no
+ * image, or images with no text in the HTML beside them.
+ */
+function filesAreThePaste(files: File[], html: string): boolean {
+  return (
+    files.length > 0 &&
+    (!files.every((file) => file.type.startsWith("image/")) ||
+      !carriesText(html))
+  );
+}
+
 export function richPaste(): Extension {
-  return EditorView.domEventHandlers({
-    keydown(event, view) {
-      if (isPlainPasteKey(event)) {
-        plainUntil.set(view, Date.now() + PLAIN_PASTE_MS);
-      } else {
+  return Prec.high(
+    EditorView.domEventHandlers({
+      keydown(event, view) {
+        if (isPlainPasteKey(event)) {
+          plainUntil.set(view, Date.now() + PLAIN_PASTE_MS);
+        } else {
+          plainUntil.delete(view);
+        }
+        // Never taken: the browser must still fire its paste.
+        return false;
+      },
+      paste(event, view) {
+        const plainKey = (plainUntil.get(view) ?? 0) > Date.now();
         plainUntil.delete(view);
-      }
-      // Never taken: the browser must still fire its paste.
-      return false;
-    },
-    paste(event, view) {
-      const plainKey = (plainUntil.get(view) ?? 0) > Date.now();
-      plainUntil.delete(view);
-      const data = event.clipboardData;
-      if (
-        data === null ||
-        plainKey ||
-        view.state.readOnly ||
-        transferFiles(data).length > 0
-      ) {
-        return false;
-      }
-      const html = data.getData("text/html");
-      if (html.trim() === "" || inCode(view.state)) {
-        return false;
-      }
-      const plain = data.getData("text/plain");
-      event.preventDefault();
-      if (loaded !== null) {
-        insert(view, converted(loaded, html, plain));
+        const data = event.clipboardData;
+        if (data === null || view.state.readOnly) {
+          return false;
+        }
+        const html = data.getData("text/html");
+        const files = transferFiles(data);
+        if (html.trim() === "" || filesAreThePaste(files, html)) {
+          return false;
+        }
+        const plain = data.getData("text/plain");
+        if (plainKey || inCode(view.state)) {
+          if (files.length === 0) {
+            return false;
+          }
+          // Plain text is wanted, and the picture of it beside must not
+          // reach the uploads.
+          event.preventDefault();
+          insert(view, plain);
+          return true;
+        }
+        event.preventDefault();
+        if (loaded !== null) {
+          insert(view, converted(loaded, html, plain));
+          return true;
+        }
+        loadConverter().then(
+          (converter) => insert(view, converted(converter, html, plain)),
+          // No converter, no lost paste: the plain text goes in.
+          () => insert(view, plain),
+        );
         return true;
-      }
-      loadConverter().then(
-        (converter) => insert(view, converted(converter, html, plain)),
-        // No converter, no lost paste: the plain text goes in.
-        () => insert(view, plain),
-      );
-      return true;
-    },
-  });
+      },
+    }),
+  );
 }

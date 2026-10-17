@@ -16,7 +16,11 @@ afterEach(() => {
   view = null;
 });
 
-function mount(doc: string, extra: Extension[] = []): EditorView {
+function mount(
+  doc: string,
+  extra: Extension[] = [],
+  handler: Extension = richPaste(),
+): EditorView {
   view = new EditorView({
     state: EditorState.create({
       doc,
@@ -25,7 +29,7 @@ function mount(doc: string, extra: Extension[] = []): EditorView {
         EditorState.lineSeparator.of("\n"),
         history(),
         markdown(),
-        richPaste(),
+        handler,
         ...extra,
       ],
     }),
@@ -161,18 +165,62 @@ describe("richPaste", () => {
     expect(v.state.doc.toString()).toBe("");
   });
 
-  it("leaves no section id in a Reflection buffer", async () => {
+  it("converts a copy of text that brought a picture of itself along", async () => {
+    const onFiles = vi.fn();
+    const v = mount("", [attachmentUploads(onFiles)]);
+    const picture = new File(["png"], "image.png", { type: "image/png" });
+    paste(v, { html: RICH, plain: RICH_PLAIN, files: [picture] });
+    await vi.waitFor(() =>
+      expect(v.state.doc.toString()).toBe("## Steps\n\n- **Build** it"),
+    );
+    expect(onFiles).not.toHaveBeenCalled();
+  });
+
+  it("pastes plain text, not its picture, after Mod-Shift-V and into a fence", () => {
+    const onFiles = vi.fn();
+    const v = mount("```\n\n```\n", [attachmentUploads(onFiles)]);
+    const picture = new File(["png"], "image.png", { type: "image/png" });
+    keydown(v, { key: "V", code: "KeyV", shiftKey: true, metaKey: true });
+    paste(v, { html: RICH, plain: "one", files: [picture] });
+    v.dispatch({ selection: { anchor: 4 } });
+    paste(v, { html: RICH, plain: "two", files: [picture] });
+    expect(v.state.doc.toString()).toBe("```\ntwo\n```\none");
+    expect(onFiles).not.toHaveBeenCalled();
+  });
+
+  it("uploads a file that is no image even when text came with it", () => {
+    const onFiles = vi.fn();
+    const v = mount("", [attachmentUploads(onFiles)]);
+    const deck = new File(["pdf"], "deck.pdf", { type: "application/pdf" });
+    paste(v, { html: RICH, plain: RICH_PLAIN, files: [deck] });
+    expect(onFiles).toHaveBeenCalledWith([deck]);
+    expect(v.state.doc.toString()).toBe("");
+  });
+
+  it("strips a section id from a pasted code block in a Reflection buffer", async () => {
     const page = "## First\n<!-- r:0b1c2d3e -->\n\nBody.\n";
     const v = mount(page, reflectionAdapter().extensions);
     paste(v, {
-      html: "<h2>Pasted</h2><p>&lt;!-- r:aaaa1111 --&gt;</p><p>Text</p>",
-      plain: "Pasted\n<!-- r:aaaa1111 -->\nText",
+      html: "<pre><code>a\n&lt;!-- r:aaaa1111 --&gt;\nb</code></pre>",
+      plain: "a\n<!-- r:aaaa1111 -->\nb",
     });
     await vi.waitFor(() =>
-      expect(v.state.doc.toString()).toContain("## Pasted"),
+      expect(v.state.doc.toString()).toBe(`${page}\`\`\`\na\nb\n\`\`\``),
     );
-    expect(v.state.doc.toString()).not.toContain("r:aaaa1111");
-    expect(v.state.doc.toString()).toContain("<!-- r:0b1c2d3e -->");
+  });
+
+  it("keeps a visible id-like line as text, never as an id", async () => {
+    const page = "## First\n<!-- r:0b1c2d3e -->\n\nBody.\n";
+    const v = mount(page, reflectionAdapter().extensions);
+    paste(v, {
+      html: "<h2>Pasted</h2><p>&lt;!-- r:aaaa1111 --&gt;</p>",
+      plain: "Pasted\n<!-- r:aaaa1111 -->",
+    });
+    await vi.waitFor(() =>
+      expect(v.state.doc.toString()).toBe(
+        `${page}## Pasted\n\n\\<!-- r:aaaa1111 -->`,
+      ),
+    );
   });
 
   it("is part of the shared surface, beside the uploads, in a Reflection buffer", async () => {
@@ -211,15 +259,42 @@ describe("richPaste", () => {
     });
     await vi.waitFor(() =>
       expect(v.state.doc.toString()).toBe(
-        // The id paragraph goes with one of its line breaks.
-        `${page}## Pasted\n\n\n> [!TIP]\n> Short.`,
+        `${page}## Pasted\n\n\\<!-- r:aaaa1111 -->\n\n> [!TIP]\n> Short.`,
       ),
     );
     // Mod-Shift-V through the whole keymap stack still reaches the paste.
     keydown(v, { key: "V", code: "KeyV", shiftKey: true, ctrlKey: true });
     paste(v, { html: "<p><b>bold</b></p>", plain: "bold" });
     expect(v.state.doc.toString()).toBe(
-      `${page}## Pasted\n\n\n> [!TIP]\n> Short.bold`,
+      `${page}## Pasted\n\n\\<!-- r:aaaa1111 -->\n\n> [!TIP]\n> Short.bold`,
     );
+  });
+});
+
+describe("richPaste when the converter cannot load", () => {
+  afterEach(() => {
+    vi.doUnmock("./htmlToMarkdown");
+    vi.resetModules();
+  });
+
+  it("pastes the plain text, and loads the converter again on the next paste", async () => {
+    let attempts = 0;
+    vi.resetModules();
+    vi.doMock("./htmlToMarkdown", async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error("chunk failed to load");
+      }
+      return await vi.importActual<typeof import("./htmlToMarkdown")>(
+        "./htmlToMarkdown",
+      );
+    });
+    const fresh = await import("./richPaste");
+    const v = mount("", [], fresh.richPaste());
+    paste(v, { html: "<p><b>one</b></p>", plain: "one" });
+    await vi.waitFor(() => expect(v.state.doc.toString()).toBe("one"));
+    paste(v, { html: "<p><b>two</b></p>", plain: "two" });
+    await vi.waitFor(() => expect(v.state.doc.toString()).toContain("**two**"));
+    expect(attempts).toBe(2);
   });
 });

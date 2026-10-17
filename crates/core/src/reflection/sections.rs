@@ -457,6 +457,8 @@ mod tests {
         }
         assert_eq!(parse_id_line("<!-- r:XYZ -->"), None);
         assert_eq!(parse_id_line("  <!-- r:abcd -->  "), Some("abcd"));
+        // A pasted id-like line arrives escaped, as visible text: never an id.
+        assert_eq!(parse_id_line("\\<!-- r:abcd -->"), None);
     }
 
     /// An id anchors threads and provenance, so it never moves to another

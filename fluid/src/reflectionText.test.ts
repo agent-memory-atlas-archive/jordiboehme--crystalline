@@ -160,6 +160,8 @@ describe("display helpers", () => {
     expect(isIdLine("  <!-- r:0b1c -->  ")).toBe(true);
     expect(isIdLine("<!-- a comment -->")).toBe(false);
     expect(isIdLine("- <!-- r:7f3a9c2e -->")).toBe(false);
+    // A pasted id-like line arrives escaped, as visible text: never an id.
+    expect(isIdLine("\\<!-- r:7f3a9c2e -->")).toBe(false);
     expect(stripIdLines("## A\n<!-- r:7f3a9c2e -->\nText.")).toBe(
       "## A\nText.",
     );
