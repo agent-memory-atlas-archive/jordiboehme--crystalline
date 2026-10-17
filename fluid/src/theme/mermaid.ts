@@ -58,10 +58,13 @@ import type { MermaidConfig } from "mermaid";
  * per-diagram directive: they are theme variables, so the reading view, the
  * editor preview and the paper copy all get them.
  *
- * What stays out of reach: the C4 renderer paints relationship text
- * `#444444` in its own code unless the diagram source says `UpdateRelStyle`,
- * so a C4 relationship label is dim on the dark canvas whatever this file
- * says. `e2e/diagrams.spec.ts` names it.
+ * C4 is closed with `themeCSS`, not a variable. Its renderer writes the
+ * relationship text, the boundary text and the relationship line as SVG
+ * presentation attributes with a hard-coded `#444444` (unless the diagram
+ * source says `UpdateRelStyle`), which no theme variable reaches. CSS beats a
+ * presentation attribute, so `c4Css` below re-points exactly those attribute
+ * values at the scheme's ink and line colours; inline-styled text and
+ * `UpdateRelStyle` colours are untouched.
  */
 /**
  * Eight series colours per scheme, each dark enough to carry white label text
@@ -109,6 +112,16 @@ function seriesVariables(ramp: readonly string[]): Record<string, string> {
     out[`cScaleInv${String(i)}`] = colour(i);
   }
   return out;
+}
+
+/**
+ * The CSS that re-points C4's hard-coded `#444444` text and line colours at
+ * the scheme's own ink and line (mermaid scopes `themeCSS` under the diagram's
+ * id, and only an attribute selector reaches these elements).
+ */
+function c4Css(scheme: "dark" | "light"): string {
+  const { primaryTextColor, lineColor } = VARIABLES[scheme];
+  return `text[fill="#444444"] { fill: ${primaryTextColor}; } path[stroke="#444444"], line[stroke="#444444"] { stroke: ${lineColor}; }`;
 }
 
 const VARIABLES = {
@@ -183,6 +196,7 @@ export function mermaidConfig(dark: boolean): MermaidConfig {
     layout: "dagre",
     htmlLabels: false,
     flowchart: { wrappingWidth: 2000 },
+    themeCSS: c4Css(dark ? "dark" : "light"),
     themeVariables: dark
       ? { ...VARIABLES.dark, ...seriesVariables(RAMP.dark) }
       : { ...VARIABLES.light, ...seriesVariables(RAMP.light) },

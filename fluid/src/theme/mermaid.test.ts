@@ -74,4 +74,18 @@ describe("mermaidConfig", () => {
       }
     }
   });
+
+  test("C4's hard-coded grey is re-pointed at the scheme's ink and line", () => {
+    // The C4 renderer writes #444444 as a presentation attribute, which only
+    // CSS can beat; the values are the palette's own.
+    expect(mermaidConfig(true).themeCSS).toContain(
+      'text[fill="#444444"] { fill: #e2e8f0; }',
+    );
+    expect(mermaidConfig(true).themeCSS).toContain(
+      'path[stroke="#444444"], line[stroke="#444444"] { stroke: #64748b; }',
+    );
+    expect(mermaidConfig(false).themeCSS).toContain(
+      'text[fill="#444444"] { fill: #0f172a; }',
+    );
+  });
 });

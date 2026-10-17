@@ -143,6 +143,7 @@ export default function MermaidDiagram({
       };
       const directive = `%%{init: ${JSON.stringify({
         theme: light.theme,
+        themeCSS: light.themeCSS,
         themeVariables,
       })}}%%`;
       mermaid

@@ -153,6 +153,19 @@ function inspect(page: Page, checkContrast: boolean): Promise<Drawn[]> {
             }
           }
         }
+        // C4 draws its relationship line with a #444444 attribute; the
+        // attribute stays, so ask for the stroke the browser paints.
+        if (contrast && svg !== undefined) {
+          for (const line of Array.from(
+            svg.querySelectorAll(
+              'path[stroke="#444444"], line[stroke="#444444"]',
+            ),
+          )) {
+            if (getComputedStyle(line).stroke === "rgb(68, 68, 68)") {
+              unreadable.push(`${line.tagName} line still #444444`);
+            }
+          }
+        }
         return {
           type: types[index] ?? `#${String(index)}`,
           drawn: svg !== undefined,
@@ -186,12 +199,8 @@ for (const theme of ["light", "dark"] as const) {
     expectSound(rows);
     if (theme === "dark") {
       // One verdict for the whole gallery, so a failure names every type.
-      // C4 is out of this check alone: mermaid's C4 renderer hard-codes its
-      // relationship text to #444444 unless the diagram source calls
-      // UpdateRelStyle, and no theme variable or config key reaches it.
       expect(
         rows
-          .filter((row) => row.type !== "C4 context")
           .filter((row) => row.unreadable.length > 0)
           .map((row) => `${row.type}: ${row.unreadable.join(", ")}`),
         `text below ${String(READABLE)}:1 on the canvas`,
