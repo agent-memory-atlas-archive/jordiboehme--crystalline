@@ -88,7 +88,15 @@ for arm in empty_skill seed_memory seed_memory_presentation; do
 done
 ```
 
-The baseline numbers are recorded after the next run.
+| Arm | hard | soft |
+| --- | --- | --- |
+| empty skill | 0.00 | 0.82 |
+| intelligence skill | 0.00 | 0.78 |
+| intelligence plus presentation skill | 0.00 | 0.87 |
+
+Test split, n=3, one run per arm, target model claude-haiku-4-5-20251001. No arm passes an item outright. Only the arm with the presentation skill wrote any callout or table (two callouts and one table across its three pages, no diagram), and the other two arms wrote plain prose and bullet lists. Three items and one run cannot rank the arms, and the agent called the skills tool in none of the nine sessions, so these numbers record where the skill starts.
+
+Runs auto-resume: re-running the same command against the same out_root continues from the last completed step.
 
 ## Cost
 
