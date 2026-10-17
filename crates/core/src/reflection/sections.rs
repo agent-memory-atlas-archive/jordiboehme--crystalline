@@ -157,6 +157,37 @@ pub fn find_section<'a>(sections: &'a [Section], key: &str) -> Option<&'a Sectio
         })
 }
 
+/// Why a `sources` key names no single section.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SectionKeyMiss {
+    /// No section carries that id or heading.
+    None,
+    /// Two or more sections carry that heading; how many.
+    Ambiguous(usize),
+}
+
+/// The one section a `sources` key names: by id, else by heading text
+/// (case-insensitive, any `#` marks the writer copied in dropped). Unlike
+/// [`find_section`], a heading two sections share names neither.
+pub fn resolve_section_key<'a>(
+    sections: &'a [Section],
+    key: &str,
+) -> Result<&'a Section, SectionKeyMiss> {
+    if let Some(section) = sections.iter().find(|s| s.id.as_deref() == Some(key)) {
+        return Ok(section);
+    }
+    let wanted = key.trim().trim_start_matches('#').trim().to_lowercase();
+    let matches: Vec<&Section> = sections
+        .iter()
+        .filter(|s| !s.heading.is_empty() && s.heading.to_lowercase() == wanted)
+        .collect();
+    match matches.as_slice() {
+        [] => Err(SectionKeyMiss::None),
+        [one] => Ok(one),
+        many => Err(SectionKeyMiss::Ambiguous(many.len())),
+    }
+}
+
 /// Give every `##` heading without an id (or with an id an earlier heading
 /// already holds) a fresh one on the line under it, minted by `mint` and
 /// never one in `taken` or already on the page. Every other byte is kept.
@@ -685,5 +716,42 @@ mod tests {
                 edit.text
             );
         }
+    }
+
+    /// A sources key names one section: its id first, else its heading
+    /// text, case-insensitive, with any `#` marks the writer copied in
+    /// dropped. A heading two sections share names neither, and the title
+    /// and a `###` heading name none.
+    #[test]
+    fn a_sources_key_resolves_to_one_section_or_says_why_not() {
+        let sections = split_sections(PAGE);
+        let by = |key: &str| resolve_section_key(&sections, key).map(|s| s.heading.clone());
+        assert_eq!(by("0b1c2d3e"), Ok("Rollback".to_string()));
+        assert_eq!(by("rollback"), Ok("Rollback".to_string()));
+        assert_eq!(by("## Night deploys"), Ok("Night deploys".to_string()));
+        assert_eq!(by("##Night deploys "), Ok("Night deploys".to_string()));
+        assert_eq!(by("_top"), Ok(String::new()));
+        assert_eq!(by("Deploying"), Err(SectionKeyMiss::None), "the title");
+        assert_eq!(
+            by("### Rollback"),
+            Ok("Rollback".to_string()),
+            "marks are only copied text"
+        );
+        assert_eq!(by("not a heading"), Err(SectionKeyMiss::None), "a fence");
+
+        let twice = "# T\n\n## Example\n\nA.\n\n## Other\n\nB.\n\n## example\n\nC.\n";
+        let sections = split_sections(twice);
+        assert_eq!(
+            resolve_section_key(&sections, "Example"),
+            Err(SectionKeyMiss::Ambiguous(2))
+        );
+
+        let id_named_like_a_heading = "# T\n\n## abcd\n\nA.\n\n## Other\n<!-- r:abcd -->\n\nB.\n";
+        let sections = split_sections(id_named_like_a_heading);
+        assert_eq!(
+            resolve_section_key(&sections, "abcd").map(|s| s.heading.as_str()),
+            Ok("Other"),
+            "an id wins over a heading and is never ambiguous"
+        );
     }
 }

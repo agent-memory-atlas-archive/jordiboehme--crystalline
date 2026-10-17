@@ -639,9 +639,10 @@ pub struct WriteReflectionParams {
     /// write with replace_section: replace deeper subsections too.
     #[serde(default)]
     pub include_subsections: bool,
-    /// write: the engrams each section was built from, by section id or
-    /// heading, as permalinks in this domain. Naming a section here curates
-    /// it: its reflected text moves to what you wrote.
+    /// write: the engrams each section was built from, by a `##` section's
+    /// id or heading text (a heading this write creates included), as
+    /// permalinks in this domain. Naming a section here curates it: its
+    /// reflected text moves to what you wrote.
     #[serde(default, deserialize_with = "null_as_default")]
     pub sources: BTreeMap<String, Vec<String>>,
     /// move: the new path inside reflections/; move_asset: the file's new

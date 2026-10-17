@@ -19,5 +19,6 @@ mod queue;
 mod rest;
 mod rights;
 mod search;
+mod sources;
 mod switch;
 mod threads;

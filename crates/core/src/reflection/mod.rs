@@ -46,8 +46,8 @@ pub use provenance::{
     text_changed, title_of, write_provenance,
 };
 pub use sections::{
-    Section, TOP_SECTION, WrittenIds, assign_ids, drop_written_ids, edit_section, find_section,
-    id_line, normalize_section_text, parse_id_line, random_section_id, reattach_ids, section_hash,
-    split_sections,
+    Section, SectionKeyMiss, TOP_SECTION, WrittenIds, assign_ids, drop_written_ids, edit_section,
+    find_section, id_line, normalize_section_text, parse_id_line, random_section_id, reattach_ids,
+    resolve_section_key, section_hash, split_sections,
 };
 pub use state::{ReflectionHome, ReflectionState};

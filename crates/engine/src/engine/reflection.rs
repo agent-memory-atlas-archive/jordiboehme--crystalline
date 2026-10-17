@@ -1259,6 +1259,41 @@ pub(super) struct Composed {
 /// heading, which still resolves, so it is logged and the write stands. A
 /// heading the page no longer holds answers no id, and its thread stays as
 /// it is.
+/// The refusal for a `sources` key that names no single section, worded so
+/// the writer gets it right on the next call: what a key may be, and the
+/// sections this page has.
+fn sources_key_miss(
+    miss: &r::SectionKeyMiss,
+    key: &str,
+    path: &str,
+    sections: &[r::Section],
+) -> EngineError {
+    EngineError::Invalid(match miss {
+        r::SectionKeyMiss::Ambiguous(count) => format!(
+            "the heading '{key}' names {count} sections in '{path}', so it cannot \
+             carry sources: write the page, then key each of those sections by \
+             the id the receipt's ids_assigned or read_reflection gives it"
+        ),
+        r::SectionKeyMiss::None => {
+            let headings: Vec<String> = sections
+                .iter()
+                .filter(|s| !s.heading.is_empty())
+                .map(|s| format!("'{}'", s.heading))
+                .collect();
+            let has = if headings.is_empty() {
+                "this page has no ## section yet, only _top for the text above them".to_string()
+            } else {
+                format!("this page has {}", headings.join(", "))
+            };
+            format!(
+                "no section '{key}' in '{path}' to set sources on: a key is a ## \
+                 section's id or its heading text, or _top for the text before the \
+                 first ##; the # title and ### headings are not sections, and {has}"
+            )
+        }
+    })
+}
+
 fn anchor_threads_on_ids(threads_abs: &Path, page: &str) {
     let file = match read_opt(threads_abs) {
         Ok(Some(file)) => file,
@@ -1690,12 +1725,8 @@ impl Engine {
                 .iter()
                 .find(|(made_up, _)| made_up == key)
                 .map_or(key, |(_, id)| id);
-            let section = r::find_section(&sections, key).ok_or_else(|| {
-                EngineError::Invalid(format!(
-                    "no section '{key}' in '{}' to set sources on",
-                    p.path
-                ))
-            })?;
+            let section = r::resolve_section_key(&sections, key)
+                .map_err(|miss| sources_key_miss(&miss, key, &p.path, &sections))?;
             let id = section
                 .id
                 .clone()
