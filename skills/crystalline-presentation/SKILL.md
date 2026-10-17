@@ -35,15 +35,16 @@ These shapes need their element. A numbered list or a paragraph is not enough fo
 
 1. Do two or more parties send each other something in order? Draw a `sequenceDiagram`.
 2. Does the process branch on a decision? Draw a `flowchart`.
-3. Do I compare three or more options on the same points? Write a table.
-4. Does this section describe a step that cannot be undone? Put the callout here, at that step.
-5. None of these? Write prose.
+3. Does something move between named states? Draw a `stateDiagram-v2`.
+4. Do I compare three or more options on the same points? Write a table.
+5. Does this section describe a step that cannot be undone? Put the callout here, at that step.
+6. None of these? Write prose.
 
 ## Restraint
 
 The triggers above are where an element is required. Everywhere else prose wins: an element earns its place only when it does a job prose cannot. When in doubt, prose. A page with no diagram and no callout is often the right page. Never add an element to make a page look rich.
 
-- One or two callouts per page. Never two callouts in a row, and never a callout inside a callout.
+- A required warning or caution comes first. Beyond the required ones, one or two callouts per page. Never two callouts in a row, and never a callout inside a callout.
 - One diagram per idea. Keep it small, and put a sentence before it that says what it shows.
 - Use the reader's words for labels, in diagrams and in tables.
 - Never fold a warning or a caution: a risk the reader has to open is a risk the reader misses.
@@ -66,14 +67,18 @@ The triggers above are where an element is required. Everywhere else prose wins:
 
 ## Example
 
-Two engrams:
+Engram one, `card-payment`:
 
 ```markdown
 - [fact] The shop sends the card token to the gateway, and the gateway asks the bank to approve it
 - [fact] The bank answers the gateway, and the gateway sends the shop a receipt
+```
 
+Engram two, `refunds`:
+
+```markdown
 - [risk] A refund cannot be taken back once the bank has sent it
-- [fact] Full refund: everything back, the default. Partial refund: for damaged goods. Store credit: only on request
+- [fact] Full refund: everything back, verdict recommended. Partial refund: part back, verdict for damaged goods only. Store credit: credit in the shop, verdict not recommended
 ```
 
 The sections they become:
@@ -95,9 +100,9 @@ sequenceDiagram
 
 | Refund | What the customer gets | Verdict |
 | --- | --- | --- |
-| Full refund | Everything back | :status[Default]{green} |
-| Partial refund | Part of the amount | :status[Damaged goods]{yellow} |
-| Store credit | Credit in the shop | :status[On request]{grey} |
+| Full refund | Everything back | :status[Recommended]{green} |
+| Partial refund | Part of the amount | :status[Damaged goods only]{yellow} |
+| Store credit | Credit in the shop | :status[Not recommended]{red} |
 
 > [!CAUTION] A refund cannot be taken back
 > Check the amount first. Once the bank has sent the refund, it is final.

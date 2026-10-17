@@ -88,7 +88,7 @@ async fn an_update_keys_sources_by_the_heading_of_a_section_it_adds() {
 }
 
 #[tokio::test]
-async fn a_heading_two_sections_share_is_refused_and_both_are_named() {
+async fn a_heading_two_sections_share_is_refused_with_both_headings_and_the_way_out() {
     let fx = reflecting().await;
     let page = "# Deploying\n\n## Example\n\nA.\n\n## Rollback\n\nB.\n\n## Example\n\nC.\n";
     let err = fx
@@ -97,7 +97,11 @@ async fn a_heading_two_sections_share_is_refused_and_both_are_named() {
         .await
         .unwrap_err()
         .to_string();
-    assert!(err.contains("'Example' names 2 sections"), "{err}");
+    assert!(
+        err.contains("'Example' names 2 sections in 'a.md' ('Example', 'Example')"),
+        "{err}"
+    );
+    assert!(err.contains("write it again with sources"), "{err}");
     assert!(err.contains("ids_assigned"), "asks for the ids: {err}");
     assert!(!exists(&fx, "a.md"), "nothing written");
 }

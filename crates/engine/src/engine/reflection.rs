@@ -1252,13 +1252,6 @@ pub(super) struct Composed {
     pub changed: Vec<String>,
 }
 
-/// Move every thread of a page that is anchored by heading onto the id its
-/// heading carries in `page`, the text just written, so a later rename of
-/// the heading keeps the thread on its section. Runs under the page lock,
-/// after the page is on disk: a failure here leaves the thread anchored by
-/// heading, which still resolves, so it is logged and the write stands. A
-/// heading the page no longer holds answers no id, and its thread stays as
-/// it is.
 /// The refusal for a `sources` key that names no single section, worded so
 /// the writer gets it right on the next call: what a key may be, and the
 /// sections this page has.
@@ -1269,10 +1262,16 @@ fn sources_key_miss(
     sections: &[r::Section],
 ) -> EngineError {
     EngineError::Invalid(match miss {
-        r::SectionKeyMiss::Ambiguous(count) => format!(
-            "the heading '{key}' names {count} sections in '{path}', so it cannot \
-             carry sources: write the page, then key each of those sections by \
-             the id the receipt's ids_assigned or read_reflection gives it"
+        r::SectionKeyMiss::Ambiguous(headings) => format!(
+            "the key '{key}' names {} sections in '{path}' ({}), so it cannot \
+             carry sources: write the page without sources, then write it again \
+             with sources keyed by the ids from ids_assigned or read_reflection",
+            headings.len(),
+            headings
+                .iter()
+                .map(|h| format!("'{h}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
         r::SectionKeyMiss::None => {
             let headings: Vec<String> = sections
@@ -1294,6 +1293,13 @@ fn sources_key_miss(
     })
 }
 
+/// Move every thread of a page that is anchored by heading onto the id its
+/// heading carries in `page`, the text just written, so a later rename of
+/// the heading keeps the thread on its section. Runs under the page lock,
+/// after the page is on disk: a failure here leaves the thread anchored by
+/// heading, which still resolves, so it is logged and the write stands. A
+/// heading the page no longer holds answers no id, and its thread stays as
+/// it is.
 fn anchor_threads_on_ids(threads_abs: &Path, page: &str) {
     let file = match read_opt(threads_abs) {
         Ok(Some(file)) => file,

@@ -162,13 +162,16 @@ pub fn find_section<'a>(sections: &'a [Section], key: &str) -> Option<&'a Sectio
 pub enum SectionKeyMiss {
     /// No section carries that id or heading.
     None,
-    /// Two or more sections carry that heading; how many.
-    Ambiguous(usize),
+    /// Two or more sections carry that heading; their headings as written,
+    /// in page order.
+    Ambiguous(Vec<String>),
 }
 
 /// The one section a `sources` key names: by id, else by heading text
-/// (case-insensitive, any `#` marks the writer copied in dropped). Unlike
-/// [`find_section`], a heading two sections share names neither.
+/// (case-insensitive), else by heading text after a `## ` the writer copied
+/// in. A `#` title or a `###` heading is no section, so `# T` and `### T`
+/// name none. Unlike [`find_section`], a heading two sections share names
+/// neither.
 pub fn resolve_section_key<'a>(
     sections: &'a [Section],
     key: &str,
@@ -176,15 +179,26 @@ pub fn resolve_section_key<'a>(
     if let Some(section) = sections.iter().find(|s| s.id.as_deref() == Some(key)) {
         return Ok(section);
     }
-    let wanted = key.trim().trim_start_matches('#').trim().to_lowercase();
-    let matches: Vec<&Section> = sections
-        .iter()
-        .filter(|s| !s.heading.is_empty() && s.heading.to_lowercase() == wanted)
-        .collect();
-    match matches.as_slice() {
-        [] => Err(SectionKeyMiss::None),
-        [one] => Ok(one),
-        many => Err(SectionKeyMiss::Ambiguous(many.len())),
+    let by_heading = |text: &str| {
+        let wanted = text.trim().to_lowercase();
+        let matches: Vec<&'a Section> = sections
+            .iter()
+            .filter(|s| !s.heading.is_empty() && s.heading.to_lowercase() == wanted)
+            .collect();
+        match matches.as_slice() {
+            [] => Err(SectionKeyMiss::None),
+            [one] => Ok(*one),
+            many => Err(SectionKeyMiss::Ambiguous(
+                many.iter().map(|s| s.heading.clone()).collect(),
+            )),
+        }
+    };
+    match by_heading(key) {
+        Err(SectionKeyMiss::None) => match key.trim().strip_prefix("##") {
+            Some(rest) if rest.starts_with(char::is_whitespace) => by_heading(rest),
+            _ => Err(SectionKeyMiss::None),
+        },
+        found => found,
     }
 }
 
@@ -719,9 +733,9 @@ mod tests {
     }
 
     /// A sources key names one section: its id first, else its heading
-    /// text, case-insensitive, with any `#` marks the writer copied in
-    /// dropped. A heading two sections share names neither, and the title
-    /// and a `###` heading name none.
+    /// text, case-insensitive, else that text after a copied `## `. A
+    /// heading two sections share names neither, and a `#` title or a
+    /// `###` heading names none.
     #[test]
     fn a_sources_key_resolves_to_one_section_or_says_why_not() {
         let sections = split_sections(PAGE);
@@ -729,22 +743,37 @@ mod tests {
         assert_eq!(by("0b1c2d3e"), Ok("Rollback".to_string()));
         assert_eq!(by("rollback"), Ok("Rollback".to_string()));
         assert_eq!(by("## Night deploys"), Ok("Night deploys".to_string()));
-        assert_eq!(by("##Night deploys "), Ok("Night deploys".to_string()));
+        assert_eq!(by(" ##  Night deploys "), Ok("Night deploys".to_string()));
+        assert_eq!(by("##Night deploys"), Err(SectionKeyMiss::None), "no space");
         assert_eq!(by("_top"), Ok(String::new()));
         assert_eq!(by("Deploying"), Err(SectionKeyMiss::None), "the title");
+        assert_eq!(by("# Rollback"), Err(SectionKeyMiss::None), "title marks");
         assert_eq!(
             by("### Rollback"),
-            Ok("Rollback".to_string()),
-            "marks are only copied text"
+            Err(SectionKeyMiss::None),
+            "a ### heading"
         );
         assert_eq!(by("not a heading"), Err(SectionKeyMiss::None), "a fence");
 
         let twice = "# T\n\n## Example\n\nA.\n\n## Other\n\nB.\n\n## example\n\nC.\n";
         let sections = split_sections(twice);
         assert_eq!(
-            resolve_section_key(&sections, "Example"),
-            Err(SectionKeyMiss::Ambiguous(2))
+            resolve_section_key(&sections, "## Example"),
+            Err(SectionKeyMiss::Ambiguous(vec![
+                "Example".to_string(),
+                "example".to_string()
+            ]))
         );
+
+        let hash_in_text = "# T\n\n## #1 priority\n\nA.\n";
+        let sections = split_sections(hash_in_text);
+        for key in ["#1 priority", "## #1 priority"] {
+            assert_eq!(
+                resolve_section_key(&sections, key).map(|s| s.heading.as_str()),
+                Ok("#1 priority"),
+                "a # in the heading text is text: {key}"
+            );
+        }
 
         let id_named_like_a_heading = "# T\n\n## abcd\n\nA.\n\n## Other\n<!-- r:abcd -->\n\nB.\n";
         let sections = split_sections(id_named_like_a_heading);
