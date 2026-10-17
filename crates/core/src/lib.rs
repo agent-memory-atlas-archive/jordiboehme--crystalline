@@ -93,7 +93,9 @@ pub use manifest::{
     read_only_of_source, reflection_at, reflection_home_at, sharing_at, starter_stanzas,
     tag_alias_pairs, validate_reflection_home,
 };
-pub use markdown::{CALLOUT_KINDS, MarkdownFinding, STATUS_COLOURS, lint_markdown};
+pub use markdown::{
+    CALLOUT_KINDS, MarkdownFinding, STATUS_COLOURS, lint_engram_source, lint_markdown,
+};
 pub use names::{NameInput, NameTable};
 pub use parse::{
     FenceTracker, LosslessEngram, PARSE_GENERATION, ParseError, parse_engram, parse_engram_lossless,

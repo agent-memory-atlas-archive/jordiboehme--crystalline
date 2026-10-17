@@ -3021,3 +3021,58 @@ async fn a_cli_write_that_starts_a_close_folder_carries_the_hint() {
         "{receipt}"
     );
 }
+
+/// An unknown status colour is named on the write that made it, at the line
+/// the file holds it on.
+#[tokio::test]
+async fn a_write_with_an_unknown_status_colour_carries_markdown_findings() {
+    let (tmp, engine) = engine_fixture().await;
+    let receipt = engine
+        .write_engram(&write_params(
+            "eng",
+            "Colours",
+            "First line.\n\nBuild is :status[Done]{orange} today.",
+        ))
+        .await
+        .unwrap();
+    let finding = &receipt["markdown_findings"][0];
+    assert_eq!(finding["code"], "Q006", "{receipt}");
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/colours.md")).unwrap();
+    let line = on_disk
+        .lines()
+        .position(|l| l.contains(":status[Done]{orange}"))
+        .unwrap()
+        + 1;
+    assert_eq!(finding["line"], line, "{receipt}\n{on_disk}");
+}
+
+#[tokio::test]
+async fn a_clean_write_has_no_markdown_findings_key() {
+    let (_tmp, engine) = engine_fixture().await;
+    let receipt = engine
+        .write_engram(&write_params(
+            "eng",
+            "Clean",
+            "Build is :status[Done]{green} today.",
+        ))
+        .await
+        .unwrap();
+    assert!(receipt.get("markdown_findings").is_none(), "{receipt}");
+}
+
+/// The edit receipt hears about the text the edit left behind.
+#[tokio::test]
+async fn an_edit_with_an_unknown_callout_kind_carries_markdown_findings() {
+    let (_tmp, engine) = engine_fixture().await;
+    let receipt = engine
+        .edit_engram(&section_edit(
+            "eng",
+            "alpha",
+            "insert_after_section",
+            "# Alpha",
+            "> [!DANGER]\n> Careful.",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(receipt["markdown_findings"][0]["code"], "Q007", "{receipt}");
+}

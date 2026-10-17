@@ -28,6 +28,16 @@ pub struct MarkdownFinding {
     pub line: usize,
 }
 
+/// The dialect checks over a whole engram file: its body, numbered by the
+/// line the file holds it on, which is the number verify reports. Q008 is on.
+/// For callers that hold the file text and not a parsed engram (write
+/// receipts, the validate dry run).
+pub fn lint_engram_source(source: &str) -> Vec<MarkdownFinding> {
+    let (_, _, body_start) = crate::parse::locate(source);
+    let first_line = source[..body_start].bytes().filter(|b| *b == b'\n').count() + 1;
+    lint_markdown(&source[body_start..], first_line, true)
+}
+
 /// What the dialect checks find in one Markdown text (an engram body or a
 /// reflection page). `engram` switches Q008 on. Fences and inline code are
 /// skipped.

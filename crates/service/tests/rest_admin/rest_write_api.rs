@@ -2540,6 +2540,34 @@ async fn validate_reports_findings_without_writing() {
     );
 }
 
+/// The editor's findings rail reads this answer: an unknown status colour in
+/// the body is a Q006 at the line the document holds it on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn validate_names_an_unknown_status_colour_at_its_line() {
+    let fx = serve(Options::default()).await;
+    let editor = login(fx.addr, "eddy", "eddypw").await;
+    let content = ALPHA.replace("A rule about alpha.", "Build is :status[Done]{orange}.");
+    let line = content
+        .lines()
+        .position(|l| l.contains(":status["))
+        .unwrap()
+        + 1;
+    let resp = as_session(fx.addr, reqwest::Method::POST, "/api/v1/validate", &editor)
+        .json(&serde_json::json!({"domain": "eng", "path": "alpha.md", "content": content}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let q006 = body["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["rule"] == "Q006")
+        .unwrap_or_else(|| panic!("expected Q006 in {body}"));
+    assert_eq!(q006["line"], line, "{body}");
+}
+
 /// The dry run holds a document named into a domain to that domain's
 /// overrides; one named into no registered domain runs every rule at its
 /// default.

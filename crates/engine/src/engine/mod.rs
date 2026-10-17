@@ -9280,6 +9280,29 @@ fn note_manifest_findings(receipt: &mut Value, text: &str, verify: Option<&Verif
     }
 }
 
+/// The dialect lints of the text just written, so an agent hears about an
+/// unknown status colour or callout kind on the write that made it. Absent
+/// when there is nothing to say. The caller picks the lint: an engram's own
+/// (with Q008) or a reflection page's (without).
+fn note_markdown_findings(receipt: &mut Value, findings: Vec<crystalline_core::MarkdownFinding>) {
+    if findings.is_empty() {
+        return;
+    }
+    receipt["markdown_findings"] = Value::Array(
+        findings
+            .into_iter()
+            .map(|f| {
+                json!({
+                    "code": f.code,
+                    "severity": f.severity,
+                    "message": f.message,
+                    "line": f.line,
+                })
+            })
+            .collect(),
+    );
+}
+
 /// What a draft's receipt says when the row landed and this machine could not
 /// mirror it under the state directory.
 ///

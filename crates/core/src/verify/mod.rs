@@ -265,6 +265,13 @@ pub fn check_document(domain: &str, rel_path: &Path, source: &str) -> Vec<Issue>
             .filter(|issue| issue.rule != "T006"),
     );
 
+    // The rich Markdown dialect (Q006-Q008), so the editor's findings rail
+    // hears about an unknown status colour or callout kind as it types.
+    for f in crate::markdown::lint_engram_source(source) {
+        let mut sink = Sink::new(&mut issues, &mut summary, None, false);
+        sink.emit(rel_path, Some(f.line), f.code, f.severity, f.message, None);
+    }
+
     issues
 }
 

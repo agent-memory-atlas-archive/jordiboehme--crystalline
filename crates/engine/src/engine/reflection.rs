@@ -1686,6 +1686,10 @@ impl Engine {
             "curated": !advanced.is_empty(),
         });
         note_domain_names_normalized(&mut receipt, normalized);
+        note_markdown_findings(
+            &mut receipt,
+            crystalline_core::lint_markdown(&final_text, 1, false),
+        );
         if let Some(heading) = heading_stripped {
             receipt["heading_stripped"] = json!(heading);
             receipt["guidance"] = json!(HEADING_STRIPPED_GUIDANCE);

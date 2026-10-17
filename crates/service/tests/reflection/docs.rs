@@ -1367,3 +1367,34 @@ async fn a_move_announces_the_pages_whose_links_it_rewrote() {
         "{heard:?}"
     );
 }
+
+/// A reflection receipt names an unknown callout kind, and never raises Q008
+/// (an observation inside a callout is only a finding for an engram).
+#[tokio::test]
+async fn a_reflection_receipt_names_an_unknown_callout_kind_but_never_q008() {
+    let fx = reflecting().await;
+    let page = "# Deploying\n\n> [!DANGER]\n> Careful.\n> - [fact] x\n";
+    let written = fx
+        .engine
+        .write_reflection(&write("guides/danger.md", page), &person())
+        .await
+        .unwrap();
+    let codes: Vec<&str> = written["markdown_findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["Q007"], "{written}");
+    // The line is the one the saved page holds it on, ids and all.
+    let saved = file(&fx, "guides/danger.md");
+    let line = saved.lines().position(|l| l.contains("[!DANGER]")).unwrap() + 1;
+    assert_eq!(written["markdown_findings"][0]["line"], line, "{written}");
+
+    let clean = fx
+        .engine
+        .write_reflection(&write("guides/clean.md", PAGE), &person())
+        .await
+        .unwrap();
+    assert!(clean.get("markdown_findings").is_none(), "{clean}");
+}

@@ -1336,6 +1336,31 @@ describe("the engram editor", () => {
     expect(disclosure).toHaveAttribute("aria-expanded", "true");
   });
 
+  it("shows a status colour finding from validate in the findings rail", async () => {
+    serveEditor({
+      "/validate": () => ({
+        errors: 0,
+        findings: [
+          {
+            rule: "Q006",
+            severity: "warning",
+            message: "unknown status colour `orange`",
+            line: 9,
+            fix: null,
+          },
+        ],
+      }),
+    });
+    renderApp("/d/eng/edit/alpha");
+    await openBuffer();
+    const rail = await screen.findByRole("region", {
+      name: "Validation findings",
+    });
+    expect(
+      await within(rail).findByText(/unknown status colour `orange`/),
+    ).toBeInTheDocument();
+  });
+
   it("Close leaves a clean buffer at once, with nothing to ask about", async () => {
     const put = vi.fn(() => detailResponse({ checksum: "next111" }));
     serveEditor({
