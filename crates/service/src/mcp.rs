@@ -946,6 +946,66 @@ use crate::params::*;
 use crate::scope::Scope;
 use crate::similar::SimilarProbe;
 
+/// reflect's arguments as the MCP tool takes them: [`ReflectParams`], with a
+/// key it does not take refused instead of ignored. An agent that sent
+/// write_reflection's settle arguments to reflect got the queue back and
+/// believed it had settled. Only this tool's own arguments are checked
+/// here, after rmcp hands them over (`_meta` travels beside them, and a
+/// `_`-prefixed key is left to the protocol); the schema is
+/// [`ReflectParams`]'s, unchanged, so a client that validates arguments
+/// itself still reaches this refusal and its words. Route, control socket
+/// and remote callers deserialize [`ReflectParams`] as before.
+struct ReflectArgs(ReflectParams);
+
+impl<'de> serde::Deserialize<'de> for ReflectArgs {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let args = serde_json::Map::<String, Value>::deserialize(deserializer)?;
+        // Every key ReflectParams reads, `skip_unavailable` included (kept
+        // out of the schema, still taken): it serializes them all once the
+        // flag is set.
+        let known = serde_json::to_value(ReflectParams {
+            skip_unavailable: true,
+            ..ReflectParams::default()
+        })
+        .map_err(D::Error::custom)?;
+        let mut unknown: Vec<&str> = args
+            .keys()
+            .map(String::as_str)
+            .filter(|key| !key.starts_with('_') && known.get(key).is_none())
+            .collect();
+        unknown.sort_unstable();
+        if !unknown.is_empty() {
+            let named: Vec<String> = unknown.iter().map(|key| format!("`{key}`")).collect();
+            return Err(D::Error::custom(format!(
+                "reflect does not take {}: it only returns the queue and changes nothing. To settle feedback items, call write_reflection with action settle, sections and outcome.",
+                named.join(", ")
+            )));
+        }
+        serde_json::from_value(Value::Object(args))
+            .map(ReflectArgs)
+            .map_err(D::Error::custom)
+    }
+}
+
+impl rmcp::schemars::JsonSchema for ReflectArgs {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        ReflectParams::schema_name()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        ReflectParams::schema_id()
+    }
+
+    fn inline_schema() -> bool {
+        ReflectParams::inline_schema()
+    }
+
+    fn json_schema(generator: &mut rmcp::schemars::SchemaGenerator) -> rmcp::schemars::Schema {
+        ReflectParams::json_schema(generator)
+    }
+}
+
 /// rmcp's `subscriptions/listen` sink as the engine's registry sees it.
 #[derive(Debug)]
 struct RmcpListSink(rmcp::service::SubscriptionSink);
@@ -3321,7 +3381,7 @@ impl McpServer {
     )]
     async fn reflect(
         &self,
-        Parameters(p): Parameters<ReflectParams>,
+        Parameters(ReflectArgs(p)): Parameters<ReflectArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         if let Some(answer) = self.mounted("reflect", &p, &ctx).await {
@@ -3374,7 +3434,7 @@ impl McpServer {
     #[tool(
         name = "write_reflection",
         title = "Write reflection",
-        description = "Create, change, move or delete a reflection - a document for people under reflections/, where the domain's MANIFEST says reflection: on - or edit PACT.md, the domain's agreement on audience, level of detail, presentation and structure (PACT.md and every write with sources need curate access, which everyone who edits the engrams holds; anyone else proposes a PACT.md change with discuss). Write at the level PACT.md describes. action write (the default) takes the whole markdown: keep each ## heading's <!-- r:... --> id line as it is; new headings get one. To change one section instead, pass operation replace_section, insert_before_section or insert_after_section with section (the heading path, for example ## Night deploys) and content, exactly as edit_engram does; the section keeps its id line. Pass sources (section id or heading to engram permalinks in this domain) for every section you built from engrams: that curates the section and records what it reflects. Without sources a write is an ordinary edit, and a person's change stays a feedback item in reflect. action settle with sections and outcome kept (the person's text stands, sources stay) or taken_in (you changed the engrams to match) settles feedback items. action move carries the reflection's threads and baseline and rewrites relative links to it (a page open in a co-editing room is saved first, and the room is closed and told the new path), and its receipt carries links_failed when a page that links it could not be rewritten; delete takes both along. action move_asset (path and to) or delete_asset (path) moves or removes a file under reflections/assets/ and needs curate access; a move rewrites every link to the file, and its receipt carries links_failed (pages whose link could not be rewritten) or note (the file moved and its index row did not follow) when that happened. A page that embeds an engram attachment is refused (copy the file into reflections/assets/ first, which a person does). When a person has the page open in a co-editing room, the receipt says landed live (the room took your text in) or landed file with room (conflict or waiting) and room_note: tell the person what room_note says. Needs edit access; sources and settle need curate access. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server. The receipt carries markdown_findings (code, severity, message, line) when the text has a status colour or callout kind Crystalline does not know: fix them. Present the page with the crystalline-presentation skill (callouts, status labels, diagrams, tables, math) where they serve the reader; read it with the skills tool if it is not installed.",
+        description = "Create, change, move or delete a reflection - a document for people under reflections/, where the domain's MANIFEST says reflection: on - or edit PACT.md, the domain's agreement on audience, level of detail, presentation and structure (PACT.md and every write with sources need curate access, which everyone who edits the engrams holds; anyone else proposes a PACT.md change with discuss). Write at the level PACT.md describes. action write (the default) takes the whole markdown: keep each ## heading's <!-- r:... --> id line as it is. Crystalline gives a new heading its id line; never write one yourself. The `reflection:` frontmatter key is Crystalline's bookkeeping; never write it (pass `sources` instead). To change one section instead, pass operation replace_section, insert_before_section or insert_after_section with section (the heading path, for example ## Night deploys) and content, exactly as edit_engram does; the section keeps its id line. Pass sources (section id or heading to engram permalinks in this domain) for every section you built from engrams: that curates the section and records what it reflects. Without sources a write is an ordinary edit, and a person's change stays a feedback item in reflect. action settle with sections and outcome kept (the person's text stands, sources stay) or taken_in (you changed the engrams to match) settles feedback items. action move carries the reflection's threads and baseline and rewrites relative links to it (a page open in a co-editing room is saved first, and the room is closed and told the new path), and its receipt carries links_failed when a page that links it could not be rewritten; delete takes both along. action move_asset (path and to) or delete_asset (path) moves or removes a file under reflections/assets/ and needs curate access; a move rewrites every link to the file, and its receipt carries links_failed (pages whose link could not be rewritten) or note (the file moved and its index row did not follow) when that happened. A page that embeds an engram attachment is refused (copy the file into reflections/assets/ first, which a person does). When a person has the page open in a co-editing room, the receipt says landed live (the room took your text in) or landed file with room (conflict or waiting) and room_note: tell the person what room_note says. Needs edit access; sources and settle need curate access. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server. The receipt carries markdown_findings (code, severity, message, line) when the text has a status colour or callout kind Crystalline does not know: fix them. Present the page with the crystalline-presentation skill (callouts, status labels, diagrams, tables, math) where they serve the reader; read it with the skills tool if it is not installed.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -4175,7 +4235,7 @@ impl McpServer {
     #[tool(
         name = "skills",
         title = "Skills",
-        description = "List the agent skills this server ships and read any skill's full SKILL.md playbook: how to route, capture, model schemas, collaborate and provision tools well with Crystalline. Call with no arguments for the index of names and descriptions; pass name to read one skill before its kind of task.",
+        description = "List the agent skills this server ships and read any skill's full SKILL.md playbook: how to route, capture, model schemas, collaborate, provision tools and present reflections (callouts, status labels, diagrams, tables, math) well with Crystalline. Call with no arguments for the index of names and descriptions; pass name to read one skill before its kind of task.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,

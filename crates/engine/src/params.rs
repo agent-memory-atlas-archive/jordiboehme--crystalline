@@ -614,10 +614,11 @@ pub struct WriteReflectionParams {
     /// move_asset and delete_asset the file's path inside reflections/, for
     /// example assets/flow.png.
     pub path: String,
-    /// write: the whole markdown of the reflection. Section ids (the
-    /// <!-- r:... --> lines) are kept as they are and added under new ##
-    /// headings; the reflection: frontmatter block is Crystalline's own and is
-    /// ignored. Leave it out when you pass operation.
+    /// write: the whole markdown of the reflection. Keep the <!-- r:... -->
+    /// id lines a read returned as they are; Crystalline gives a new ##
+    /// heading its id line, never write one yourself. The reflection:
+    /// frontmatter key is Crystalline's bookkeeping; never write it (pass
+    /// sources instead). Leave it out when you pass operation.
     #[serde(default)]
     pub markdown: Option<String>,
     /// write: change one section instead of the whole page, the way

@@ -1124,14 +1124,21 @@ impl SectionAuthors {
     }
 }
 
+/// The sentence a write receipt carries when the writer made up an id line.
+const WRITTEN_ID_GUIDANCE: &str =
+    "Crystalline gives a new heading its id line; never write one yourself.";
+
+/// The sentence a write receipt carries when the writer made up the
+/// bookkeeping block.
+const WRITTEN_BLOCK_GUIDANCE: &str = "The reflection: frontmatter key is Crystalline's bookkeeping; the one written here was replaced. Never write it: pass sources instead.";
+
 /// Rules 1 to 4 of a reflection write: the engine's bookkeeping block
 /// replaces the incoming one, a heading that lost its id line gets it back
 /// by heading, headings get new ids when `assign_ids`, changed sections
 /// record each of `authors.changed` (one entry each, the on-disk list) and a
 /// section that just got its id also the names carried for its heading,
-/// records of vanished sections go. Answers the text to write (without
-/// the bookkeeping block re-emitted yet), the minted ids and the new
-/// records. A live room composes through it too.
+/// records of vanished sections go. Answers a [`Composed`]. A live room
+/// composes through it too.
 pub(super) fn compose_reflection(
     current: Option<&str>,
     baseline: &str,
@@ -1139,7 +1146,7 @@ pub(super) fn compose_reflection(
     authors: &SectionAuthors,
     assign_ids: bool,
     now: &str,
-) -> Result<(String, Vec<String>, r::Provenance)> {
+) -> Result<Composed> {
     let stored = current.map(r::read_provenance).unwrap_or_default();
     let stripped =
         r::write_provenance(incoming, &r::Provenance::new()).map_err(EngineError::Invalid)?;
@@ -1184,6 +1191,7 @@ pub(super) fn compose_reflection(
     // of its own (pasted from another page) takes no place.
     let minted_ids: BTreeSet<&str> = minted.iter().map(String::as_str).collect();
     let mut new_seen: HashMap<String, usize> = HashMap::new();
+    let mut changed = Vec::new();
     for section in r::split_sections(&text) {
         let Some(id) = section.id.clone() else {
             continue;
@@ -1195,6 +1203,7 @@ pub(super) fn compose_reflection(
         });
         let mut record = stored.get(&id).cloned().unwrap_or_default();
         if before.get(&id) != Some(&r::section_hash(&section.text)) {
+            changed.push(id.clone());
             record.changed_at = Some(now.to_string());
             let carried = place
                 .and_then(|place| {
@@ -1222,7 +1231,25 @@ pub(super) fn compose_reflection(
         }
         prov.insert(id, record);
     }
-    Ok((text, minted, prov))
+    Ok(Composed {
+        text,
+        minted,
+        prov,
+        changed,
+    })
+}
+
+/// What [`compose_reflection`] answers.
+pub(super) struct Composed {
+    /// The text to write, without the bookkeeping block re-emitted yet.
+    pub text: String,
+    /// The ids minted, in page order.
+    pub minted: Vec<String>,
+    /// The new records.
+    pub prov: r::Provenance,
+    /// The ids of the sections this text changed against the stored page
+    /// (the top included), in page order: new ones too.
+    pub changed: Vec<String>,
 }
 
 /// Move every thread of a page that is anchored by heading onto the id its
@@ -1522,6 +1549,7 @@ impl Engine {
             }
         }
         if current.is_none() {
+            r::validate_new_reflection_path(&p.path).map_err(EngineError::Invalid)?;
             self.refuse_only_elsewhere(&p.domain, access.domain_id, ElsewhereRow::Page(&p.path))
                 .await?;
         }
@@ -1589,17 +1617,77 @@ impl Engine {
             }
             None => (None, stored_baseline.clone()),
         };
-        let (text, minted, mut prov) = compose_reflection(
+        // The bookkeeping is Crystalline's (rule 1 replaces the block): a
+        // block the writer made up, and an id line no heading can carry, are
+        // replaced and said, so an agent corrected in silence does not keep
+        // writing them. The page sent back as it was read is told nothing.
+        // A room save keeps a pasted section's id; it does not come here.
+        let made_up_block = r::block_as_written(&incoming).is_some_and(|block| {
+            current.as_deref().and_then(r::block_as_written).as_ref() != Some(&block)
+        });
+        // An id is per page, so one only another page carries was copied or
+        // made up: it is replaced too. Asked only for ids this page, its
+        // baseline and its records never had, so a page sent back as it was
+        // read reads no other page. The store lock is taken inside the file
+        // lock, the order `index_reflection` uses.
+        let mut known = r::baseline_ids(&baseline);
+        if let Some(page) = stored.as_deref() {
+            known.extend(r::split_sections(page).into_iter().filter_map(|s| s.id));
+            known.extend(r::read_provenance(page).into_keys());
+        }
+        let unknown: BTreeSet<String> = r::split_sections(&incoming)
+            .into_iter()
+            .skip(1)
+            .filter_map(|s| s.id)
+            .filter(|id| !known.contains(id))
+            .collect();
+        let elsewhere: BTreeSet<String> = if unknown.is_empty() {
+            BTreeSet::new()
+        } else {
+            let rows = self
+                .store
+                .lock()
+                .await
+                .list_reflections(access.domain_id)
+                .await?;
+            rows.iter()
+                .filter(|row| row.path != p.path)
+                .flat_map(|row| r::split_sections(&row.content))
+                .filter_map(|s| s.id)
+                .filter(|id| unknown.contains(id))
+                .collect()
+        };
+        let written = r::drop_written_ids(&incoming, &|id| elsewhere.contains(id));
+        let Composed {
+            text,
+            minted,
+            mut prov,
+            changed,
+        } = compose_reflection(
             stored.as_deref(),
             &baseline,
-            &incoming,
+            &written.text,
             &SectionAuthors::plain(vec![caller.author.name.clone()]),
             true,
             &now(),
         )?;
         let sections = r::split_sections(&text);
+        // Each made-up id the heading it sat under no longer carries, with
+        // the id it carries now; sources keyed by the made-up id follow it.
+        let replaced: Vec<(String, String)> = written
+            .dropped
+            .iter()
+            .filter_map(|(k, made_up)| {
+                let id = sections.get(k + 1)?.id.clone()?;
+                (&id != made_up).then(|| (made_up.clone(), id))
+            })
+            .collect();
         let mut advanced: Vec<String> = Vec::new();
         for (key, engrams) in &p.sources {
+            let key = replaced
+                .iter()
+                .find(|(made_up, _)| made_up == key)
+                .map_or(key, |(_, id)| id);
             let section = r::find_section(&sections, key).ok_or_else(|| {
                 EngineError::Invalid(format!(
                     "no section '{key}' in '{}' to set sources on",
@@ -1630,6 +1718,30 @@ impl Engine {
             record.changed_at = None;
             record.answered_by = None;
             advanced.push(id);
+        }
+        // An agent's curated write reflects the rest of what it wrote too:
+        // the top, which no source names, and a section it wrote without
+        // sources would otherwise come back to it as its own feedback. Only
+        // what this write changed moves, so a person's change it sent back
+        // untouched stays a feedback item; an empty top is no change.
+        if !advanced.is_empty() && caller.author.agent {
+            for id in changed {
+                if advanced.contains(&id) {
+                    continue;
+                }
+                let empty_top = id == r::TOP_SECTION
+                    && sections
+                        .first()
+                        .is_some_and(|top| top.text.trim().is_empty());
+                if empty_top {
+                    continue;
+                }
+                let record = prov.entry(id.clone()).or_default();
+                record.changed_by.clear();
+                record.changed_at = None;
+                record.answered_by = None;
+                advanced.push(id);
+            }
         }
         let final_text = stamp_reflected(&text, &mut prov, &advanced)?;
         let threads_abs = access.abs(&r::threads_path(&p.path));
@@ -1690,9 +1802,22 @@ impl Engine {
             &mut receipt,
             crystalline_core::lint_markdown(&final_text, 1, false),
         );
-        if let Some(heading) = heading_stripped {
-            receipt["heading_stripped"] = json!(heading);
-            receipt["guidance"] = json!(HEADING_STRIPPED_GUIDANCE);
+        note_heading_stripped(&mut receipt, heading_stripped);
+        if !replaced.is_empty() {
+            let list: Vec<String> = replaced
+                .iter()
+                .map(|(made_up, id)| format!("{made_up} (now {id})"))
+                .collect();
+            add_guidance(
+                &mut receipt,
+                &format!(
+                    "{WRITTEN_ID_GUIDANCE} The id lines written here were replaced: {}.",
+                    list.join(", ")
+                ),
+            );
+        }
+        if made_up_block {
+            add_guidance(&mut receipt, WRITTEN_BLOCK_GUIDANCE);
         }
         let doc = RoomDoc::Reflection(p.path.clone());
         if let Some(rooms) = self.collab_rooms()
@@ -1903,7 +2028,11 @@ impl Engine {
             }
             None => (None, stored_baseline.clone()),
         };
-        let (composed, _, prov) = compose_reflection(
+        let Composed {
+            text: composed,
+            prov,
+            ..
+        } = compose_reflection(
             stored.as_deref(),
             &baseline,
             &incoming,
@@ -2334,9 +2463,8 @@ impl Engine {
             .await?;
         self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
             .await?;
-        for path in [from, to] {
-            r::validate_reflection_path(path).map_err(EngineError::Invalid)?;
-        }
+        r::validate_reflection_path(from).map_err(EngineError::Invalid)?;
+        r::validate_new_reflection_path(to).map_err(EngineError::Invalid)?;
         if from == r::PACT_FILE || to == r::PACT_FILE {
             return Err(EngineError::Invalid(
                 "PACT.md is the domain's agreement; edit it instead of moving it".into(),
@@ -2966,7 +3094,9 @@ mod tests {
             )]),
             someone_if_empty: false,
         };
-        let (text, minted, prov) = compose_reflection(
+        let Composed {
+            text, minted, prov, ..
+        } = compose_reflection(
             Some(current),
             "",
             &incoming,
@@ -3003,7 +3133,9 @@ mod tests {
             )]),
             someone_if_empty: false,
         };
-        let (text, minted, prov) = compose_reflection(
+        let Composed {
+            text, minted, prov, ..
+        } = compose_reflection(
             Some(current),
             "",
             &incoming,

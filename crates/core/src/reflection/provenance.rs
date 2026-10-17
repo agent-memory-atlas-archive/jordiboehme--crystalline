@@ -82,6 +82,19 @@ pub fn read_provenance(source: &str) -> Provenance {
         .collect()
 }
 
+/// The [`PROVENANCE_KEY`] block of `source` as YAML, in whatever shape it
+/// was written, or `None` when there is none. A write holds the block it was
+/// sent against the stored page's this way: a block a writer made up (`for:`,
+/// `built_from:`) reads as no records at all, so comparing records would take
+/// it for the stored one.
+pub fn block_as_written(source: &str) -> Option<String> {
+    let parts = split_frontmatter(source)?;
+    let serde_yaml_ng::Value::Mapping(map) = serde_yaml_ng::from_str(parts.yaml).ok()? else {
+        return None;
+    };
+    serde_yaml_ng::to_string(map.get(PROVENANCE_KEY)?).ok()
+}
+
 /// `source` with its records replaced by `provenance`: the key block is
 /// rewritten in place, appended when absent, removed when `provenance` is
 /// empty. A page with no frontmatter gets one only when there is something
@@ -160,6 +173,20 @@ mod tests {
     use crate::reflection::sections::split_sections;
 
     const PAGE: &str = "---\ntitle: Deploying\ntags: [ops]\n---\n\n# Deploying\n\n## Night deploys\n<!-- r:7f3a9c2e -->\n\nDeploys run at night.\n";
+
+    /// The block as it stands, in any shape: what a writer's block is held
+    /// against, so a page sent back as it was read is told nothing.
+    #[test]
+    fn the_block_is_read_as_written() {
+        let theirs = "---\nreflection:\n  for: new operators\n---\n\n# A\n";
+        assert_eq!(
+            block_as_written(theirs).as_deref(),
+            Some("for: new operators\n")
+        );
+        assert!(read_provenance(theirs).is_empty(), "not a record");
+        assert_eq!(block_as_written(PAGE), None);
+        assert_eq!(block_as_written("# No frontmatter\n"), None);
+    }
 
     fn record() -> SectionRecord {
         SectionRecord {

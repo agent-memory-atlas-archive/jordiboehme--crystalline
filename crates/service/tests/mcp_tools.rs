@@ -728,6 +728,22 @@ async fn the_descriptions_of_the_call_time_gated_tools_state_their_condition() {
         write.contains("crystalline-presentation") && write.contains("skills tool"),
         "{write}"
     );
+    // The bookkeeping is Crystalline's: the write says so, so an agent does
+    // not invent id lines or a reflection: block.
+    assert!(
+        write.contains("Crystalline gives a new heading its id line; never write one yourself.")
+            && write.contains("The `reflection:` frontmatter key is Crystalline's bookkeeping; never write it (pass `sources` instead)."),
+        "{write}"
+    );
+    // The skills tool is found when an agent is about to present a page.
+    let skills = description("skills");
+    assert!(
+        skills.contains("present reflections")
+            && skills.contains("callouts")
+            && skills.contains("diagrams")
+            && skills.contains("tables"),
+        "{skills}"
+    );
     // Discuss teaches the conventional comment shape.
     let discuss = description("discuss");
     assert!(
@@ -8989,5 +9005,106 @@ async fn a_filter_only_search_keeps_its_rows_undated_for_the_agent() {
     assert!(
         hits.iter().all(|hit| hit.get("recorded_at").is_none()),
         "{page}"
+    );
+}
+
+/// reflect only reads the queue: a call that sends what write_reflection's
+/// settle takes is refused with the arguments named and the tool that
+/// settles, instead of answering the queue as if it had settled. A
+/// `_`-prefixed protocol key passes, and the schema stays open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reflect_refuses_arguments_it_does_not_take() {
+    let h = Harness::new(&["eng"]).await;
+    switch_reflection_on(&h, "eng").await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+    let err = reflection_refusal(
+        peer,
+        "reflect",
+        json!({ "domains": ["eng"], "action": "settle", "sections": ["aaaa1111"], "outcome": "kept" }),
+    )
+    .await;
+    assert!(
+        err.contains("`action`, `outcome`, `sections`")
+            && err.contains("write_reflection")
+            && err.contains("action settle"),
+        "{err}"
+    );
+    let taken = serde_json::to_value(
+        call_result(
+            peer,
+            "reflect",
+            json!({ "domains": ["eng"], "kinds": ["feedback"], "limit": 5, "page": 1, "_meta": {} }),
+        )
+        .await,
+    )
+    .unwrap();
+    assert_ne!(
+        taken["isError"], true,
+        "every argument reflect takes, and a protocol key: {taken}"
+    );
+    let tools = peer.list_tools(Default::default()).await.unwrap();
+    let reflect = tools.tools.iter().find(|t| t.name == "reflect").unwrap();
+    let schema = serde_json::to_value(&*reflect.input_schema).unwrap();
+    assert!(schema["properties"]["domains"].is_object(), "{schema}");
+    assert!(schema.get("additionalProperties").is_none(), "{schema}");
+}
+
+/// The path is inside reflections/ already; a write that repeats the
+/// folder is refused with the corrected path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_reflection_refuses_a_path_that_repeats_the_folder() {
+    let h = Harness::new(&["eng"]).await;
+    switch_reflection_on(&h, "eng").await;
+    let (client, _server) = h.connect().await;
+    let err = call(
+        client.peer(),
+        "write_reflection",
+        json!({ "domain": "eng", "path": "reflections/guides/a.md", "markdown": "# A\n" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.contains("drop the reflections/ prefix") && err.contains("'guides/a.md'"),
+        "{err}"
+    );
+}
+
+/// An agent's curated write over MCP owes no feedback on the intro it wrote
+/// before the first `##`, with no `_top` source named.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agents_curated_write_over_mcp_owes_no_feedback_on_its_intro() {
+    let h = Harness::new(&["eng"]).await;
+    switch_reflection_on(&h, "eng").await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+    call(
+        peer,
+        "write_engram",
+        json!({ "domain": "eng", "title": "Deploy", "content": "- [fact] deploys run at night #eng" }),
+    )
+    .await
+    .unwrap();
+    let written = call(
+        peer,
+        "write_reflection",
+        json!({
+            "domain": "eng",
+            "path": "guides/deploying.md",
+            "markdown": "# Deploying\n\nFor new people.\n\n## Night deploys\n\nDeploys run at night.\n",
+            "sources": { "Night deploys": ["deploy"] },
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(written["curated"], true, "{written}");
+    let queue = call_text(peer, "reflect", json!({ "domains": ["eng"] }))
+        .await
+        .unwrap();
+    assert!(
+        queue.contains("total: 0")
+            || queue.contains("\"total\": 0")
+            || queue.contains("\"total\":0"),
+        "{queue}"
     );
 }

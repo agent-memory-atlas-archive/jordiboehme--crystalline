@@ -32,8 +32,9 @@ async fn curated(extra: &[(&str, &str)]) -> Fx {
         "guides/deploying.md",
         "# Deploying\n\n## Night deploys\n\nDeploys run at night.\n\n## Rollback\n\nRoll back with the script.\n",
     );
-    // `_top` with no sources curates the title and intro too, so the queue
-    // starts empty.
+    // `_top` with no sources names the top as curated. An agent's curated
+    // write reflects the top it wrote without it too, so the queue starts
+    // empty either way; the key keeps naming the top explicitly covered.
     p.sources = BTreeMap::from([
         ("_top".to_string(), Vec::new()),
         (
@@ -1168,5 +1169,76 @@ async fn reflection_summary_timing() {
         "median of {RUNS}: review {:?}, summary {:?}",
         median(review_times),
         median(summary_times)
+    );
+}
+
+/// An agent's own curated write owes nobody feedback: the intro before the
+/// first `##`, which no source names, and a section it wrote without
+/// sources move to what it wrote. A person's later change of the intro is
+/// feedback again.
+#[tokio::test]
+async fn an_agents_curated_write_owes_no_feedback_on_its_own_intro() {
+    let fx = crate::docs::reflecting().await;
+    let mut p = write(
+        "guides/deploying.md",
+        "# Deploying\n\nFor new people.\n\n## Night deploys\n\nDeploys run at night.\n\n## Questions\n\nAsk in the channel.\n",
+    );
+    p.sources = BTreeMap::from([(
+        "Night deploys".to_string(),
+        vec!["runbooks/deploy".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert_eq!(queue["total"], 0, "the agent's own text: {queue}");
+
+    let text = edit_page(&fx, "For new people.", "For new people and visitors.");
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &text), &person())
+        .await
+        .unwrap();
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows(&queue),
+        [("feedback".into(), "changed".into(), String::new())],
+        "{queue}"
+    );
+    assert_eq!(queue["queue"][0]["section"], "_top", "{queue}");
+    assert_eq!(queue["queue"][0]["changed_by"][0], "jordi", "{queue}");
+}
+
+/// A curated write moves only what it wrote: a person's change to a section
+/// the agent sent back untouched stays a feedback item.
+#[tokio::test]
+async fn a_curated_write_keeps_a_persons_change_it_did_not_touch() {
+    let fx = curated_with_a_feedback_item().await;
+    let text = edit_page(
+        &fx,
+        "Roll back with the script.",
+        "Roll back with the old script.",
+    );
+    let text = text.replace("# Deploying\n", "# Deploying\n\nFor new people.\n");
+    let mut p = write("guides/deploying.md", &text);
+    p.sources = BTreeMap::from([(
+        "Rollback".to_string(),
+        vec!["runbooks/rollback".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows(&queue),
+        [("feedback".into(), "changed".into(), "Night deploys".into())],
+        "{queue}"
     );
 }

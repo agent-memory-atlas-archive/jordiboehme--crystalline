@@ -101,6 +101,25 @@ pub fn validate_reflection_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Why `path` cannot name a new reflection, or `Ok`: the rules of
+/// [`validate_reflection_path`], and no first segment that repeats the
+/// `reflections/` folder (ASCII case folded, as the folder is matched). The
+/// path is inside the folder already, so `reflections/guides/a.md` would put
+/// the page at `reflections/reflections/guides/a.md`, outside the pact's
+/// structure. Asked where a path is chosen (a write that creates a page, a
+/// move's destination); a page already there stays a page, so it can still
+/// be read, edited and moved out.
+pub fn validate_new_reflection_path(path: &str) -> Result<(), String> {
+    validate_reflection_path(path)?;
+    if is_under_reflections(path) {
+        let rest = path.split_once('/').map_or("", |(_, rest)| rest);
+        return Err(format!(
+            "'{path}' starts with reflections/, but the path is already inside reflections/; drop the reflections/ prefix and pass '{rest}'"
+        ));
+    }
+    Ok(())
+}
+
 /// The threads file beside a reflection.
 pub fn threads_path(path: &str) -> String {
     let stem = path.strip_suffix(".md").unwrap_or(path);
@@ -252,6 +271,43 @@ pub fn fits_structure(path: &str, globs: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An agent that spells the folder as part of the path would put the
+    /// page at reflections/reflections/, outside the pact's structure. A new
+    /// path is refused with the corrected one named; a page already there
+    /// stays a page, so it can still be read, edited and moved out.
+    #[test]
+    fn a_new_page_path_must_not_repeat_the_reflections_folder() {
+        for (bad, fixed) in [
+            ("reflections/guides/a.md", "guides/a.md"),
+            ("Reflections/a.md", "a.md"),
+        ] {
+            let err = validate_new_reflection_path(bad).unwrap_err();
+            assert!(
+                err.contains("drop the reflections/ prefix") && err.contains(&format!("'{fixed}'")),
+                "{err}"
+            );
+            assert!(
+                validate_reflection_path(bad).is_ok(),
+                "{bad} is still a page"
+            );
+            assert_eq!(classify(bad), ReflectionFile::Page(bad.to_string()));
+        }
+        for ok in [
+            "guides/a.md",
+            "guides/reflections/a.md",
+            "reflections.md",
+            "PACT.md",
+        ] {
+            assert!(validate_new_reflection_path(ok).is_ok(), "{ok}");
+        }
+        assert!(
+            validate_new_reflection_path("reflections/a.txt")
+                .unwrap_err()
+                .contains("must end in .md"),
+            "the shared rules come first"
+        );
+    }
 
     #[test]
     fn the_folder_is_matched_like_assets() {
