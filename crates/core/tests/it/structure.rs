@@ -351,3 +351,12 @@ fn snapshot_schema_engram() {
     let e = parse_fixture("schemas/schema-task.md");
     insta::assert_yaml_snapshot!("schema-engram", e);
 }
+
+#[test]
+fn task_items_and_status_labels_leave_only_real_structure() {
+    let e = parse_fixture("canonical/task-list-and-status.md");
+    assert_eq!(e.observations.len(), 1);
+    assert_eq!(e.observations[0].category, "fact");
+    let types: Vec<&str> = e.relations.iter().map(|r| r.rel_type.as_str()).collect();
+    assert_eq!(types, ["relates_to"]);
+}
