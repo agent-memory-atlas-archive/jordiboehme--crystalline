@@ -1721,43 +1721,41 @@ impl Engine {
             record.answered_by = None;
             advanced.push(id);
         }
-        // An agent's curated write reflects the rest of what it wrote too:
-        // the top, which no source names, and a section it wrote without
-        // sources would otherwise come back to it as its own feedback. Only
-        // what this write changed moves, and never a section that held
-        // someone else's unsettled change: that is settled only by sources,
-        // a settle or a thread, so an agent that rewords it (or a stray id
-        // line taken out of it) does not make it vanish. An empty top is no
-        // change.
+        // An agent's curated write reflects the rest of what it wrote in
+        // this call: its new top while the stored top owes nothing, and a
+        // section the stored page did not hold at all (neither its id nor
+        // its heading), which no source names and which would otherwise come
+        // back to it as its own feedback. Every other section keeps what it
+        // owes, whoever changed it and however this write changed it: a
+        // pending change is settled only by sources, a settle or a thread.
+        // An empty top is no change.
         if !advanced.is_empty() && caller.author.agent {
-            let theirs: BTreeSet<String> = stored
-                .as_deref()
-                .map(|page| {
-                    let records = r::read_provenance(page);
-                    r::feedback_changes(page, &baseline)
-                        .into_iter()
-                        .filter_map(|change| change.id)
-                        .filter(|id| {
-                            records.get(id).is_none_or(|record| {
-                                record.changed_by.is_empty()
-                                    || record
-                                        .changed_by
-                                        .iter()
-                                        .any(|name| name != &caller.author.name)
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+            let stored_sections = stored.as_deref().map(r::split_sections).unwrap_or_default();
+            let top_owes = stored.as_deref().is_some_and(|page| {
+                r::feedback_changes(page, &baseline)
+                    .iter()
+                    .any(|change| change.id.as_deref() == Some(r::TOP_SECTION))
+            });
             for id in changed {
-                if advanced.contains(&id) || theirs.contains(&id) {
+                if advanced.contains(&id) {
                     continue;
                 }
-                let empty_top = id == r::TOP_SECTION
-                    && sections
-                        .first()
-                        .is_some_and(|top| top.text.trim().is_empty());
-                if empty_top {
+                let Some(section) = sections
+                    .iter()
+                    .find(|s| s.id.as_deref() == Some(id.as_str()))
+                else {
+                    continue;
+                };
+                let fresh = if id == r::TOP_SECTION {
+                    !top_owes && !section.text.trim().is_empty()
+                } else {
+                    !stored_sections.iter().any(|old| {
+                        old.id.as_deref() == Some(id.as_str())
+                            || (!old.heading.is_empty()
+                                && old.heading.eq_ignore_ascii_case(&section.heading))
+                    })
+                };
+                if !fresh {
                     continue;
                 }
                 let record = prov.entry(id.clone()).or_default();

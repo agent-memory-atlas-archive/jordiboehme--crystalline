@@ -1308,3 +1308,141 @@ async fn a_stray_id_taken_out_of_a_persons_change_keeps_it_as_feedback() {
         "{queue}"
     );
 }
+
+/// The agent curates Rollback and sends the rest of the page as `edit`
+/// makes it; the queue's feedback rows after that write, by heading.
+async fn curate_rollback_and_resend(fx: &Fx, edit: impl Fn(String) -> String) -> Vec<String> {
+    let path = fx.root.join("reflections/guides/deploying.md");
+    let text = edit(std::fs::read_to_string(&path).unwrap()).replace(
+        "Roll back with the script.",
+        "Roll back with the old script.",
+    );
+    let mut p = write("guides/deploying.md", &text);
+    p.sources = BTreeMap::from([(
+        "Rollback".to_string(),
+        vec!["runbooks/rollback".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let queue = fx
+        .engine
+        .reflect(
+            &ReflectParams {
+                kinds: vec!["feedback".into()],
+                ..Default::default()
+            },
+            &agent(),
+        )
+        .await
+        .unwrap();
+    queue["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["heading"].as_str().unwrap_or("").to_string())
+        .collect()
+}
+
+/// A section a person typed in a plain editor (no id line yet) stays a
+/// feedback item through an agent's curated write, sent back untouched or
+/// reworded: the write gives it an id and nothing else.
+#[tokio::test]
+async fn a_hand_typed_section_stays_feedback_through_a_curated_write() {
+    for reword in [false, true] {
+        let fx = curated(&[]).await;
+        let path = fx.root.join("reflections/guides/deploying.md");
+        let text = std::fs::read_to_string(&path).unwrap()
+            + "\n## Typed by hand\n\nA person wrote this outside Crystalline.\n";
+        std::fs::write(&path, text).unwrap();
+        fx.engine.sync(None).await.unwrap();
+        let owed = curate_rollback_and_resend(&fx, |t| {
+            if reword {
+                t.replace("A person wrote this", "Someone wrote this")
+            } else {
+                t
+            }
+        })
+        .await;
+        assert_eq!(owed, ["Typed by hand"], "reword {reword}");
+    }
+}
+
+/// A person's on-disk change of a section whose record names only the agent
+/// (its own earlier write, never settled) stays feedback through the agent's
+/// next curated write that rewords it: sync does not touch the record, so the record cannot
+/// tell whose change it is.
+#[tokio::test]
+async fn a_persons_disk_edit_of_the_agents_unsettled_section_stays_feedback() {
+    let fx = curated(&[]).await;
+    let text = edit_page(
+        &fx,
+        "Roll back with the script.\n",
+        "Roll back with the script.\n\n## Notes\n\nAsk first.\n",
+    );
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &text), &agent())
+        .await
+        .unwrap();
+    let path = fx.root.join("reflections/guides/deploying.md");
+    let edited = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("Ask first.", "Ask the on-call first.");
+    std::fs::write(&path, edited).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let owed = curate_rollback_and_resend(&fx, |t| {
+        t.replace("the on-call first.", "the on-call engineer first.")
+    })
+    .await;
+    assert_eq!(owed, ["Notes"]);
+}
+
+/// The agent's own earlier unsourced section stays feedback through its next
+/// curated write, reworded or not, until it settles it.
+#[tokio::test]
+async fn the_agents_own_unsettled_section_stays_feedback_until_it_settles_it() {
+    let fx = curated(&[]).await;
+    let text = edit_page(
+        &fx,
+        "Roll back with the script.\n",
+        "Roll back with the script.\n\n## Notes\n\nAsk first.\n",
+    );
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &text), &agent())
+        .await
+        .unwrap();
+    let owed =
+        curate_rollback_and_resend(&fx, |t| t.replace("Ask first.", "Ask before you start.")).await;
+    assert_eq!(owed, ["Notes"]);
+    let page = std::fs::read_to_string(fx.root.join("reflections/guides/deploying.md")).unwrap();
+    let notes = crystalline_core::reflection::split_sections(&page)
+        .into_iter()
+        .find(|s| s.heading == "Notes")
+        .and_then(|s| s.id)
+        .unwrap();
+    fx.engine
+        .settle_reflection("eng", "guides/deploying.md", &[notes], "kept", &agent())
+        .await
+        .unwrap();
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert_eq!(queue["total"], 0, "{queue}");
+}
+
+/// A person's pending change of the top stays feedback when the agent's
+/// curated write rewrites the top.
+#[tokio::test]
+async fn a_persons_top_change_stays_feedback_through_an_agents_rewrite() {
+    let fx = curated(&[]).await;
+    let text = edit_page(&fx, "# Deploying\n", "# Deploying\n\nFor new people.\n");
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &text), &person())
+        .await
+        .unwrap();
+    let owed = curate_rollback_and_resend(&fx, |t| {
+        t.replace("For new people.", "For new people and visitors.")
+    })
+    .await;
+    assert_eq!(owed, [""], "the top, addressed as _top");
+}
