@@ -1723,19 +1723,34 @@ impl Engine {
         }
         // An agent's curated write reflects the rest of what it wrote in
         // this call: its new top while the stored top owes nothing, and a
-        // section the stored page did not hold at all (neither its id nor
-        // its heading), which no source names and which would otherwise come
-        // back to it as its own feedback. Every other section keeps what it
-        // owes, whoever changed it and however this write changed it: a
-        // pending change is settled only by sources, a settle or a thread.
-        // An empty top is no change.
+        // section neither the stored page nor the baseline held (not its
+        // id, not its heading), which no source names and which would
+        // otherwise come back to it as its own feedback. Every other section
+        // keeps what it owes, whoever changed it and however this write
+        // changed it: a pending change, a person's removal among them, is
+        // settled only by sources, a settle or a thread. An emptied top is a
+        // change too, and it is not settled here.
         if !advanced.is_empty() && caller.author.agent {
-            let stored_sections = stored.as_deref().map(r::split_sections).unwrap_or_default();
-            let top_owes = stored.as_deref().is_some_and(|page| {
-                r::feedback_changes(page, &baseline)
-                    .iter()
-                    .any(|change| change.id.as_deref() == Some(r::TOP_SECTION))
-            });
+            // A heading with no id yet (typed in a plain editor) is held by
+            // its heading alone.
+            let mut held: Vec<(Option<String>, String)> = stored
+                .as_deref()
+                .map(r::split_sections)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| (s.id, s.heading))
+                .collect();
+            held.extend(r::parse_baseline(&baseline).into_iter().map(|(id, text)| {
+                let heading = r::split_sections(&text)
+                    .into_iter()
+                    .nth(1)
+                    .map(|s| s.heading)
+                    .unwrap_or_default();
+                (Some(id), heading)
+            }));
+            let top_owes = r::feedback_changes(stored.as_deref().unwrap_or(""), &baseline)
+                .iter()
+                .any(|change| change.id.as_deref() == Some(r::TOP_SECTION));
             for id in changed {
                 if advanced.contains(&id) {
                     continue;
@@ -1749,10 +1764,10 @@ impl Engine {
                 let fresh = if id == r::TOP_SECTION {
                     !top_owes && !section.text.trim().is_empty()
                 } else {
-                    !stored_sections.iter().any(|old| {
-                        old.id.as_deref() == Some(id.as_str())
-                            || (!old.heading.is_empty()
-                                && old.heading.eq_ignore_ascii_case(&section.heading))
+                    !held.iter().any(|(old_id, old_heading)| {
+                        old_id.as_deref() == Some(id.as_str())
+                            || (!old_heading.is_empty()
+                                && old_heading.eq_ignore_ascii_case(&section.heading))
                     })
                 };
                 if !fresh {

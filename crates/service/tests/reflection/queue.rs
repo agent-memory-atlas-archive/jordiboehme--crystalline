@@ -1446,3 +1446,85 @@ async fn a_persons_top_change_stays_feedback_through_an_agents_rewrite() {
     .await;
     assert_eq!(owed, [""], "the top, addressed as _top");
 }
+
+/// A person removed a section; the agent then sends a stale copy that still
+/// holds it (reflowed), without a checksum. The section was reflected
+/// before, so it is not the agent's fresh text: it stays in the queue.
+#[tokio::test]
+async fn a_stale_copy_of_a_section_a_person_removed_is_not_settled() {
+    let fx = curated(&[]).await;
+    let path = fx.root.join("reflections/guides/deploying.md");
+    let stale = std::fs::read_to_string(&path).unwrap();
+    let rollback = stale.find("## Rollback").unwrap();
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &stale[..rollback]), &person())
+        .await
+        .unwrap();
+    let mut p = write(
+        "guides/deploying.md",
+        &stale
+            .replace("Deploys run at night.", "Deploys run at night, late.")
+            .replace(
+                "Roll back with the script.",
+                "Roll back with the script, then check.",
+            ),
+    );
+    p.sources = BTreeMap::from([(
+        "Night deploys".to_string(),
+        vec!["runbooks/deploy".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert!(
+        rows(&queue)
+            .iter()
+            .any(|(kind, _, heading)| kind == "feedback" && heading == "Rollback"),
+        "{queue}"
+    );
+}
+
+/// The page file is gone but its baseline survives; the agent re-creates the
+/// page with the old ids. A section the baseline holds is not fresh text, so
+/// a change of it against the baseline stays in the queue.
+#[tokio::test]
+async fn a_recreated_page_does_not_settle_what_its_baseline_holds() {
+    let fx = curated(&[]).await;
+    let path = fx.root.join("reflections/guides/deploying.md");
+    let stale = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    assert!(
+        fx.root
+            .join("reflections/.reflected/guides/deploying.md")
+            .exists()
+    );
+    let mut p = write(
+        "guides/deploying.md",
+        &stale
+            .replace("Deploys run at night.", "Deploys run at night, late.")
+            .replace(
+                "Roll back with the script.",
+                "Roll back with the script, then check.",
+            ),
+    );
+    p.sources = BTreeMap::from([(
+        "Night deploys".to_string(),
+        vec!["runbooks/deploy".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert!(
+        rows(&queue)
+            .iter()
+            .any(|row| row == &("feedback".into(), "changed".into(), "Rollback".into())),
+        "{queue}"
+    );
+}
