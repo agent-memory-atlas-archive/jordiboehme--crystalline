@@ -110,8 +110,10 @@ function offIdLine(doc: Text, line: Line, pos: number, down?: boolean): number {
 const caretOffIdLines = EditorState.transactionFilter.of((tr) => {
   const doc = tr.newDoc;
   const selection = tr.newSelection;
-  // Only a step of this person's own says where the caret came from; any
-  // other caret goes by the end of the line it landed on.
+  // Only a step of this person's own says where the caret came from. Any
+  // other caret (one a remote change, a Y undo or a dispatch mapped there)
+  // was below the heading before the change, so it goes down, never up into
+  // the heading where the next key would land in it.
   const stepped = tr.isUserEvent("select");
   const before = tr.changes.mapPos(tr.startState.selection.main.head);
   let moved = false;
@@ -124,7 +126,7 @@ const caretOffIdLines = EditorState.transactionFilter.of((tr) => {
     }
     moved = true;
     const down = !stepped
-      ? undefined
+      ? true
       : before < line.from
         ? true
         : before > line.to
@@ -178,10 +180,10 @@ export function stepOffIdLines(view: EditorView): void {
 /**
  * Text this person puts in at an id line goes beside it, so the id line stays
  * byte for byte what it was: typing, a paste or a verb from a caret on either
- * end of it. A one-line text at the start of the id line goes to the end of
- * the heading above; anything else goes to the start of the line below (after
- * a new line break when the id line ends the page). A text that starts with a
- * line break at the end of the id line is already beside it and stays.
+ * end of it. It goes to the start of the line below (after a new line break
+ * when the id line ends the page), never up into the heading: a caret there
+ * was mapped from below. A text that starts with a line break at the end of
+ * the id line is already beside it and stays.
  */
 const insertsOffIdLines = EditorState.transactionFilter.of((tr) => {
   if (!tr.docChanged || !tr.isUserEvent("input")) {
@@ -204,11 +206,10 @@ const insertsOffIdLines = EditorState.transactionFilter.of((tr) => {
       return;
     }
     moved = true;
-    const up = fromA === line.from && inserted.lines === 1;
-    if (up) {
-      specs.push({ from: line.from - 1, to: line.from - 1, insert: inserted });
-      spans.push({ fromB, toB, at: line.from - 1, lead: 0 });
-    } else if (line.number < doc.lines) {
+    // Never up into the heading: a caret at an id line came there by being
+    // mapped, from the line below. (Typing at the heading's own end is
+    // `newLineBelowId`'s.)
+    if (line.number < doc.lines) {
       specs.push({ from: line.to + 1, to: line.to + 1, insert: inserted });
       spans.push({ fromB, toB, at: line.to + 1, lead: 0 });
     } else {

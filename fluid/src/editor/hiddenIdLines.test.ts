@@ -12,7 +12,7 @@ import {
   undo,
 } from "@codemirror/commands";
 import type { Extension } from "@codemirror/state";
-import { EditorSelection, EditorState } from "@codemirror/state";
+import { Annotation, EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -142,15 +142,14 @@ describe("hiddenIdLines keeps an id with its heading", () => {
   });
 
   it.each([
-    // A caret put on the id line's start goes to the heading's end, and a
-    // block from there lands below the id.
+    // A caret put on the id line by a dispatch goes to the blank line
+    // below, from either end, and a block from an empty line takes that
+    // line.
     [
       "start",
       "## One\n".length,
-      "## One\n<!-- r:aaaa1111 -->\n\n![a](assets/a.png)\n\n\nFirst.\n",
+      "## One\n<!-- r:aaaa1111 -->\n![a](assets/a.png)\n\nFirst.\n",
     ],
-    // One put on its end goes to the blank line below, and a block from an
-    // empty line takes that line.
     [
       "end",
       "## One\n<!-- r:aaaa1111 -->".length,
@@ -639,19 +638,34 @@ describe("a caret on an id line", () => {
     expect(v.state.selection.main.head).toBe("## A".length);
   });
 
-  it("is put beside the id line when it is placed on it", () => {
+  it("is put below the id line when a dispatch places it there", () => {
     const v = mount(DOC);
     v.dispatch({ selection: EditorSelection.cursor(ID_FROM) });
-    expect(v.state.selection.main.head).toBe("## A".length);
+    expect(v.state.selection.main.head).toBe(ID_TO + 1);
     v.dispatch({ selection: EditorSelection.cursor(ID_TO) });
     expect(v.state.selection.main.head).toBe(ID_TO + 1);
   });
 
-  it("puts a character typed at the id line's start at the heading's end", () => {
+  it("stays below the heading when a remote change puts an id line where it is", () => {
+    // What a room's binding dispatches: an annotation, no user event. A
+    // peer's undo of a join puts the id line back at the start of the line
+    // the caret is on.
+    const remote = Annotation.define<boolean>();
+    const v = mount("## A\n\nmore\n");
+    v.dispatch({ selection: EditorSelection.cursor("## A\n".length) });
+    v.dispatch({
+      changes: { from: "## A\n".length, insert: "<!-- r:aaaa0001 -->\n" },
+      annotations: remote.of(true),
+    });
+    v.dispatch(v.state.replaceSelection("x"), { userEvent: "input.type" });
+    expect(v.state.doc.toString()).toBe("## A\n<!-- r:aaaa0001 -->\nx\nmore\n");
+  });
+
+  it("puts a character typed at the id line's start on the line below", () => {
     const v = opened(ID_FROM);
     v.dispatch(v.state.replaceSelection("x"), { userEvent: "input.type" });
-    expect(v.state.doc.toString()).toBe("## Ax\n<!-- r:aaaa0001 -->\n\none\n");
-    expect(v.state.selection.main.head).toBe("## Ax".length);
+    expect(v.state.doc.toString()).toBe("## A\n<!-- r:aaaa0001 -->\nx\none\n");
+    expect(v.state.selection.main.head).toBe(ID_TO + 2);
   });
 
   it("puts a character typed at the id line's end on the line below", () => {

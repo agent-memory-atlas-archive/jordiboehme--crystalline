@@ -208,6 +208,53 @@ describe("the reflection editor", () => {
     expect(session.get().ytext?.toJSON()).toBe(PAGE);
   });
 
+  it("keeps typing below the heading when a peer's undo puts the joined section's id back", async () => {
+    serve("edit");
+    const session = live(room(PAGE));
+    const editor = await openEditor();
+    const view = EditorView.findFromDOM(
+      editor.closest(".cm-editor") as HTMLElement,
+    ) as EditorView;
+    act(() => {
+      view.dispatch({ selection: { anchor: PAGE.indexOf("## One") + 3 } });
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Heading" }));
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Heading 3" }),
+    );
+    await user.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Join sections",
+      }),
+    );
+    const joined = "# A\n\n### One\n\nFirst.\n";
+    const ytext = session.get().ytext as Y.Text;
+    expect(ytext.toJSON()).toBe(joined);
+    // This person's caret on the line below the heading; then a peer undoes
+    // the join, which puts the id line back at the start of that line. The
+    // change reaches this buffer through the room, with no user event.
+    const below = joined.indexOf("### One\n") + "### One\n".length;
+    act(() => {
+      view.dispatch({ selection: { anchor: below } });
+    });
+    act(() => {
+      ytext.doc?.transact(() => {
+        ytext.insert(below, "<!-- r:aaaa1111 -->\n");
+        ytext.delete(joined.indexOf("### One"), 1);
+      });
+    });
+    expect(ytext.toJSON()).toBe(PAGE);
+    act(() => {
+      view.dispatch(view.state.replaceSelection("x"), {
+        userEvent: "input.type",
+      });
+    });
+    expect(ytext.toJSON()).toBe(
+      "# A\n\n## One\n<!-- r:aaaa1111 -->\nx\nFirst.\n",
+    );
+  });
+
   it("says Saving while the room writes and Offline while the socket is down, one at a time", async () => {
     serve("edit");
     const session = live({
