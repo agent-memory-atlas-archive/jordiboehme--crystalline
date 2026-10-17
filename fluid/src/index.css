@@ -115,6 +115,17 @@
     --mark: var(--color-amber-100);
     --mark-rule: var(--color-amber-500);
     --mark-active: var(--color-accent-200);
+    /*
+     * The six callout kinds (`Callout.tsx`): the colour of the rule, the
+     * icon and a 6% tint. Text in a callout stays ink, so its contrast is
+     * the page's own.
+     */
+    --callout-note: var(--color-blue-600);
+    --callout-tip: var(--color-green-600);
+    --callout-important: var(--color-purple-600);
+    --callout-warning: var(--color-amber-600);
+    --callout-caution: var(--color-red-600);
+    --callout-details: var(--color-slate-500);
     /* The mode switch's track and its raised half, and a menu's shadow. */
     --seg: #f1f5f9;
     --seg-on: #ffffff;
@@ -172,6 +183,12 @@
       );
       --mark: color-mix(in srgb, var(--color-amber-400) 16%, transparent);
       --mark-rule: #d6a23a;
+      --callout-note: var(--color-blue-400);
+      --callout-tip: var(--color-green-400);
+      --callout-important: var(--color-purple-400);
+      --callout-warning: var(--color-amber-400);
+      --callout-caution: var(--color-red-400);
+      --callout-details: #8b93a7;
       --mark-active: color-mix(
         in srgb,
         var(--color-accent-400) 32%,
@@ -220,6 +237,30 @@
  * stylesheet the bundle has to reach through the dependency tree for.
  */
 @layer components {
+  /*
+   * A callout (`Callout.tsx`): a 3px rule and a light tint in its kind's
+   * colour, no box. The kind arrives as `data-callout`.
+   */
+  .callout {
+    --callout: var(--callout-note);
+    border-left: 3px solid var(--callout);
+    background: color-mix(in srgb, var(--callout) 6%, transparent);
+  }
+  .callout[data-callout="tip"] {
+    --callout: var(--callout-tip);
+  }
+  .callout[data-callout="important"] {
+    --callout: var(--callout-important);
+  }
+  .callout[data-callout="warning"] {
+    --callout: var(--callout-warning);
+  }
+  .callout[data-callout="caution"] {
+    --callout: var(--callout-caution);
+  }
+  .callout[data-callout="details"] {
+    --callout: var(--callout-details);
+  }
   /*
    * The two halves of the mode switch in the top bar (ReflectionModeSwitch):
    * the current one, whichever kind of aria-current it carries, is the raised
@@ -617,6 +658,7 @@
   img,
   svg,
   blockquote,
+  aside[data-callout],
   .print-note,
   .print-related li {
     break-inside: avoid;
@@ -642,6 +684,35 @@
   .measured img {
     max-height: 190mm;
     object-fit: contain;
+  }
+
+  /*
+   * A callout prints open and without its tint: a folded one shows its body
+   * under its title, which is a small bold lead. The content of a closed
+   * `<details>` is held back by the element itself, not by its children, so
+   * `::details-content` is opened as well where the browser has it.
+   */
+  details[data-callout] {
+    display: block;
+  }
+  details[data-callout] > *:not(summary) {
+    display: block !important;
+  }
+  details[data-callout]::details-content {
+    content-visibility: visible;
+    display: block;
+  }
+  details[data-callout] > summary {
+    list-style: none;
+    font-size: 0.9em;
+    font-weight: 700;
+  }
+  details[data-callout] > summary svg {
+    display: none;
+  }
+  [data-callout] {
+    break-inside: avoid;
+    background: none;
   }
 
   /*

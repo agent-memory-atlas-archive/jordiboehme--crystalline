@@ -32,6 +32,7 @@ import { Clock, MessageSquarePlus, MessagesSquare, X } from "lucide-react";
 import type { ReactElement, ReactNode, RefObject } from "react";
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useId,
@@ -61,6 +62,8 @@ import type { ReflectionRight } from "../api/reflectionDomains";
 import { atLeast } from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
 import { plural, relativeTime } from "../format";
+import { REVEAL_EVENT } from "../markdown/callouts";
+import type { RevealDetail } from "../markdown/callouts";
 import { KeptComments } from "./KeptComments";
 import { useSaid } from "./useSaid";
 import { onlyMarkers, placeMarkers, printNotes } from "../printNotes";
@@ -588,6 +591,39 @@ export function ReflectionThreads({
   );
 
   const shown = hovered ?? picked;
+  // The thread whose quote the page was last asked to show, so a repaint
+  // does not open again a fold the reader closed.
+  const pickedNow = useRef(picked);
+  const revealed = useRef<string | null>(null);
+  useEffect(() => {
+    pickedNow.current = picked;
+    if (picked === null) {
+      revealed.current = null;
+    }
+  });
+  // A picked thread's quote may sit in a folded callout: ask the page to
+  // show it (`REVEAL_EVENT`, which `MarkdownBody` answers by opening the
+  // fold). Once per pick, as soon as the quote is painted.
+  const revealPicked = useCallback(() => {
+    const id = pickedNow.current;
+    const node =
+      id === null ? undefined : painted.current.get(id)?.startContainer;
+    if (id === null || node === undefined || revealed.current === id) {
+      return;
+    }
+    const target =
+      node.nodeType === Node.TEXT_NODE ? node.parentElement : (node as Element);
+    if (target === null) {
+      return;
+    }
+    revealed.current = id;
+    target.dispatchEvent(
+      new CustomEvent<RevealDetail>(REVEAL_EVENT, {
+        bubbles: true,
+        detail: { target },
+      }),
+    );
+  }, []);
 
   // Words kept for a thread that is no longer open (resolved, or gone) have
   // nowhere to go back to.
@@ -658,6 +694,7 @@ export function ReflectionThreads({
         }
       }
       stop = paintQuotes(all, current);
+      revealPicked();
     };
     paint();
     // While the page prints, the numbers put in the text are no change to
@@ -672,7 +709,11 @@ export function ReflectionThreads({
       observer.disconnect();
       stop();
     };
-  }, [articleRef, open, sections, shown]);
+  }, [articleRef, open, sections, shown, revealPicked]);
+  // A pick while another thread is under the pointer paints nothing new.
+  useEffect(() => {
+    revealPicked();
+  }, [picked, revealPicked]);
 
   // On paper each open thread is a numbered note at the end of the page
   // (`PrintNotes`), and its number stands at the end of the block that holds

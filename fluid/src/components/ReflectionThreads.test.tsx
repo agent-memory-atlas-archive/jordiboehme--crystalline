@@ -1358,6 +1358,36 @@ describe("comments on a reflection", () => {
     });
   });
 
+  it("opens a folded callout that holds the quote of the thread a reader picks", async () => {
+    serve(
+      [
+        thread("t-00000001", {
+          anchor: {
+            section: "7f3a9c2e",
+            quote: "after the batch",
+            occurrence: 1,
+            state: "found",
+          },
+        }),
+      ],
+      {},
+      "# Deploying\n\n## Night deploys\n<!-- r:7f3a9c2e -->\n\n> [!DETAILS]- Why\n> Deploys run at night, after the batch.\n",
+    );
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const card = await screen.findByRole("article", {
+      name: "Thread on Night deploys",
+    });
+    await waitFor(() => {
+      expect(registry.get(QUOTE_HIGHLIGHT)?.ranges ?? []).toHaveLength(1);
+    });
+    const fold = document.querySelector("details[data-callout]")!;
+    expect(fold).toHaveProperty("open", false);
+    await userEvent.click(within(card).getByText("Still true?"));
+    await waitFor(() => {
+      expect(fold).toHaveProperty("open", true);
+    });
+  });
+
   it("says the Comment button is there once per selection, and puts focus on the new thread", async () => {
     let posted = false;
     serve([], {

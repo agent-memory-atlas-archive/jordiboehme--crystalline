@@ -22,6 +22,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 
+import { REVEAL_EVENT } from "../markdown/callouts";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import type { WikilinkResolver } from "../wikilinks";
 import { Markdown } from "./Markdown";
@@ -885,5 +886,107 @@ describe("section anchors", () => {
     // The fragment is added to where the reader stands rather than replacing
     // it: a page opened with a query string is still that page afterwards.
     expect(screen.getByTestId("location")).toHaveTextContent("?tab=graph#api");
+  });
+});
+
+describe("callouts", () => {
+  it("renders a callout as a named note with its title", async () => {
+    await renderMarkdown(
+      "> [!WARNING] Data loss\n> The restore drops writes.\n",
+    );
+    const note = screen.getByRole("note", { name: "Warning: Data loss" });
+    expect(note).toHaveTextContent("The restore drops writes.");
+    expect(note).not.toHaveTextContent("[!WARNING]");
+  });
+
+  it("names a callout without a title by its kind, and keeps a title's emphasis out of the body", async () => {
+    await renderMarkdown(
+      "> [!TIP]\n> Run it twice.\n\n> [!IMPORTANT] Read **this**\n> Then go.\n",
+    );
+    expect(screen.getByRole("note", { name: "Tip" })).toHaveTextContent(
+      "Run it twice.",
+    );
+    const important = screen.getByRole("note", {
+      name: "Important: Read this",
+    });
+    expect(important.querySelector("p")).toHaveTextContent(/^Then go\.$/);
+  });
+
+  it("folds a callout closed, and an unknown kind stays a plain quote", async () => {
+    const { container } = await renderMarkdown(
+      "> [!DETAILS]- Rollback steps\n> 1. Stop the job\n\n> [!DANGER] Hot\n> body\n",
+    );
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details?.open).toBe(false);
+    expect(screen.getByText("Rollback steps")).toBeVisible();
+    expect(container.querySelector("blockquote")).toHaveTextContent(
+      "[!DANGER] Hot",
+    );
+  });
+
+  it("folds a callout open with a plus", async () => {
+    const { container } = await renderMarkdown(
+      "> [!NOTE]+ More\n> Shown at first.\n",
+    );
+    expect(container.querySelector("details")?.open).toBe(true);
+    expect(screen.getByText("Shown at first.")).toBeVisible();
+  });
+
+  it("keeps source spans inside a callout", async () => {
+    const source = "> [!NOTE] Heads up\n> Deploys run **at** night.\n";
+    const { container } = await renderSpans(source);
+    expect(expectSpansMatch(container, source).length).toBeGreaterThan(0);
+  });
+
+  it("opens a folded callout when the location points inside it", async () => {
+    const source = "> [!DETAILS]- Steps\n>\n> ### Restore\n>\n> Run it.\n";
+    const anchors = { pageUrl: "https://kb.example.com/d/eng/e/alpha" };
+    const viaRouter = await renderMarkdown(
+      source,
+      undefined,
+      undefined,
+      undefined,
+      anchors,
+      "/#restore",
+    );
+    expect(viaRouter.container.querySelector("details")?.open).toBe(true);
+    viaRouter.unmount();
+
+    const { container } = await renderMarkdown(
+      source,
+      undefined,
+      undefined,
+      undefined,
+      anchors,
+    );
+    const details = container.querySelector("details");
+    expect(details?.open).toBe(false);
+    try {
+      window.location.hash = "#restore";
+      await waitFor(() => {
+        expect(details?.open).toBe(true);
+      });
+    } finally {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+  });
+
+  it("opens a folded callout when something inside it is revealed", async () => {
+    const { container } = await renderMarkdown(
+      "> [!CAUTION]- Old data\n> The quote is in here.\n",
+    );
+    const details = container.querySelector("details")!;
+    expect(details.open).toBe(false);
+    const words = screen.getByText("The quote is in here.");
+    act(() => {
+      words.dispatchEvent(
+        new CustomEvent(REVEAL_EVENT, {
+          bubbles: true,
+          detail: { target: words },
+        }),
+      );
+    });
+    expect(details.open).toBe(true);
   });
 });

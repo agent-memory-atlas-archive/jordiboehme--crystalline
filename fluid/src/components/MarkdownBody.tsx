@@ -62,11 +62,18 @@ import {
   imageStyle,
   parseImageFragment,
 } from "../editor/imageFormat";
+import {
+  CALLOUT_KINDS,
+  REVEAL_EVENT,
+  remarkCallouts,
+} from "../markdown/callouts";
+import type { CalloutKind, RevealDetail } from "../markdown/callouts";
 import { printUrl } from "../printUrl";
 import { SOURCE_ATTR, spanPieces } from "../reflectionQuotes";
 import { isIdLine } from "../reflectionText";
 import { WIKILINK, referenceState } from "../wikilinks";
 import type { WikilinkResolution, WikilinkResolver } from "../wikilinks";
+import Callout from "./Callout";
 import DiagramOverlay from "./DiagramOverlay";
 import DiagramToolbar from "./DiagramToolbar";
 import { imageFileName } from "./downloads";
@@ -590,6 +597,33 @@ function structuredBullet(children: ReactNode): ReactNode {
   return children;
 }
 
+/** The callout a component's props describe, or the element as it came. */
+function calloutOf(
+  props: Record<string, unknown>,
+  children: ReactNode,
+  tag: "aside" | "details",
+): ReactNode {
+  const kind = props["data-callout"];
+  if (
+    typeof kind !== "string" ||
+    !(CALLOUT_KINDS as readonly string[]).includes(kind)
+  ) {
+    const Tag = tag;
+    return <Tag>{children}</Tag>;
+  }
+  const title = props["data-title"];
+  const fold = props["data-fold"];
+  return (
+    <Callout
+      kind={kind as CalloutKind}
+      title={typeof title === "string" ? title : null}
+      fold={fold === "open" || fold === "closed" ? fold : null}
+    >
+      {children}
+    </Callout>
+  );
+}
+
 /**
  * How each element is drawn.
  *
@@ -638,6 +672,10 @@ const components: Components = {
       {children}
     </blockquote>
   ),
+  // A callout, named by `remarkCallouts`; nothing else in this tree makes an
+  // `aside` or a `details`, as raw HTML stays text.
+  aside: ({ children, ...props }) => calloutOf(props, children, "aside"),
+  details: ({ children, ...props }) => calloutOf(props, children, "details"),
   hr: () => <hr className="my-6 border-slate-200 dark:border-slate-800" />,
   table: ({ children }) => (
     // Wide tables scroll inside themselves rather than widening the page, and
@@ -1293,6 +1331,27 @@ function componentsFor(
   };
 }
 
+/**
+ * The markdown extensions, in the order they run: GitHub's tables, task
+ * lists and footnotes first, then the callouts, which read the quotes the
+ * parser built.
+ */
+const REMARK_PLUGINS = [remarkGfm, remarkCallouts];
+
+/** Open every folded callout around `target`, innermost first. */
+function revealIn(root: HTMLElement | null, target: Element | null): void {
+  if (root === null || target === null || !root.contains(target)) {
+    return;
+  }
+  for (
+    let fold = target.closest("details");
+    fold !== null && root.contains(fold);
+    fold = fold.parentElement?.closest("details") ?? null
+  ) {
+    fold.open = true;
+  }
+}
+
 /** A diagram's source, which is what shows while the renderer is on its way. */
 function DiagramSource({ source }: { source: string }) {
   return (
@@ -1414,6 +1473,43 @@ export default function MarkdownBody({
     ],
     [anchored, wikilinks, sourceSpans, shown],
   );
+  // A folded callout opens when what a reader is sent to is inside it: the
+  // fragment in the location (the router's, and the window's for a hash set
+  // from outside the router), or an element another part of the page asks to
+  // show (`REVEAL_EVENT`, from the threads beside a Reflection page). Before
+  // the scroll below, which cannot scroll to what a closed fold hides.
+  useEffect(() => {
+    const root = rootRef.current;
+    const fromHash = (fragment: string) => {
+      if (fragment.length < 2) {
+        return;
+      }
+      let id = fragment.slice(1);
+      try {
+        id = decodeURIComponent(id);
+      } catch {
+        // A hash that is not encoded stays as it is.
+      }
+      revealIn(root, document.getElementById(id));
+    };
+    fromHash(hash);
+    const onHash = () => {
+      fromHash(window.location.hash);
+    };
+    const onReveal = (event: Event) => {
+      const detail = (event as CustomEvent<RevealDetail | undefined>).detail;
+      const target =
+        detail?.target ??
+        (event.target instanceof Element ? event.target : null);
+      revealIn(root, target);
+    };
+    window.addEventListener("hashchange", onHash);
+    root?.addEventListener(REVEAL_EVENT, onReveal);
+    return () => {
+      window.removeEventListener("hashchange", onHash);
+      root?.removeEventListener(REVEAL_EVENT, onReveal);
+    };
+  }, [hash, source]);
   // Arriving at a section: scroll it into view and point it out for a moment.
   // It runs on the hash rather than on a navigation, which is what makes a
   // click on a link symbol behave exactly like opening the URL it copied, and
@@ -1461,7 +1557,7 @@ export default function MarkdownBody({
   }, [anchored, hash, source]);
   const rendered = (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={REMARK_PLUGINS}
       rehypePlugins={rehypePlugins}
       components={componentMap}
       urlTransform={urlTransform}

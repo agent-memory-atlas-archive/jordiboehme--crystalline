@@ -163,6 +163,13 @@ describe("a quote through the real renderer", () => {
     expect(range.toString()).toBe("first line\nquoted");
   });
 
+  it("anchors a quote inside a callout and across two of its lines", async () => {
+    const text =
+      "> [!NOTE] Heads up\n> Deploys run at night.\n> Rollbacks run by day.";
+    await roundTrip(text, "Deploys run at night.");
+    await roundTrip(text, "night.\n> Rollbacks");
+  });
+
   it("crosses an indented paragraph continuation", async () => {
     await roundTrip("Opening words\n   then more words.\n", "words\n   then");
   });
