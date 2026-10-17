@@ -253,7 +253,10 @@ fn status_through_the_daemon_counts_the_kept_texts() {
 #[test]
 fn an_unfinished_keep_is_listed_shown_and_warned_about() {
     let home = tempfile::tempdir().unwrap();
-    let folder = kept_root(home.path()).join("eng").join("engram").join("runbooks");
+    let folder = kept_root(home.path())
+        .join("eng")
+        .join("engram")
+        .join("runbooks");
     std::fs::create_dir_all(&folder).unwrap();
     let file = folder.join(".deploy.md.20261015T080000Z.42-0.keeping");
     std::fs::write(&file, "Half kept.\n").unwrap();
