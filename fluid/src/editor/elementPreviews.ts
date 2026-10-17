@@ -212,23 +212,31 @@ class MathWidget extends WidgetType {
   readonly display: boolean;
   /** The callout a display formula stands in, whose tint it keeps. */
   readonly callout: CalloutKind | null;
+  /**
+   * The callout's edge line classes (`cm-callout-first`, `cm-callout-last`)
+   * of the lines the formula replaces, so the head and foot padding stay.
+   */
+  readonly edge: string;
 
   constructor(
     tex: string,
     display: boolean,
     callout: CalloutKind | null = null,
+    edge = "",
   ) {
     super();
     this.tex = tex;
     this.display = display;
     this.callout = callout;
+    this.edge = edge;
   }
 
   override eq(other: MathWidget): boolean {
     return (
       other.tex === this.tex &&
       other.display === this.display &&
-      other.callout === this.callout
+      other.callout === this.callout &&
+      other.edge === this.edge
     );
   }
 
@@ -238,6 +246,9 @@ class MathWidget extends WidgetType {
     if (this.callout !== null) {
       dom.classList.add("callout");
       dom.dataset["callout"] = this.callout;
+      for (const name of this.edge.split(" ").filter(Boolean)) {
+        dom.classList.add(name);
+      }
     }
     // The source as code until the part arrives, as on the page.
     const fallback = createElement("code", null, this.tex);
@@ -571,7 +582,17 @@ function mathBlocks(state: EditorState, sections: boolean): Block[] {
       const fence = /^```math[ \t]*\n([\s\S]*?)\n?```[ \t]*$/.exec(
         lines.join("\n"),
       );
-      if (fence !== null) {
+      // On a page read section by section, a fence that runs over a section
+      // heading is not one block on the page: draw none.
+      const crosses =
+        sections &&
+        lines.some(
+          (text, index) =>
+            index > 0 &&
+            quoteDepth(doc.line(first.number + index).text) === 0 &&
+            SECTION_HEADING.test(text),
+        );
+      if (fence !== null && !crosses) {
         blocks.push({ from: first.from, to: last.to, tex: fence[1] ?? "" });
       }
       return false;
@@ -604,7 +625,11 @@ function mathBlocks(state: EditorState, sections: boolean): Block[] {
     if (rest.trim() !== "$$") {
       continue;
     }
-    if (open === null || depth !== open.depth) {
+    if (open !== null && depth > open.depth) {
+      // A deeper line is the formula's content, as the reader reads it.
+      continue;
+    }
+    if (open === null) {
       open = { number, depth };
       continue;
     }
@@ -629,16 +654,32 @@ function buildBlocks(state: EditorState, sections: boolean): DecorationSet {
     );
   const out = mathBlocks(state, sections)
     .filter((block) => block.tex.trim() !== "" && !touched(block))
-    .map((block) =>
-      Decoration.replace({
+    .map((block) => {
+      const callout = calloutAt(state, block.from + 1);
+      const doc = state.doc;
+      const edge =
+        callout === null
+          ? ""
+          : [
+              doc.lineAt(block.from).number ===
+              doc.lineAt(callout.quote.from).number
+                ? "cm-callout-first"
+                : "",
+              doc.lineAt(block.to).number ===
+              doc.lineAt(callout.quote.to).number
+                ? "cm-callout-last"
+                : "",
+            ].join(" ");
+      return Decoration.replace({
         widget: new MathWidget(
           block.tex,
           true,
-          calloutAt(state, block.from + 1)?.callout ?? null,
+          callout?.callout ?? null,
+          edge.trim(),
         ),
         block: true,
-      }).range(block.from, block.to),
-    );
+      }).range(block.from, block.to);
+    });
   return Decoration.set(out.sort((a, b) => a.from - b.from));
 }
 
@@ -662,6 +703,12 @@ const elementTheme = EditorView.baseTheme({
   },
   // Inside a callout, in from the rule like the callout's words.
   ".cm-math-block.callout": { paddingLeft: "1rem" },
+  ".cm-math-block.callout.cm-callout-first": {
+    borderTopRightRadius: "0.375rem",
+  },
+  ".cm-math-block.callout.cm-callout-last": {
+    borderBottomRightRadius: "0.375rem",
+  },
 });
 
 /**

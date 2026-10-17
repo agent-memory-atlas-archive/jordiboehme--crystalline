@@ -14,11 +14,15 @@
  * Read the way the reading page reads them (`markdown/callouts.ts`,
  * `markdown/directives.ts`, `markdown/math.ts`):
  *
- * - A callout marker is taken only at the start of the first paragraph of a
- *   quote (blank `>` lines before it are fine), only for the six kinds in any
- *   case, and never when a `(` follows its `]`, which keeps `[!note](url)` a
- *   link. A paragraph, heading, list item or table cell elsewhere that starts
- *   with `[!NOTE]` is left to the markdown parser.
+ * - A callout marker is taken only at the start of a paragraph that stands
+ *   directly in a quote, only for the six kinds in any case, and never when
+ *   a `(` follows its `]`, which keeps `[!note](url)` a link. A paragraph,
+ *   heading, list item or table cell elsewhere that starts with `[!NOTE]` is
+ *   left to the markdown parser. The grammar asks only the public parent
+ *   type, so a later paragraph of a quote that starts with a marker is
+ *   marked too; that is the colour of the marker and nothing more, because
+ *   everything that acts on a callout (`calloutOf`) asks for the quote's
+ *   first paragraph, as the reading page does.
  * - A label needs at least one word, and only `:status[` starts one.
  * - Inline math opens with two or more dollar signs and closes with the same
  *   run on the same line. Code that starts first is code; a single dollar
@@ -51,12 +55,6 @@ interface Block {
   elt(type: string, from: number, to: number, children?: unknown[]): unknown;
   addLeafElement(leaf: Leaf, element: unknown): void;
   parser: { parseInline(text: string, offset: number): unknown[] };
-  /**
-   * The open block and what it holds so far. Not part of the package's
-   * typed surface: it is read to see that nothing but quote marks stands
-   * before the paragraph, and a missing one marks nothing.
-   */
-  block?: { children?: { type?: { name?: string } }[] };
 }
 
 /** A paragraph as the block parser hands it over. */
@@ -138,14 +136,6 @@ export const dialectGrammar = {
       leaf(cx: Block, leaf: Leaf): CalloutHeadParser | null {
         const length = calloutMarkIn(leaf.content);
         if (length === null || cx.parentType().name !== "Blockquote") {
-          return null;
-        }
-        // The quote's first paragraph: only quote marks stand before it.
-        const before = cx.block?.children;
-        if (
-          before === undefined ||
-          !before.every((child) => child.type?.name === "QuoteMark")
-        ) {
           return null;
         }
         return new CalloutHeadParser(length);

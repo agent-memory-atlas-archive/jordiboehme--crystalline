@@ -81,7 +81,7 @@ describe("the dialect markers", () => {
     return names;
   }
 
-  it("take a callout marker only on the first line of a quote", () => {
+  it("take a callout marker only in a quote", () => {
     expect(namesOf("> [!NOTE]\n> body\n")).toContain("CalloutMark");
     // A quote whose first line is blank still opens with it, as on the page.
     expect(namesOf(">\n> [!NOTE]\n> body\n")).toContain("CalloutMark");
@@ -90,10 +90,15 @@ describe("the dialect markers", () => {
       "# [!NOTE] in a heading\n",
       "- [!NOTE] in a list item\n",
       "| [!NOTE] | b |\n| --- | --- |\n| 1 | 2 |\n",
-      "> words first\n>\n> [!NOTE] later\n",
     ]) {
       expect(namesOf(doc)).not.toContain("CalloutMark");
     }
+    // A later paragraph of a quote is marked too, which is cosmetic: the
+    // grammar asks only the public parent type, and everything that acts on
+    // a callout asks for the quote's first paragraph (`calloutOf`).
+    expect(namesOf("> words first\n>\n> [!NOTE] later\n")).toContain(
+      "CalloutMark",
+    );
     // A link stays a link.
     const link = namesOf("> [!note](https://example.com)\n");
     expect(link).not.toContain("CalloutMark");

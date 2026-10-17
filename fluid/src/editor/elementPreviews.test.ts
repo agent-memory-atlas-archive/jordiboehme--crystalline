@@ -303,3 +303,39 @@ describe("a callout's inset", () => {
     expect(lines[1]?.classList.contains("cm-callout-last")).toBe(true);
   });
 });
+
+describe("math, the edges", () => {
+  it("keeps a callout's foot when a formula ends it", async () => {
+    const doc = "> [!TIP]\n> Words\n>\n> $$\n> x\n> $$\n\nEnd\n";
+    const v = editor(doc, doc.length);
+    await waitFor(() => {
+      expect(
+        v.dom.querySelector(".cm-math-block .katex-display"),
+      ).not.toBeNull();
+    });
+    const block = v.dom.querySelector(".cm-math-block");
+    expect(block?.classList.contains("cm-callout-last")).toBe(true);
+    expect(block?.classList.contains("cm-callout-first")).toBe(false);
+  });
+
+  it("reads a deeper dollar line as content, as the reader does", async () => {
+    const doc = "$$\n> $$\n$$\n\nEnd\n";
+    const v = editor(doc, doc.length);
+    expect(v.dom.querySelectorAll(".cm-math-block")).toHaveLength(1);
+    // KaTeX cannot set a dollar sign and shows the TeX it was handed.
+    await waitFor(() => {
+      expect(v.dom.querySelector(".cm-math-block")?.textContent).toContain(
+        "> $$",
+      );
+    });
+  });
+
+  it("draws no fence that runs across a page's section heading", () => {
+    const doc = "## A\n\n```math\nx\n\n## B\n\nWords\n\n```\n\nEnd\n";
+    const page = editor(doc, doc.length, { sections: true });
+    expect(page.dom.querySelector(".cm-math-block")).toBeNull();
+    page.destroy();
+    const engram = editor(doc, doc.length);
+    expect(engram.dom.querySelector(".cm-math-block")).not.toBeNull();
+  });
+});

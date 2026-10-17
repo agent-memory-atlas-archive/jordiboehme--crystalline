@@ -93,6 +93,9 @@ describe("elementAt", () => {
     // A plain quote is no callout, and an unknown kind leaves it a quote.
     const quote = "> just a quote\n";
     expect(elementAt(state(quote, 4))).toBeNull();
+    // A marker on a later paragraph of a quote does not make it a callout.
+    const later = "> words first\n>\n> [!NOTE] later\n";
+    expect(elementAt(state(later, later.indexOf("later")))).toBeNull();
     const unknown = "> [!BANANA]\n> body\n";
     expect(elementAt(state(unknown, unknown.indexOf("body")))).toBeNull();
     // A label in code is code, and one with no words is text.
