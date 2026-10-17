@@ -51,6 +51,7 @@ import { BUTTON, IconButton } from "../components/primitives";
 import type { IconComponent } from "../components/primitives";
 import type { DocumentAdapter } from "./adapter";
 import { AttachButton } from "./AttachButton";
+import { stepOffIdLines } from "./hiddenIdLines";
 import { TableSizePicker } from "./TableSizePicker";
 import type { ImageAlign } from "./imageFormat";
 import {
@@ -321,6 +322,9 @@ export function EditorToolbar({
     );
   };
   const pickHeading = (v: EditorView, level: number): boolean => {
+    // The line the change is made on, as `cycleHeading` will find it: off a
+    // hidden id line first, so the question is about that same line.
+    stepOffIdLines(v);
     const sentence = questionFor(v, level);
     if (sentence === null) {
       return cycleHeading(v, level);
@@ -441,12 +445,15 @@ export function EditorToolbar({
           disabled={off}
           onClick={act((v) => toggleLinePrefix(v, "> "))}
         />
-        <IconButton
-          label="Wiki link"
-          icon={Brackets}
-          disabled={off}
-          onClick={act(insertWikilink)}
-        />
+        {/* Only where the document links engrams: a Reflection page does not. */}
+        {(adapter?.wikilinks ?? true) && (
+          <IconButton
+            label="Wiki link"
+            icon={Brackets}
+            disabled={off}
+            onClick={act(insertWikilink)}
+          />
+        )}
         <IconButton
           label="Link"
           icon={Link}

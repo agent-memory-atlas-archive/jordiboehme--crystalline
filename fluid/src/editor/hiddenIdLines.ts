@@ -37,6 +37,7 @@ import {
   Prec,
   RangeSetBuilder,
   StateField,
+  Transaction,
 } from "@codemirror/state";
 import type { DecorationSet } from "@codemirror/view";
 import { Decoration, EditorView, keymap } from "@codemirror/view";
@@ -77,6 +78,184 @@ export function isIdLineAt(state: EditorState, lineNo: number): boolean {
   }
   return isIdLine(state.doc.line(lineNo).text);
 }
+
+/** A heading line of any level: what a kept id may sit under. */
+const HEADING_LINE = /^#{1,6}[ \t]/;
+
+/** The id line `pos` is on, or null. The first line is never one: no heading above. */
+function idLineAt(doc: Text, pos: number): Line | null {
+  const line = doc.lineAt(pos);
+  return line.number > 1 && isIdLine(line.text) ? line : null;
+}
+
+/**
+ * Where a caret that landed on id line `line` rests instead: the end of the
+ * heading above, or the start of the line below. `down` says which; without
+ * it the start of the id line goes up and every other position goes down. An
+ * id line at the end of the page has no line below, so it goes up.
+ */
+function offIdLine(doc: Text, line: Line, pos: number, down?: boolean): number {
+  const below = line.number < doc.lines ? line.to + 1 : null;
+  const goDown = down ?? pos !== line.from;
+  return goDown && below !== null ? below : line.from - 1;
+}
+
+/**
+ * A caret never rests on an id line. The line is atomic, but both its ends
+ * are caret positions, and a verb run from there would write into the id
+ * (`****<!-- r:... -->`). A caret that lands there goes on in the direction it
+ * came from: one ArrowRight from a heading's end reaches the next visible
+ * line, one ArrowLeft from there comes back to the heading's end.
+ */
+const caretOffIdLines = EditorState.transactionFilter.of((tr) => {
+  const doc = tr.newDoc;
+  const selection = tr.newSelection;
+  // Only a step of this person's own says where the caret came from; any
+  // other caret goes by the end of the line it landed on.
+  const stepped = tr.isUserEvent("select");
+  const before = tr.changes.mapPos(tr.startState.selection.main.head);
+  let moved = false;
+  const ranges = selection.ranges.map((range) => {
+    // A selection that ends on an id line is left as it is: what an edit of
+    // it does to the id is the other filters' to put right.
+    const line = range.empty ? idLineAt(doc, range.head) : null;
+    if (line === null) {
+      return range;
+    }
+    moved = true;
+    const down = !stepped
+      ? undefined
+      : before < line.from
+        ? true
+        : before > line.to
+          ? false
+          : undefined;
+    return EditorSelection.cursor(offIdLine(doc, line, range.head, down));
+  });
+  if (!moved) {
+    return tr;
+  }
+  return [
+    tr,
+    {
+      selection: EditorSelection.create(ranges, selection.mainIndex),
+      sequential: true,
+    },
+  ];
+});
+
+/**
+ * Move the caret off an id line before a verb writes at it, the way
+ * `caretOffIdLines` would have: the start of the id line goes to the end of
+ * the heading above, the end to the start of the line below. For the state a
+ * buffer opened with, which no filter has seen. Nothing happens where the
+ * ids are not hidden.
+ */
+export function stepOffIdLines(view: EditorView): void {
+  const { state } = view;
+  if (state.field(field, false) === undefined) {
+    return;
+  }
+  let moved = false;
+  const fix = (pos: number): number => {
+    const line = idLineAt(state.doc, pos);
+    if (line === null) {
+      return pos;
+    }
+    moved = true;
+    return offIdLine(state.doc, line, pos);
+  };
+  const ranges = state.selection.ranges.map((range) =>
+    EditorSelection.range(fix(range.anchor), fix(range.head)),
+  );
+  if (moved) {
+    view.dispatch({
+      selection: EditorSelection.create(ranges, state.selection.mainIndex),
+    });
+  }
+}
+
+/**
+ * Text this person puts in at an id line goes beside it, so the id line stays
+ * byte for byte what it was: typing, a paste or a verb from a caret on either
+ * end of it. A one-line text at the start of the id line goes to the end of
+ * the heading above; anything else goes to the start of the line below (after
+ * a new line break when the id line ends the page). A text that starts with a
+ * line break at the end of the id line is already beside it and stays.
+ */
+const insertsOffIdLines = EditorState.transactionFilter.of((tr) => {
+  if (!tr.docChanged || !tr.isUserEvent("input")) {
+    return tr;
+  }
+  const doc = tr.startState.doc;
+  const specs: { from: number; to: number; insert: Text | string }[] = [];
+  const spans: { fromB: number; toB: number; at: number; lead: number }[] = [];
+  let moved = false;
+  tr.changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
+    const line = fromA === toA ? idLineAt(doc, fromA) : null;
+    const beside =
+      line !== null &&
+      fromA === line.to &&
+      inserted.lines > 1 &&
+      inserted.line(1).length === 0;
+    if (line === null || beside) {
+      specs.push({ from: fromA, to: toA, insert: inserted });
+      spans.push({ fromB, toB, at: fromA, lead: 0 });
+      return;
+    }
+    moved = true;
+    const up = fromA === line.from && inserted.lines === 1;
+    if (up) {
+      specs.push({ from: line.from - 1, to: line.from - 1, insert: inserted });
+      spans.push({ fromB, toB, at: line.from - 1, lead: 0 });
+    } else if (line.number < doc.lines) {
+      specs.push({ from: line.to + 1, to: line.to + 1, insert: inserted });
+      spans.push({ fromB, toB, at: line.to + 1, lead: 0 });
+    } else {
+      const lead = tr.startState.lineBreak;
+      specs.push({
+        from: line.to,
+        to: line.to,
+        insert: `${lead}${inserted.toString()}`,
+      });
+      // A line break is one position however it is written.
+      spans.push({ fromB, toB, at: line.to, lead: 1 });
+    }
+  });
+  if (!moved) {
+    return tr;
+  }
+  const changes = tr.startState.changes(specs);
+  // The selection the change asked for, carried along with the text it was
+  // in, or mapped through untouched text.
+  const place = (pos: number): number => {
+    for (const span of spans) {
+      if (pos >= span.fromB && pos <= span.toB) {
+        return changes.mapPos(span.at, -1) + span.lead + (pos - span.fromB);
+      }
+    }
+    return changes.mapPos(tr.changes.invertedDesc.mapPos(pos), 1);
+  };
+  const asked = tr.selection;
+  return {
+    changes,
+    ...(asked === undefined
+      ? {}
+      : {
+          selection: EditorSelection.create(
+            asked.ranges.map((r) =>
+              EditorSelection.range(place(r.anchor), place(r.head)),
+            ),
+            asked.mainIndex,
+          ),
+        }),
+    effects: tr.effects,
+    scrollIntoView: tr.scrollIntoView,
+    annotations: Transaction.userEvent.of(
+      tr.annotation(Transaction.userEvent) ?? "input",
+    ),
+  };
+});
 
 /**
  * Marks the one change that may take a section's id away while its heading
@@ -294,15 +473,21 @@ const keepHeadingIds = Prec.high(
         // taken off) leaves the line where it was: the heading is gone only
         // when a change runs from its start past its end, or takes the line
         // break before it.
+        // And the line left there must still be a heading: one change that
+        // wrote "Note: " over the mark while another crossed the line break
+        // leaves plain text, which keeps no id.
         const survives =
           renamed ||
-          !changes.some(
+          (!changes.some(
             (c) =>
               (c.fromA <= heading.from && c.toA > heading.to) ||
               (heading.from > 0 &&
                 c.fromA < heading.from &&
                 c.toA >= heading.from),
-          );
+          ) &&
+            HEADING_LINE.test(
+              tr.newDoc.lineAt(tr.changes.mapPos(heading.from, -1)).text,
+            ));
         // The confirmed join: this heading's mark changes and its id line
         // goes whole, as the person agreed to.
         const joined =
@@ -564,6 +749,8 @@ export function hiddenIdLines(): Extension {
     field,
     newLineBelowId,
     keepIdLines,
+    insertsOffIdLines,
+    caretOffIdLines,
     // Later in this list runs first: the paste loses its ids before the
     // heading ids are put right.
     keepHeadingIds,

@@ -733,6 +733,18 @@ describe("the engram editor", () => {
     expect(docText(view.state)).toContain("### Part\n<!-- r:aaaa0001 -->\n");
   });
 
+  it("offers Wiki link, which a Reflection page does not", async () => {
+    serveEditor();
+    renderApp("/d/eng/edit/alpha");
+    await openBuffer();
+    expect(
+      within(screen.getByRole("toolbar", { name: "Formatting" })).getByRole(
+        "button",
+        { name: "Wiki link" },
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("runs format-bar buttons from the keyboard", async () => {
     serveEditor();
     renderApp("/d/eng/edit/alpha");

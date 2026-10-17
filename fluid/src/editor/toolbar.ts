@@ -23,7 +23,7 @@ import { keymap } from "@codemirror/view";
 
 import { frontmatterHidden } from "./frontmatterFold";
 import { frontmatterRegion } from "./frontmatterRegion";
-import { isIdLineAt, joinSections } from "./hiddenIdLines";
+import { isIdLineAt, joinSections, stepOffIdLines } from "./hiddenIdLines";
 
 /**
  * Keep a command off a frontmatter block that is currently hidden.
@@ -62,6 +62,9 @@ import { isIdLineAt, joinSections } from "./hiddenIdLines";
  * over a hidden block rather than each having their own idea of the rule.
  */
 export function clearOfFoldedFrontmatter(view: EditorView): boolean {
+  // First off a Reflection's hidden id line, where a caret can stand at
+  // either end: a verb run from there would write into the id.
+  stepOffIdLines(view);
   const { state } = view;
   if (!frontmatterHidden(state)) {
     return true;
@@ -195,7 +198,8 @@ export function headingLevelAfter(
  * asked about first (`confirmHeadingChange`): a section heading of a
  * Reflection that stops being one takes its hidden id line with it, in the
  * same transaction, so one undo puts both back. Without it the id line stays
- * where it is.
+ * where it is. In a Reflection every heading change goes through the
+ * adapter's `confirmHeadingChange` first; the format bar does that.
  */
 export function cycleHeading(
   view: EditorView,

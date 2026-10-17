@@ -34,6 +34,12 @@ export interface DocumentAdapter {
    * of the preview.
    */
   previewLayers: Extension[];
+  /**
+   * Whether this kind links engrams with `[[...]]`, which decides whether
+   * the format bar offers Wiki link. A Reflection page renders the brackets
+   * as plain text.
+   */
+  wikilinks: boolean;
   /** The completions this kind offers while typing, in every mode. */
   completions: CompletionSource[];
   /**
@@ -71,6 +77,7 @@ export function engramAdapter(opts: {
 }): DocumentAdapter {
   return {
     kind: "engram",
+    wikilinks: true,
     extensions: [],
     previewLayers: [
       wikilinkChips(),
@@ -92,6 +99,7 @@ export function engramAdapter(opts: {
 export function reflectionAdapter(): DocumentAdapter {
   return {
     kind: "reflection",
+    wikilinks: false,
     extensions: [hiddenIdLines()],
     previewLayers: [],
     // No wikilink completions: a Reflection page links no engrams.

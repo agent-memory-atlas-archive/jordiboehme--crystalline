@@ -166,7 +166,6 @@ describe("the reflection editor", () => {
       "Numbered list",
       "Task list",
       "Blockquote",
-      "Wiki link",
       "Link",
       "Insert table",
       "Insert diagram",
@@ -174,6 +173,8 @@ describe("the reflection editor", () => {
       "Attach a file",
     ]);
     expect(screen.queryByRole("toolbar", { name: "Insert" })).toBeNull();
+    // A Reflection page renders `[[...]]` as plain text, so no Wiki link.
+    expect(within(bar).queryByRole("button", { name: "Wiki link" })).toBeNull();
   });
 
   it("joins a section into the one above only once the person confirms, in one undo step", async () => {

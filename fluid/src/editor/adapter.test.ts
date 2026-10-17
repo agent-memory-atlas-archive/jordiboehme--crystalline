@@ -19,6 +19,8 @@ import {
   cycleHeading,
   headingLevelAfter,
   insertBlock,
+  insertMarkdownLink,
+  toggleInline,
   toggleLinePrefix,
 } from "./toolbar";
 
@@ -139,6 +141,48 @@ describe("the reflection adapter", () => {
     const v = mount(DOC, adapter.extensions, DOC.indexOf("## B") + 3);
     cycleHeading(v, 3);
     expect(v.state.doc.toString()).toContain("### B\n<!-- r:bbbb0002 -->\n");
+  });
+});
+
+describe("the verbs from a caret on a hidden id line", () => {
+  const adapter = reflectionAdapter();
+  const ID_FROM = DOC.indexOf("<!-- r:aaaa0001");
+  const ID_TO = DOC.indexOf("-->", ID_FROM) + "-->".length;
+  const ID_LINE = "\n<!-- r:aaaa0001 -->\n";
+
+  // The buffer opened with the caret there, which no selection filter saw:
+  // the verbs step off the id line themselves.
+  const verbs: [string, (v: EditorView) => boolean, string, string][] = [
+    ["Bold", (v) => toggleInline(v, "**"), "## A****", "\n****\none"],
+    ["Italic", (v) => toggleInline(v, "*"), "## A**", "\n**\none"],
+    ["Strikethrough", (v) => toggleInline(v, "~~"), "## A~~~~", "\n~~~~\none"],
+    ["Inline code", (v) => toggleInline(v, "`"), "## A``", "\n``\none"],
+    ["Link", insertMarkdownLink, "## A[text](url)", "\n[text](url)\none"],
+  ];
+  for (const [name, run, atStart, atEnd] of verbs) {
+    it(`${name} leaves the id line as it was, from either end`, () => {
+      const one = mount(DOC, adapter.extensions, ID_FROM);
+      run(one);
+      expect(one.state.doc.toString()).toContain(`${atStart}${ID_LINE}`);
+      one.destroy();
+      const two = mount(DOC, adapter.extensions, ID_TO);
+      run(two);
+      expect(two.state.doc.toString()).toContain(
+        `## A${ID_LINE.slice(0, -1)}${atEnd}`,
+      );
+    });
+  }
+
+  it("a heading change from the id line's end makes the line below a heading", () => {
+    const v = mount(DOC, adapter.extensions, ID_TO);
+    cycleHeading(v, 2);
+    expect(v.state.doc.toString()).toContain(`## A${ID_LINE}## \none`);
+  });
+
+  it("a heading change from the id line's start is about the heading above", () => {
+    const v = mount(DOC, adapter.extensions, ID_FROM);
+    cycleHeading(v, 3);
+    expect(v.state.doc.toString()).toContain(`### A${ID_LINE}`);
   });
 });
 
