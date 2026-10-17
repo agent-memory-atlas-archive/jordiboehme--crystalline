@@ -41,4 +41,37 @@ describe("mermaidConfig", () => {
       expect(config.flowchart?.wrappingWidth).toBe(2000);
     }
   });
+
+  test("git graph and mindmap colours are named, never derived", () => {
+    // base derives the git branch labels and the mindmap's section labels
+    // and edges as black on the dark canvas, and commitLabelColor as the
+    // inversion of its background. Each is named from the app's palette.
+    expect(mermaidConfig(true).themeVariables).toMatchObject({
+      commitLabelColor: "#e2e8f0",
+      commitLabelBackground: "#1e293b",
+      gitBranchLabel0: "#f8fafc",
+      cScaleLabel0: "#f8fafc",
+    });
+    expect(mermaidConfig(false).themeVariables).toMatchObject({
+      commitLabelColor: "#0f172a",
+      commitLabelBackground: "#f1f5f9",
+    });
+    for (const scheme of [false, true]) {
+      const variables = mermaidConfig(scheme).themeVariables as Record<
+        string,
+        string
+      >;
+      for (let i = 0; i < 8; i += 1) {
+        expect(variables[`git${String(i)}`]).toMatch(/^#[0-9a-f]{6}$/);
+        expect(variables[`gitBranchLabel${String(i)}`]).toMatch(
+          /^#[0-9a-f]{6}$/,
+        );
+      }
+      for (let i = 0; i < 12; i += 1) {
+        expect(variables[`cScale${String(i)}`]).toMatch(/^#[0-9a-f]{6}$/);
+        expect(variables[`cScaleLabel${String(i)}`]).toMatch(/^#[0-9a-f]{6}$/);
+        expect(variables[`cScaleInv${String(i)}`]).toMatch(/^#[0-9a-f]{6}$/);
+      }
+    }
+  });
 });

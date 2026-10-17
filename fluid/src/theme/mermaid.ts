@@ -46,11 +46,71 @@ import type { MermaidConfig } from "mermaid";
  * four is what closes that: overrides are applied again AFTER the derivation
  * pass, so a named variable always wins.
  *
- * Ledger: gitGraph's commit-label half of this same derivation wart REMAINS
- * unfixed here. `base` has no themeVariable for it, so closing it needs a
- * per-diagram override this config does not carry - not promoted into the
- * palette by this change.
+ * gitGraph's commit labels and mindmap's section colours are the same wart
+ * in two more places, and they close the same way, by name. `base` derives
+ * `git0..git7` and `gitBranchLabel0..7` from the primary colour and leaves
+ * the branch label text black, and `commitLabelColor` is the channel inversion
+ * of `commitLabelBackground`; the mindmap reads `cScale0..11` (a node's
+ * fill), `cScaleLabel0..11` (its text, black on the root) and `cScaleInv0..11`
+ * (its edges, black on the dark canvas). All of them are named from `RAMP`
+ * below, one set per scheme, so a git graph or a mindmap in this app is drawn
+ * in the same purple, blue and slate as everything else. Nothing here is a
+ * per-diagram directive: they are theme variables, so the reading view, the
+ * editor preview and the paper copy all get them.
+ *
+ * What stays out of reach: the C4 renderer paints relationship text
+ * `#444444` in its own code unless the diagram source says `UpdateRelStyle`,
+ * so a C4 relationship label is dim on the dark canvas whatever this file
+ * says. `e2e/diagrams.spec.ts` names it.
  */
+/**
+ * Eight series colours per scheme, each dark enough to carry white label text
+ * (5:1 or better) and far enough from its canvas to read as a line (3:1).
+ * Purple first, because the accent is the one colour every diagram already
+ * has.
+ */
+const RAMP = {
+  dark: [
+    "#6d5bd0",
+    "#3a6fb5",
+    "#25786d",
+    "#3f7a33",
+    "#8f5f0f",
+    "#b0393c",
+    "#9a4283",
+    "#52627a",
+  ],
+  light: [
+    "#45388c",
+    "#2b5797",
+    "#0f766e",
+    "#2f6b25",
+    "#92400e",
+    "#b91c1c",
+    "#9d174d",
+    "#475569",
+  ],
+} as const;
+
+/** Text that sits on a `RAMP` fill, in either scheme. */
+const ON_RAMP = "#f8fafc";
+
+/** The ramp's series variables: the git graph's eight and the mindmap's twelve. */
+function seriesVariables(ramp: readonly string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  const colour = (index: number) => ramp[index % ramp.length] ?? ON_RAMP;
+  for (let i = 0; i < 8; i += 1) {
+    out[`git${String(i)}`] = colour(i);
+    out[`gitBranchLabel${String(i)}`] = ON_RAMP;
+  }
+  for (let i = 0; i < 12; i += 1) {
+    out[`cScale${String(i)}`] = colour(i);
+    out[`cScaleLabel${String(i)}`] = ON_RAMP;
+    out[`cScaleInv${String(i)}`] = colour(i);
+  }
+  return out;
+}
+
 const VARIABLES = {
   dark: {
     darkMode: true,
@@ -65,6 +125,8 @@ const VARIABLES = {
     noteBkgColor: "#1e293b",
     noteTextColor: "#e2e8f0",
     titleColor: "#e2e8f0",
+    commitLabelColor: "#e2e8f0",
+    commitLabelBackground: "#1e293b",
     fontFamily: "ui-sans-serif, system-ui, sans-serif",
   },
   light: {
@@ -79,6 +141,8 @@ const VARIABLES = {
     noteBkgColor: "#f1f5f9",
     noteTextColor: "#0f172a",
     titleColor: "#0f172a",
+    commitLabelColor: "#0f172a",
+    commitLabelBackground: "#f1f5f9",
     fontFamily: "ui-sans-serif, system-ui, sans-serif",
   },
 } as const;
@@ -119,6 +183,8 @@ export function mermaidConfig(dark: boolean): MermaidConfig {
     layout: "dagre",
     htmlLabels: false,
     flowchart: { wrappingWidth: 2000 },
-    themeVariables: dark ? { ...VARIABLES.dark } : { ...VARIABLES.light },
+    themeVariables: dark
+      ? { ...VARIABLES.dark, ...seriesVariables(RAMP.dark) }
+      : { ...VARIABLES.light, ...seriesVariables(RAMP.light) },
   };
 }
