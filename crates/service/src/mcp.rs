@@ -961,18 +961,11 @@ impl<'de> serde::Deserialize<'de> for ReflectArgs {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::Error as _;
         let args = serde_json::Map::<String, Value>::deserialize(deserializer)?;
-        // Every key ReflectParams reads, `skip_unavailable` included (kept
-        // out of the schema, still taken): it serializes them all once the
-        // flag is set.
-        let known = serde_json::to_value(ReflectParams {
-            skip_unavailable: true,
-            ..ReflectParams::default()
-        })
-        .map_err(D::Error::custom)?;
+        let known = reflect_keys();
         let mut unknown: Vec<&str> = args
             .keys()
             .map(String::as_str)
-            .filter(|key| !key.starts_with('_') && known.get(key).is_none())
+            .filter(|key| !key.starts_with('_') && !known.iter().any(|k| k == key))
             .collect();
         unknown.sort_unstable();
         if !unknown.is_empty() {
@@ -985,6 +978,19 @@ impl<'de> serde::Deserialize<'de> for ReflectArgs {
         serde_json::from_value(Value::Object(args))
             .map(ReflectArgs)
             .map_err(D::Error::custom)
+    }
+}
+
+/// Every key [`ReflectParams`] reads, `skip_unavailable` included (kept out
+/// of the schema, still taken): it serializes them all once the flag is set.
+/// A test holds the list against the schema's properties.
+fn reflect_keys() -> Vec<String> {
+    match serde_json::to_value(ReflectParams {
+        skip_unavailable: true,
+        ..ReflectParams::default()
+    }) {
+        Ok(Value::Object(map)) => map.into_iter().map(|(key, _)| key).collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -6213,6 +6219,25 @@ mod tests {
     use rmcp::model::ErrorCode;
 
     use super::*;
+
+    /// reflect refuses what it does not take, so the keys it takes must be
+    /// exactly what its schema offers, plus the one flag kept out of it: a
+    /// renamed or skipped field would otherwise refuse a valid argument.
+    #[test]
+    fn reflect_takes_exactly_the_keys_its_schema_offers() {
+        let schema = serde_json::to_value(rmcp::schemars::schema_for!(ReflectParams)).unwrap();
+        let mut offered: Vec<String> = schema["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        offered.push("skip_unavailable".to_string());
+        offered.sort();
+        let mut taken = super::reflect_keys();
+        taken.sort();
+        assert_eq!(taken, offered);
+    }
 
     /// A routed file read the server refused (a Reflection served by another
     /// instance, a right too low) is an input error with the server's words;

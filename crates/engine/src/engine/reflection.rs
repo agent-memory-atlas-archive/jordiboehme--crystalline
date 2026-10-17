@@ -1621,7 +1621,9 @@ impl Engine {
         // block the writer made up, and an id line no heading can carry, are
         // replaced and said, so an agent corrected in silence does not keep
         // writing them. The page sent back as it was read is told nothing.
-        // A room save keeps a pasted section's id; it does not come here.
+        // A room save does not come here: it keeps a pasted section's id and
+        // takes no stray id line out, which is cosmetic, since Fluid never
+        // writes a made-up one.
         let made_up_block = r::block_as_written(&incoming).is_some_and(|block| {
             current.as_deref().and_then(r::block_as_written).as_ref() != Some(&block)
         });
@@ -1722,11 +1724,33 @@ impl Engine {
         // An agent's curated write reflects the rest of what it wrote too:
         // the top, which no source names, and a section it wrote without
         // sources would otherwise come back to it as its own feedback. Only
-        // what this write changed moves, so a person's change it sent back
-        // untouched stays a feedback item; an empty top is no change.
+        // what this write changed moves, and never a section that held
+        // someone else's unsettled change: that is settled only by sources,
+        // a settle or a thread, so an agent that rewords it (or a stray id
+        // line taken out of it) does not make it vanish. An empty top is no
+        // change.
         if !advanced.is_empty() && caller.author.agent {
+            let theirs: BTreeSet<String> = stored
+                .as_deref()
+                .map(|page| {
+                    let records = r::read_provenance(page);
+                    r::feedback_changes(page, &baseline)
+                        .into_iter()
+                        .filter_map(|change| change.id)
+                        .filter(|id| {
+                            records.get(id).is_none_or(|record| {
+                                record.changed_by.is_empty()
+                                    || record
+                                        .changed_by
+                                        .iter()
+                                        .any(|name| name != &caller.author.name)
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             for id in changed {
-                if advanced.contains(&id) {
+                if advanced.contains(&id) || theirs.contains(&id) {
                     continue;
                 }
                 let empty_top = id == r::TOP_SECTION

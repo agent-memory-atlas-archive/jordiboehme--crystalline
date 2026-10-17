@@ -1242,3 +1242,69 @@ async fn a_curated_write_keeps_a_persons_change_it_did_not_touch() {
         "{queue}"
     );
 }
+
+/// A person's change an agent's curated write rewrites without naming its
+/// sources is not settled by it: the feedback item stays until the agent
+/// takes it in, keeps it or answers it.
+#[tokio::test]
+async fn a_curated_write_that_rewrites_a_persons_change_keeps_it_as_feedback() {
+    let fx = curated_with_a_feedback_item().await;
+    let text = edit_page(
+        &fx,
+        "Deploys run at dawn.",
+        "Deploys run at dawn, after the batch.",
+    )
+    .replace(
+        "Roll back with the script.",
+        "Roll back with the old script.",
+    );
+    let mut p = write("guides/deploying.md", &text);
+    p.sources = BTreeMap::from([(
+        "Rollback".to_string(),
+        vec!["runbooks/rollback".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows(&queue),
+        [("feedback".into(), "changed".into(), "Night deploys".into())],
+        "{queue}"
+    );
+    assert_eq!(queue["queue"][0]["changed_by"][0], "jordi", "{queue}");
+}
+
+/// A stray id comment the write takes out of a person's changed section
+/// changes its text, and still does not settle the person's change.
+#[tokio::test]
+async fn a_stray_id_taken_out_of_a_persons_change_keeps_it_as_feedback() {
+    let fx = curated_with_a_feedback_item().await;
+    let path = fx.root.join("reflections/guides/deploying.md");
+    let page = std::fs::read_to_string(&path).unwrap().replace(
+        "\nDeploys run at dawn.",
+        "\n<!-- r:a1b2c3d4 -->\n\nDeploys run at dawn.",
+    );
+    std::fs::write(&path, &page).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let mut p = write("guides/deploying.md", &page);
+    p.sources = BTreeMap::from([(
+        "Rollback".to_string(),
+        vec!["runbooks/rollback".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("a1b2c3d4"), "{text}");
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows(&queue),
+        [("feedback".into(), "changed".into(), "Night deploys".into())],
+        "{queue}"
+    );
+}

@@ -1589,3 +1589,31 @@ async fn a_path_that_repeats_the_reflections_folder_is_refused() {
         .expect("and moved out");
     assert!(fx.root.join("reflections/old.md").exists());
 }
+
+/// A page's own id one blank line below its heading is seated back under
+/// its heading: no id is minted, nothing is said and the section does not
+/// read as changed.
+#[tokio::test]
+async fn a_pages_own_id_a_blank_line_down_is_seated_back() {
+    let fx = reflecting().await;
+    let first = fx
+        .engine
+        .write_reflection(&write("a.md", PAGE), &agent())
+        .await
+        .unwrap();
+    let id = first["ids_assigned"][0].as_str().unwrap().to_string();
+    let read = file(&fx, "a.md");
+    let loose = read.replace(
+        &format!("## Night deploys\n<!-- r:{id} -->\n"),
+        &format!("## Night deploys\n\n<!-- r:{id} -->\n"),
+    );
+    assert_ne!(loose, read);
+    let written = fx
+        .engine
+        .write_reflection(&write("a.md", &loose), &agent())
+        .await
+        .unwrap();
+    assert_eq!(written["ids_assigned"], serde_json::json!([]), "{written}");
+    assert!(written.get("guidance").is_none(), "{written}");
+    assert_eq!(file(&fx, "a.md"), read, "seated back, nothing else moved");
+}

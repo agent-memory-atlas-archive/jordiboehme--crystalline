@@ -8746,12 +8746,7 @@ async fn an_agent_writes_reads_and_works_the_reflection_over_mcp() {
     let queue = call_text(peer, "reflect", json!({ "domains": ["eng"] }))
         .await
         .unwrap();
-    assert!(
-        queue.contains("total: 0")
-            || queue.contains("\"total\": 0")
-            || queue.contains("\"total\":0"),
-        "{queue}"
-    );
+    assert_eq!(queue_total(&queue), 0, "{queue}");
 }
 
 /// R57: read_reflection with a query answers section hits, never a score, and
@@ -9101,10 +9096,18 @@ async fn an_agents_curated_write_over_mcp_owes_no_feedback_on_its_intro() {
     let queue = call_text(peer, "reflect", json!({ "domains": ["eng"] }))
         .await
         .unwrap();
-    assert!(
-        queue.contains("total: 0")
-            || queue.contains("\"total\": 0")
-            || queue.contains("\"total\":0"),
-        "{queue}"
-    );
+    assert_eq!(queue_total(&queue), 0, "{queue}");
+}
+
+/// The `total` of a reflect answer, TOON (the list encoding a session gets
+/// by default) or JSON.
+fn queue_total(answer: &str) -> i64 {
+    if let Ok(value) = serde_json::from_str::<Value>(answer) {
+        return value["total"].as_i64().expect("a total");
+    }
+    answer
+        .lines()
+        .find_map(|line| line.strip_prefix("total:"))
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no total in {answer}"))
 }
