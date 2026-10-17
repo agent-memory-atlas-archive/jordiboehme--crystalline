@@ -1383,6 +1383,33 @@ describe("the sidebar's own width", () => {
     });
   });
 
+  it("puts a long page's outline at the top of the phone drawer", async () => {
+    stubNarrowWindow();
+    serveInDomain({
+      "/domains/eng/engrams/alpha": () => ({
+        domain: "eng",
+        permalink: "alpha",
+        title: "Alpha",
+        url: "crystalline://eng/alpha",
+        content: "# Alpha\n\n## One\n\nx\n\n## Two\n\nx\n\n## Three\n\nx\n",
+        frontmatter: {},
+        observations: [],
+        relations: [],
+        links: [],
+      }),
+    });
+    renderApp("/d/eng/e/alpha");
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Domains" }));
+    const drawer = await screen.findByRole("dialog", { name: "eng" });
+    const nav = await within(drawer).findByRole("navigation", {
+      name: "On this page",
+    });
+    expect(
+      Array.from(nav.querySelectorAll("a")).map((a) => a.textContent),
+    ).toEqual(["One", "Two", "Three"]);
+  });
+
   it("shuts the drawer for good when the window grows past the breakpoint", async () => {
     let wide = false;
     const listeners = new Set<(event: { matches: boolean }) => void>();

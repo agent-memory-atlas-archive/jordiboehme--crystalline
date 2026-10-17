@@ -102,6 +102,8 @@ import { RetireDialog } from "../components/RetireDialog";
 import { ShareDialog } from "../components/ShareDialog";
 import { PrintRelated } from "../components/PrintRelated";
 import { Loading } from "../components/Loading";
+import { PageOutline } from "../components/PageOutline";
+import { useBodyHeadings, useOutlineSlot } from "../components/outlineSlot";
 import { useRememberedDisclosure } from "../disclosure";
 import { domainSpellings } from "../domainNames";
 import type { RecentChange } from "../events/recent";
@@ -109,6 +111,7 @@ import { useRecentChange } from "../events/recent";
 import { useHoldPlace, useScrollKeeper } from "../events/useScrollKeeper";
 import { formatActor, plural } from "../format";
 import { useFullWidth } from "../layoutWidth";
+import { useWide } from "../useWide";
 import {
   domainRoute,
   editRoute,
@@ -494,6 +497,13 @@ export default function EngramPage() {
     },
   });
 
+  // The outline of a long page: in the rail from the medium breakpoint up, at
+  // the top of the phone drawer below it.
+  const wide = useWide();
+  const bodyRef = useRef<HTMLElement>(null);
+  const outline = useBodyHeadings(bodyRef, detail.data?.content ?? "");
+  useOutlineSlot(wide ? null : outline);
+
   if (isMissing(detail.error)) {
     return <EngramNotFound domain={domain} permalink={permalink} />;
   }
@@ -855,7 +865,7 @@ export default function EngramPage() {
         }`}
       >
         <div className="flex min-w-0 flex-col gap-8">
-          <article aria-labelledby="engram-title">
+          <article ref={bodyRef} aria-labelledby="engram-title">
             {/*
               The heading above is the page's rendering of the title, so the
               body's own opening `# Title` folds away rather than repeating
@@ -948,6 +958,7 @@ export default function EngramPage() {
         </div>
         {!fullWidth && (
           <aside className="flex flex-col divide-y divide-hair print:hidden [&>*]:py-4 [&>*:first-child]:pt-0">
+            {wide && <PageOutline headings={outline} />}
             <DetailsPanel
               key={`${engram.domain}/${engram.permalink}`}
               frontmatter={engram.frontmatter}

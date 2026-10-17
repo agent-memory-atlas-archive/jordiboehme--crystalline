@@ -121,6 +121,45 @@ describe("the reflection page", () => {
     expect(article.querySelector("#s-_top")).not.toBeNull();
   });
 
+  it("lists the page's sections above the threads once there are three", async () => {
+    const heads = ["Night deploys", "Rollbacks", "Alerts"];
+    serve("curate", true, {
+      "/domains/eng/reflections/guides/deploying.md": () =>
+        doc({
+          markdown: `# Deploying\n\nIntro.\n\n${heads
+            .map((h, i) => `## ${h}\n<!-- r:0000000${String(i)} -->\n\nText.\n`)
+            .join("\n")}`,
+          sections: heads.map((heading, i) => ({
+            id: `0000000${String(i)}`,
+            heading,
+            line: 5 + i * 5,
+            changed: false,
+            sources: [],
+          })),
+        }),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const nav = await screen.findByRole("navigation", {
+      name: "On this page",
+    });
+    expect(
+      Array.from(nav.querySelectorAll("a")).map((a) => a.textContent),
+    ).toEqual(heads);
+    expect(nav.querySelector("a")?.getAttribute("href")).toBe("#s-00000000");
+    expect(document.getElementById("s-00000000")).not.toBeNull();
+  });
+
+  it("draws no outline for a page with one section", async () => {
+    serve("curate", true);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await within(await screen.findByRole("article")).findByText(
+      "Deploys run at night.",
+    );
+    expect(
+      screen.queryByRole("navigation", { name: "On this page" }),
+    ).toBeNull();
+  });
+
   it("draws one h1 when the page's own title is not its first line", async () => {
     serve("curate", true, {
       "/domains/eng/reflections/guides/deploying.md": () =>

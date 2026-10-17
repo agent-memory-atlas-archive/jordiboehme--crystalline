@@ -32,7 +32,14 @@ import {
   Share2,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { RefObject } from "react";
 import {
   Link,
@@ -94,6 +101,9 @@ import {
 } from "../paths";
 import { PREFETCH } from "../prefetch";
 import { useWide } from "../useWide";
+import { PageOutline } from "./PageOutline";
+import type { OutlineHeading } from "./PageOutline";
+import { OutlineSlotContext } from "./outlineSlot";
 import { CommandPalette, openPalette } from "./CommandPalette";
 import { CreateDomainDialog } from "./CreateDomainDialog";
 import { CreateEngramDialog } from "./CreateEngramDialog";
@@ -583,6 +593,14 @@ export function Layout() {
   const [sidebarCreate, setSidebarCreate] = useState<SidebarCreate | null>(
     null,
   );
+  // The outline a long page hands the phone drawer (see `outlineSlot.ts`).
+  const [outlineHeadings, setOutlineHeadings] = useState<
+    readonly OutlineHeading[]
+  >([]);
+  const outlineSlot = useMemo(
+    () => ({ headings: outlineHeadings, set: setOutlineHeadings }),
+    [outlineHeadings],
+  );
   const sidebarState = useMemo<SidebarState>(
     () => ({
       folders,
@@ -824,164 +842,166 @@ export function Layout() {
     // never on the login or setup screens.
     <ChangeStreamProvider>
       <SidebarStateContext value={sidebarState}>
-        {/*
+        <OutlineSlotContext value={outlineSlot}>
+          {/*
         The width context goes around the whole frame rather than around the
         outlet: the top bar's own width button is a reader of this value too.
       */}
-        <LayoutWidthContext value={width}>
-          <LayoutTextContext value={text}>
-            <EngramsOrderContext value={engramsOrderChoice}>
-              <div className="min-h-screen bg-canvas text-ink">
-                <TopBar
-                  navToggleRef={navToggleRef}
-                  navOpen={navOpen}
-                  onToggleNav={() => {
-                    setNavOpen((open) => !open);
-                  }}
-                  onShare={openShare}
-                  onHelp={(opener) => {
-                    setHelpReturn(opener);
-                    setHelpOpen(true);
-                  }}
-                  onCreateDomain={
-                    capabilities.canAdminister
-                      ? () => {
-                          setCreatingDomain(true);
-                        }
-                      : null
-                  }
-                />
-                <PhoneModeRow />
-                {/*
+          <LayoutWidthContext value={width}>
+            <LayoutTextContext value={text}>
+              <EngramsOrderContext value={engramsOrderChoice}>
+                <div className="min-h-screen bg-canvas text-ink">
+                  <TopBar
+                    navToggleRef={navToggleRef}
+                    navOpen={navOpen}
+                    onToggleNav={() => {
+                      setNavOpen((open) => !open);
+                    }}
+                    onShare={openShare}
+                    onHelp={(opener) => {
+                      setHelpReturn(opener);
+                      setHelpOpen(true);
+                    }}
+                    onCreateDomain={
+                      capabilities.canAdminister
+                        ? () => {
+                            setCreatingDomain(true);
+                          }
+                        : null
+                    }
+                  />
+                  <PhoneModeRow />
+                  {/*
           Above everything, on every screen, for as long as this window is
           inside somebody else's draft. Working in another person's unfolded
           work is a state the WINDOW is in rather than something one page
           does, so it is drawn here and not by the screen that started it.
         */}
-                <JoinedDraftBar />
-                <div
-                  className={`mx-auto flex w-full gap-6 px-4 md:gap-10 md:pl-0 ${
-                    fullWidth ? "" : "max-w-350"
-                  }`}
-                >
-                  {/*
+                  <JoinedDraftBar />
+                  <div
+                    className={`mx-auto flex w-full gap-6 px-4 md:gap-10 md:pl-0 ${
+                      fullWidth ? "" : "max-w-350"
+                    }`}
+                  >
+                    {/*
             The stored rail only reaches the sidebar where there is a sidebar
             to apply it to: below `md` this is a drawer, and it is always
             expanded.
           */}
-                  <DomainSidebar
-                    open={navOpen}
-                    rail={rail && wide}
-                    onToggleRail={toggleRail}
-                    onDismiss={() => {
-                      setNavOpen(false);
-                    }}
-                    drawerToggle={navToggleRef}
-                    onCreateDomain={() => {
-                      setCreatingDomain(true);
-                    }}
-                  />
-                  {/*
+                    <DomainSidebar
+                      open={navOpen}
+                      rail={rail && wide}
+                      onToggleRail={toggleRail}
+                      onDismiss={() => {
+                        setNavOpen(false);
+                      }}
+                      drawerToggle={navToggleRef}
+                      onCreateDomain={() => {
+                        setCreatingDomain(true);
+                      }}
+                    />
+                    {/*
             One attribute for the whole app's measure: the stylesheet lifts the
             cap under it, so no screen has to know anything about the choice to
             be drawn at the width it asks for. The frame's own cap goes with
             it: full width means the window, not a wider column inside the
             same box.
           */}
-                  <main
-                    ref={mainRef}
-                    tabIndex={-1}
-                    data-width={fullWidth ? "full" : undefined}
-                    data-text={largeText ? "large" : undefined}
-                    className="relative min-w-0 flex-1 py-6 focus:outline-none"
-                  >
-                    <Outlet />
-                    <ReadyFlash />
-                  </main>
-                </div>
-                <RouteFocus target={mainRef} />
-                {/*
+                    <main
+                      ref={mainRef}
+                      tabIndex={-1}
+                      data-width={fullWidth ? "full" : undefined}
+                      data-text={largeText ? "large" : undefined}
+                      className="relative min-w-0 flex-1 py-6 focus:outline-none"
+                    >
+                      <Outlet />
+                      <ReadyFlash />
+                    </main>
+                  </div>
+                  <RouteFocus target={mainRef} />
+                  {/*
           Once for the whole app, so the shortcut works on every screen and the
           palette outlives the screen a jump leaves behind.
         */}
-                <CommandPalette />
-                {/*
+                  <CommandPalette />
+                  {/*
           And the map of the keys that drive it, one press away from anywhere.
         */}
-                <HelpOverlay
-                  open={helpOpen}
-                  returnFocusTo={helpReturn}
-                  onClose={() => {
-                    setHelpOpen(false);
-                  }}
-                />
-                {/*
+                  <HelpOverlay
+                    open={helpOpen}
+                    returnFocusTo={helpReturn}
+                    onClose={() => {
+                      setHelpOpen(false);
+                    }}
+                  />
+                  {/*
           Mounted by the frame rather than by the sidebar, because both ways in
           - the launcher under the listing and the palette row - are the
           frame's.
         */}
-                {/*
+                  {/*
           The sidebar's create dialogs, drawn here rather than inside the
           sidebar so a window crossing the breakpoint keeps them open, with
           what was typed in them.
         */}
-                {sidebarCreate?.kind === "engram" && (
-                  <CreateEngramDialog
-                    domain={sidebarCreate.domain}
-                    initialFolder=""
-                    returnFocusTo={sidebarCreate.launcher}
-                    onClose={() => {
-                      setSidebarCreate(null);
-                    }}
-                  />
-                )}
-                {sidebarCreate?.kind === "page" && (
-                  <LazyBoundary fallback={null}>
-                    <NewReflectionDialog
+                  {sidebarCreate?.kind === "engram" && (
+                    <CreateEngramDialog
                       domain={sidebarCreate.domain}
-                      folder={sidebarCreate.folder}
+                      initialFolder=""
                       returnFocusTo={sidebarCreate.launcher}
                       onClose={() => {
                         setSidebarCreate(null);
                       }}
                     />
-                  </LazyBoundary>
-                )}
-                {creatingDomain && (
-                  <CreateDomainDialog
-                    onClose={() => {
-                      setCreatingDomain(false);
-                    }}
-                  />
-                )}
-                {/*
+                  )}
+                  {sidebarCreate?.kind === "page" && (
+                    <LazyBoundary fallback={null}>
+                      <NewReflectionDialog
+                        domain={sidebarCreate.domain}
+                        folder={sidebarCreate.folder}
+                        returnFocusTo={sidebarCreate.launcher}
+                        onClose={() => {
+                          setSidebarCreate(null);
+                        }}
+                      />
+                    </LazyBoundary>
+                  )}
+                  {creatingDomain && (
+                    <CreateDomainDialog
+                      onClose={() => {
+                        setCreatingDomain(false);
+                      }}
+                    />
+                  )}
+                  {/*
           The same pair, for the same reason: the button and the palette row
           both belong to the frame, and the picker hands straight over to the
           dialog beside it rather than opening a second one over itself.
         */}
-                {pickingShare && (
-                  <SharePickerDialog
-                    onPick={(domain) => {
-                      setPickingShare(false);
-                      setShareDomain(domain);
-                    }}
-                    onClose={() => {
-                      setPickingShare(false);
-                    }}
-                  />
-                )}
-                {shareDomain !== null && (
-                  <ShareDialog
-                    domain={shareDomain}
-                    onClose={() => {
-                      setShareDomain(null);
-                    }}
-                  />
-                )}
-              </div>
-            </EngramsOrderContext>
-          </LayoutTextContext>
-        </LayoutWidthContext>
+                  {pickingShare && (
+                    <SharePickerDialog
+                      onPick={(domain) => {
+                        setPickingShare(false);
+                        setShareDomain(domain);
+                      }}
+                      onClose={() => {
+                        setPickingShare(false);
+                      }}
+                    />
+                  )}
+                  {shareDomain !== null && (
+                    <ShareDialog
+                      domain={shareDomain}
+                      onClose={() => {
+                        setShareDomain(null);
+                      }}
+                    />
+                  )}
+                </div>
+              </EngramsOrderContext>
+            </LayoutTextContext>
+          </LayoutWidthContext>
+        </OutlineSlotContext>
       </SidebarStateContext>
     </ChangeStreamProvider>
   );
@@ -1341,6 +1361,7 @@ function DomainSidebar({
   const { capabilities } = useAuth();
   const wide = useWide();
   const sidebar = useSidebarState();
+  const outline = useContext(OutlineSlotContext)?.headings ?? [];
   const listing = useQuery({
     queryKey: DOMAINS_QUERY_KEY,
     queryFn: fetchDomains,
@@ -1522,6 +1543,10 @@ function DomainSidebar({
               aria-label={label}
               className="min-h-0 flex-1 overflow-y-auto px-3 py-4"
             >
+              {/* A long page's outline leads the drawer (spec B1). */}
+              <div className="mb-4 border-b border-hair pb-4 empty:hidden">
+                <PageOutline headings={outline} onNavigate={onDismiss} />
+              </div>
               {content}
             </nav>
           </Dialog.Content>

@@ -301,6 +301,30 @@ describe("the engram page", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("lists the page's sections in the rail once there are three", async () => {
+    const long = `${BODY}\n## Setup\n\ntext\n\n### Install\n\ntext\n\n## Usage\n\ntext\n\n## Limits\n\ntext\n`;
+    serve({
+      "/domains/eng/engrams/alpha": () => detailResponse({ content: long }),
+    });
+    renderApp("/d/eng/e/alpha");
+    const nav = await screen.findByRole("navigation", {
+      name: "On this page",
+    });
+    expect(
+      Array.from(nav.querySelectorAll("a")).map((a) => a.getAttribute("href")),
+    ).toEqual(["#setup", "#install", "#usage", "#limits"]);
+    expect(nav.closest("aside")).not.toBeNull();
+  });
+
+  it("draws no outline for a short page", async () => {
+    serve();
+    renderApp("/d/eng/e/alpha");
+    await screen.findByRole("heading", { name: "Alpha", level: 1 });
+    expect(
+      screen.queryByRole("navigation", { name: "On this page" }),
+    ).toBeNull();
+  });
+
   it("draws the body and links the wikilinks the server resolved", async () => {
     serve();
 

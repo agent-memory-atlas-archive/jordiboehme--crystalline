@@ -76,6 +76,7 @@ import {
   paintQuotes,
   selectionAnchor,
 } from "../reflectionQuotes";
+import { PageOutline } from "./PageOutline";
 import type { SectionText } from "../reflectionText";
 import { TOP_SECTION, locateQuote } from "../reflectionText";
 import {
@@ -877,8 +878,32 @@ export function ReflectionThreads({
     </h2>
   );
 
+  // The page's `##` sections, linked to the section elements the page draws
+  // (`s-<id>`, see `PageSection`): this page has no heading ids of its own.
+  const outline = sections.flatMap((s, index) =>
+    s.id === TOP_SECTION || s.heading === ""
+      ? []
+      : [
+          {
+            id: s.id === null ? `s-h${String(index)}` : `s-${s.id}`,
+            text: s.heading,
+            level: 2 as const,
+          },
+        ],
+  );
+
   const body = (
     <>
+      <PageOutline
+        headings={outline}
+        onNavigate={
+          column
+            ? undefined
+            : () => {
+                setSheetOpen(false);
+              }
+        }
+      />
       <div className="flex items-center gap-2.5">
         {column ? heading : <Dialog.Title asChild>{heading}</Dialog.Title>}
         {open.length > 0 && (
