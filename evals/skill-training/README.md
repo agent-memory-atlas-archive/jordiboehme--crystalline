@@ -88,13 +88,15 @@ for arm in empty_skill seed_memory seed_memory_presentation; do
 done
 ```
 
-| Arm | hard | soft |
-| --- | --- | --- |
-| empty skill | 0.00 | 0.82 |
-| intelligence skill | 0.00 | 0.78 |
-| intelligence plus presentation skill | 0.00 | 0.87 |
+| Arm | Run | hard | soft |
+| --- | --- | --- | --- |
+| empty skill | r3 | 0.00 | 0.82 |
+| intelligence skill | r3 | 0.00 | 0.78 |
+| intelligence skill | r4 | 0.00 | 0.76 |
+| intelligence plus presentation skill | r3 | 0.00 | 0.87 |
+| intelligence plus presentation skill | r4 | 0.67 | 0.97 |
 
-Test split, n=3, one run per arm, target model claude-haiku-4-5-20251001. No arm passes an item outright. Only the arm with the presentation skill wrote any callout or table (two callouts and one table across its three pages, no diagram), and the other two arms wrote plain prose and bullet lists. Three items and one run cannot rank the arms, and the agent called the skills tool in none of the nine sessions, so these numbers record where the skill starts.
+Test split, n=3, one run per row, target model claude-haiku-4-5-20251001. r3 is the earlier run. r4 ran after the presentation skill text and the `write_reflection` sources keys changed, and the empty arm was not re-run. In r4 the arm with the presentation skill passed two of three items outright and wrote a callout and a table in every item (and one diagram, in the item that passed); the only failed check was the diagram in the first item. The intelligence-only arm wrote no diagram, callout or table in either run. The agent called the skills tool in none of the sessions. Three items and one run per row cannot separate a change in the skill from run-to-run variation.
 
 Runs auto-resume: re-running the same command against the same out_root continues from the last completed step.
 
