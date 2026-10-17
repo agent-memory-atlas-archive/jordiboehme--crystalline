@@ -247,6 +247,7 @@ mod tests {
             "never inside a callout",
             "same section",
             "markdown_findings",
+            "https://github.com/jordiboehme/crystalline/blob/main/docs/markdown.md",
         ] {
             assert!(p.contains(needle), "presentation skill lacks {needle}");
         }

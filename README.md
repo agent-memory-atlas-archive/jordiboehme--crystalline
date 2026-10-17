@@ -144,7 +144,7 @@ A chat memory is a hidden blob. One vendor owns it, it is tied to one model, and
 
 ## Fluid
 
-The primary author in Crystalline is the agent. Fluid is how you take part: read what was learned, correct a fact, add knowledge of your own, in the browser, without spending a token. It is built into the binary and on by default at `http://localhost:7411`. An engram is a page, the editor previews live, everyone in the same engram sees each other's cursors, search is the same hybrid ranking the agents use and a maintenance page shows what the knowledge needs next. The full tour: [Fluid, the web UI](docs/fluid.md).
+The primary author in Crystalline is the agent. Fluid is how you take part: read what was learned, correct a fact, add knowledge of your own, in the browser, without spending a token. It is built into the binary and on by default at `http://localhost:7411`. An engram is a page, the editor previews live, everyone in the same engram sees each other's cursors, search is the same hybrid ranking the agents use and a maintenance page shows what the knowledge needs next. The full tour: [Fluid, the web UI](docs/fluid.md). Pages can use callouts, status labels, math, task lists, footnotes and diagrams, and pasting from a wiki or a browser becomes clean Markdown: [The Markdown Crystalline understands](docs/markdown.md).
 
 ![An engram in Fluid in the light theme: the learn, evolve, remember lifecycle as a diagram, observations, typed relations and the details rail](assets/fluid-engram.jpg)
 

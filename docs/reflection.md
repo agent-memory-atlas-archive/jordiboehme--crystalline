@@ -4,7 +4,7 @@ A domain can keep a Reflection: documents for people, next to the engrams the ag
 
 ## What a Reflection is
 
-A Reflection is a domain's documents for people. They live in the folder `reflections/` of the domain, and each one is called a reflection. They are written at the level that `reflections/PACT.md` agrees on: for whom, how deep and in which structure.
+A Reflection is a domain's documents for people. They live in the folder `reflections/` of the domain, and each one is called a reflection. They are written at the level that `reflections/PACT.md` agrees on: for whom, how deep, how it is presented and in which structure.
 
 Engrams stay the agent's knowledge. The Reflection is where people and agents meet. Both edit the pages, and both comment on them in threads. The agent brings what changed in the engrams into the pages, and it reads what people changed in the pages and decides what to learn from it.
 
@@ -12,7 +12,7 @@ A reflection is not an engram. It needs no frontmatter, `search_engrams` never r
 
 ## Switch it on
 
-Set the MANIFEST key `reflection: on`. Do it in the domain policies card in Fluid, with `PATCH /api/v1/domains/{domain}/manifest`, or ask your agent (the `configure` tool with `domain`). Switching it on writes a first `reflections/PACT.md` with the three headings to fill in. Switching it off again is always allowed, and the files stay where they are.
+Set the MANIFEST key `reflection: on`. Do it in the domain policies card in Fluid, with `PATCH /api/v1/domains/{domain}/manifest`, or ask your agent (the `configure` tool with `domain`). Switching it on writes a first `reflections/PACT.md` with the four headings to fill in. Switching it off again is always allowed, and the files stay where they are.
 
 On a domain connected to GitHub, switching it off has one more effect. The folder `reflections/` is then ordinary engram content, so "share changes" offers its pages, their threads and `PACT.md`. Threads can hold comments from people who may not see engrams. So do not share changes while the switch is off. Once these files are in the team's copy, switching on again is refused until the team's copy no longer holds them. The answer to the switch-off says this too.
 
@@ -32,13 +32,20 @@ A plain editor or a pull can still write `reflection: on` into the MANIFEST. If 
 
 ## The pact
 
-`reflections/PACT.md` is the agreement between the people and the agents who work on the Reflection. It has three parts:
+`reflections/PACT.md` is the agreement between the people and the agents who work on the Reflection. It has four parts:
 
 - `## Audience`: who reads these pages and what they already know.
 - `## Level of detail`: how deep the pages go, and what they leave to the engrams.
+- `## Presentation`: which diagrams, callouts, tables and status labels help these readers, and what to avoid.
 - `## Structure`: one bullet per glob, for example `- guides/*.md`.
 
 The agent reads the pact before it writes. A page that fits none of the `## Structure` globs is reported to the agent as an update item. A change to the pact is reported too, so the agent applies it to the pages it affects.
+
+## Presentation
+
+A reflection is Markdown with a few extra elements: callouts, status labels, math, task items, footnotes and diagrams. The full list is in [The Markdown Crystalline understands](markdown.md). The `## Presentation` part of the pact narrows or extends the defaults, and where they differ the pact wins. A pact that says "no diagrams" means no diagrams. The skill `crystalline-presentation` teaches agents to read it first and to use an element only where it helps the reader.
+
+Two rules matter for a reflection. Each `##` section renders on its own, so a footnote reference and its definition belong in the same section. And a change that only ticks or unticks a task item is not feedback, so a tick on the reading page does not send the agent back to the section.
 
 ## Sections and their hidden ids
 

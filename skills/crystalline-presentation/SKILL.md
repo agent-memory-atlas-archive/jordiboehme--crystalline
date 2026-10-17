@@ -68,11 +68,11 @@ When a comment says "how does X work?" or "I don't follow", more words are not a
 
 ## Engrams
 
-Tables and diagrams may help an engram when they make knowledge easier to retrieve or to use: a table of settings, a diagram of a flow. Observations and relations stay top-level bullets, never inside a callout: a `- [fact] ...` or `- relates_to [[X]]` line inside a `>` quote is not indexed (lint Q008). Task items (`- [ ]`, `- [x]`, `- [~]`) are never observations, so do not use them to record facts.
+Tables and diagrams may help an engram when they make knowledge easier to retrieve or to use: a table of settings, a diagram of a flow. Observations and relations stay top-level bullets, never inside a callout: an observation or relation inside a callout is not indexed (lint Q008), and the same holds inside any `>` quote. Task items (`- [ ]`, `- [x]`, `- [~]`) are never observations, so do not use them to record facts.
 
 ## Syntax sheet
 
-Every element reads sensibly as raw Markdown, and on GitHub too: a callout with a title or a fold sign falls back to a plain quote, and a status label reads as text.
+Every element reads sensibly as raw Markdown, and on GitHub too: a callout with a title or a fold sign falls back to a plain quote, and a status label reads as text. The full reference is at https://github.com/jordiboehme/crystalline/blob/main/docs/markdown.md.
 
 | Element | Raw form | Notes |
 | --- | --- | --- |
