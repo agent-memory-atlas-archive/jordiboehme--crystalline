@@ -429,6 +429,12 @@ export function tableSkeleton(columns: number, rows: number): string[] {
  */
 export const TABLE_SKELETON: readonly string[] = tableSkeleton(2, 2);
 
+/** A span of the document, in positions of the state it is read against. */
+export interface TextRange {
+  from: number;
+  to: number;
+}
+
 /**
  * Where the caret lands inside a freshly inserted block: an index into the
  * inserted line array plus a character range within that line.
@@ -518,11 +524,17 @@ export const MERMAID_SKELETON = [
  * off the end maps past the document and `dispatch` raises rather than editing
  * (atomically, so no half-insert lands). Build the two together, as
  * `selectToken` and `mermaidFence` do, and the pair cannot disagree.
+ *
+ * `replace` is a range on the cursor's line that goes in the same
+ * transaction: the `/query` the slash menu was opened with. The line is read
+ * as it will be without it, so a slash typed on an empty line leaves no blank
+ * line in front of the block, and one undo puts the typed text back.
  */
 export function insertBlock(
   view: EditorView,
   lines: readonly string[],
   select?: BlockSelection | null,
+  replace?: TextRange,
 ): boolean {
   if (!clearOfFoldedFrontmatter(view)) {
     return false;
@@ -531,11 +543,12 @@ export function insertBlock(
   const { state } = view;
   const separator = state.lineBreak;
   const line = state.doc.lineAt(state.selection.main.head);
-  const lead = line.length === 0 ? "" : separator + separator;
+  const removed = replace === undefined ? 0 : replace.to - replace.from;
+  const lead = line.length - removed === 0 ? "" : separator + separator;
   const block = `${lead}${lines.join(separator)}${separator}`;
   // Where the block's first line begins: past the cursor's line and past the
   // lead's breaks, which are two positions when the lead is there at all.
-  const start = line.to + (lead === "" ? 0 : 2);
+  const start = line.to - removed + (lead === "" ? 0 : 2);
   const startOf = (index: number) =>
     start +
     lines
@@ -549,7 +562,10 @@ export function insertBlock(
           head: startOf(select.line) + select.to,
         };
   view.dispatch({
-    changes: { from: line.to, insert: block },
+    changes: [
+      ...(replace === undefined ? [] : [{ ...replace, insert: "" }]),
+      { from: line.to, insert: block },
+    ],
     selection,
     userEvent: "input",
   });

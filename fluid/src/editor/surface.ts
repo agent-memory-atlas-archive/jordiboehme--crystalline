@@ -18,6 +18,7 @@ import { fencePreviews } from "./fencePreviews";
 import { imageContextListener } from "./imageVerbs";
 import { livePreview } from "./preview";
 import { readingTheme } from "./readingTheme";
+import { slashCompletions } from "./slashMenu";
 import { RAW_MONO, baseExtensions } from "./setup";
 import { tableContextListener } from "./tableVerbs";
 import { formattingKeymap } from "./toolbar";
@@ -138,10 +139,10 @@ export function surfaceExtensions(options: SurfaceOptions): Extension[] {
     formattingKeymap,
     // Typing help rather than preview, so it stays on in raw mode: outside
     // the compartment the Raw toggle empties. One `autocompletion` for every
-    // source, because two would fight over the override.
-    ...(adapter.completions.length > 0
-      ? [autocompletion({ override: adapter.completions })]
-      : []),
+    // source, because two would fight over the override. The `/` menu comes
+    // first and is on both kinds of document; it answers only a slash that
+    // starts a line, where no other source does.
+    autocompletion({ override: [slashCompletions, ...adapter.completions] }),
     ...adapter.extensions,
     // Every later flip goes through the compartment rather than through this
     // array, which is read once per state.

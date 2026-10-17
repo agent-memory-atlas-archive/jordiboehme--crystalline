@@ -36,15 +36,13 @@ import {
   ListOrdered,
   ListTodo,
   Rows3,
-  SquareCode,
   Strikethrough,
   TextQuote,
   WandSparkles,
-  Workflow,
 } from "lucide-react";
 import { AlertDialog, DropdownMenu } from "radix-ui";
 import type { MouseEvent, ReactElement, ReactNode } from "react";
-import { useId, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
 import { ITEM_CLASSES, MENU_CLASSES } from "../components/menu";
 import { BUTTON, IconButton } from "../components/primitives";
@@ -52,6 +50,7 @@ import type { IconComponent } from "../components/primitives";
 import type { DocumentAdapter } from "./adapter";
 import { AttachButton } from "./AttachButton";
 import { stepOffIdLines } from "./hiddenIdLines";
+import { InsertMenu } from "./InsertMenu";
 import { TableSizePicker } from "./TableSizePicker";
 import type { ImageAlign } from "./imageFormat";
 import {
@@ -65,7 +64,6 @@ import {
   ImageWidth75Icon,
 } from "./imageIcons";
 import { clearImageFormat, setImageAlign, setImageWidth } from "./imageVerbs";
-import { MERMAID_STARTER_GROUPS, mermaidFence } from "./mermaidStarters";
 import {
   AlignColumnCenterIcon,
   AlignColumnIcon,
@@ -76,11 +74,9 @@ import {
 } from "./tableIcons";
 import type { Align } from "./tableModel";
 import {
-  CODE_SKELETON,
   ORDERED_ITEM,
   cycleHeading,
   headingLevelAfter,
-  insertBlock,
   insertMarkdownLink,
   insertWikilink,
   toggleInline,
@@ -146,32 +142,6 @@ const WIDTHS: { width: string; label: string; icon: IconComponent }[] = [
   { width: "50%", label: "Width 50%", icon: ImageWidth50Icon },
   { width: "75%", label: "Width 75%", icon: ImageWidth75Icon },
 ];
-
-/**
- * The diagram menu's surface: the shared one, with a ceiling on it.
- *
- * Nineteen rows - sixteen starters and the three labels over them - stand 594
- * pixels tall (a 32px item, a 24px label, 10px of padding and border), and a
- * menu grows to its content by default, so on a short window the last group
- * would open past the bottom edge. 70vh starts scrolling instead, which bites
- * below a viewport of about 850px - an ordinary laptop - and never on a tall
- * screen.
- */
-const DIAGRAM_MENU_CLASSES = `${MENU_CLASSES} max-h-[70vh] overflow-y-auto`;
-
-/**
- * A group's heading inside that menu: muted, small, sentence case. It is a
- * signpost rather than a choice, so it is drawn quieter than the rows under it
- * - slate-500 reads 4.76:1 on the light menu surface and slate-400 6.78:1 on
- * the dark one, both clear of the floor for text this size. (slate-500 would
- * be 3.74:1 on the dark surface, which is why the pair steps a shade lighter
- * there rather than staying one color, the size picker's caption reasoning.)
- * The dark figures are computed from the palette this tree actually ships:
- * Tailwind v4 declares the slate ramp in oklch, so slate-400 resolves to
- * #90a1b9 and slate-900 to #0f172b, a hair off the v3 hexes the plan quoted.
- */
-const GROUP_LABEL_CLASSES =
-  "px-2 py-1 text-caption text-slate-500 dark:text-slate-400";
 
 /** Decoration, not information: the same hairline every menu in the app draws. */
 function Divider(): ReactElement {
@@ -300,8 +270,6 @@ export function EditorToolbar({
    * because the menu closes before the state above has rendered.
    */
   const askingNow = useRef(false);
-  /** The stem the diagram menu's group headings hang their ids off. */
-  const groupId = useId();
   const act = (run: (view: EditorView) => boolean) => () => {
     if (view) {
       run(view);
@@ -472,72 +440,12 @@ export function EditorToolbar({
       */}
         <TableSizePicker view={view} />
         {/*
-        The other insert verb that asks first: which diagram. The button that
-        used to drop a flowchart now offers all sixteen types, and the first
-        item is that same flowchart - so the keyboard route through this menu
-        costs one keypress more than the button did and lands the same text.
+        Every other element, as words: callouts, diagrams, blocks and inline
+        elements, from the same registry as the slash menu.
       */}
-        <DropdownMenu.Root>
-          <DropdownMenu.Trigger asChild>
-            <IconButton label="Insert diagram" icon={Workflow} disabled={off} />
-          </DropdownMenu.Trigger>
-          <DropdownMenu.Portal>
-            <DropdownMenu.Content
-              align="start"
-              sideOffset={6}
-              className={DIAGRAM_MENU_CLASSES}
-              // The heading menu's discipline, for the same reason: Radix hands
-              // focus back to the trigger on close, and this bar always returns
-              // an author to the buffer instead - having picked a diagram, or
-              // having pressed Escape.
-              onCloseAutoFocus={(event) => {
-                event.preventDefault();
-                view?.focus();
-              }}
-            >
-              {MERMAID_STARTER_GROUPS.map((group, index) => (
-                // Radix draws the group and the label as siblings and wires
-                // neither to the other, so the `role="group"` it emits would
-                // announce nothing: the heading has to be named as the group's
-                // label by hand. One id per menu with the group's index on it,
-                // rather than a hook per group, because a list cannot call one.
-                <DropdownMenu.Group
-                  key={group.label}
-                  aria-labelledby={`${groupId}-${String(index)}`}
-                >
-                  <DropdownMenu.Label
-                    id={`${groupId}-${String(index)}`}
-                    className={GROUP_LABEL_CLASSES}
-                  >
-                    {group.label}
-                  </DropdownMenu.Label>
-                  {group.starters.map((starter) => (
-                    <DropdownMenu.Item
-                      key={starter.label}
-                      className={ITEM_CLASSES}
-                      onSelect={act((v) => {
-                        // The body and the caret come from one call, so the
-                        // range can never describe lines other than these.
-                        const { lines, select } = mermaidFence(starter);
-                        return insertBlock(v, lines, select);
-                      })}
-                    >
-                      {starter.label}
-                    </DropdownMenu.Item>
-                  ))}
-                </DropdownMenu.Group>
-              ))}
-            </DropdownMenu.Content>
-          </DropdownMenu.Portal>
-        </DropdownMenu.Root>
-        <IconButton
-          label="Insert code block"
-          icon={SquareCode}
-          disabled={off}
-          onClick={act((v) => insertBlock(v, CODE_SKELETON))}
-        />
+        <InsertMenu view={view} />
         {/*
-        The third insert verb that asks first, and the only one whose question
+        The other insert verb that asks first, and the only one whose question
         the browser asks: which file. Paste and drop reach the same flow with
         no button at all, so this is the way in for a file that is neither on
         the clipboard nor draggable onto the buffer.

@@ -79,6 +79,14 @@ export function isIdLineAt(state: EditorState, lineNo: number): boolean {
   return isIdLine(state.doc.line(lineNo).text);
 }
 
+/**
+ * Whether this buffer hides section id lines: a Reflection page, which the
+ * page renders one section at a time.
+ */
+export function hidesIdLines(state: EditorState): boolean {
+  return state.field(field, false) !== undefined;
+}
+
 /** A heading line of any level: what a kept id may sit under. */
 const HEADING_LINE = /^#{1,6}[ \t]/;
 

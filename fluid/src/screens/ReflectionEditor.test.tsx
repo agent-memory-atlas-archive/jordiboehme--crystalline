@@ -168,8 +168,7 @@ describe("the reflection editor", () => {
       "Blockquote",
       "Link",
       "Insert table",
-      "Insert diagram",
-      "Insert code block",
+      "Insert",
       "Attach a file",
     ]);
     expect(screen.queryByRole("toolbar", { name: "Insert" })).toBeNull();

@@ -15,7 +15,7 @@ import type { Extension } from "@codemirror/state";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { RenderResult } from "@testing-library/react";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test } from "vitest";
 
@@ -111,11 +111,19 @@ async function align(label: string): Promise<void> {
   await user.click(await screen.findByRole("menuitem", { name: label }));
 }
 
+/** Open Insert > Diagram, the diagram menu. */
+async function openDiagrams(): Promise<HTMLElement> {
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Insert" }));
+  await user.click(await screen.findByRole("menuitem", { name: "Diagram" }));
+  return screen.findByRole("menu", { name: "Diagram" });
+}
+
 /** Open the diagram menu and pick one of its starters. */
 async function pickDiagram(label: string): Promise<void> {
   const user = userEvent.setup();
-  await user.click(screen.getByRole("button", { name: "Insert diagram" }));
-  await user.click(await screen.findByRole("menuitem", { name: label }));
+  const diagrams = await openDiagrams();
+  await user.click(within(diagrams).getByRole("menuitem", { name: label }));
 }
 
 describe("the format buttons", () => {
@@ -159,9 +167,23 @@ describe("the format buttons", () => {
     );
   });
 
-  test("Insert code block inserts a bare fence", async () => {
+  test("one Insert button stands where the diagram and code buttons were", () => {
+    mount("prose\n", 5);
+    const names = screen
+      .getAllByRole("button")
+      .map((button) => button.getAttribute("aria-label") ?? button.textContent);
+    expect(names).not.toContain("Insert diagram");
+    expect(names).not.toContain("Insert code block");
+    // Right after the table picker, the other insert verb that asks first.
+    expect(names.indexOf("Insert")).toBe(names.indexOf("Insert table") + 1);
+  });
+
+  test("Insert > Code block inserts a bare fence", async () => {
     const v = mount("prose\n", 5);
-    await press("Insert code block");
+    await press("Insert");
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "Code block" }),
+    );
     // A blank line, the bare fence, its body line and the close - dropped
     // below the cursor's line, which keeps its own trailing break.
     expect(docText(v.state)).toBe("prose\n\n```\n\n```\n\n");
@@ -171,20 +193,21 @@ describe("the format buttons", () => {
 describe("the diagram menu", () => {
   test("offers sixteen starters under three group labels", async () => {
     mount("prose\n", 5);
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Insert diagram" }));
+    const diagrams = await openDiagrams();
     // Sixteen by count rather than by reading the starters module back at
     // itself: a menu that quietly lost an entry would agree with the module
     // and disagree with the decision that named all sixteen.
-    expect(await screen.findAllByRole("menuitem")).toHaveLength(16);
+    expect(within(diagrams).getAllByRole("menuitem")).toHaveLength(16);
     for (const label of ["Everyday", "Planning and product", "Technical"]) {
-      expect(screen.getByText(label)).not.toBeNull();
+      expect(within(diagrams).getByText(label)).not.toBeNull();
     }
     // The labels are headings, not choices: only the sixteen are selectable.
     expect(
-      screen.getByRole("menuitem", { name: "User journey" }),
+      within(diagrams).getByRole("menuitem", { name: "User journey" }),
     ).not.toBeNull();
-    expect(screen.getByRole("menuitem", { name: "Radar" })).not.toBeNull();
+    expect(
+      within(diagrams).getByRole("menuitem", { name: "Radar" }),
+    ).not.toBeNull();
   });
 
   test("User journey inserts its starter with the title selected", async () => {
@@ -200,14 +223,16 @@ describe("the diagram menu", () => {
     expect(v.state.sliceDoc(from, to)).toBe("First visit");
   });
 
-  test("Enter Enter reproduces the old diagram button exactly", async () => {
-    // Decision 16, end to end: opening the menu from the keyboard highlights
-    // the first item, so the shortest route costs one extra keypress and
-    // lands the same bytes the button used to insert on its own.
+  test("the keyboard route to a flowchart lands the old diagram button's text", async () => {
+    // Decision 16, end to end: Enter opens Insert on Callout, Down reaches
+    // Diagram, Right opens it on its first starter, and Enter takes the
+    // flowchart - the same bytes the old one-shape button inserted.
     const v = mount("prose\n", 5);
     const user = userEvent.setup();
-    screen.getByRole("button", { name: "Insert diagram" }).focus();
+    screen.getByRole("button", { name: "Insert" }).focus();
     await user.keyboard("{Enter}");
+    await screen.findByRole("menuitem", { name: "Callout" });
+    await user.keyboard("{ArrowDown}{ArrowRight}");
     await screen.findByRole("menuitem", { name: "Flowchart" });
     await user.keyboard("{Enter}");
     expect(docText(v.state)).toBe(
@@ -223,10 +248,11 @@ describe("the diagram menu", () => {
     // `role="group"` that names nothing announces sixteen flat items, which is
     // the list the grouping was introduced to break up.
     mount("prose\n", 5);
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Insert diagram" }));
+    const diagrams = await openDiagrams();
     for (const label of ["Everyday", "Planning and product", "Technical"]) {
-      expect(await screen.findByRole("group", { name: label })).not.toBeNull();
+      expect(
+        within(diagrams).getByRole("group", { name: label }),
+      ).not.toBeNull();
     }
   });
 
@@ -236,8 +262,7 @@ describe("the diagram menu", () => {
     // would keep that one green and strand the caret on the trigger here.
     const v = mount("prose\n", 5);
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Insert diagram" }));
-    await screen.findByRole("menuitem", { name: "Flowchart" });
+    await openDiagrams();
     await user.keyboard("{Escape}");
     await waitFor(() => {
       expect(screen.queryByRole("menuitem")).toBeNull();

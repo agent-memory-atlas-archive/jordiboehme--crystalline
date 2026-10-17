@@ -192,7 +192,7 @@ function headingText(line: string | undefined): string | null {
   return /[ \t]$/.test(without) ? without.trim() : text;
 }
 /** Whether a line is a level-two heading at all: the server said one is here. */
-function isLevelTwo(line: string | undefined): boolean {
+export function isLevelTwo(line: string | undefined): boolean {
   return headingText(line) !== null;
 }
 function isHeading(line: string | undefined, heading: string): boolean {
