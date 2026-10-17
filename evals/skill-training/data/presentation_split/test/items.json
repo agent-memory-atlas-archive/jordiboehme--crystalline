@@ -1,0 +1,62 @@
+[
+  {
+    "id": "pr-te-01",
+    "workspace": "beacon",
+    "task_type": "full_page",
+    "question": "Bring the relay Reflection up to date.",
+    "expect": {
+      "checks": [
+        "diagram_for_protocol",
+        "callout_for_risk",
+        "table_for_comparison",
+        "restraint",
+        "clean_dialect"
+      ]
+    }
+  },
+  {
+    "id": "pr-te-02",
+    "workspace": "beacon",
+    "task_type": "pact_override",
+    "question": "Bring the quiet relay Reflection up to date.",
+    "expect": {
+      "checks": [
+        "pact_override",
+        "callout_for_risk",
+        "table_for_comparison",
+        "restraint",
+        "clean_dialect"
+      ],
+      "pact_override": {
+        "domain": "quiet"
+      },
+      "callout_for_risk": {
+        "domain": "quiet"
+      },
+      "table_for_comparison": {
+        "domain": "quiet"
+      },
+      "restraint": {
+        "domain": "quiet"
+      },
+      "clean_dialect": {
+        "domain": "quiet"
+      }
+    }
+  },
+  {
+    "id": "pr-te-03",
+    "workspace": "beacon",
+    "task_type": "full_page",
+    "question": "Write the relay Reflection for new operators: how a client joins, how to remove a tenant, which transport to pick and how to restart.",
+    "expect": {
+      "checks": [
+        "diagram_for_protocol",
+        "callout_for_risk",
+        "table_for_comparison",
+        "restraint",
+        "clean_dialect"
+      ]
+    }
+  }
+]

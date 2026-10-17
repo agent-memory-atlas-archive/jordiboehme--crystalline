@@ -36,6 +36,7 @@ rebuild only those and leave the rest untouched):
     bash fixtures/generate.sh harbor
     bash fixtures/generate.sh derelict
     bash fixtures/generate.sh lantern
+    bash fixtures/generate.sh beacon
 """
 from __future__ import annotations
 
@@ -106,6 +107,48 @@ def control_room_log(nights: int = 64) -> str:
         )
     lines.append('- "relates to" [[Nightly calibration checklist]]')
     return "\n".join(lines)
+
+
+# The engrams both beacon domains share: a protocol with three parties and
+# ordered messages, an irreversible step with a risk, a comparison with
+# verdicts and a one-line how-to the presentation skill must leave plain.
+BEACON_ENGRAMS = [
+    engram(
+        "Relay handshake",
+        "How a client joins the relay.\n\n"
+        "- [fact] The client sends a hello to the relay and the relay asks the auth service to check the token #relay\n"
+        "- [fact] The auth service answers the relay with a verdict and the relay then sends the client a ready message #relay\n"
+        "- [convention] The client sends no data before it has received the ready message #relay",
+        tags="relay,protocol",
+        engram_type="runbook",
+    ),
+    engram(
+        "Tenant purge",
+        "Removing a tenant from the relay for good.\n\n"
+        "- [fact] The purge deletes the tenant, its queues and every backup of them #relay\n"
+        "- [risk] A purge cannot be undone and the backups are gone with it #relay\n"
+        "- [convention] Export the tenant before a purge #relay",
+        tags="relay,purge",
+        engram_type="runbook",
+    ),
+    engram(
+        "Transport options",
+        "The three ways to carry relay traffic.\n\n"
+        "- [fact] WebSocket keeps one open connection and is the default for browsers, verdict recommended #relay\n"
+        "- [fact] Long polling works behind every proxy but costs a request per message, verdict fallback only #relay\n"
+        "- [fact] gRPC streams are the fastest and need HTTP/2 end to end, verdict only inside the data centre #relay",
+        tags="relay,transport",
+        engram_type="reference",
+    ),
+    engram(
+        "Restart the relay",
+        "How to restart the relay.\n\n"
+        "- [convention] Restart the relay with the command relay restart #relay\n"
+        "- [fact] The restart takes a few seconds and clients reconnect on their own #relay",
+        tags="relay,restart",
+        engram_type="runbook",
+    ),
+]
 
 
 WORKSPACES: dict[str, dict] = {
@@ -1246,6 +1289,37 @@ WORKSPACES: dict[str, dict] = {
                     engram_type="runbook",
                 ),
             ],
+        },
+    },
+    # The presentation benchmark's workspace: two domains that keep a
+    # Reflection and no page yet, so the queue holds an `unreflected` update
+    # item for every engram. `relay` has a plain PACT; `quiet` carries the
+    # same engrams and a PACT whose Presentation section says no diagrams,
+    # which has to win over the presentation skill's defaults. Each `##`
+    # heading carries its hidden id line (lantern's shape), because a page
+    # without one reads as an engram and holds the switch pending.
+    "beacon": {
+        "options": {
+            "reflection": {
+                "relay": {
+                    "PACT.md": "# How we write about the relay\n\n## Audience\n<!-- r:d4e5f6a7 -->\n\n- Operators on their first week.\n\n## Structure\n<!-- r:e5f6a7b8 -->\n\n- guides/*.md\n",
+                },
+                "quiet": {
+                    "PACT.md": "# How we write about the quiet relay\n\n## Audience\n<!-- r:f6a7b8c9 -->\n\n- Operators on their first week.\n\n## Structure\n<!-- r:a7b8c9d0 -->\n\n- guides/*.md\n\n## Presentation\n<!-- r:b8c9d0e1 -->\n\n- No diagrams. Plain text and tables only.\n",
+                },
+            },
+        },
+        "relay": {
+            "scope": ["Running the relay: connections, purges, transports and restarts"],
+            "when": ["Questions about how the relay is operated"],
+            "notes": [],
+            "engrams": BEACON_ENGRAMS,
+        },
+        "quiet": {
+            "scope": ["Running the quiet relay: connections, purges, transports and restarts"],
+            "when": ["Questions about how the quiet relay is operated"],
+            "notes": [],
+            "engrams": BEACON_ENGRAMS,
         },
     },
 }
