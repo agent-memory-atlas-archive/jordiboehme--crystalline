@@ -25,7 +25,7 @@ import { frontmatterHidden } from "./frontmatterFold";
 import { frontmatterRegion } from "./frontmatterRegion";
 
 /**
- * Keep a command off a frontmatter block that is currently folded away.
+ * Keep a command off a frontmatter block that is currently hidden.
  *
  * The fold is atomic, but atomicity constrains cursor MOTION only - it is read
  * by the movement commands and by pointer selection, never by a dispatched
@@ -34,8 +34,9 @@ import { frontmatterRegion } from "./frontmatterRegion";
  * freshly opened engram has its caret at position 0, inside the block. A
  * heading run before the author has clicked anywhere would turn the opening
  * fence into `## ---`, and a table would land between the fence and the first
- * key where the chip keeps it invisible - a button that looks like it did
- * nothing while the file stops parsing.
+ * key where nobody can see it - a button that looks like it did nothing while
+ * the file stops parsing. (The fold's own guard keeps typing out of the
+ * block; a command is a dispatch of its own and is answered here first.)
  *
  * Two cases, deliberately answered differently:
  *
@@ -49,14 +50,15 @@ import { frontmatterRegion } from "./frontmatterRegion";
  *   key unhandled, which is the honest answer for a command that declined.
  *
  * The question asked is the fold's own live state, never the mode: in Raw mode
- * the field is not installed, after the chip is clicked its set is empty, and
- * the MANIFEST surface never carries it. In all three the frontmatter is text
- * on screen like any other and formatting it is legitimate.
+ * the field is not installed, a document whose block lost its closing fence
+ * has an empty set, and the MANIFEST surface never carries it. In all three
+ * the frontmatter is text on screen like any other and formatting it is
+ * legitimate.
  *
  * Exported because it is the shared guard for the assist verbs too, not only
  * for the formatting commands in this file: `tableVerbs` opens every one of
  * its dispatches with it, so a table edit and a bold both refuse the same way
- * over a folded block rather than each having their own idea of the rule.
+ * over a hidden block rather than each having their own idea of the rule.
  */
 export function clearOfFoldedFrontmatter(view: EditorView): boolean {
   const { state } = view;

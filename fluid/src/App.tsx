@@ -16,6 +16,7 @@
 import { CommandsProvider } from "./CommandsProvider";
 import { AuthProvider } from "./auth/AuthProvider";
 import { Tooltips } from "./components/primitives";
+import { UploadNotices } from "./components/UploadNotices";
 import { VersionSkewToast } from "./components/VersionSkewToast";
 import { QueryProvider } from "./query/QueryProvider";
 import { AppRoutes } from "./routes";
@@ -27,7 +28,15 @@ export default function App() {
       <ThemeProvider>
         <Tooltips>
           <AuthProvider>
-            <VersionSkewToast />
+            {/*
+              The notice corner, above the routes: an upload whose screen has
+              gone is reported on whatever screen is open now, stacked above
+              the version notice and never over it, on narrow screens too.
+            */}
+            <div className="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex flex-col items-center gap-2 px-4">
+              <UploadNotices />
+              <VersionSkewToast />
+            </div>
             {/*
               Inside the auth provider, because what a screen registers depends
               on what this session may do, and above the routes, because the

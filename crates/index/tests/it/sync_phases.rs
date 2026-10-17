@@ -66,38 +66,6 @@ fn record(path: &str, permalink: &str, content: &str, sha: &str) -> EngramRecord
 
 // --- backend runner ----------------------------------------------------------
 
-#[cfg(feature = "postgres")]
-fn pg_url() -> Option<String> {
-    use std::sync::Once;
-    static NOTE: Once = Once::new();
-    match std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") {
-        Ok(u) if !u.is_empty() => Some(u),
-        _ => {
-            NOTE.call_once(|| {
-                eprintln!(
-                    "note: skipping the postgres parity leg (CRYSTALLINE_TEST_POSTGRES_URL is unset); turso only"
-                )
-            });
-            None
-        }
-    }
-}
-
-/// A recycled pid must never adopt a schema a panicking run left behind.
-#[cfg(feature = "postgres")]
-fn unique_schema() -> String {
-    use std::hash::{BuildHasher, RandomState};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "cp_{}_{}_{:x}",
-        std::process::id(),
-        n,
-        RandomState::new().hash_one(n)
-    )
-}
-
 /// The failure signature of the one flake this harness has seen: a query
 /// that spills a sorter or a hash join asks the database engine for a
 /// scratch directory, which it creates fresh under the OS temp directory
@@ -158,21 +126,17 @@ macro_rules! parity {
             .await;
             #[cfg(feature = "postgres")]
             {
-                if let Some(url) = pg_url() {
-                    run_attempt(|| {
-                        let url = url.clone();
-                        async move {
-                            let schema = unique_schema();
-                            let store =
-                                crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                                    .await
-                                    .expect("open the postgres test schema");
-                            $body(&store).await;
-                            store
-                                .drop_schema()
-                                .await
-                                .expect("drop the postgres test schema");
-                        }
+                if crate::pg::pg_url().is_some() {
+                    // A fresh schema per attempt, dropped when the attempt ends.
+                    run_attempt(|| async {
+                        let scratch = crate::pg::scratch("cp").expect("the postgres url is set");
+                        let store = crystalline_index::PostgresStore::open_in_schema(
+                            scratch.url(),
+                            scratch.name(),
+                        )
+                        .await
+                        .expect("open the postgres test schema");
+                        $body(&store).await;
                     })
                     .await;
                 }

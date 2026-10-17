@@ -57,4 +57,34 @@ mod tests {
             "a heading is looked up by its text"
         );
     }
+
+    #[test]
+    fn a_multi_line_quote_sent_with_lf_is_found_in_a_page_saved_with_crlf() {
+        // A page saved on Windows; the reader's quote comes from the client's
+        // LF-joined section text.
+        let crlf = format!("---\ntitle: D\n---\n{PAGE}").replace('\n', "\r\n");
+        let anchor = Anchor {
+            section: SectionRef::Id("7f3a9c2e".into()),
+            quote: Some("after the batch.\nDeploys run at night".into()),
+            occurrence: 1,
+        };
+        let AnchorState::Found { start, end } = anchor_state(&crlf, &anchor) else {
+            panic!("an LF quote must be found in a CRLF page")
+        };
+        let section = &crate::reflection::split_sections(&crlf)[1].text;
+        assert!(!section.contains('\r'), "section text is LF-joined");
+        assert_eq!(
+            &section[start..end],
+            "after the batch.\nDeploys run at night"
+        );
+        let by_heading = Anchor {
+            section: SectionRef::Heading("Night deploys".into()),
+            quote: Some("Deploys run at night.".into()),
+            occurrence: 1,
+        };
+        assert!(
+            matches!(anchor_state(&crlf, &by_heading), AnchorState::Found { .. }),
+            "a CRLF heading is matched without its CR"
+        );
+    }
 }

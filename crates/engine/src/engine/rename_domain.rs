@@ -245,7 +245,10 @@ impl Engine {
                 // the old name.
                 let _captured =
                     self.capture_audience(old, DomainAudience::Accounts(HashSet::new()));
-                self.close_editors(old).await;
+                // The rooms learn the new name once the rename is done; a
+                // finish that stops again tells them `internal` (the old
+                // name still serves until it is finished).
+                let closed_editors = self.close_editors(old).await;
                 let mut report = self
                     .finish_rename(
                         journal,
@@ -254,6 +257,7 @@ impl Engine {
                         DomainAudience::Accounts(HashSet::new()),
                     )
                     .await?;
+                closed_editors.renamed(new).await;
                 if let Value::Object(map) = &mut report {
                     map.entry("shadows").or_insert_with(|| json!([]));
                 }
@@ -295,6 +299,10 @@ impl Engine {
                 )
             }));
         }
+        // A name that differs only in letter case from another domain's
+        // local name would share its state folders on a disk that ignores
+        // case. A case-only rename of this domain itself stays allowed.
+        self.refuse_case_twin(new, Some(old), scope).await?;
         // A name a connected server holds (mounted, or kept for a domain it
         // does not offer right now) is that source's (decision D13): the
         // renamed domain would be hidden under it at once. One check for both
@@ -402,7 +410,7 @@ impl Engine {
         // after its MANIFEST and relink steps, which write into the domain
         // like any other edit and would otherwise wait on its own pause.
         if local_only && !self.pause_and_drain(old, new).await {
-            let closed = if closed_editors {
+            let closed = if closed_editors.any() {
                 " Its open editors were closed and reopen on the next edit."
             } else {
                 ""
@@ -411,6 +419,13 @@ impl Engine {
                 "domain '{old}' is busy with a write that has not finished; try again in a \
                  moment.{closed}"
             )));
+        }
+        // Before the journal exists, so never on a replay. A case-only
+        // rename's `kept/<new>` is its own folder on a disk that ignores case.
+        if crystalline_core::config::registration::fold_domain_name(new)
+            != crystalline_core::config::registration::fold_domain_name(old)
+        {
+            self.set_aside_orphan_kept(new);
         }
         let journal = RenameJournal {
             version: 1,
@@ -439,9 +454,15 @@ impl Engine {
             self.rename_pause.resume(&[old, new]);
             return Err(io_error(e));
         }
+        // The swept rooms learn the new name once the rename is done. A
+        // full rename can still stop inside `finish_rename` (a busy domain
+        // after its MANIFEST and link steps); its journal finishes it later,
+        // and until then the old name serves, so the rooms are told
+        // `internal` when the answer drops.
         let mut report = self
             .finish_rename(journal, &state_dir, true, old_audience)
             .await?;
+        closed_editors.renamed(new).await;
         if let Value::Object(map) = &mut report {
             if !shadows.is_empty() {
                 let shadow_note = format!(
@@ -588,6 +609,14 @@ impl Engine {
     /// A rename it finished is logged and its report answered, for the one
     /// caller that was about to send that same rename again.
     pub async fn finish_leftover_rename(&self) -> Option<Value> {
+        let finished = self.finish_leftover_rename_inner().await;
+        // After the journal, so a rename it finished has its texts under
+        // the new name before any folder is judged.
+        self.set_aside_orphan_kept_all();
+        finished
+    }
+
+    async fn finish_leftover_rename_inner(&self) -> Option<Value> {
         match self.recover_rename_journal().await {
             Ok(Some(report)) => {
                 tracing::info!(
@@ -721,6 +750,14 @@ impl Engine {
         *self.rename_drain_wait.lock().unwrap() = limit;
     }
 
+    /// Whether this process's configuration snapshot or its discovered
+    /// domains hold `name`, with no file read. A rename updates both before
+    /// it lifts its pause.
+    fn holds_domain_in_memory(&self, name: &str) -> bool {
+        self.config.read().unwrap().domains.contains_key(name)
+            || self.discovered_domains.read().unwrap().contains_key(name)
+    }
+
     /// Hold the next rename right after `step` until the answered hold is
     /// released.
     #[cfg(any(test, feature = "testing"))]
@@ -772,10 +809,21 @@ impl Engine {
                 .wait_clear(&[name.to_string()], RENAME_WAIT)
                 .await
                 .map_err(renaming_conflict)?;
-            if waited && !self.registered_domain_names().contains(name) {
-                return Err(EngineError::Conflict(format!(
-                    "domain '{name}' was renamed while this request waited; send it again"
-                )));
+            // The name is asked for whatever the wait did: a rename that
+            // finished just before this write got here leaves the name gone
+            // just the same. The in-memory registration answers nearly every
+            // write without reading the configuration file; only a name it
+            // does not hold is asked of every tier.
+            if !self.holds_domain_in_memory(name) && !self.registered_domain_names().contains(name)
+            {
+                return Err(EngineError::Conflict(if waited {
+                    format!("domain '{name}' was renamed while this request waited; send it again")
+                } else {
+                    format!(
+                        "domain '{name}' is not registered here any more (renamed or removed \
+                         while this request ran); send it again"
+                    )
+                }));
             }
             if let Some(ticket) = self.rename_pause.try_enter(name) {
                 #[cfg(any(test, feature = "testing"))]
@@ -788,6 +836,25 @@ impl Engine {
                 return Ok(ticket);
             }
         }
+    }
+
+    /// [`Engine::enter_write`] without the wait: a domain a rename has paused
+    /// is refused at once rather than waited for. For a write that is one
+    /// part of a larger verb, which may report the part it skipped and must
+    /// not hold its other parts back for as long as a rename may run.
+    pub(super) fn try_enter_write(&self, name: &str) -> Result<WriteTicket<'_>> {
+        if !self.holds_domain_in_memory(name) && !self.registered_domain_names().contains(name) {
+            return Err(EngineError::Conflict(format!(
+                "domain '{name}' is not registered here any more (renamed or removed \
+                 while this request ran); send it again"
+            )));
+        }
+        self.rename_pause.try_enter(name).ok_or_else(|| {
+            EngineError::Conflict(format!(
+                "domain '{name}' is being renamed, so nothing was written in it; \
+                 the link still names the old address"
+            ))
+        })
     }
 
     /// Count one pass of a sync or the watcher into `name`, or `None` when a
@@ -984,14 +1051,17 @@ impl Engine {
     }
 
     /// Close every co-editing room and end every join in `old`; each room
-    /// saves its last text first. Whether there was anything to close.
-    async fn close_editors(&self, old: &str) -> bool {
-        let rooms_closed = match self.collab.get().and_then(std::sync::Weak::upgrade) {
-            Some(sessions) => sessions.dispose_domain(old).await,
-            None => 0,
+    /// saves its last text first. The rooms are not told yet: the rename
+    /// tells them `moved` with the new name once it is done
+    /// (`ClosedEditors::renamed`), and a rename refused or stopped before
+    /// that tells them `internal` when the answer drops.
+    async fn close_editors(&self, old: &str) -> ClosedEditors {
+        let rooms = match self.collab.get().and_then(std::sync::Weak::upgrade) {
+            Some(sessions) => Some(sessions.sweep_domain_for_rename(old).await),
+            None => None,
         };
         let joins_ended = self.joins.end_domain(old);
-        rooms_closed + joins_ended > 0
+        ClosedEditors { rooms, joins_ended }
     }
 
     /// The MANIFEST step: `domain_name: <new>` into the domain's MANIFEST,
@@ -1183,6 +1253,33 @@ impl Engine {
             };
             let writable = journal.writable.binary_search(&domain).is_ok();
             let folder = super::reflection::reflection_dir(&root);
+            // A page's row is written only by the domain's host (the
+            // host-lock fence), so the step claims each domain it respells
+            // as a sync would, a one-shot command included, which gives the
+            // lock back when the step is done. A domain another live
+            // instance holds stops the step, so it runs again.
+            let needs_writes = writable && rows.iter().any(|row| respell(&row.content).1 > 0);
+            if needs_writes && !self.instance_id.is_empty() {
+                let claim = {
+                    let store = self.store.lock().await;
+                    // Not handed to the watcher: a rename may be under way
+                    // for this very domain, and the sync that ends it arms
+                    // the watch under the name it ends with.
+                    self.claim_file_host_as(&*store, &domain, &root, false, false)
+                        .await
+                };
+                match claim {
+                    Ok(HostClaim::Acquired { .. }) => {}
+                    Ok(HostClaim::HeldByOther(host)) => {
+                        self.release_taken_hosts().await;
+                        return Err(EngineError::Conflict(host_refusal(&domain, &host)));
+                    }
+                    Err(e) => {
+                        self.release_taken_hosts().await;
+                        return Err(e);
+                    }
+                }
+            }
             for row in rows {
                 let references = respell(&row.content).1;
                 if references == 0 {
@@ -1199,7 +1296,7 @@ impl Engine {
                     continue;
                 }
                 match self
-                    .relink_page(domain_id, &folder, &row.path, &respell)
+                    .relink_page(&domain, domain_id, &folder, &row.path, &respell)
                     .await
                 {
                     Ok(0) => {}
@@ -1208,9 +1305,24 @@ impl Engine {
                             &domain,
                             crate::reflection_backup::BackupCause::Settled,
                         );
+                        // A respelled link is nobody's change.
+                        self.announce_reflection(
+                            &domain,
+                            &row.path,
+                            ReflectionChangeKind::Changed,
+                            None,
+                            None,
+                        );
                         let counts = outcome.rewritten.entry(domain.clone()).or_default();
                         counts.0 += 1;
                         counts.1 += references;
+                    }
+                    // The fence refused: this instance lost the domain's lock
+                    // meanwhile. The step is not done; the next run tries
+                    // again.
+                    Err(e) if super::fence::is_fence_refusal(&e) => {
+                        self.release_taken_hosts().await;
+                        return Err(e);
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -1228,6 +1340,7 @@ impl Engine {
                 }
             }
         }
+        self.release_taken_hosts().await;
         Ok(())
     }
 
@@ -1501,6 +1614,18 @@ impl Engine {
                 )
                 .map_err(io_error)?;
             }
+            RenameStep::KeptDir => {
+                let root = state_dir.join(crystalline_core::kept::KEPT_DIR);
+                // Texts already under the new name belong to no registered
+                // domain (one removed before removals set them aside): they
+                // go aside, never under the renamed domain and never away.
+                let distinct = old.to_lowercase() != new.to_lowercase();
+                if distinct && root.join(old).is_dir() && root.join(new).is_dir() {
+                    crystalline_core::kept::set_aside(&root, new, chrono::Utc::now())
+                        .map_err(io_error)?;
+                }
+                move_state_dir(&root, old, new).map_err(io_error)?;
+            }
             RenameStep::ProvisionReceipt => {
                 let path = state_dir.join(RECEIPT_FILE);
                 if path.is_file() {
@@ -1591,6 +1716,20 @@ impl Engine {
                 hosted.insert(new.to_string(), id);
             }
         }
+        // A one-shot command's locks and every claim's token follow the
+        // name too, so the release after the walk still finds them.
+        {
+            let mut taken = self.taken.lock().unwrap();
+            if taken.remove(old) {
+                taken.insert(new.to_string());
+            }
+        }
+        {
+            let mut leases = self.leases.lock().unwrap();
+            if let Some(lease) = leases.remove(old) {
+                leases.insert(new.to_string(), lease);
+            }
+        }
         self.origin_poller.rename_domain(old, new);
         {
             let mut routing = self.routing_virtual.write().unwrap();
@@ -1665,7 +1804,10 @@ impl Engine {
                 "domain '{old}' is in an index that instance {} also serves (last heartbeat {}); \
                  a rename on this machine alone would rename it under that instance too. Stop \
                  that instance first, then rename",
-                row.host_instance_id.as_deref().unwrap_or_default(),
+                row.host_label
+                    .as_deref()
+                    .or(row.host_instance_id.as_deref())
+                    .unwrap_or_default(),
                 row.host_heartbeat_at.as_deref().unwrap_or("unknown")
             )));
         }
@@ -1780,6 +1922,29 @@ impl Engine {
 
 /// The provision receipt's file name under the state directory.
 const RECEIPT_FILE: &str = "provisions.json";
+
+/// What [`Engine::close_editors`] ended: the swept rooms, not told yet, and
+/// how many joins it ended. Dropped without [`ClosedEditors::renamed`], the
+/// rooms are told `internal` (see `SweptRooms`).
+struct ClosedEditors {
+    rooms: Option<crate::collab::session::SweptRooms>,
+    joins_ended: usize,
+}
+
+impl ClosedEditors {
+    /// Whether there was anything to close.
+    fn any(&self) -> bool {
+        self.rooms.as_ref().is_some_and(|rooms| !rooms.is_empty()) || self.joins_ended > 0
+    }
+
+    /// Tell every swept room that its document moved with the domain to
+    /// `new`.
+    async fn renamed(self, new: &str) {
+        if let Some(rooms) = self.rooms {
+            rooms.moved_to_domain(new).await;
+        }
+    }
+}
 
 /// The conflict a request answers when a rename kept a domain paused past the
 /// wait.

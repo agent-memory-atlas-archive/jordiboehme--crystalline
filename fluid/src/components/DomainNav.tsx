@@ -4,12 +4,11 @@
  *
  * A domain is a place somebody works in rather than an entry they picked once,
  * so while they are inside one the sidebar stops being a list of everything and
- * becomes the way around this one thing. Two controls make that true: a
- * domain row that names the current domain, goes to its page, and carries
- * the button that moves across to another; and the folder tree below it,
- * which is the domain's own shape rather than a flat listing of it. The way
- * back out to every domain stays on screen beside them, because a place you
- * cannot leave is a trap.
+ * becomes the way around this one thing: an Overview row that goes to the
+ * domain's front page, and the folder tree below it, which is the domain's
+ * own shape rather than a flat listing of it. The domain's name is not
+ * repeated here (spec 4.4): the top bar's switcher names it, and it is also
+ * the way across to another domain and back out to every domain.
  *
  * The tree is walked rather than downloaded. `GET /domains/{d}/tree` answers
  * one folder at a time - its subfolder names and the engrams directly in it -
@@ -39,24 +38,28 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeftRight, FolderOpen, Folder as FolderShut } from "lucide-react";
-import { DropdownMenu } from "radix-ui";
-import { useState } from "react";
-import { Link, useMatch, useNavigate, useSearchParams } from "react-router";
+import {
+  FileText,
+  FolderOpen,
+  Folder as FolderShut,
+  House,
+  Plus,
+} from "lucide-react";
+import { Link, useMatch, useSearchParams } from "react-router";
 
 import { problemDetail } from "../api/client";
 import { treeQuery } from "../api/domain";
-import type { DomainSummary } from "../api/domains";
 import type { EngramRow } from "../api/engrams";
 import { hasFilters } from "../api/engrams";
 import { useDomainWritable } from "../domainWritable";
 import { frontmatterFilters } from "../filters";
-import { RETIRED_CLASS, isRetired } from "../lifecycle";
+import { plural } from "../format";
+import { isRetired } from "../lifecycle";
 import { domainRoute, engramRoute, folderRoute } from "../paths";
-import { ENGRAM_PREFETCH } from "../prefetch";
-import { CreateEngramDialog } from "./CreateEngramDialog";
-import { ITEM_CLASSES, MENU_CLASSES } from "./menu";
-import { Chip, FOCUS_RING, Tooltip } from "./primitives";
+import { ENGRAM_PREFETCH, PREFETCH } from "../prefetch";
+import { Loading } from "./Loading";
+import { FOCUS_RING, SIDE } from "./primitives";
+import { useFolderOpen, useSidebarState } from "./sidebarState";
 
 export interface DomainNavProps {
   /** The domain the route is inside. */
@@ -66,13 +69,11 @@ export interface DomainNavProps {
    * own home screen, where there is none.
    */
   permalink: string;
-  /** Every registered domain, for the switcher. */
-  domains: DomainSummary[];
 }
 
-export function DomainNav({ domain, permalink, domains }: DomainNavProps) {
+export function DomainNav({ domain, permalink }: DomainNavProps) {
   const { canWrite } = useDomainWritable(domain);
-  const [creating, setCreating] = useState(false);
+  const sidebar = useSidebarState();
   const [params] = useSearchParams();
   // Whether the domain's own page is what stands beside the tree: the exact
   // route, no engram, no editor. Only that page writes `path`, so the folder
@@ -90,160 +91,66 @@ export function DomainNav({ domain, permalink, domains }: DomainNavProps) {
   // filter is a lens over the domain rather than a reason to fold away where
   // the reader just was.
   const marked = hasFilters(frontmatterFilters(params)) ? "" : browsing;
+  const overview = onDomainPage && browsing === "";
 
   return (
-    <div className="flex flex-col gap-3">
-      <Link
-        to="/"
-        className="px-2 text-xs text-slate-500 underline underline-offset-2 hover:no-underline focus-visible:ring-2 focus-visible:ring-accent-600 dark:focus-visible:ring-accent-400 focus-visible:outline-none dark:text-slate-400"
-      >
-        All domains
-      </Link>
-
-      <DomainRow
-        domain={domain}
-        domains={domains}
-        // Current while the domain page is open: no folder, whatever
-        // filter. A folder is its own page and its own row in the tree
-        // says so; an engram or the editor is somewhere else again.
-        current={onDomainPage && browsing === ""}
-      />
-
-      <div>
-        <h2 className="text-caption px-2 pb-2 font-semibold text-slate-500 dark:text-slate-400">
-          Engrams
-        </h2>
-        <TreeBranch
-          domain={domain}
-          path=""
-          permalink={permalink}
-          browsing={browsing}
-          marked={marked}
-        />
-        {/*
-          Left out on the domain's own home screen only: that screen carries
-          the same launcher beside its heading, prefilled with the folder
-          being browsed, so the sidebar would otherwise offer a second one
-          right next to the first. `permalink` is empty there and there
-          alone - both the engram page and the editor resolve one (see
-          `Layout.tsx`'s `DomainSidebar`) - so this is the only launcher on
-          either of those screens.
-        */}
-        {canWrite && permalink !== "" && (
-          <button
-            type="button"
-            onClick={() => {
-              setCreating(true);
-            }}
-            className="mt-2 w-full rounded border border-slate-300 px-2 py-1 text-sm hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-accent-600 dark:focus-visible:ring-accent-400 focus-visible:outline-none dark:border-slate-700 dark:hover:bg-slate-800"
-          >
-            New engram
-          </button>
-        )}
-      </div>
-      {creating && (
-        <CreateEngramDialog
-          domain={domain}
-          initialFolder=""
-          onClose={() => {
-            setCreating(false);
-          }}
-        />
-      )}
-    </div>
-  );
-}
-
-/**
- * The domain the reader is in, and the way across to another.
- *
- * One row: the name is a link to the domain page, marked current while that
- * page is open, and the button beside it opens every domain by name with
- * what each holds, which is what makes choosing between them a choice rather
- * than a guess. A domain the listing does not name - a wrong address, or one
- * this identity may not list - still shows in the row, so the sidebar says
- * where the reader actually is.
- *
- * The trigger is drawn the way the top bar's theme trigger is: the menu's
- * own trigger element with an icon inside and the app's tooltip around it,
- * so the pointer and the screen reader are told the same name.
- */
-function DomainRow({
-  domain,
-  domains,
-  current,
-}: {
-  domain: string;
-  domains: DomainSummary[];
-  current: boolean;
-}) {
-  const navigate = useNavigate();
-
-  return (
-    <div
-      className={`flex items-center gap-1 rounded text-sm hover:bg-slate-100 dark:hover:bg-slate-800 ${
-        current ? "bg-slate-100 font-medium dark:bg-slate-800" : ""
-      }`}
-    >
+    <div className="flex flex-col gap-0.5">
       <Link
         to={domainRoute(domain)}
-        aria-current={current ? "page" : undefined}
-        className={`min-w-0 grow truncate rounded px-2 py-1 ${FOCUS_RING}`}
+        {...PREFETCH.domain}
+        // Current while the domain's front page is open: no folder, whatever
+        // filter. A folder is its own page and its own row in the tree says
+        // so; an engram or the editor is somewhere else again.
+        aria-current={overview ? "page" : undefined}
+        className={`${SIDE.row} ${overview ? SIDE.current : ""}`}
       >
-        {domain}
+        <House
+          aria-hidden="true"
+          size={16}
+          strokeWidth={1.75}
+          className={SIDE.icon}
+        />
+        <span className="truncate">Overview</span>
       </Link>
-      <DropdownMenu.Root>
-        <Tooltip label="Switch domain">
-          <DropdownMenu.Trigger
-            aria-label="Switch domain"
-            className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded text-slate-600 hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-700 ${FOCUS_RING}`}
-          >
-            <ArrowLeftRight aria-hidden="true" size={16} strokeWidth={1.75} />
-          </DropdownMenu.Trigger>
-        </Tooltip>
-        <DropdownMenu.Portal>
-          <DropdownMenu.Content
-            align="start"
-            sideOffset={6}
-            className={MENU_CLASSES}
-          >
-            <DropdownMenu.RadioGroup
-              value={domain}
-              onValueChange={(value) => {
-                if (value !== domain) {
-                  void navigate(domainRoute(value));
-                }
-              }}
-            >
-              {domains.map((entry) => (
-                <DropdownMenu.RadioItem
-                  key={entry.name}
-                  value={entry.name}
-                  className={ITEM_CLASSES}
-                >
-                  <DropdownMenu.ItemIndicator>
-                    <span aria-hidden="true">*</span>
-                  </DropdownMenu.ItemIndicator>
-                  <span className="truncate">{entry.name}</span>
-                  {/*
-                    The same badge the flat sidebar list gives a private
-                    domain, in the sidebar's other form: a reader inside a
-                    domain picks the next one from here, and a domain that
-                    reads as private in one list must not read as ordinary
-                    in the other.
-                  */}
-                  {entry.private && <Chip variant="accent">private</Chip>}
-                  {entry.engrams !== null && (
-                    <span className="ml-auto text-xs text-slate-500 tabular-nums dark:text-slate-400">
-                      {entry.engrams}
-                    </span>
-                  )}
-                </DropdownMenu.RadioItem>
-              ))}
-            </DropdownMenu.RadioGroup>
-          </DropdownMenu.Content>
-        </DropdownMenu.Portal>
-      </DropdownMenu.Root>
+
+      <h2 className={SIDE.label}>Engrams</h2>
+      <TreeBranch
+        domain={domain}
+        path=""
+        permalink={permalink}
+        browsing={browsing}
+        marked={marked}
+      />
+      {/*
+        Left out on the domain's own home screen only: that screen carries
+        the same launcher beside its heading, prefilled with the folder
+        being browsed, so the sidebar would otherwise offer a second one
+        right next to the first. `permalink` is empty there and there
+        alone - both the engram page and the editor resolve one (see
+        `Layout.tsx`'s `DomainSidebar`) - so this is the only launcher on
+        either of those screens.
+      */}
+      {canWrite && permalink !== "" && (
+        <button
+          type="button"
+          onClick={(event) => {
+            sidebar?.create({
+              kind: "engram",
+              domain,
+              launcher: event.currentTarget,
+            });
+          }}
+          className={`${SIDE.row} ${SIDE.add} mt-1.5 w-full`}
+        >
+          <Plus
+            aria-hidden="true"
+            size={16}
+            strokeWidth={1.75}
+            className={SIDE.icon}
+          />
+          New engram
+        </button>
+      )}
     </div>
   );
 }
@@ -274,16 +181,14 @@ function TreeBranch({
 
   if (tree.isPending) {
     return (
-      <p className="px-2 py-1 text-sm text-slate-500 dark:text-slate-400">
-        Loading engrams
-      </p>
+      <Loading compact label="Loading engrams" className="px-2.5 py-1.5" />
     );
   }
   if (tree.error) {
     return (
       <p
         role="alert"
-        className="rounded bg-red-50 px-2 py-1.5 text-sm text-red-800 dark:bg-red-950 dark:text-red-200"
+        className="rounded bg-red-50 px-2.5 py-1.5 text-sm text-red-800 dark:bg-red-950 dark:text-red-200"
       >
         {problemDetail(tree.error)}
       </p>
@@ -296,7 +201,7 @@ function TreeBranch({
   );
   if (folders.length === 0 && engrams.length === 0) {
     return (
-      <p className="px-2 py-1 text-sm text-slate-500 dark:text-slate-400">
+      <p className="px-2.5 py-1.5 text-sm text-muted">
         {/*
           One sentence, and no instruction attached to it: the launcher the
           second half used to name is drawn only while an engram is open (see
@@ -316,6 +221,7 @@ function TreeBranch({
             domain={domain}
             path={childPath(path, name)}
             name={name}
+            count={tree.data?.folderCounts[name] ?? null}
             permalink={permalink}
             browsing={browsing}
             marked={marked}
@@ -348,8 +254,9 @@ function TreeBranch({
  * at the root - where the row names the domain - a direct count reads as the
  * size of the whole domain, which it is not. The payload's `total` stays a
  * true fact about the level for anything that wants it; if a number is ever
- * wanted here it has to be the recursive one, which is a server field this
- * does not have.
+ * wanted here it has to be the recursive one. The server sends that number
+ * per child folder (`folderCounts`, drawn on the folder rows), but not for
+ * the level itself.
  *
  * Muted and one step down in size, because it is the only row here that is not
  * a thing in the domain. Muted at slate-600 rather than the slate-500 the
@@ -364,7 +271,7 @@ function BrowseAll({ domain, path }: { domain: string; path: string }) {
   return (
     <Link
       to={folderRoute(domain, path)}
-      className={`block truncate rounded px-2 py-1 text-caption text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 ${FOCUS_RING}`}
+      className={`${SIDE.row} text-caption text-slate-600 dark:text-slate-400`}
     >
       {path === ""
         ? "Browse all engrams in this domain"
@@ -398,9 +305,9 @@ function isPinnedManifest(row: EngramRow): boolean {
  *
  * One glyph does both jobs - it says this row is a folder, and its open or
  * shut face says whether the branch is - because the two pictures this row
- * used to carry read as one smudge at sixteen pixels. The engram rows stay
- * icon-free on purpose: the icon IS the distinction, and one on every row
- * would say nothing.
+ * used to carry read as one smudge at sixteen pixels. An engram row carries
+ * a document glyph in the same column (spec 4.4), so folders and files line
+ * up and the two shapes tell them apart.
  *
  * The button is named after what it will do - "Expand notes", "Collapse
  * notes" - rather than after the folder, for two reasons: two controls in one
@@ -420,6 +327,7 @@ function Folder({
   domain,
   path,
   name,
+  count,
   permalink,
   browsing,
   marked,
@@ -427,6 +335,11 @@ function Folder({
   domain: string;
   path: string;
   name: string;
+  /**
+   * The engrams under this folder at any depth, the number its listing
+   * totals; null from a server that sends no count.
+   */
+  count: number | null;
   permalink: string;
   browsing: string;
   marked: string;
@@ -441,18 +354,13 @@ function Folder({
     permalink.startsWith(`${path}/`) ||
     browsing === path ||
     browsing.startsWith(`${path}/`);
-  const [open, setOpen] = useState(holdsCurrent);
-  // Adjusted while rendering rather than in an effect, which is what React
-  // asks for when state has to follow a prop: the branch opens in the same
-  // pass that noticed the reader moved into it, with no flash of a shut
-  // folder in between.
-  const [held, setHeld] = useState(holdsCurrent);
-  if (held !== holdsCurrent) {
-    setHeld(holdsCurrent);
-    if (holdsCurrent) {
-      setOpen(true);
-    }
-  }
+  // Kept by the frame rather than by this row, so a folder opened by hand
+  // stays open when the drawer shuts or the window crosses the breakpoint.
+  // It opens in the same pass that noticed the reader moved into it.
+  const [open, setOpen] = useFolderOpen(
+    `engrams\u0000${domain}\u0000${path}`,
+    holdsCurrent,
+  );
 
   return (
     <>
@@ -464,8 +372,8 @@ function Folder({
         lights up under the pointer is the row.
       */}
       <div
-        className={`flex items-center rounded text-sm hover:bg-slate-100 dark:hover:bg-slate-800 ${
-          here ? "bg-slate-100 font-medium dark:bg-slate-800" : ""
+        className={`flex min-h-8 items-center rounded-[7px] text-sm text-ink-3 hover:bg-sunken ${
+          here ? SIDE.current : ""
         }`}
       >
         {/*
@@ -487,9 +395,9 @@ function Folder({
           aria-expanded={open}
           aria-label={`${open ? "Collapse" : "Expand"} ${name}`}
           onClick={() => {
-            setOpen((wasOpen) => !wasOpen);
+            setOpen(!open);
           }}
-          className={`rounded py-1 pr-1 pl-2 text-slate-500 dark:text-slate-400 ${FOCUS_RING}`}
+          className={`self-stretch rounded-[7px] pr-1 pl-2.5 text-muted ${FOCUS_RING}`}
         >
           {open ? (
             <FolderOpen
@@ -513,13 +421,27 @@ function Folder({
           // The gap the icon used to sit in, kept as padding: the name still
           // stands off the glyph rather than against it, and the engram rows
           // under it still start where they always did.
-          className={`flex min-w-0 grow items-center rounded py-1 pr-2 pl-1.5 ${FOCUS_RING}`}
+          className={`flex min-w-0 grow items-center self-stretch rounded-[7px] pr-2.5 pl-1 ${FOCUS_RING}`}
         >
           <span className="truncate">{name}</span>
+          {/* Drawn in the row and not spoken there, so the link's name stays
+              the folder's; the words follow beside it. */}
+          {count !== null && (
+            <span
+              aria-hidden="true"
+              title={plural(count, "engram", "engrams")}
+              className={SIDE.count}
+            >
+              {count}
+            </span>
+          )}
         </Link>
+        {count !== null && (
+          <span className="sr-only">{plural(count, "engram", "engrams")}</span>
+        )}
       </div>
       {open && (
-        <div className="ml-3 border-l border-slate-200 pl-1 dark:border-slate-800">
+        <div className="ml-[17px] border-l border-hair pl-1">
           <TreeBranch
             domain={domain}
             path={path}
@@ -536,9 +458,10 @@ function Folder({
 /**
  * One engram in the tree.
  *
- * Named by its title alone: this is navigation, and the row that says what an
- * engram is made of is the list on the screen beside it. A retired one is
- * faded and still there, which is the rule everywhere else in this app.
+ * Named by its title alone, behind a document glyph that is drawn and not
+ * spoken: this is navigation, and the row that says what an engram is made
+ * of is the list on the screen beside it. A retired one is still there,
+ * set apart in a slanted, lighter ink that keeps its contrast.
  */
 function EngramLink({ row, current }: { row: EngramRow; current: boolean }) {
   const retired = isRetired(row.status);
@@ -547,11 +470,17 @@ function EngramLink({ row, current }: { row: EngramRow; current: boolean }) {
       to={engramRoute(row.domain, row.permalink)}
       {...ENGRAM_PREFETCH}
       aria-current={current ? "page" : undefined}
-      className={`block truncate rounded px-2 py-1 text-sm hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-accent-600 dark:focus-visible:ring-accent-400 focus-visible:outline-none dark:hover:bg-slate-800 ${
-        current ? "bg-slate-100 font-medium dark:bg-slate-800" : ""
-      } ${retired ? RETIRED_CLASS : ""}`}
+      className={`${SIDE.row} ${current ? SIDE.current : ""} ${
+        retired ? SIDE.retired : ""
+      }`}
     >
-      {row.title}
+      <FileText
+        aria-hidden="true"
+        size={16}
+        strokeWidth={1.75}
+        className={SIDE.icon}
+      />
+      <span className="truncate">{row.title}</span>
     </Link>
   );
 }

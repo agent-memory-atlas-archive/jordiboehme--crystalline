@@ -77,6 +77,9 @@ export function changeKeys(
     }
     case "domain":
       return [...keys, gameInboundPrefix(event.change.domain)];
+    case "reflection":
+      // The game reads no Reflection: Fluid's table is all there is to do.
+      return keys;
     case "reset":
       return "everything";
   }

@@ -134,7 +134,7 @@ function NoAnchor({ address }: { address: string }) {
       </p>
       <Link
         to="/search"
-        className="text-sm text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400"
+        className="text-sm text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline"
       >
         Find an engram to start from
       </Link>

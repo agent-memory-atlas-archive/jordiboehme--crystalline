@@ -8,10 +8,10 @@
  * recorded, or, when nothing was, the last sync.
  */
 
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "../api/client";
+import { ApiProblem, api } from "../api/client";
 import {
   answersFor,
   domainsResponse,
@@ -64,6 +64,7 @@ async function main() {
 
 beforeEach(() => {
   apiMock.mockReset();
+  Reflect.deleteProperty(window, "matchMedia");
 });
 
 describe("the home screen", () => {
@@ -186,6 +187,55 @@ describe("the home screen", () => {
     expect(screen.queryByRole("link", { name: /^Start in/ })).toBeNull();
   });
 
+  it("says a failed domain listing once, with no loader and no empty list", async () => {
+    serve({
+      "/domains": () => {
+        throw new ApiProblem(500, "internal", "the listing broke");
+      },
+    });
+
+    renderApp("/");
+
+    const body = await main();
+    // Wide, the sidebar beside this screen is the one alert.
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("the listing broke");
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(body.queryByRole("alert")).toBeNull();
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("status", { name: "Loading domains" }),
+      ).toBeNull();
+    });
+    expect(body.queryByText(/No domains are registered/)).toBeNull();
+    expect(body.queryByRole("link", { name: /^Start in/ })).toBeNull();
+  });
+
+  it("makes the screen's own line the alert when the sidebar is a closed drawer", async () => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: (query: string) => ({
+        matches: false,
+        media: query,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      }),
+    });
+    serve({
+      "/domains": () => {
+        throw new ApiProblem(500, "internal", "the listing broke");
+      },
+    });
+
+    renderApp("/");
+
+    const body = await main();
+    expect(await body.findByRole("alert")).toHaveTextContent(
+      "the listing broke",
+    );
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+  });
+
   it("lists the domains from connected servers with a link to each server", async () => {
     serve({
       "/domains": () => ({
@@ -224,5 +274,134 @@ describe("the home screen", () => {
     expect(
       home.queryByRole("region", { name: "From connected servers" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("lists the domains a contributor works on, and never says the instance is empty", async () => {
+    serve({
+      "/domains": () => ({ behavior: [], domains: [] }),
+      "/reflection/domains": () => ({
+        domains: [
+          {
+            domain: "eng",
+            state: "on",
+            right: "edit",
+            engrams_visible: false,
+            home: "here",
+            home_url: null,
+            open_threads: 3,
+          },
+          {
+            domain: "ops",
+            state: "elsewhere",
+            right: "read",
+            engrams_visible: false,
+            home: "elsewhere",
+            home_url: "https://team.example.com",
+            open_threads: 0,
+          },
+          {
+            domain: "lab",
+            state: "pending",
+            right: "read",
+            engrams_visible: false,
+            home: null,
+            home_url: null,
+            open_threads: 0,
+          },
+        ],
+      }),
+    });
+    renderApp("/");
+    const section = await screen.findByRole("region", { name: "Reflection" });
+    expect(within(section).getByRole("link", { name: "eng" })).toHaveAttribute(
+      "href",
+      "/d/eng/reflection",
+    );
+    expect(within(section).getByText("3 open threads")).toBeVisible();
+    expect(
+      within(section).getByRole("link", { name: "https://team.example.com" }),
+    ).toBeVisible();
+    // A Reflection that is not live yet says so instead of counting threads.
+    expect(within(section).getByRole("link", { name: "lab" })).toHaveAttribute(
+      "href",
+      "/d/lab/reflection",
+    );
+    expect(within(section).getByText("Not open yet")).toBeVisible();
+    expect(
+      screen.queryByText("No domains are registered on this instance yet."),
+    ).toBeNull();
+  });
+
+  it("says what a Reflection hosted by another instance, or without a home, is doing", async () => {
+    serve({
+      "/domains": () => ({ behavior: [], domains: [] }),
+      "/reflection/domains": () => ({
+        domains: [
+          {
+            domain: "a",
+            state: "hosted_elsewhere",
+            host_label: "node-2",
+            right: "read",
+            engrams_visible: false,
+            home: null,
+            home_url: null,
+            open_threads: 0,
+          },
+          {
+            domain: "b",
+            state: "hosted_elsewhere",
+            host_label: null,
+            right: "read",
+            engrams_visible: false,
+            home: null,
+            home_url: null,
+            open_threads: 0,
+          },
+          {
+            domain: "c",
+            state: "homeless",
+            right: "read",
+            engrams_visible: false,
+            home: null,
+            home_url: null,
+            open_threads: 0,
+          },
+        ],
+      }),
+    });
+    renderApp("/");
+    const section = await screen.findByRole("region", { name: "Reflection" });
+    expect(
+      within(section).getByText("Served by another instance: node-2"),
+    ).toBeVisible();
+    expect(
+      within(section).getByText(
+        "Being renamed. It opens again when the rename is done.",
+      ),
+    ).toBeVisible();
+    expect(within(section).getAllByText("Not open yet")).toHaveLength(1);
+  });
+
+  it("leaves a domain whose engrams the caller reads out of the Reflection section", async () => {
+    serve({
+      "/reflection/domains": () => ({
+        domains: [
+          {
+            domain: "eng",
+            state: "on",
+            right: "curate",
+            engrams_visible: true,
+            home: "here",
+            home_url: null,
+            open_threads: 1,
+          },
+        ],
+      }),
+    });
+    renderApp("/");
+    expect(
+      await (await main()).findByRole("heading", { name: "Domains" }),
+    ).toBeVisible();
+    expect(screen.queryByRole("region", { name: "Reflection" })).toBeNull();
   });
 });

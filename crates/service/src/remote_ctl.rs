@@ -32,7 +32,7 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
-use crate::control::{envelope_err, envelope_ok};
+use crate::control::{envelope_err, envelope_err_kind, envelope_ok};
 use crate::engine::{Engine, ShareActor};
 use crate::mcp_gate::{Bearer, McpIdentity, resolve_bearer};
 use crate::params::ListDomainsParams;
@@ -53,6 +53,7 @@ pub const REMOTE_COMMANDS: &[&str] = &[
     "hook_status",
     "origin_status",
     "origin_changes",
+    crystalline_remote::FILE_COMMAND,
 ];
 
 /// The commands whose answer carries an etag, because a client caches it.
@@ -184,17 +185,35 @@ pub(crate) async fn dispatch(
     };
     let answer = match cmd {
         "status" => remote_status(engine, identity, &scope).await,
-        "tool" => remote_tool(engine, request, identity, &scope, base).await,
         "routing_bullets" => routing_model(engine, identity, &scope).await,
         "hook_status" => hook_status(engine, identity, &scope).await,
         "origin_status" => origin_status(engine, request, &scope).await,
         "origin_changes" => origin_changes(engine, request, identity, &scope).await,
+        // The two commands that run a verb: an argument error among their
+        // failures is told apart by its kind.
+        "tool" => {
+            return verb_envelope(remote_tool(engine, request, identity, &scope, base).await);
+        }
+        crystalline_remote::FILE_COMMAND => {
+            return verb_envelope(remote_file(engine, request, identity, &scope, base).await);
+        }
         other => Err(format!("'{other}' {NOT_REMOTE}")),
     };
     match answer {
         Ok(data) if ETAG_COMMANDS.contains(&cmd) => conditional(request, data),
         Ok(data) => envelope_ok(data),
         Err(message) => envelope_err(message),
+    }
+}
+
+/// The envelope of a verb's answer: an argument error carries its kind.
+fn verb_envelope(verb: Result<Value, crate::mcp::RemoteToolError>) -> Value {
+    match verb {
+        Ok(data) => envelope_ok(data),
+        Err(failure) if failure.is_invalid() => {
+            envelope_err_kind(failure.into_message(), crystalline_remote::INVALID_KIND)
+        }
+        Err(failure) => envelope_err(failure.into_message()),
     }
 }
 
@@ -409,32 +428,63 @@ fn forwarded_client(request: &Value) -> String {
         .unwrap_or_else(|| REMOTE_CLIENT.to_string())
 }
 
+/// A remote `file` read (0.27.0): one file of a domain, `{domain, path}`
+/// with `path` domain-relative, answered as `{mime, size, base64}` under the
+/// account's own right for the kind of the file (engram rights for
+/// `assets/...`, the Reflection read right for `reflections/assets/...`).
+/// The bytes are the file's, never past `MAX_ATTACHMENT_BYTES`; the client
+/// reads the answer with that ceiling (`crystalline_remote::FILE_ANSWER_CAP`).
+async fn remote_file(
+    engine: &Arc<Engine>,
+    request: &Value,
+    identity: &McpIdentity,
+    scope: &Scope,
+    base: &WebBase,
+) -> Result<Value, crate::mcp::RemoteToolError> {
+    let domain = request.get("domain").and_then(Value::as_str).unwrap_or("");
+    let path = request.get("path").and_then(Value::as_str).unwrap_or("");
+    crate::mcp::McpServer::new_http(engine.clone())
+        .remote_file(domain, path, &remote_caller(request, identity, scope, base))
+        .await
+}
+
+/// The caller of a remote call: the token's account, never anything the
+/// request says, as the agent the connected machine forwarded. The holder is
+/// the one a sessionless HTTP peer gets (decision D10): keyed by the
+/// account, ended by `IDLE_JOIN_LIMIT` after the last use.
+fn remote_caller(
+    request: &Value,
+    identity: &McpIdentity,
+    scope: &Scope,
+    base: &WebBase,
+) -> crate::mcp::Caller {
+    crate::mcp::Caller {
+        scope: scope.clone(),
+        account: Some(identity.name.clone()),
+        client: Some(forwarded_client(request)),
+        holder: Some(crate::join::Holder::Token(identity.name.clone())),
+        base: base.clone(),
+    }
+}
+
 /// A remote `tool` call, through `McpServer::remote_tool` on a server object
-/// built for this one request, as the forwarded agent for the account. The
-/// account always comes from the token, never from the request. The holder is
-/// the one a sessionless HTTP peer gets (decision D10): keyed by the account,
-/// ended by `IDLE_JOIN_LIMIT` after the last use.
+/// built for this one request, as the forwarded agent for the account
+/// ([`remote_caller`]).
 async fn remote_tool(
     engine: &Arc<Engine>,
     request: &Value,
     identity: &McpIdentity,
     scope: &Scope,
     base: &WebBase,
-) -> Result<Value, String> {
+) -> Result<Value, crate::mcp::RemoteToolError> {
     let tool = request.get("tool").and_then(Value::as_str).unwrap_or("");
     if !REMOTE_TOOLS.contains(&tool) {
-        return Err(format!("the tool '{tool}' {NOT_REMOTE}"));
+        return Err(crate::mcp::RemoteToolError::Refused(format!(
+            "the tool '{tool}' {NOT_REMOTE}"
+        )));
     }
     let args = request.get("args").cloned().unwrap_or_else(|| json!({}));
-    let caller = crate::mcp::Caller {
-        scope: scope.clone(),
-        account: Some(identity.name.clone()),
-        client: Some(forwarded_client(request)),
-        holder: Some(crate::join::Holder::Token(identity.name.clone())),
-        base: base.clone(),
-    };
     crate::mcp::McpServer::new_http(engine.clone())
-        .remote_tool(tool, args, &caller)
+        .remote_tool(tool, args, &remote_caller(request, identity, scope, base))
         .await
-        .map_err(crate::mcp::RemoteToolError::into_message)
 }

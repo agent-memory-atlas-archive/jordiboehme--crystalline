@@ -20,15 +20,24 @@ import { ACTIVITY_QUERY_KEY, fetchActivity } from "../api/activity";
 import type { Activity } from "../api/activity";
 import { DOMAINS_QUERY_KEY, fetchDomains } from "../api/domains";
 import type { DomainSummary } from "../api/domains";
+import {
+  REFLECTION_DOMAINS_KEY,
+  fetchReflectionDomains,
+} from "../api/reflectionDomains";
+import type { ReflectionDomain } from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
 import { CreateDomainDialog } from "../components/CreateDomainDialog";
+import { Loading } from "../components/Loading";
+import { HomeElsewhere } from "../components/ReflectionModeSwitch";
 import { BUTTON, Chip, FOCUS_RING } from "../components/primitives";
 import { formatDay, plural } from "../format";
 import { RETIRED_CLASS, isRetired } from "../lifecycle";
-import { domainRoute, engramRoute } from "../paths";
-import { ENGRAM_PREFETCH } from "../prefetch";
+import { domainRoute, engramRoute, reflectionRoute } from "../paths";
+import { ENGRAM_PREFETCH, PREFETCH } from "../prefetch";
+import { useWide } from "../useWide";
 
 export default function Home() {
+  const wide = useWide();
   const { capabilities } = useAuth();
   // Its own, rather than the frame's: the dialog carries everything it needs,
   // so a second mount is one boolean, while threading the frame's state down
@@ -42,6 +51,16 @@ export default function Home() {
     queryKey: ACTIVITY_QUERY_KEY,
     queryFn: fetchActivity,
   });
+
+  const reflections = useQuery({
+    queryKey: REFLECTION_DOMAINS_KEY,
+    queryFn: fetchReflectionDomains,
+  });
+  // The domains a caller reaches only through their Reflection: every one
+  // whose engrams it cannot read. The others already have a card above.
+  const reflectionOnly = (reflections.data ?? []).filter(
+    (row) => !row.engramsVisible,
+  );
 
   const recorded = useMemo(
     () => lastRecordedByDomain(activity.data),
@@ -87,21 +106,22 @@ export default function Home() {
           />
         )}
         {listing.isPending && (
-          <p className="text-sm text-slate-500 dark:text-slate-400">
-            Loading domains
-          </p>
+          <Loading label="Loading domains" subject="the domains" />
         )}
         {/*
-          A failed listing is announced once, by the sidebar, which reads the
-          same query. Saying it twice would have a screen reader hear the same
-          failure twice over.
+          One failure, one announcement. From the medium breakpoint up the
+          sidebar beside this screen reads the same query and is the alert;
+          below it the sidebar is a closed drawer, so this line is.
         */}
         {listing.error && (
-          <p className="text-sm text-red-800 dark:text-red-200">
+          <p
+            role={wide ? undefined : "alert"}
+            className="text-sm text-red-800 dark:text-red-200"
+          >
             {problemDetail(listing.error)}
           </p>
         )}
-        {listing.data?.domains.length === 0 && (
+        {listing.data?.domains.length === 0 && reflectionOnly.length === 0 && (
           <p className="text-sm text-slate-500 dark:text-slate-400">
             No domains are registered on this instance yet.
           </p>
@@ -117,6 +137,47 @@ export default function Home() {
           ))}
         </ul>
       </section>
+
+      {(reflectionOnly.length > 0 || reflections.error) && (
+        <section aria-labelledby="home-reflection">
+          <h2 id="home-reflection" className="mb-3 text-section">
+            Reflection
+          </h2>
+          {reflections.error && (
+            <p className="mb-3 text-sm text-red-800 dark:text-red-200">
+              {problemDetail(reflections.error)}
+            </p>
+          )}
+          <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {reflectionOnly.map((row) => (
+              <li
+                key={row.domain}
+                className="rounded border border-slate-200 p-3 dark:border-slate-800"
+              >
+                {row.state === "elsewhere" ? (
+                  <>
+                    <p className="font-medium">{row.domain}</p>
+                    <HomeElsewhere url={row.homeUrl} />
+                  </>
+                ) : (
+                  <>
+                    <Link
+                      to={reflectionRoute(row.domain)}
+                      {...PREFETCH.reflection}
+                      className="font-medium text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline"
+                    >
+                      {row.domain}
+                    </Link>
+                    <p className="text-caption text-slate-500 dark:text-slate-400">
+                      {reflectionLine(row)}
+                    </p>
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {listing.data && listing.data.mounted.length > 0 && (
         <section aria-labelledby="home-mounted">
@@ -175,6 +236,21 @@ export default function Home() {
   );
 }
 
+/** What a Reflection-only row says under its name. */
+function reflectionLine(row: ReflectionDomain): string {
+  switch (row.state) {
+    case "on":
+      return plural(row.openThreads, "open thread", "open threads");
+    case "hosted_elsewhere":
+      return row.hostLabel !== null
+        ? `Served by another instance: ${row.hostLabel}`
+        : "Being renamed. It opens again when the rename is done.";
+    default:
+      // Pending or homeless: the Reflection home says why.
+      return "Not open yet";
+  }
+}
+
 /** One domain, as much as can be said about it from the listing and the feed. */
 function DomainCard({
   domain,
@@ -188,6 +264,7 @@ function DomainCard({
       <h3 className="flex flex-wrap items-center gap-2 text-base font-semibold">
         <Link
           to={domainRoute(domain.name)}
+          {...PREFETCH.domain}
           className="hover:underline focus-visible:ring-2 focus-visible:ring-accent-600 dark:focus-visible:ring-accent-400 focus-visible:outline-none"
         >
           {domain.name}
@@ -267,9 +344,7 @@ function ActivityFeed({
 }) {
   if (pending) {
     return (
-      <p className="text-sm text-slate-500 dark:text-slate-400">
-        Loading recent activity
-      </p>
+      <Loading label="Loading recent activity" subject="recent activity" />
     );
   }
   if (error) {
@@ -301,6 +376,7 @@ function ActivityFeed({
         {firstDomain !== null && (
           <Link
             to={domainRoute(firstDomain)}
+            {...PREFETCH.domain}
             className={`mt-1 text-sm text-accent-700 underline underline-offset-2 hover:no-underline dark:text-accent-400 ${FOCUS_RING}`}
           >
             {`Start in ${firstDomain}`}

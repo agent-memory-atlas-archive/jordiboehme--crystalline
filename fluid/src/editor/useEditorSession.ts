@@ -7,6 +7,7 @@
  */
 
 import type { Extension } from "@codemirror/state";
+import { Transaction } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { keymap } from "@codemirror/view";
 import { useMutation } from "@tanstack/react-query";
@@ -98,8 +99,12 @@ export interface EditorSessionOptions {
    * spurious 412s at best and clobber session saves at worst.
    */
   transport?: "solo" | "collab";
-  /** Required when transport is "collab": the session flush request. */
-  flush?: () => void;
+  /** Required when transport is "collab": the session flush request, false
+   *  when the room refused it (its connection was not live yet). */
+  flush?: () => boolean;
+  /** Collab only: whether the room's connection is live; a Save pressed
+   *  while it was not is asked again once it is. */
+  live?: boolean;
   /** Collab only: maps the LF buffer to file space for draft snapshots so
    *  drafts stay interchangeable with the solo flow's. ONE writer: the
    *  hook's debounce is the only draft writer in either mode. */
@@ -110,6 +115,17 @@ export interface EditorSession {
   buffer: string;
   setBuffer: (next: string) => void;
   dirty: boolean;
+  /**
+   * How many saves this session has started so far. Read when something
+   * needs to know which later save is the first to include it.
+   */
+  savesStarted: () => number;
+  /**
+   * The start number of the newest save that landed (`savesStarted` as it
+   * stood when that save began); 0 before any. A save numbered above a
+   * value read from `savesStarted` began after that read.
+   */
+  landedSave: number;
   checksum: string;
   viewRef: RefObject<EditorView | null>;
   onReady: (view: EditorView) => void;
@@ -149,6 +165,51 @@ export interface EditorSession {
   noteSaved: () => void;
 }
 
+/**
+ * Put the text the server stored into a buffer that still holds what was
+ * sent, changing only the span that differs so the caret and the scroll stay
+ * where they were. A plain transaction, not a rebuild, and kept out of the
+ * undo history.
+ */
+function adoptStored(view: EditorView, stored: string): void {
+  const separator = view.state.lineBreak;
+  const next = stored.split(/\r\n|\n/).join(separator);
+  const current = docText(view.state);
+  if (current === next) {
+    return;
+  }
+  let start = 0;
+  while (
+    start < current.length &&
+    start < next.length &&
+    current[start] === next[start]
+  ) {
+    start += 1;
+  }
+  let end = 0;
+  while (
+    end < current.length - start &&
+    end < next.length - start &&
+    current[current.length - 1 - end] === next[next.length - 1 - end]
+  ) {
+    end += 1;
+  }
+  // Offsets into the file's own string, as document positions: a CRLF break
+  // is two characters in the string and one position in the document.
+  const toPosition = (offset: number) =>
+    current.slice(0, offset).split(separator).join("\n").length;
+  view.dispatch({
+    changes: {
+      from: toPosition(start),
+      to: toPosition(current.length - end),
+      insert: next.slice(start, next.length - end),
+    },
+    // Not a step of the author's: an undo right after a save must not bring
+    // back the spelling the server replaced.
+    annotations: Transaction.addToHistory.of(false),
+  });
+}
+
 export function useEditorSession(options: EditorSessionOptions): EditorSession {
   const {
     initialContent,
@@ -164,6 +225,7 @@ export function useEditorSession(options: EditorSessionOptions): EditorSession {
     ariaLabel,
     transport = "solo",
     flush,
+    live = false,
     draftContent,
   } = options;
   const viewRef = useRef<EditorView | null>(null);
@@ -247,7 +309,16 @@ export function useEditorSession(options: EditorSessionOptions): EditorSession {
     [draftUser, draftDomain, draftSlot, checksum, asStoredDraft],
   );
 
+  // Every save gets the next number when it starts; the newest one that
+  // landed is remembered, so a caller can ask "did a save that began after
+  // this moment land yet?".
+  const saveStarts = useRef(0);
+  const [landedSave, setLandedSave] = useState(0);
   const save = useMutation({
+    onMutate: () => {
+      saveStarts.current += 1;
+      return { started: saveStarts.current };
+    },
     // The token travels with the content rather than being read from
     // `checksum` inside the mutation: a conflict's overwrite moves the
     // checksum state and fires the retry in the same handler, and a mutation
@@ -255,7 +326,8 @@ export function useEditorSession(options: EditorSessionOptions): EditorSession {
     // value on that first tick.
     mutationFn: ({ content, token }: { content: string; token: string }) =>
       transportSave(content, token),
-    onSuccess: (saved, sent) => {
+    onSuccess: (saved, sent, context) => {
+      setLandedSave((was) => Math.max(was, context.started));
       const view = viewRef.current;
       // What the draft is for is the text the server does not have. A save
       // that carried the buffer as it stands has made the draft redundant and
@@ -270,7 +342,30 @@ export function useEditorSession(options: EditorSessionOptions): EditorSession {
         clearDraft(draftUser, draftDomain, draftSlot);
       }
       setChecksum(saved.checksum);
-      setSavedText(saved.content);
+      /*
+       * The server may store something other than what was sent: a write
+       * normalizes, for one, a link through a domain alias. When the buffer
+       * still holds exactly what was sent, the stored text is put into it, so
+       * the buffer and the file agree and the header says Saved. When the
+       * author has typed on since, their text stays, and "unsaved" is judged
+       * against what was sent: the newer typing is what is unsaved.
+       */
+      if (
+        view &&
+        transport !== "collab" &&
+        saved.content !== sent.content &&
+        docText(view.state) === sent.content
+      ) {
+        setSavedText(saved.content);
+        adoptStored(view, saved.content);
+      } else {
+        setSavedText(
+          saved.content === sent.content ||
+            (view !== null && docText(view.state) !== sent.content)
+            ? sent.content
+            : saved.content,
+        );
+      }
       setNotice({ kind: "done", text: "Saved" });
       onSaved?.(saved);
     },
@@ -284,13 +379,28 @@ export function useEditorSession(options: EditorSessionOptions): EditorSession {
     },
   });
 
+  // A Save the room refused because its connection was not live yet: asked
+  // once more as soon as it is.
+  const saveOwed = useRef(false);
+  useEffect(() => {
+    if (!saveOwed.current || !live || flush === undefined) {
+      return;
+    }
+    if (flush()) {
+      saveOwed.current = false;
+    }
+  }, [live, flush]);
+
   const requestSave = () => {
     if (transport === "collab") {
       // The server owns saving in a session; Mod-S and the Save button both
       // land here and both ask it to flush. The PUT mutation, its checksum
       // and its 412 flow never run in this mode - a stale-If-Match PUT
       // against a debounce-saving server would fight the session.
-      flush?.();
+      if (flush !== undefined && !flush()) {
+        // Not live yet: asked again once it is (see below).
+        saveOwed.current = true;
+      }
       return;
     }
     const view = viewRef.current;
@@ -377,6 +487,8 @@ export function useEditorSession(options: EditorSessionOptions): EditorSession {
     buffer,
     setBuffer,
     dirty,
+    savesStarted: () => saveStarts.current,
+    landedSave,
     checksum,
     viewRef,
     onReady: (view) => {

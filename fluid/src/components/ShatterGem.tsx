@@ -226,8 +226,9 @@ function C64Screen({
               {"64K RAM SYSTEM  38911 ENGRAM BYTES FREE"}
             </p>
             <p className="mt-5">CONCEIVED AND GROWN BY JORDI BÖHME.</p>
-            <p>EST.2025. FLUID IS WHERE FLUID AND</p>
-            <p>CRYSTALLIZED INTELLIGENCE MEET.</p>
+            <p>EST.2025. ENGRAMS HOLD WHAT THE AGENT</p>
+            <p>LEARNS. THE REFLECTION MIRRORS IT FOR</p>
+            <p>PEOPLE. FLUID IS WHERE THEY ALL MEET.</p>
             <p className="mt-5">READY.</p>
             <LoadLine href={REPO_URL} label="SOURCE" />
             <LoadLine href={SUPPORT_URL} label="COFFEE" />

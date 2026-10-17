@@ -8941,3 +8941,47 @@ async fn the_reflection_gate_states_are_call_time_refusals() {
         "{text}"
     );
 }
+
+/// `add_domain` refuses a name that differs from a registered domain only in
+/// letter case, for a folder and for a virtual domain, and says why in the
+/// error an agent reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn add_domain_refuses_a_name_that_differs_only_in_case() {
+    let h = Harness::new(&["eng"]).await;
+    let (client, _server) = h.connect().await;
+    for args in [
+        json!({ "domain": "ENG", "virtual": true }),
+        json!({ "domain": "Eng" }),
+    ] {
+        let err = call(client.peer(), "add_domain", args.clone())
+            .await
+            .expect_err("a case twin is refused");
+        assert!(err.contains("only in letter case"), "{args}: {err}");
+    }
+}
+
+/// A filter-only search dates its hits for the web listing, but the tool's
+/// rows keep one shape: no hit carries `recorded_at`, dated or not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_filter_only_search_keeps_its_rows_undated_for_the_agent() {
+    let h = Harness::new(&["eng"]).await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+    call(
+        peer,
+        "write_engram",
+        json!({ "domain": "eng", "title": "Alpha", "content": "Alpha knowledge" }),
+    )
+    .await
+    .unwrap();
+    let text = call_text(peer, "search_engrams", json!({ "domains": ["eng"] }))
+        .await
+        .unwrap();
+    let page: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let hits = page["hits"].as_array().unwrap();
+    assert!(!hits.is_empty(), "{page}");
+    assert!(
+        hits.iter().all(|hit| hit.get("recorded_at").is_none()),
+        "{page}"
+    );
+}

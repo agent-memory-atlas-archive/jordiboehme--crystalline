@@ -28,7 +28,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactElement } from "react";
 import { useEffect, useState } from "react";
 
-import { fetchSyncStatus, syncDomain, syncStatusKey } from "../api/admin";
+import {
+  fetchSyncStatus,
+  syncDomain,
+  syncPullKey,
+  syncStatusKey,
+} from "../api/admin";
 import { ApiProblem, problemDetail } from "../api/client";
 import { DOMAINS_QUERY_KEY } from "../api/domains";
 import { formatInstant, plural, relativeTime } from "../format";
@@ -94,6 +99,7 @@ export function SyncCard({ domain }: { domain: string }): ReactElement | null {
   });
 
   const pull = useMutation({
+    mutationKey: syncPullKey(domain),
     mutationFn: () => syncDomain(domain),
     onSuccess: () => {
       setProblem(null);
@@ -125,11 +131,12 @@ export function SyncCard({ domain }: { domain: string }): ReactElement | null {
     // as "Team sync", which an `article` is not, and this is one of the two
     // named blocks of the domain screen rather than a card in a list.
     <section
-      aria-labelledby="domain-sync"
-      className="flex flex-col gap-3 rounded border border-slate-200 p-4 dark:border-slate-800"
+      aria-labelledby="page-domain-sync"
+      // A compact banner above the MANIFEST's lead (spec 5.3).
+      className="flex flex-col gap-2 rounded-lg border border-hair bg-chrome px-4 py-3 text-sm"
     >
       <div className="flex flex-wrap items-baseline justify-between gap-3">
-        <h2 id="domain-sync" className="text-section">
+        <h2 id="page-domain-sync" className="text-sm font-semibold">
           Team sync
         </h2>
         {/* Secondary: keeping up with the origin is maintenance, not the act
@@ -172,7 +179,10 @@ export function SyncCard({ domain }: { domain: string }): ReactElement | null {
             nothing, which is not the same as saying no.
           */}
           {sync.connected === false && (
-            <p className="text-sm text-slate-500 dark:text-slate-400">
+            <p
+              role="status"
+              className="text-sm text-slate-500 dark:text-slate-400"
+            >
               Not connected - connect GitHub under Settings to sync.
             </p>
           )}
@@ -213,7 +223,7 @@ export function SyncCard({ domain }: { domain: string }): ReactElement | null {
                 something. Declined work is informational, a conflict is
                 somebody's next task, and the wording is what says which. */}
             {sync.declinedProposals > 0 && (
-              <span>
+              <span role="status">
                 {plural(
                   sync.declinedProposals,
                   "declined proposal",
@@ -222,7 +232,7 @@ export function SyncCard({ domain }: { domain: string }): ReactElement | null {
               </span>
             )}
             {sync.conflicts > 0 && (
-              <span className="flex flex-wrap items-center gap-2">
+              <span role="status" className="flex flex-wrap items-center gap-2">
                 {/* The count is the sentence; the paths are what turns it
                     into somewhere to go. A report that carried a bare count,
                     or paths with no id to address a conflict by, still says

@@ -8,6 +8,7 @@
 
 use crystalline_core::reflection as r;
 
+use super::asset_home::refuse_extension_change;
 use super::reflection::rooms_to_rewrite;
 use super::*;
 use crate::scope::{ReflectionCaller, ReflectionRight, reflection_right_word};
@@ -56,10 +57,43 @@ impl Engine {
         bytes: Vec<u8>,
         caller: &ReflectionCaller,
     ) -> Result<WrittenReflectionAsset> {
+        self.reflection_asset_put(domain, path, bytes, caller, false)
+            .await
+    }
+
+    /// Add a file only where none is: a file already at `path` is refused
+    /// with [`EngineError::Conflict`] ending in
+    /// [`crate::engine::ASSET_EXISTS`], for a curator too. The check runs
+    /// under the file's lock, so of two racing uploads to one free path
+    /// exactly one lands.
+    pub async fn reflection_asset_create(
+        &self,
+        domain: &str,
+        path: &str,
+        bytes: Vec<u8>,
+        caller: &ReflectionCaller,
+    ) -> Result<WrittenReflectionAsset> {
+        self.reflection_asset_put(domain, path, bytes, caller, true)
+            .await
+    }
+
+    /// The two verbs above. Create-only wins over the curate refusal (R90):
+    /// a contributor who asked to only create is told that, not that
+    /// replacing needs curate.
+    async fn reflection_asset_put(
+        &self,
+        domain: &str,
+        path: &str,
+        bytes: Vec<u8>,
+        caller: &ReflectionCaller,
+        create_only: bool,
+    ) -> Result<WrittenReflectionAsset> {
         let access = self
-            .require_reflection(domain, caller, ReflectionRight::Edit)
+            .require_reflection_to_write(domain, caller, ReflectionRight::Edit)
             .await?;
-        let replace = if access.right >= ReflectionRight::Curate {
+        let replace = if create_only {
+            ReplaceRule::CreateOnly
+        } else if access.right >= ReflectionRight::Curate {
             ReplaceRule::Allow
         } else {
             ReplaceRule::Refuse(format!(
@@ -70,6 +104,14 @@ impl Engine {
         let written: WrittenAsset = self
             .asset_write_in(AssetHome::Reflection, domain, path, bytes, replace)
             .await?;
+        // The stored spelling, the one the file listing answers.
+        self.announce_reflection(
+            domain,
+            &written.row.path,
+            ReflectionChangeKind::Files,
+            None,
+            change_label(&caller.scope),
+        );
         Ok(WrittenReflectionAsset {
             row: written.row,
             created: written.created,
@@ -84,10 +126,18 @@ impl Engine {
         path: &str,
         caller: &ReflectionCaller,
     ) -> Result<()> {
-        self.require_reflection(domain, caller, ReflectionRight::Curate)
+        self.require_reflection_to_write(domain, caller, ReflectionRight::Curate)
             .await?;
         self.asset_delete_in(AssetHome::Reflection, domain, path)
-            .await
+            .await?;
+        self.announce_reflection(
+            domain,
+            path,
+            ReflectionChangeKind::Files,
+            None,
+            change_label(&caller.scope),
+        );
+        Ok(())
     }
 
     /// Move or rename a file inside `reflections/assets/` and rewrite every
@@ -101,12 +151,13 @@ impl Engine {
         caller: &ReflectionCaller,
     ) -> Result<Value> {
         let access = self
-            .require_reflection(domain, caller, ReflectionRight::Curate)
+            .require_reflection_to_write(domain, caller, ReflectionRight::Curate)
             .await?;
         // The paths first, so a move that cannot happen says why rather
         // than that a page is open.
         validate_attachment_path(from)?;
         validate_attachment_path(to)?;
+        refuse_extension_change(from, to)?;
         if from == to {
             return Err(EngineError::Invalid(format!(
                 "'{from}' already is at '{to}'"
@@ -119,17 +170,24 @@ impl Engine {
             .store
             .lock()
             .await
-            .list_reflections(access.domain_id)
+            .list_reflection_stamps(access.domain_id)
             .await?;
         let linking = rooms_to_rewrite(
             &access,
             pages.iter().map(|p| p.path.as_str()),
             &|text, inner| r::rewrite_asset_links(text, inner, from, to).1,
         );
-        self.refuse_under_live_rooms(domain, &linking).await?;
+        self.refuse_under_live_pages(domain, &linking).await?;
         let row_behind = self
             .asset_move_in(AssetHome::Reflection, domain, from, to)
             .await?;
+        self.announce_reflection(
+            domain,
+            to,
+            ReflectionChangeKind::Files,
+            Some(from),
+            change_label(&caller.scope),
+        );
         // The file has moved by now, so a page that cannot be relinked is
         // named in the receipt (and the log) instead of failing a move that
         // happened, as a page move does.
@@ -138,12 +196,24 @@ impl Engine {
         for page in &pages {
             let inner = page.path.as_str();
             match self
-                .relink_reflection(&access, inner, &|s| {
+                .relink_reflection(domain, &access, inner, &|s| {
                     r::rewrite_asset_links(s, inner, from, to)
                 })
                 .await
             {
-                Ok(n) => links += n,
+                Ok(n) => {
+                    links += n;
+                    if n > 0 {
+                        // A link that followed the file: nobody's change.
+                        self.announce_reflection(
+                            domain,
+                            inner,
+                            ReflectionChangeKind::Changed,
+                            None,
+                            None,
+                        );
+                    }
+                }
                 Err(e) => {
                     tracing::warn!(
                         domain,
@@ -152,7 +222,7 @@ impl Engine {
                         page = inner,
                         "a link to the moved file could not be rewritten: {e}"
                     );
-                    failed.push(json!({ "path": inner, "reason": e.to_string() }));
+                    super::move_::note_link_failure(&mut failed, domain, inner, &e);
                 }
             }
         }

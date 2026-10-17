@@ -16,38 +16,6 @@ use crystalline_service::params::*;
 use crystalline_service::{Engine, Scope};
 use tokio::sync::{Mutex, broadcast};
 
-#[cfg(feature = "postgres")]
-fn pg_url() -> Option<String> {
-    use std::sync::Once;
-    static NOTE: Once = Once::new();
-    match std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") {
-        Ok(u) if !u.is_empty() => Some(u),
-        _ => {
-            NOTE.call_once(|| {
-                eprintln!(
-                    "note: skipping the postgres virtual-domain leg (CRYSTALLINE_TEST_POSTGRES_URL is unset); turso only"
-                )
-            });
-            None
-        }
-    }
-}
-
-/// A recycled pid must never adopt a schema a panicking run left behind.
-#[cfg(feature = "postgres")]
-fn unique_schema() -> String {
-    use std::hash::{BuildHasher, RandomState};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "ctv_{}_{}_{:x}",
-        std::process::id(),
-        n,
-        RandomState::new().hash_one(n)
-    )
-}
-
 /// Run a body against Turso (always) and Postgres (when configured), each with a
 /// fresh, isolated store handed to the engine as a trait object.
 macro_rules! both_backends {
@@ -61,19 +29,15 @@ macro_rules! both_backends {
             }
             #[cfg(feature = "postgres")]
             {
-                if let Some(url) = pg_url() {
-                    let schema = unique_schema();
-                    let pg = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                        .await
-                        .expect("open the postgres test schema");
+                if let Some(scratch) = crate::support::scratch_schema("ctv") {
+                    let pg = crystalline_index::PostgresStore::open_in_schema(
+                        scratch.url(),
+                        scratch.name(),
+                    )
+                    .await
+                    .expect("open the postgres test schema");
                     let store: Arc<Mutex<dyn Store>> = Arc::new(Mutex::new(pg));
                     $body(store).await;
-                    // Drop the schema through a fresh connection (the boxed store
-                    // no longer exposes the inherent drop_schema).
-                    let cleanup = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                        .await
-                        .unwrap();
-                    cleanup.drop_schema().await.unwrap();
                 }
             }
         }
@@ -141,9 +105,9 @@ async fn engine_fixture_on(
         .insert("oak".to_string(), DomainEntry::file(oak));
     let config_path = root.join("config.yaml");
     crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
-    let engine = Arc::new(
-        Engine::new(store, cfg, None, Some(config_path)).with_state_dir(root.join("state")),
-    );
+    let engine =
+        Engine::new(store.clone(), cfg, None, Some(config_path)).with_state_dir(root.join("state"));
+    let engine = Arc::new(crate::support::as_this_machine(engine, &store).await);
     engine.sync(None).await.unwrap();
     (tmp, engine, scratch)
 }
@@ -666,6 +630,31 @@ async fn a_manifest_save_announces_the_manifest() {
     );
 }
 
+/// The MANIFEST editor names the account that saved, as every other save
+/// does.
+#[tokio::test]
+async fn a_manifest_save_names_the_account_that_saved_it() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let current = std::fs::read_to_string(tmp.path().join("notes/MANIFEST.md")).unwrap();
+    let mut rx = engine.changes().subscribe();
+    let revised = current.replace("Everything about notes", "Everything about notes, revised");
+    engine
+        .save_manifest(
+            "notes",
+            &revised,
+            &support::sha256_hex(current.as_bytes()),
+            &Scope::User {
+                account: "ada".into(),
+                admin: false,
+            },
+        )
+        .await
+        .unwrap();
+    let heard = drain(&mut rx);
+    assert_eq!(heard.len(), 1, "{heard:?}");
+    assert_eq!(engram_of(&heard[0]).actor.as_deref(), Some("ada"));
+}
+
 /// A save into a domain that had no MANIFEST creates the file, and the bus
 /// says so: Added, not the Modified an edit of an existing MANIFEST announces.
 #[tokio::test]
@@ -709,7 +698,7 @@ async fn a_domain_removal_and_a_rename_announce_domain_events() {
         .into_iter()
         .filter_map(|c| match c {
             Change::Domain(d) => Some(d),
-            Change::Engram(_) => None,
+            Change::Engram(_) | Change::Reflection(_) => None,
         })
         .collect();
     let names: Vec<String> = domains.iter().map(|d| d.domain.clone()).collect();

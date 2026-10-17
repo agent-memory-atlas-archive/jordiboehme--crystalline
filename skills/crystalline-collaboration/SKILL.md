@@ -19,7 +19,7 @@ In a domain with review: overlay your writes are private drafts until share_chan
 
 Somebody may hand you a draft share-link (`dl_...`) to work on their draft instead of a copy of your own: pass it as `share_link` on `read_engram` or `edit_engram`. That opens their one draft of that one engram for you - never anything wider - and any edit you make lands in their copy, so say whose draft you changed when you relay what you did.
 
-When a write receipt says it landed in a live editor and names who is present, coordinate in conversation rather than re-reading.
+When a write receipt says it landed in a live editor and names who is present, coordinate in conversation rather than re-reading. When it says `landed: file` with a `room_note`, the editor that person has open could not take your change in yet: tell them what `room_note` says.
 
 ## Capture, then share deliberately
 

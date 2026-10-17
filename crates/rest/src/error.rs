@@ -29,7 +29,7 @@ use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use serde::de::DeserializeOwned;
 
-use crate::engine::EngineError;
+use crate::engine::{EngineError, FILE_HOSTED_MARK, FILE_NO_HOST_MARK, ONLY_ELSEWHERE};
 
 /// An error response in RFC 9457 shape. `title` is a short stable slug a
 /// client may match on; `detail` carries the engine's own message verbatim,
@@ -135,6 +135,21 @@ impl ApiError {
         ApiError {
             status: StatusCode::PRECONDITION_REQUIRED,
             title: "precondition required",
+            detail: detail.into(),
+            token_required: None,
+            retry_after: None,
+            home_url: None,
+        }
+    }
+
+    /// A 412 for a write whose precondition does not hold, with a plain
+    /// detail and nothing else: an upload's `If-None-Match: *` onto a path
+    /// that already holds a file. Not [`precondition_failed`], which carries
+    /// the markdown a client merges and has none to carry for bytes.
+    pub fn precondition_failed_plain(detail: impl Into<String>) -> ApiError {
+        ApiError {
+            status: StatusCode::PRECONDITION_FAILED,
+            title: "precondition failed",
             detail: detail.into(),
             token_required: None,
             retry_after: None,
@@ -465,6 +480,24 @@ pub fn if_match(headers: &axum::http::HeaderMap) -> Result<String, ApiError> {
     Ok(checksum.to_string())
 }
 
+/// Whether an upload asks to only create: `If-None-Match: *` (RFC 9110:
+/// "only if nothing is there"). Absent is `false`, `*` (whitespace around it
+/// aside) is `true`, and anything else is 422: an upload has no entity tag
+/// to compare, so a list, a quoted tag or a weak `W/*` would read as a
+/// precondition the server never checks. Not [`if_none_match_matches`],
+/// which is permissive on purpose because it only guards a read.
+pub fn create_only(headers: &axum::http::HeaderMap) -> Result<bool, ApiError> {
+    let Some(value) = headers.get(axum::http::header::IF_NONE_MATCH) else {
+        return Ok(false);
+    };
+    match value.to_str().map(str::trim) {
+        Ok("*") => Ok(true),
+        _ => Err(ApiError::unprocessable(
+            "If-None-Match on an upload takes only *",
+        )),
+    }
+}
+
 /// `Cache-Control` for every conditional single-resource read, sent on both
 /// the 200 and the 304: store it, but revalidate before every use.
 ///
@@ -615,6 +648,20 @@ impl From<EngineError> for ApiError {
             // read as an authorization problem and 422 as a malformed request,
             // and it is neither.
             EngineError::ConnectInProgress | EngineError::ConfirmationRequired(_) => {
+                ApiError::conflict(detail)
+            }
+            // And a fifth: a write onto a path only the previous host of a
+            // host move has. The request is fine and this instance's disk is
+            // not, on every route that writes engrams, pages or files.
+            EngineError::Conflict(ref text) if text.contains(ONLY_ELSEWHERE) => {
+                ApiError::conflict(detail)
+            }
+            // And a sixth: a write into a file domain another instance on
+            // this shared database hosts. The request is fine; this instance
+            // is not the one that writes the domain.
+            EngineError::Conflict(ref text)
+                if text.contains(FILE_HOSTED_MARK) || text.contains(FILE_NO_HOST_MARK) =>
+            {
                 ApiError::conflict(detail)
             }
             // And a fourth shares the 422 with the malformed requests: the

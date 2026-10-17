@@ -156,7 +156,7 @@ describe("ReviewModeCard", () => {
       },
       false,
     );
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
 
     const region = await screen.findByRole("region", { name: "Review mode" });
     expect(
@@ -182,7 +182,7 @@ describe("ReviewModeCard", () => {
         return body.folds === undefined ? planResponse() : {};
       },
     });
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
 
     const region = await screen.findByRole("region", { name: "Review mode" });
     await userEvent.click(
@@ -235,7 +235,7 @@ describe("ReviewModeCard", () => {
             })
           : {},
     });
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
 
     const region = await screen.findByRole("region", { name: "Review mode" });
     await userEvent.click(
@@ -286,7 +286,7 @@ describe("ReviewModeCard", () => {
             })
           : {},
     });
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
 
     const region = await screen.findByRole("region", { name: "Review mode" });
     await userEvent.click(
@@ -322,7 +322,7 @@ describe("ReviewModeCard", () => {
             })
           : {},
     });
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
 
     const region = await screen.findByRole("region", { name: "Review mode" });
     await userEvent.click(
@@ -354,7 +354,7 @@ describe("ReviewModeCard", () => {
         );
       },
     });
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
 
     const region = await screen.findByRole("region", { name: "Review mode" });
     await userEvent.click(

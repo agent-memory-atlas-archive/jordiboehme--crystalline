@@ -19,15 +19,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../App";
 import { ApiProblem, api } from "../api/client";
-import { defined } from "../test/assert";
 import type { Answer } from "../test/harness";
 import {
   answersFor,
   defaultPolicyRows,
+  defaultStarterRows,
   domainsResponse,
   manifestSectionsResponse,
   meResponse,
-  policyRow,
   renderApp,
   userFixture,
 } from "../test/harness";
@@ -255,15 +254,6 @@ function requested(): string[] {
   return apiMock.mock.calls.map((call) => call[0]);
 }
 
-/** Whether one element is drawn before another, in document order. */
-function precedes(before: Element, after: Element): boolean {
-  return (
-    (before.compareDocumentPosition(after) &
-      Node.DOCUMENT_POSITION_FOLLOWING) !==
-    0
-  );
-}
-
 /**
  * The screen itself, without the frame around it.
  *
@@ -272,6 +262,17 @@ function precedes(before: Element, after: Element): boolean {
  */
 async function screenBody(): Promise<HTMLElement> {
   return screen.findByRole("main");
+}
+
+/**
+ * Open the front page's More actions menu and hand back its rows.
+ */
+async function openActions(): Promise<HTMLElement> {
+  const body = await screenBody();
+  await userEvent.click(
+    await within(body).findByRole("button", { name: "More actions" }),
+  );
+  return screen.findByRole("menu");
 }
 
 beforeEach(() => {
@@ -352,35 +353,36 @@ describe("the domain screen", () => {
 
   /**
    * Whether the MANIFEST editor, the seed buttons and Import archive are
-   * offered, on the page and in the palette. Download archive is a read and
-   * is always offered to an admin.
+   * offered, on the page, in its More actions menu and in the palette.
+   * Download archive is a read and is always offered to an admin.
    */
   async function expectManifestWrites(offered: boolean): Promise<void> {
     const body = await screenBody();
     await within(body).findByRole("heading", { level: 1 });
-    await within(body).findByRole("link", { name: "Download archive" });
-    // Every read the gate draws on has landed: the MANIFEST (the policies
-    // card), the listing and the engrams beside them.
-    await within(body).findByRole("region", { name: "Domain policies" });
+    // Every read the gate draws on has landed: the MANIFEST, the listing and
+    // the engrams beside them.
+    await within(body).findByRole("article", { name: "MANIFEST" });
     await within(body).findByRole("link", { name: /Alpha/ });
     await waitFor(() => {
       expect(requested()).toContain("/domains");
     });
-    const section = await within(body).findByRole("region", {
-      name: "Manifest",
-    });
     await waitFor(() => {
       expect(
-        within(section).queryByRole("link", { name: "Edit MANIFEST" }) !== null,
+        within(body).queryByRole("link", { name: "Edit MANIFEST" }) !== null,
       ).toBe(offered);
     });
     expect(
-      within(body).queryByRole("button", { name: "Import archive" }) !== null,
-    ).toBe(offered);
-    expect(
       within(body).queryAllByRole("button", { name: /^Add / }).length > 0,
     ).toBe(offered);
+    const menu = await openActions();
+    expect(
+      within(menu).getByRole("menuitem", { name: "Download archive" }),
+    ).toBeInTheDocument();
+    expect(
+      within(menu).queryByRole("menuitem", { name: "Import archive" }) !== null,
+    ).toBe(offered);
     const user = userEvent.setup();
+    await user.keyboard("{Escape}");
     await user.keyboard("{Meta>}k{/Meta}");
     expect(
       await screen.findByRole("option", { name: /download archive/i }),
@@ -391,9 +393,10 @@ describe("the domain screen", () => {
     expect(
       screen.queryByRole("option", { name: /import archive/i }) !== null,
     ).toBe(offered);
+    await user.keyboard("{Escape}");
   }
 
-  it("offers an admin no MANIFEST edit and no import on a locked domain, and keeps the policies card", async () => {
+  it("offers an admin no MANIFEST edit and no import on a locked domain, and keeps the policies link", async () => {
     serve(
       {
         "/domains": () => ({
@@ -405,9 +408,12 @@ describe("the domain screen", () => {
       "admin",
     );
     renderApp("/d/eng");
-    // The policies card, where a person switches the lock off, is one of
-    // the reads the helper waits for, so it is still drawn.
     await expectManifestWrites(false);
+    // The policies, where a person switches the lock off, are one link away.
+    expect(screen.getByRole("link", { name: /^Policies/ })).toHaveAttribute(
+      "href",
+      "/d/eng/settings#policies",
+    );
   });
 
   it("offers an admin off the write list no MANIFEST edit and no import", async () => {
@@ -430,7 +436,7 @@ describe("the domain screen", () => {
     await expectManifestWrites(true);
   });
 
-  it("renders the whole MANIFEST and the engrams at the root of the domain", async () => {
+  it("renders the MANIFEST as the page and the engrams at the root of the domain", async () => {
     serve();
 
     renderApp("/d/eng");
@@ -438,37 +444,29 @@ describe("the domain screen", () => {
     expect(
       await screen.findByRole("heading", { level: 1, name: "eng" }),
     ).toBeVisible();
-    // The whole document, rendered where the domain is introduced: its
-    // prose, its sections, the lot. The MANIFEST's own `# eng` folds into
-    // the page's heading, so the domain is named once.
+    // The MANIFEST's own `# eng` is the eyebrow over the page's heading, its
+    // first paragraph the lead, and its sections the prose.
+    const manifest = await screen.findByRole("article", { name: "MANIFEST" });
     expect(
-      await screen.findByText("What this domain is for, in one paragraph."),
+      await within(manifest).findByText(
+        "What this domain is for, in one paragraph.",
+      ),
     ).toBeVisible();
     expect(
-      screen.getByRole("heading", { level: 2, name: "When to Use" }),
+      within(manifest).getByRole("heading", { level: 2, name: "When to Use" }),
     ).toBeVisible();
     expect(screen.getAllByRole("heading", { name: "eng" })).toHaveLength(1);
-    expect(
-      screen.queryByRole("link", { name: "Read the MANIFEST" }),
-    ).toBeNull();
     const row = await within(await screenBody()).findByRole("link", {
       name: /Alpha/,
     });
     expect(row).toHaveAttribute("href", "/d/eng/e/alpha");
-    // The count and the order menu sit together on the row above the list,
-    // not under the heading, and the old caption is gone.
-    const body = await screenBody();
-    const count = within(body).getByText("2 engrams in this domain");
-    expect(count).toBeVisible();
-    expect(count.parentElement).not.toBeNull();
+    // The count stands beside the Engrams heading, the order menu on the row
+    // above the list.
+    const engrams = screen.getByRole("region", { name: "Engrams" });
+    expect(await within(engrams).findByText("2")).toBeVisible();
     expect(
-      within(count.parentElement as HTMLElement).getByRole("button", {
-        name: "Order: Newest first",
-      }),
+      within(engrams).getByRole("button", { name: "Order: Newest first" }),
     ).toBeVisible();
-    expect(
-      within(body).queryByText(/, by the date they were recorded\.$/),
-    ).toBeNull();
     await waitFor(() => {
       expect(
         requested().some(
@@ -481,14 +479,89 @@ describe("the domain screen", () => {
     });
   });
 
+  it("lists the engrams as rows: title, folder, description, type and date", async () => {
+    serve({
+      "/domains/eng/engrams": (path) => {
+        const page = engramsResponse(path) as {
+          hits: Record<string, unknown>[];
+        };
+        return {
+          ...page,
+          hits: page.hits.map((hit) => ({
+            ...hit,
+            snippet: `About ${String(hit.title)}.`,
+            recorded_at: "2026-09-12",
+          })),
+        };
+      },
+    });
+
+    renderApp("/d/eng");
+
+    const engrams = await screen.findByRole("region", { name: "Engrams" });
+    const beta = await within(engrams).findByRole("link", {
+      name: "Beta, notes/beta",
+    });
+    expect(within(beta).getByText("Beta")).toBeVisible();
+    // The folder in mono beside the title, the description under it, the
+    // type on the right.
+    expect(within(beta).getByText("notes")).toHaveClass("font-mono");
+    expect(within(beta).getByText("About Beta.")).toBeVisible();
+    expect(within(beta).getByText("engram")).toBeVisible();
+    // The recorded day, once the listing carries it.
+    expect(within(beta).getByTitle("2026-09-12")).toHaveTextContent(
+      /12 Sep 2026|Sep 12, 2026/,
+    );
+    // The folders as chips above the list, the domain's root as "All".
+    const folders = within(engrams).getByRole("navigation", {
+      name: "Folders",
+    });
+    expect(within(folders).getByText("All")).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(
+      within(folders).getByRole("button", { name: "notes" }),
+    ).toBeVisible();
+  });
+
+  it("keeps the Type and Status form behind Filter until it is asked for", async () => {
+    serve();
+
+    renderApp("/d/eng");
+
+    const engrams = await screen.findByRole("region", { name: "Engrams" });
+    const filter = await within(engrams).findByRole("button", {
+      name: "Filter",
+    });
+    expect(filter).toHaveAttribute("aria-expanded", "false");
+    expect(within(engrams).queryByLabelText("Type")).toBeNull();
+    await userEvent.click(filter);
+    expect(filter).toHaveAttribute("aria-expanded", "true");
+    expect(within(engrams).getByLabelText("Type")).toBeVisible();
+    expect(within(engrams).getByLabelText("Status")).toBeVisible();
+  });
+
+  it("opens the form for an address that already carries a filter", async () => {
+    serve();
+
+    renderApp("/d/eng?tags=eng");
+
+    const engrams = await screen.findByRole("region", { name: "Engrams" });
+    expect(
+      await within(engrams).findByRole("button", { name: "Filter" }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(within(engrams).getByLabelText("Type")).toBeVisible();
+  });
+
   it("offers Edit MANIFEST to an admin", async () => {
     serve({}, "admin");
 
     renderApp("/d/eng");
 
-    const section = await screen.findByRole("region", { name: "Manifest" });
+    const body = await screenBody();
     expect(
-      await within(section).findByRole("link", { name: "Edit MANIFEST" }),
+      await within(body).findByRole("link", { name: "Edit MANIFEST" }),
     ).toHaveAttribute("href", "/d/eng/manifest/edit");
   });
 
@@ -497,50 +570,135 @@ describe("the domain screen", () => {
 
     renderApp("/d/eng");
 
-    const section = await screen.findByRole("region", { name: "Manifest" });
-    await within(section).findByText(
-      "What this domain is for, in one paragraph.",
-    );
+    const body = await screenBody();
+    await within(body).findByText("What this domain is for, in one paragraph.");
     expect(
-      within(section).queryByRole("link", { name: "Edit MANIFEST" }),
+      within(body).queryByRole("link", { name: "Edit MANIFEST" }),
     ).toBeNull();
   });
-  it("shows the manifest's features when every section is there", async () => {
+
+  /** A MANIFEST with every section, routing and configuration both. */
+  const FULL_MANIFEST = [
+    "---",
+    "title: eng",
+    "---",
+    "",
+    "# Engineering",
+    "",
+    "What this domain is for, in one paragraph.",
+    "",
+    "## Scope",
+    "",
+    "- Everything about eng",
+    "",
+    "## When to Use",
+    "",
+    "- Route here for eng questions.",
+    "",
+    "## Notes for Agents",
+    "",
+    "- Write one engram per decision.",
+    "",
+    "## Provisioning",
+    "",
+    "Installed by the setup script.",
+    "",
+    "- skills: skills",
+    "- agents: ../agents",
+    "",
+    "## Tag Aliases",
+    "",
+    "- Multi_Word -> multi-word",
+    "",
+  ].join("\n");
+
+  function fullManifest(overrides: Record<string, unknown> = {}) {
+    return () => ({
+      domain: "eng",
+      markdown: FULL_MANIFEST,
+      sections: sectionsResponse({
+        scope: ["Everything about eng"],
+        missing: [],
+        provisioning: {
+          decls: [
+            { kind: "skills", path: "skills" },
+            { kind: "agents", path: "../agents" },
+          ],
+          problems: [],
+        },
+        tag_aliases: {
+          decls: [{ alias: "Multi_Word", canonical: "multi-word" }],
+          problems: [],
+        },
+        ...overrides,
+      }),
+    });
+  }
+
+  it("draws the MANIFEST once: the prose in the page, the configuration only in the rail", async () => {
+    serve({ "/domains/eng/manifest": fullManifest() });
+
+    renderApp("/d/eng");
+
+    const manifest = await screen.findByRole("article", { name: "MANIFEST" });
+    // The eyebrow is the MANIFEST's own title, over the domain's name.
+    expect(
+      await within(await screenBody()).findByText("Engineering"),
+    ).toBeVisible();
+    // The prose: When to Use first, with the line that says what agents do
+    // with it, then the rest in file order. Scope is drawn once.
+    const headings = within(manifest)
+      .getAllByRole("heading", { level: 2 })
+      .map((h) => h.textContent);
+    expect(headings).toEqual(["When to Use", "Scope", "Notes for Agents"]);
+    expect(
+      within(manifest).getByText(
+        "Agents read this to decide when to use this domain.",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText("Agents route by When to Use.")).toBeNull();
+    expect(await screen.findAllByText("Everything about eng")).toHaveLength(1);
+    expect(
+      await within(manifest).findByText("Write one engram per decision."),
+    ).toBeVisible();
+    // No Manifest cards panel, no Routing card.
+    expect(screen.queryByRole("region", { name: "Routing" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Manifest" })).toBeNull();
+
+    // The configuration sections are cut from the prose and shown once, in
+    // the rail, from what the core crate parsed out of them.
+    expect(within(manifest).queryByText(/skills/)).toBeNull();
+    expect(within(manifest).queryByText(/Multi_Word/)).toBeNull();
+    const rail = screen.getByRole("complementary", {
+      name: "About this domain",
+    });
+    const provisioning = within(rail).getByRole("region", {
+      name: "Provisioning",
+    });
+    expect(within(provisioning).getAllByText("skills")).toHaveLength(2);
+    expect(within(provisioning).getByText("agents")).toBeVisible();
+    // What the section says beside its declarations is shown with them.
+    expect(
+      await within(provisioning).findByText("Installed by the setup script."),
+    ).toBeVisible();
+    expect(
+      within(manifest).queryByText("Installed by the setup script."),
+    ).toBeNull();
+    expect(within(provisioning).getByText("../agents")).toBeVisible();
+    const aliases = within(rail).getByRole("region", { name: "Tag Aliases" });
+    expect(within(aliases).getByText(/Multi_Word/)).toBeVisible();
+    expect(within(aliases).getByText(/multi-word/)).toBeVisible();
+  });
+
+  it("cuts a configuration section the registry adds later without a change here", async () => {
     serve({
       "/domains/eng/manifest": () => ({
         domain: "eng",
-        markdown: MANIFEST,
+        markdown: `${MANIFEST}\n## Future Switches\n\n- something: on\n`,
         sections: sectionsResponse({
-          scope: ["Everything about eng"],
-          missing: [],
-          provisioning: {
-            decls: [
-              { kind: "skills", path: "skills" },
-              { kind: "agents", path: "../agents" },
-            ],
-            problems: [],
-          },
-          tag_aliases: {
-            decls: [{ alias: "Multi_Word", canonical: "multi-word" }],
-            problems: [],
-          },
-          policies: [
-            policyRow(
-              "generated_indexes",
-              "shared",
-              "shared",
-              ["local", "shared"],
-              "local",
-              "Whether the generated folder listings travel with a share.",
-            ),
-            policyRow(
-              "sharing",
-              null,
-              "proposal",
-              ["proposal", "direct"],
-              "proposal",
-              "Whether a share opens a proposal for review or commits straight to the branch.",
-            ),
+          starters: [
+            ...defaultStarterRows(),
+            { section: "Future Switches", meaning: "", example: "" },
           ],
         }),
       }),
@@ -548,69 +706,288 @@ describe("the domain screen", () => {
 
     renderApp("/d/eng");
 
-    const routing = await screen.findByRole("region", { name: "Routing" });
-    expect(
-      within(routing).getByRole("heading", { name: "When to Use" }),
-    ).toBeVisible();
-    expect(
-      within(routing).getByText("Route here for eng questions."),
-    ).toBeVisible();
-    expect(
-      within(routing).getByRole("heading", { name: "Scope" }),
-    ).toBeVisible();
-    expect(within(routing).getByText("Everything about eng")).toBeVisible();
-    expect(
-      within(routing).getByText("Agents route by When to Use."),
-    ).toBeVisible();
-
-    const provisioning = screen.getByRole("region", { name: "Provisioning" });
-    expect(within(provisioning).getByText("skills: skills")).toBeVisible();
-    expect(within(provisioning).getByText("agents: ../agents")).toBeVisible();
-    expect(within(provisioning).queryByText("Nothing declared")).toBeNull();
-
-    const aliases = screen.getByRole("region", { name: "Tag aliases" });
-    expect(within(aliases).getByText("Multi_Word -> multi-word")).toBeVisible();
-    expect(within(aliases).queryByText("No aliases")).toBeNull();
-
-    // The switches are their own card, down with the domain's team
-    // furniture rather than a fifth panel inside the facets grid, and every
-    // registry key has a row there.
-    const policies = screen.getByRole("region", { name: "Domain policies" });
-    const generated = within(policies).getByRole("row", {
-      name: /^generated_indexes/,
+    const manifest = await screen.findByRole("article", { name: "MANIFEST" });
+    await within(manifest).findByText("Route here for eng questions.");
+    expect(within(manifest).queryByText("something: on")).toBeNull();
+    const rail = screen.getByRole("complementary", {
+      name: "About this domain",
     });
-    // The declared cell, which is the first: what holds reads `shared` too,
-    // so the row is asked by position rather than by the word.
-    expect(
-      defined(within(generated).getAllByRole("cell")[0], "the declared cell"),
-    ).toHaveTextContent("shared");
-    expect(
-      within(policies).getByRole("row", { name: /^sharing/ }),
-    ).toBeVisible();
+    const block = within(rail).getByRole("region", {
+      name: "Future Switches",
+    });
+    expect(await within(block).findByText("something: on")).toBeVisible();
   });
 
-  it("draws the policies card with the team furniture, after review mode and before backup", async () => {
-    serve({}, "admin");
+  it("fills the rail: about and the settings with their values, and nothing the list already says", async () => {
+    const synced = new Date(Date.now() - 2 * 3600 * 1000).toISOString();
+    serve(
+      {
+        "/domains": () => ({
+          ...domainsResponse(),
+          domains: [{ ...domainsResponse().domains[0], last_sync: synced }],
+        }),
+        "/domains/eng/manifest": fullManifest(),
+      },
+      "admin",
+    );
+
+    renderApp("/d/eng");
+
+    const rail = await screen.findByRole("complementary", {
+      name: "About this domain",
+    });
+    const about = await within(rail).findByRole("region", { name: "About" });
+    expect(await within(about).findByText("4 engrams")).toBeVisible();
+    expect(within(about).getByText("Shared with everyone")).toBeVisible();
+    expect(within(about).getByText("Files on disk")).toBeVisible();
+    // When it last synced in a reader's words, the instant in the title.
+    const when = within(about).getByText("2 hours ago");
+    expect(when).toHaveAttribute("title", expect.stringMatching(/^\d{4}-/));
+
+    const settings = within(rail).getByRole("region", { name: "Settings" });
+    expect(
+      await within(settings).findByRole("link", { name: /^Members everyone/ }),
+    ).toHaveAttribute("href", "/d/eng/settings#members");
+    expect(
+      within(settings).getByRole("link", { name: /^Policies 0 set/ }),
+    ).toHaveAttribute("href", "/d/eng/settings#policies");
+    expect(
+      within(settings).getByRole("link", { name: /^Review mode off/ }),
+    ).toHaveAttribute("href", "/d/eng/settings#review-mode");
+    expect(
+      within(settings).getByRole("link", { name: "Backup and import" }),
+    ).toHaveAttribute("href", "/d/eng/settings#backup");
+
+    // What was recorded lately is the list below, newest first: the rail
+    // does not say it a second time.
+    expect(
+      within(rail).queryByRole("region", { name: "Recently recorded" }),
+    ).toBeNull();
+    expect(requested()).not.toContain("/activity");
+  });
+
+  it("draws no eyebrow over a MANIFEST whose title is the domain's own name", async () => {
+    serve();
+
+    renderApp("/d/eng");
+
+    // The scaffold every new domain starts from is \`# <name>\`, which
+    // would only say the heading twice.
+    const manifest = await screen.findByRole("article", { name: "MANIFEST" });
+    await within(manifest).findByText(
+      "What this domain is for, in one paragraph.",
+    );
+    const heading = screen.getByRole("heading", { level: 1, name: "eng" });
+    const header = heading.closest("header") as HTMLElement;
+    expect(within(header).getAllByText("eng", { exact: true })).toEqual([
+      heading,
+    ]);
+  });
+
+  it("reads a MANIFEST written with CRLF line endings", async () => {
+    serve({
+      "/domains/eng/manifest": () => ({
+        domain: "eng",
+        markdown: FULL_MANIFEST.replace(/\n/g, "\r\n"),
+        sections: fullManifest()().sections,
+      }),
+    });
+
+    renderApp("/d/eng");
+
+    const manifest = await screen.findByRole("article", { name: "MANIFEST" });
+    expect(
+      await within(await screenBody()).findByText("Engineering"),
+    ).toBeVisible();
+    expect(
+      within(manifest)
+        .getAllByRole("heading", { level: 2 })
+        .map((h) => h.textContent),
+    ).toEqual(["When to Use", "Scope", "Notes for Agents"]);
+    expect(within(manifest).queryByText(/Multi_Word/)).toBeNull();
+  });
+
+  it("gives each section heading the id the document renderer would, and draws its markdown", async () => {
+    serve({
+      "/domains/eng/manifest": () => ({
+        domain: "eng",
+        markdown:
+          "# eng\n\nLead.\n\n## When to Use\n\n- a\n\n## The `deploy` flow\n\nText.\n",
+        sections: sectionsResponse(),
+      }),
+    });
+
+    renderApp("/d/eng");
+
+    const manifest = await screen.findByRole("article", { name: "MANIFEST" });
+    const flow = await within(manifest).findByRole("heading", {
+      level: 2,
+      name: "The deploy flow",
+    });
+    expect(flow).toHaveAttribute("id", "the-deploy-flow");
+    expect(within(flow).getByText("deploy").tagName).toBe("CODE");
+    expect(
+      within(manifest).getByRole("heading", { level: 2, name: "When to Use" }),
+    ).toHaveAttribute("id", "when-to-use");
+  });
+
+  /**
+   * The MANIFEST as the server lists it: a row in the root tree whose file is
+   * the root MANIFEST.md, under a permalink of its own choosing, and a hit
+   * in every listing that is not filtered away from it.
+   */
+  function withManifestRow(): Record<string, Answer> {
+    const manifestHit = {
+      domain: "eng",
+      permalink: "about-eng",
+      title: "MANIFEST",
+      engram_type: "manifest",
+      kind: "engram",
+      status: "current",
+      tags: [],
+    };
+    return {
+      "/domains/eng/tree": (path) => {
+        const tree = treeResponse(path) as {
+          engrams: Record<string, unknown>[];
+        };
+        return path.includes("path=")
+          ? tree
+          : {
+              ...tree,
+              engrams: [
+                {
+                  permalink: "about-eng",
+                  title: "MANIFEST",
+                  type: "manifest",
+                  path: "MANIFEST.md",
+                },
+                ...tree.engrams,
+              ],
+            };
+      },
+      "/domains/eng/engrams": (path) => {
+        const page = engramsResponse(path) as {
+          total: number;
+          count: number;
+          hits: Record<string, unknown>[];
+        };
+        if (path.includes("type=manifest")) {
+          return { ...page, total: 1, count: 1, hits: [manifestHit] };
+        }
+        return path.includes("tags=")
+          ? page
+          : {
+              ...page,
+              total: page.total + 1,
+              count: page.count + 1,
+              hits: [manifestHit, ...page.hits],
+            };
+      },
+    };
+  }
+
+  it("does not list the MANIFEST under itself, and no count includes it", async () => {
+    serve(withManifestRow());
 
     renderApp("/d/eng");
 
     const engrams = await screen.findByRole("region", { name: "Engrams" });
-    const review = await screen.findByRole("region", { name: "Review mode" });
-    const policies = screen.getByRole("region", { name: "Domain policies" });
-    const backup = screen.getByRole("region", { name: "Backup" });
-    // The switches sit with the domain's other team furniture, below the
-    // engrams and right beside review mode, not under the MANIFEST's own
-    // boxes the way the card used to sit.
-    expect(precedes(engrams, policies)).toBe(true);
-    expect(precedes(review, policies)).toBe(true);
-    expect(precedes(policies, backup)).toBe(true);
+    await within(engrams).findByRole("link", { name: /Alpha/ });
+    expect(
+      within(engrams).queryByRole("link", { name: /MANIFEST/ }),
+    ).toBeNull();
+    // The heading and About agree: 2 of the listing's 3 and 3 of the
+    // summary's 4, the MANIFEST left out of both.
+    expect(await within(engrams).findByText("2")).toBeVisible();
+    const about = await screen.findByRole("region", { name: "About" });
+    expect(await within(about).findByText("3 engrams")).toBeVisible();
+  });
+
+  it("still finds the MANIFEST through an explicit type filter", async () => {
+    serve(withManifestRow());
+
+    renderApp("/d/eng?type=manifest");
+
+    const engrams = await screen.findByRole("region", { name: "Engrams" });
+    expect(
+      await within(engrams).findByRole("link", { name: /^MANIFEST, / }),
+    ).toHaveAttribute("href", "/d/eng/e/about-eng");
+  });
+
+  it("reads prose, then the engrams, then the rail, in document order", async () => {
+    serve();
+
+    renderApp("/d/eng");
+
+    const manifest = await screen.findByRole("article", { name: "MANIFEST" });
+    const engrams = await screen.findByRole("region", { name: "Engrams" });
+    const rail = await screen.findByRole("complementary", {
+      name: "About this domain",
+    });
+    expect(
+      manifest.compareDocumentPosition(engrams) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      engrams.compareDocumentPosition(rail) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("keeps the backup link and the review mode row from a caller who would be refused there", async () => {
+    serve();
+
+    renderApp("/d/eng");
+
+    const rail = await screen.findByRole("complementary", {
+      name: "About this domain",
+    });
+    const settings = within(rail).getByRole("region", { name: "Settings" });
+    await within(settings).findByRole("link", { name: /^Members/ });
+    expect(
+      within(settings).queryByRole("link", { name: "Backup and import" }),
+    ).toBeNull();
+  });
+
+  it("offers each action in the More actions menu by right", async () => {
+    serve({}, "admin");
+    renderApp("/d/eng");
+    const admin = await openActions();
+    expect(
+      within(admin)
+        .getAllByRole("menuitem")
+        .map((item) => item.textContent),
+    ).toEqual([
+      "Rename domain",
+      "Download archive",
+      "Import archive",
+      "Domain settings",
+    ]);
+    expect(
+      within(admin).getByRole("menuitem", { name: "Download archive" }),
+    ).toHaveAttribute("href", "/api/v1/domains/eng/archive");
+    expect(
+      within(admin).getByRole("menuitem", { name: "Domain settings" }),
+    ).toHaveAttribute("href", "/d/eng/settings");
+  });
+
+  it("offers an editor only the way to the domain's settings", async () => {
+    serve();
+    renderApp("/d/eng");
+    const menu = await openActions();
+    expect(
+      within(menu)
+        .getAllByRole("menuitem")
+        .map((item) => item.textContent),
+    ).toEqual(["Domain settings"]);
   });
 
   it("draws a routing bullet's markdown instead of its punctuation", async () => {
     serve({
       "/domains/eng/manifest": () => ({
         domain: "eng",
-        markdown: MANIFEST,
+        markdown:
+          "# eng\n\nLead.\n\n## When to Use\n\n- **Search `project2030` first**\n",
         sections: sectionsResponse({
           when_to_use: ["**Search `project2030` first**"],
         }),
@@ -619,18 +996,18 @@ describe("the domain screen", () => {
 
     renderApp("/d/eng");
 
-    const routing = await screen.findByRole("region", { name: "Routing" });
-    const code = await within(routing).findByText("project2030");
+    const manifest = await screen.findByRole("article", { name: "MANIFEST" });
+    const code = await within(manifest).findByText("project2030");
     expect(code.tagName).toBe("CODE");
     expect(code.closest("strong")).not.toBeNull();
-    expect(within(routing).queryByText(/\*\*/)).toBeNull();
+    expect(within(manifest).queryByText(/\*\*/)).toBeNull();
   });
 
-  it("names what a MANIFEST lacks, panel by panel", async () => {
+  it("names a routing section a MANIFEST lacks, and how agents route then", async () => {
     serve({
       "/domains/eng/manifest": () => ({
         domain: "eng",
-        markdown: MANIFEST,
+        markdown: "# eng\n\nLead.\n\n## Scope\n\n- Everything about eng\n",
         sections: sectionsResponse({
           scope: ["Everything about eng"],
           when_to_use: [],
@@ -643,44 +1020,30 @@ describe("the domain screen", () => {
     renderApp("/d/eng");
 
     // What an undeclared section says is what it is FOR, in the server's own
-    // words, and the syntax that starts it: naming the absence alone taught a
-    // reader nothing they did not already know from the empty box.
-    const routing = await screen.findByRole("region", { name: "Routing" });
+    // words, and the syntax that starts it.
+    const manifest = await screen.findByRole("article", { name: "MANIFEST" });
     expect(
-      within(routing).getByText(/Agents pick this domain by these bullets/),
+      await within(manifest).findByText(
+        /Agents pick this domain by these bullets/,
+      ),
     ).toBeVisible();
     expect(
-      within(routing).queryByText(
+      within(manifest).getByText(
+        "Agents read Scope to decide when to use this domain, because When to Use is empty.",
+      ),
+    ).toBeVisible();
+    expect(
+      within(manifest).queryByText(
         /What belongs in this domain and what does not/,
       ),
     ).toBeNull();
-    expect(
-      within(routing).getByText(
-        "Agents route by Scope, because When to Use is absent or empty.",
-      ),
-    ).toBeVisible();
-    expect(
-      within(screen.getByRole("region", { name: "Provisioning" })).getByText(
-        /Folders this domain installs into an AI harness/,
-      ),
-    ).toBeVisible();
-    expect(
-      within(screen.getByRole("region", { name: "Tag aliases" })).getByText(
-        /Spellings that fold into one canonical tag/,
-      ),
-    ).toBeVisible();
-    const policies = screen.getByRole("region", { name: "Domain policies" });
-    const generated = within(policies).getByRole("row", {
-      name: /^generated_indexes/,
-    });
-    expect(within(generated).getByText("not declared")).toBeVisible();
   });
 
   it("says when no agent can route here", async () => {
     serve({
       "/domains/eng/manifest": () => ({
         domain: "eng",
-        markdown: MANIFEST,
+        markdown: "# eng\n\nLead.\n",
         sections: sectionsResponse({
           when_to_use: [],
           routing: "none",
@@ -691,57 +1054,45 @@ describe("the domain screen", () => {
 
     renderApp("/d/eng");
 
-    const routing = await screen.findByRole("region", { name: "Routing" });
+    const manifest = await screen.findByRole("article", { name: "MANIFEST" });
     expect(
-      within(routing).getByText(
+      await within(manifest).findByText(
         /What belongs in this domain and what does not/,
       ),
     ).toBeVisible();
     expect(
-      within(routing).getByText(/Agents pick this domain by these bullets/),
+      within(manifest).getByText(/Agents pick this domain by these bullets/),
     ).toBeVisible();
     expect(
-      within(routing).getByText(
+      within(manifest).getByText(
         "Agents cannot route here until When to Use has a bullet.",
       ),
     ).toBeVisible();
   });
 
-  it("lists every problem bullet with its reason", async () => {
+  it("lists every problem bullet with its reason, in the rail", async () => {
     serve({
-      "/domains/eng/manifest": () => ({
-        domain: "eng",
-        markdown: MANIFEST,
-        sections: sectionsResponse({
-          provisioning: {
-            decls: [{ kind: "skills", path: "skills" }],
-            problems: [
-              {
-                kind: "unknown_type",
-                bullet: "widgets: w",
-                reason:
-                  "unknown provisioning type `widgets`, expected one of skills, commands, agents or mcps",
-              },
-            ],
-          },
-          tag_aliases: {
-            decls: [{ alias: "foo", canonical: "bar" }],
-            problems: [
-              {
-                kind: "chained_alias",
-                bullet: "foo -> bar",
-                reason:
-                  "canonical `bar` is itself an alias, resolution stays a single hop",
-              },
-            ],
-          },
-        }),
+      "/domains/eng/manifest": fullManifest({
+        provisioning: {
+          decls: [{ kind: "skills", path: "skills" }],
+          problems: [
+            {
+              kind: "unknown_type",
+              bullet: "widgets: w",
+              reason:
+                "unknown provisioning type `widgets`, expected one of skills, commands, agents or mcps",
+            },
+          ],
+        },
       }),
     });
 
     renderApp("/d/eng");
 
-    const provisioning = await screen.findByRole("region", {
+    const rail = await screen.findByRole("complementary", {
+      name: "About this domain",
+    });
+    const provisioning = await within(rail).findByRole("region", {
       name: "Provisioning",
     });
     expect(within(provisioning).getByText("widgets: w")).toBeVisible();
@@ -750,106 +1101,30 @@ describe("the domain screen", () => {
         "unknown provisioning type `widgets`, expected one of skills, commands, agents or mcps",
       ),
     ).toBeVisible();
-    const aliases = screen.getByRole("region", { name: "Tag aliases" });
-    // A chained alias is a declaration AND a problem, so the bullet stands
-    // twice in the panel: once in the list the MANIFEST declares, once above
-    // the reason it was flagged for.
-    expect(within(aliases).getAllByText("foo -> bar")).toHaveLength(2);
-    expect(
-      within(aliases).getByText(
-        "canonical `bar` is itself an alias, resolution stays a single hop",
-      ),
-    ).toBeVisible();
   });
 
-  it("draws no panels for a server that sends no sections", async () => {
-    serve({
-      "/domains/eng/manifest": () => ({ domain: "eng", markdown: MANIFEST }),
-    });
-
-    renderApp("/d/eng");
-
-    // An older daemon answers the markdown alone. The document is still
-    // read; the panels, which would say nothing true, are not drawn.
-    expect(
-      await screen.findByText("What this domain is for, in one paragraph."),
-    ).toBeVisible();
-    expect(screen.queryByRole("region", { name: "Routing" })).toBeNull();
-    // No sections, no card.
-    expect(
-      screen.queryByRole("region", { name: "Domain policies" }),
-    ).toBeNull();
-  });
-
-  it("draws no policies card for a MANIFEST the server could not parse", async () => {
+  it("draws the document whole for a server that sends no sections", async () => {
     serve({
       "/domains/eng/manifest": () => ({
         domain: "eng",
-        markdown: MANIFEST,
-        sections: sectionsResponse({ policies: [] }),
+        markdown: `${MANIFEST}\n## Tag Aliases\n\n- k8s -> kubernetes\n`,
       }),
     });
 
     renderApp("/d/eng");
 
-    // A document nobody can read declares nothing, so the server answers an
-    // empty registry rather than one at its defaults: there is no switch to
-    // offer over a MANIFEST that would have to be repaired first.
+    // An older daemon answers the markdown alone. The document is still
+    // read, and nothing is cut, because nothing says what is configuration.
+    const manifest = await screen.findByRole("article", { name: "MANIFEST" });
     expect(
-      await screen.findByRole("region", { name: "Routing" }),
+      await within(manifest).findByText(
+        "What this domain is for, in one paragraph.",
+      ),
     ).toBeVisible();
     expect(
-      screen.queryByRole("region", { name: "Domain policies" }),
-    ).toBeNull();
-  });
-
-  it("explains a section that is not declared, and offers to start it", async () => {
-    serve({}, "admin");
-
-    renderApp("/d/eng");
-
-    const aliases = await screen.findByRole("region", { name: "Tag aliases" });
-    // The meaning and the syntax, both the server's: a reader learns what the
-    // section is for and what one line of it looks like without leaving the
-    // page or already knowing.
-    expect(
-      within(aliases).getByText(/Spellings that fold into one canonical tag/),
+      await within(manifest).findByText("k8s -> kubernetes"),
     ).toBeVisible();
-    expect(within(aliases).getByText(/k8s -> kubernetes/)).toBeVisible();
-    expect(
-      within(aliases).getByRole("button", { name: "Add Tag Aliases" }),
-    ).toBeVisible();
-  });
-
-  it("says nothing extra about a section that is declared", async () => {
-    serve(
-      {
-        "/domains/eng/manifest": () => ({
-          domain: "eng",
-          markdown: MANIFEST,
-          sections: sectionsResponse({
-            tag_aliases: {
-              decls: [{ alias: "k8s", canonical: "kubernetes" }],
-              problems: [],
-            },
-          }),
-        }),
-      },
-      "admin",
-    );
-
-    renderApp("/d/eng");
-
-    const aliases = await screen.findByRole("region", { name: "Tag aliases" });
-    expect(within(aliases).getByText("k8s -> kubernetes")).toBeVisible();
-    // Somebody who has already configured a thing does not need to be told
-    // what it is, and has nothing to start.
-    expect(
-      within(aliases).queryByText(/Spellings that fold into one canonical tag/),
-    ).toBeNull();
-    expect(
-      within(aliases).queryByRole("button", { name: "Add Tag Aliases" }),
-    ).toBeNull();
+    expect(screen.queryByRole("link", { name: /^Policies/ })).toBeNull();
   });
 
   it("shows the explanation but no action to a reader who cannot edit", async () => {
@@ -858,39 +1133,19 @@ describe("the domain screen", () => {
     renderApp("/d/eng");
 
     // The honest answer for somebody without the right: they can still learn
-    // what the section does, they just cannot start it from here.
-    const aliases = await screen.findByRole("region", { name: "Tag aliases" });
+    // what the missing section does, they just cannot start it from here.
+    const manifest = await screen.findByRole("article", { name: "MANIFEST" });
     expect(
-      within(aliases).getByText(/Spellings that fold into one canonical tag/),
+      await within(manifest).findByText(
+        /What belongs in this domain and what does not/,
+      ),
     ).toBeVisible();
     expect(
-      within(aliases).queryByRole("button", { name: "Add Tag Aliases" }),
+      within(manifest).queryByRole("button", { name: "Add Scope" }),
     ).toBeNull();
   });
 
-  it("draws the old bare line for a daemon that sends no startable sections", async () => {
-    serve(
-      {
-        "/domains/eng/manifest": () => ({
-          domain: "eng",
-          markdown: MANIFEST,
-          sections: sectionsResponse({ starters: [] }),
-        }),
-      },
-      "admin",
-    );
-
-    renderApp("/d/eng");
-
-    // Nothing to explain a section with, so nothing is invented on this side.
-    const aliases = await screen.findByRole("region", { name: "Tag aliases" });
-    expect(within(aliases).getByText("No aliases")).toBeVisible();
-    expect(
-      within(aliases).queryByRole("button", { name: "Add Tag Aliases" }),
-    ).toBeNull();
-  });
-
-  it("shows the whole configurable surface for a domain whose MANIFEST is blank", async () => {
+  it("offers a blank MANIFEST's routing sections and the whole document to start", async () => {
     serve(
       {
         "/domains/eng/manifest": () => ({
@@ -910,16 +1165,11 @@ describe("the domain screen", () => {
 
     renderApp("/d/eng");
 
-    // The gap is still named, and every box below it is now something the
-    // reader can see, understand and start.
     expect(await screen.findByText(/no MANIFEST yet/)).toBeVisible();
     expect(
       screen.getByRole("button", { name: "Add When to Use" }),
     ).toBeVisible();
     expect(screen.getByRole("button", { name: "Add Scope" })).toBeVisible();
-    expect(
-      screen.getByRole("button", { name: "Add Provisioning" }),
-    ).toBeVisible();
     expect(
       screen.getByRole("button", { name: "Create a MANIFEST" }),
     ).toBeVisible();
@@ -939,12 +1189,10 @@ describe("the domain screen", () => {
 
     renderApp("/d/eng");
 
-    // The sections are still explained - the registry does not depend on this
-    // document - and the document itself is still drawn, because repairing it
-    // is what somebody does next.
-    const aliases = await screen.findByRole("region", { name: "Tag aliases" });
+    // The document itself is still drawn, because repairing it is what
+    // somebody does next.
     expect(
-      within(aliases).getByText(/Spellings that fold into one canonical tag/),
+      await screen.findByText("What this domain is for, in one paragraph."),
     ).toBeVisible();
     expect(
       screen.queryByRole("button", { name: "Create a MANIFEST" }),
@@ -957,20 +1205,19 @@ describe("the domain screen", () => {
     renderApp("/d/eng");
 
     await userEvent.click(
-      await screen.findByRole("button", { name: "Add Tag Aliases" }),
+      await screen.findByRole("button", { name: "Add Scope" }),
     );
 
     // The whole hop, end to end: the button names a section, the navigation
     // state carries the name, and the editor puts the server's own example
-    // for it into the buffer. The two ends are only ever tested together.
+    // for it into the buffer.
     expect(
       await screen.findByRole("heading", { name: "Editing eng MANIFEST" }),
     ).toBeVisible();
     const editor = await screen.findByLabelText("MANIFEST source");
     await waitFor(() => {
-      expect(editor.textContent).toContain("## Tag Aliases");
+      expect(editor.textContent).toContain("## Scope");
     });
-    expect(editor.textContent).toContain("k8s -> kubernetes");
   });
 
   it("wears a private badge beside its name when the domain is private, and none when it is shared", async () => {
@@ -1092,7 +1339,7 @@ describe("the domain screen", () => {
 
     // A document with nothing but its title is still a document: it is not
     // the same fact as a missing MANIFEST.
-    await screen.findByRole("region", { name: "Manifest" });
+    await screen.findByRole("article", { name: "MANIFEST" });
     await within(await screenBody()).findByRole("link", { name: /Alpha/ });
     expect(screen.queryByText(/no MANIFEST yet/)).toBeNull();
   });
@@ -1103,12 +1350,14 @@ describe("the domain screen", () => {
     renderApp("/d/eng");
     const body = await screenBody();
 
-    // The primary tier: it is the one thing a writer comes to a domain to do,
-    // and the sidebar's launcher never co-renders with it.
+    // The secondary tier (spec 3.1): the filled primary is kept for the step
+    // that commits a flow, and the sidebar's launcher never co-renders with
+    // it.
     const launcher = await within(body).findByRole("button", {
       name: "New engram",
     });
-    expect(launcher.className).toContain("bg-accent-700");
+    expect(launcher.className).toContain("border-slate-300");
+    expect(launcher.className).not.toContain("bg-accent-700");
   });
 
   it("says a domain nobody registered is not here", async () => {
@@ -1203,13 +1452,14 @@ describe("the domain screen", () => {
     // The daemon predates `missing: true`, so the gap arrives as a 404. That
     // reader still gets the sentence and the way to the editor; the starter
     // button needs the registry the 404 did not carry, so it is not drawn.
-    const section = await screen.findByRole("region", { name: "Manifest" });
+    const body = await screenBody();
+    const section = await screen.findByRole("article", { name: "MANIFEST" });
     expect(await within(section).findByText(/no MANIFEST yet/)).toBeVisible();
     expect(
-      within(section).getByRole("link", { name: "Edit MANIFEST" }),
+      within(body).getByRole("link", { name: "Edit MANIFEST" }),
     ).toHaveAttribute("href", "/d/eng/manifest/edit");
     expect(
-      within(section).queryByRole("button", { name: "Create a MANIFEST" }),
+      within(body).queryByRole("button", { name: "Create a MANIFEST" }),
     ).toBeNull();
     expect(within(section).queryByRole("alert")).toBeNull();
   });
@@ -1256,10 +1506,11 @@ describe("the domain screen", () => {
 
     // A domain with no MANIFEST is exactly the domain an admin opens the
     // editor to fix, so the gap sentence comes with the way to close it.
-    const section = await screen.findByRole("region", { name: "Manifest" });
+    const body = await screenBody();
+    const section = await screen.findByRole("article", { name: "MANIFEST" });
     await within(section).findByText(/no MANIFEST yet/);
     expect(
-      within(section).getByRole("link", { name: "Edit MANIFEST" }),
+      within(body).getByRole("link", { name: "Edit MANIFEST" }),
     ).toHaveAttribute("href", "/d/eng/manifest/edit");
 
     // And the way through: the seed, then a save that creates the file under
@@ -1389,6 +1640,12 @@ describe("the domain screen", () => {
       within(body).queryByRole("region", { name: "Proposals" }),
     ).toBeNull();
     expect(within(body).queryByRole("region", { name: "Members" })).toBeNull();
+    // The team cards are lazy on the domain page, so an absent card could
+    // only mean its chunk had not landed yet. No loading shape either says
+    // the folder page never asked for them.
+    expect(
+      within(body).queryByRole("status", { name: "Loading the members" }),
+    ).toBeNull();
     expect(
       within(body).queryByRole("region", { name: "Review mode" }),
     ).toBeNull();
@@ -1540,6 +1797,8 @@ describe("the domain screen", () => {
     const body = await screenBody();
     await within(body).findByRole("link", { name: /Beta/ });
 
+    // The tags wait behind Filter with the rest of the frontmatter form.
+    await userEvent.click(within(body).getByRole("button", { name: "Filter" }));
     await userEvent.click(within(body).getByRole("button", { name: /#eng/ }));
 
     await screen.findByRole("link", { name: /Gamma/ });
@@ -1566,6 +1825,8 @@ describe("the domain screen", () => {
     const body = await screenBody();
     await within(body).findByRole("link", { name: /Alpha/ });
 
+    // The tags wait behind Filter with the rest of the frontmatter form.
+    await userEvent.click(within(body).getByRole("button", { name: "Filter" }));
     await userEvent.click(within(body).getByRole("button", { name: /#eng/ }));
 
     // The frontmatter view answers, and it is the one that carries status.
@@ -1612,6 +1873,132 @@ describe("the domain screen", () => {
 });
 
 describe("the team sync card", () => {
+  it("folds the team banners behind one line on a phone", async () => {
+    serve({ "/domains/eng/sync": () => syncResponse() }, "admin");
+
+    renderApp("/d/eng");
+    const body = await screenBody();
+
+    // The line says what waits; the cards behind it open on a press. From
+    // md up the line is hidden and the cards always show (CSS, not jsdom's).
+    const line = await within(body).findByRole("button", {
+      name: "Team sync · 2 local changes, 1 open proposal",
+    });
+    expect(line).toHaveAttribute("aria-expanded", "false");
+    const panel = document.getElementById(
+      line.getAttribute("aria-controls") ?? "",
+    ) as HTMLElement;
+    expect(panel.className).toMatch(/(^| )hidden( |$)/);
+    expect(panel.className).toContain("md:flex");
+    await userEvent.click(line);
+    expect(line).toHaveAttribute("aria-expanded", "true");
+    expect(panel.className).not.toMatch(/(^| )hidden( |$)/);
+  });
+
+  /** The phone line and the panel behind it, once the status has landed. */
+  async function phoneBanners(): Promise<{
+    line: HTMLElement;
+    panel: HTMLElement;
+  }> {
+    const body = await screenBody();
+    const card = await within(body).findByRole("region", { name: "Team sync" });
+    const panel = card.parentElement as HTMLElement;
+    const line = await within(body).findByText("Team sync", {
+      selector: "span",
+    });
+    return { line: line.parentElement as HTMLElement, panel };
+  }
+
+  /** Whether the panel is folded away below md. */
+  function folded(panel: HTMLElement): boolean {
+    return /(^| )hidden( |$)/.test(panel.className);
+  }
+
+  for (const [label, overrides] of [
+    ["a failed origin check", { probe_error: "GitHub did not answer" }],
+    [
+      "no connection",
+      { connection: { connected: false, user: null, token_store: null } },
+    ],
+    ["conflicts", { conflicts: ["notes/a.md"] }],
+    [
+      "declined proposals",
+      { declined_proposals: [{ number: 3 }, { number: 4 }] },
+    ],
+  ] as const) {
+    it(`keeps the team banners open on a phone for ${label}, without a summary line above the card`, async () => {
+      serve(
+        { "/domains/eng/sync": () => syncResponse({ ...overrides }) },
+        "admin",
+      );
+
+      renderApp("/d/eng");
+
+      const body = await screenBody();
+      const card = await within(body).findByRole("region", {
+        name: "Team sync",
+      });
+      expect(folded(card.parentElement as HTMLElement)).toBe(false);
+      expect(
+        within(body).queryByText("Team sync", { selector: "span" }),
+      ).toBeNull();
+    });
+  }
+
+  it("keeps the team banners open on a phone when the status read is refused", async () => {
+    serve(
+      {
+        "/domains/eng/sync": () => {
+          throw new ApiProblem(502, "bad gateway", "the origin did not answer");
+        },
+      },
+      "admin",
+    );
+
+    renderApp("/d/eng");
+
+    // Nothing to fold behind: the card stands open with the refusal in it.
+    const body = await screenBody();
+    const card = await within(body).findByRole("region", { name: "Team sync" });
+    expect(within(card).getByRole("alert")).toBeVisible();
+    expect(folded(card.parentElement as HTMLElement)).toBe(false);
+    expect(
+      within(body).queryByRole("button", { name: /^Team sync ·/ }),
+    ).toBeNull();
+  });
+
+  it("unfolds the team banners on a phone once Sync now fails", async () => {
+    serve(
+      {
+        "/domains/eng/sync": (_path, init) => {
+          if (init?.method === "POST") {
+            throw new ApiProblem(422, "refused", "the pull was refused");
+          }
+          return syncResponse();
+        },
+      },
+      "admin",
+    );
+
+    renderApp("/d/eng");
+
+    const { line, panel } = await phoneBanners();
+    expect(folded(panel)).toBe(true);
+    await userEvent.click(line);
+    await userEvent.click(
+      within(panel).getByRole("button", { name: "Sync now" }),
+    );
+    await waitFor(() => {
+      expect(within(panel).getByText(/the pull was refused/)).toHaveAttribute(
+        "role",
+        "alert",
+      );
+    });
+    // Folding is no longer offered while the failure stands.
+    expect(screen.queryByRole("button", { name: /^Team sync ·/ })).toBeNull();
+    expect(folded(panel)).toBe(false);
+  });
+
   it("shows the sync card for an admin on a team domain", async () => {
     serve({ "/domains/eng/sync": () => syncResponse() }, "admin");
 
@@ -2257,7 +2644,10 @@ describe("the domain's declared name", () => {
     expect(
       within(banner as HTMLElement).getByRole("button", { name: "Rename" }),
     ).toBeVisible();
-    expect(screen.getByRole("button", { name: "Rename domain" })).toBeVisible();
+    const menu = await openActions();
+    expect(
+      within(menu).getByRole("menuitem", { name: "Rename domain" }),
+    ).toBeVisible();
   });
 
   it("keeps Rename domain inert on a read-only instance, and says why", async () => {
@@ -2270,10 +2660,10 @@ describe("the domain's declared name", () => {
 
     renderApp("/d/eng");
 
-    const trigger = await screen.findByRole("button", {
+    const menu = await openActions();
+    const trigger = within(menu).getByRole("menuitem", {
       name: "Rename domain",
     });
-    expect(trigger).not.toBeDisabled();
     expect(trigger).toHaveAttribute("aria-disabled", "true");
     expect(trigger).toHaveAccessibleDescription(
       "This instance is read only, so nothing here can be changed.",
@@ -2309,8 +2699,11 @@ describe("the domain's declared name", () => {
     renderApp("/d/eng");
 
     await screen.findByText(/^This domain calls itself/);
-    expect(screen.queryByRole("button", { name: "Rename domain" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
+    const menu = await openActions();
+    expect(
+      within(menu).queryByRole("menuitem", { name: "Rename domain" }),
+    ).toBeNull();
   });
 
   it("shows Renaming... and disables every write control, each with the same reason", async () => {
@@ -2338,45 +2731,35 @@ describe("the domain's declared name", () => {
     expect(newEngram).toHaveAttribute("aria-disabled", "true");
     expect(newEngram).toHaveAccessibleDescription(REASON);
 
-    // The launcher itself: the same reason as every other control here,
-    // not the read-only one - a rename in progress is what is disabling it.
-    const renameLauncher = screen.getByRole("button", {
-      name: "Rename domain",
-    });
-    expect(renameLauncher).not.toBeDisabled();
-    expect(renameLauncher).toHaveAttribute("aria-disabled", "true");
-    expect(renameLauncher).toHaveAccessibleDescription(REASON);
-
     const editManifest = await screen.findByRole("link", {
       name: "Edit MANIFEST",
     });
     expect(editManifest).toHaveAttribute("aria-disabled", "true");
     expect(editManifest).toHaveAccessibleDescription(REASON);
 
-    const importArchive = await screen.findByRole("button", {
+    // A click on any of them does nothing: guarded at the press, not merely
+    // painted as inert. New engram opens a dialog when it acts and Edit
+    // MANIFEST navigates to the editor; neither does.
+    await userEvent.click(newEngram);
+    await userEvent.click(editManifest);
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    // The launcher and the import, rows of the More actions menu: the same
+    // reason as every other control here, not the read-only one - a rename
+    // in progress is what is shutting them. Unregister and the visibility
+    // switch live on the settings screen, under the same rule.
+    const menu = await openActions();
+    const renameLauncher = within(menu).getByRole("menuitem", {
+      name: "Rename domain",
+    });
+    expect(renameLauncher).toHaveAttribute("aria-disabled", "true");
+    expect(renameLauncher).toHaveAccessibleDescription(REASON);
+    const importArchive = within(menu).getByRole("menuitem", {
       name: "Import archive",
     });
     expect(importArchive).toHaveAttribute("aria-disabled", "true");
     expect(importArchive).toHaveAccessibleDescription(REASON);
-
-    const unregister = await screen.findByRole("button", {
-      name: "Unregister domain",
-    });
-    expect(unregister).toHaveAttribute("aria-disabled", "true");
-    expect(unregister).toHaveAccessibleDescription(REASON);
-
-    // Gated on the members read landing, the way the card itself gates it.
-    const share = await screen.findByRole("button", { name: "Make private" });
-    expect(share).toHaveAttribute("aria-disabled", "true");
-    expect(share).toHaveAccessibleDescription(REASON);
-
-    // A click on any of them does nothing: guarded at the press, not merely
-    // painted as inert. New engram, Import archive and the launcher each
-    // open a dialog when they act, and Edit MANIFEST navigates to the
-    // editor; none of the four does either.
-    await userEvent.click(newEngram);
     await userEvent.click(renameLauncher);
-    await userEvent.click(editManifest);
     await userEvent.click(importArchive);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.queryByRole("heading", { name: /^Editing/ })).toBeNull();
@@ -2483,8 +2866,12 @@ describe("the domain's declared name", () => {
 
     renderApp("/d/eng");
 
+    // The members read is what says who owns the domain, so the row arrives
+    // with it.
+    await screen.findByRole("link", { name: "Members 0 members" });
+    const menu = await openActions();
     expect(
-      await screen.findByRole("button", { name: "Rename domain" }),
+      within(menu).getByRole("menuitem", { name: "Rename domain" }),
     ).toBeVisible();
   });
 
@@ -2773,7 +3160,7 @@ describe("a domain's old address", () => {
       expect(call).toBeGreaterThanOrEqual(2);
     });
     expect(
-      screen.getByRole("heading", { name: "Domain not found" }),
+      await screen.findByRole("heading", { name: "Domain not found" }),
     ).toBeVisible();
 
     // A later read of the listing - a window-focus refetch here, standing

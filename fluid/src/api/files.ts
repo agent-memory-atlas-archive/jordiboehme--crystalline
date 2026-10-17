@@ -248,6 +248,21 @@ export interface AttachmentRow extends UploadedAttachment {
   modified: string;
 }
 
+/** An upload's answer, tolerantly; shared with the Reflection's file route. */
+export function readUploaded(
+  payload: unknown,
+  path: string,
+  size: number,
+): UploadedAttachment {
+  const record = asObject(payload);
+  return {
+    path: asString(record?.path) ?? path,
+    mime: asString(record?.mime) ?? "application/octet-stream",
+    size: asNumber(record?.size) ?? size,
+    sha256: asString(record?.sha256) ?? "",
+  };
+}
+
 /**
  * Store the bytes, creating or replacing whatever is at `path`.
  *
@@ -266,13 +281,7 @@ export async function uploadAttachment(
     headers: { "Content-Type": file.type || "application/octet-stream" },
     body: file,
   });
-  const record = asObject(payload);
-  return {
-    path: asString(record?.path) ?? path,
-    mime: asString(record?.mime) ?? "application/octet-stream",
-    size: asNumber(record?.size) ?? file.size,
-    sha256: asString(record?.sha256) ?? "",
-  };
+  return readUploaded(payload, path, file.size);
 }
 
 /** Remove one attachment. The engram bodies that reference it are untouched. */
@@ -283,16 +292,10 @@ export async function deleteAttachment(
   await api(filesPath(domain, path), { method: "DELETE" });
 }
 
-/** Every attachment the domain carries, ordered by path as the server sends it. */
-export async function listAttachments(
-  domain: string,
-): Promise<AttachmentRow[]> {
-  const payload = await api<unknown>(
-    `/domains/${encodeSegment(domain)}/attachments`,
-  );
-  const record = asObject(payload);
+/** A listing's rows (`{ attachments | assets: [...] }` is the caller's pick), tolerantly. */
+export function readAttachmentRows(entries: unknown): AttachmentRow[] {
   const rows: AttachmentRow[] = [];
-  for (const entry of asArray(record?.attachments)) {
+  for (const entry of asArray(entries)) {
     const row = asObject(entry);
     const path = asString(row?.path);
     if (path === null) {
@@ -309,7 +312,58 @@ export async function listAttachments(
   return rows;
 }
 
+/** Every attachment the domain carries, ordered by path as the server sends it. */
+export async function listAttachments(
+  domain: string,
+): Promise<AttachmentRow[]> {
+  const payload = await api<unknown>(
+    `/domains/${encodeSegment(domain)}/attachments`,
+  );
+  return readAttachmentRows(asObject(payload)?.attachments);
+}
+
 /** The cache key of one domain's attachment listing. */
 export function attachmentsKey(domain: string): readonly unknown[] {
   return ["attachments", domain];
+}
+
+/**
+ * Where a written link target points and where its bytes are read: the half
+ * of a file store that drawing a document needs.
+ *
+ * Engrams and reflections keep their files in different places and spell the
+ * links to them differently, so the code that draws, previews and lists
+ * attachments asks one of these rather than knowing either kind. The engram
+ * instance is `engramAssetHome` in `editor/imageFormat.ts`, beside the
+ * `assetPath` it resolves with: this module is in the entry bundle and that
+ * one is not, so the instance lives there and only the types live here.
+ */
+export interface AssetResolver {
+  /** The stored path a target names (engram: `assets/...` from the domain root), or null. */
+  resolve: (target: string) => string | null;
+  /** The URL the browser reads the bytes at, for a stored path. */
+  url: (path: string) => string;
+  /**
+   * Why a target must not be fetched at all, or null. Engram: always null.
+   * The Reflection answers a sentence for an engram attachment.
+   */
+  refused: (target: string) => string | null;
+}
+
+/** One kind's file store: the resolver plus the verbs the upload flow and the rail need. */
+export interface AssetHome extends AssetResolver {
+  /** The listing's cache key. */
+  key: readonly unknown[];
+  list: () => Promise<AttachmentRow[]>;
+  /** Store a new file under a free path (the upload flow). */
+  upload: (path: string, file: Blob) => Promise<UploadedAttachment>;
+  /**
+   * Overwrite the file at a path that is already taken, on purpose. Its own
+   * verb so a create-only precondition on {@link upload} never reaches it.
+   * Absent, this home offers no replace (engrams: shared design D11).
+   */
+  replace?: (path: string, file: Blob) => Promise<UploadedAttachment>;
+  remove: (path: string) => Promise<void>;
+  /** The text a document writes to point at a stored path (engram: the path itself). */
+  linkTo: (path: string) => string;
 }

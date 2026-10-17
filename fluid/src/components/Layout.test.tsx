@@ -5,16 +5,22 @@
  */
 
 import {
+  act,
   cleanup,
   fireEvent,
+  render,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useEffect } from "react";
+import { MemoryRouter, useNavigate } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import App from "../App";
 import { ApiProblem, api, setCsrfToken } from "../api/client";
+import { FOCUS_HEADING } from "../focusHeading";
 import { defined } from "../test/assert";
 import {
   answersFor,
@@ -92,6 +98,7 @@ function treeResponse(path: string) {
     domain: "eng",
     path: "/",
     folders: ["notes"],
+    folder_counts: { notes: 12 },
     engrams: [
       // The engine lists the MANIFEST as an engram of the domain like any
       // other, which is what the sidebar's pinned row above the tree would
@@ -213,6 +220,46 @@ function stubNarrowWindow() {
   });
 }
 
+/**
+ * A window whose width can change under the frame: starts narrow, and
+ * `resize(true)` takes it past the medium breakpoint (or back).
+ */
+function stubResizableWindow(): (wide: boolean) => void {
+  let wide = false;
+  const listeners = new Set<(event: { matches: boolean }) => void>();
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: (query: string) => ({
+      get matches() {
+        return query.includes("min-width") ? wide : false;
+      },
+      media: query,
+      addEventListener: (
+        _: string,
+        fn: (event: { matches: boolean }) => void,
+      ) => {
+        if (query.includes("min-width")) {
+          listeners.add(fn);
+        }
+      },
+      removeEventListener: (
+        _: string,
+        fn: (event: { matches: boolean }) => void,
+      ) => {
+        listeners.delete(fn);
+      },
+    }),
+  });
+  return (next) => {
+    act(() => {
+      wide = next;
+      listeners.forEach((fn) => {
+        fn({ matches: wide });
+      });
+    });
+  };
+}
+
 beforeEach(() => {
   apiMock.mockReset();
   setCsrfTokenMock.mockReset();
@@ -222,6 +269,17 @@ beforeEach(() => {
   // starts from a browser that has never been told anything.
   localStorage.clear();
 });
+
+/** Open the avatar menu, signed in as the fixture's person. */
+async function openAvatar(
+  user: ReturnType<typeof userEvent.setup>,
+  name = "Ada Lovelace",
+): Promise<HTMLElement> {
+  await user.click(await screen.findByRole("button", { name }));
+  // The body is a lazy part, so the first row is the sign it has arrived.
+  await screen.findByRole("menuitem", { name: "Maintenance" });
+  return screen.getByRole("menu");
+}
 
 describe("the layout", () => {
   it("moves focus to the main region on navigation", async () => {
@@ -243,6 +301,33 @@ describe("the layout", () => {
     });
   });
 
+  it("leaves focus to the screen when a navigation asks to focus its heading", async () => {
+    serveInDomain();
+    let go: (to: string, state: unknown) => void = () => undefined;
+    function Capture() {
+      const navigate = useNavigate();
+      useEffect(() => {
+        go = (to, state) => void navigate(to, { state });
+      }, [navigate]);
+      return null;
+    }
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <App />
+        <Capture />
+      </MemoryRouter>,
+    );
+    await screen.findByRole("navigation", { name: "Domains" });
+    act(() => {
+      go("/d/eng", FOCUS_HEADING);
+    });
+    await screen.findByRole("heading", { name: "eng", level: 1 });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(document.activeElement).not.toBe(screen.getByRole("main"));
+  });
+
   it("lists the instance's domains in the sidebar", async () => {
     serveSignedIn();
 
@@ -254,6 +339,37 @@ describe("the layout", () => {
     // Outside a domain there is nothing to switch between yet: the flat list
     // is the whole sidebar, and it stays that way.
     expect(screen.queryByRole("button", { name: /^Domain:/ })).toBeNull();
+  });
+
+  it("does not call the instance empty when a contributor has Reflection-only domains", async () => {
+    serveSignedIn({
+      "/domains": () => ({ behavior: [], domains: [] }),
+      "/reflection/domains": () => ({
+        domains: [
+          {
+            domain: "eng",
+            state: "on",
+            right: "edit",
+            engrams_visible: false,
+            home: "here",
+            home_url: null,
+            open_threads: 1,
+          },
+        ],
+      }),
+    });
+
+    renderApp("/");
+
+    const domains = await screen.findByRole("navigation", { name: "Domains" });
+    // Home draws the Reflection section from the same listing the sidebar
+    // reads, so once it is there the sentence's absence means something.
+    await screen.findByRole("region", { name: "Reflection" });
+    expect(
+      within(domains).queryByText(
+        "No domains are registered on this instance yet.",
+      ),
+    ).toBeNull();
   });
 
   it("badges a private domain in the sidebar and leaves a shared one plain", async () => {
@@ -298,9 +414,39 @@ describe("the layout", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "this account is a viewer",
     );
+    // The sidebar's list ends in the error state: no loader left spinning and
+    // no claim that the instance is empty.
+    const list = await sidebar();
+    expect(within(list).getByRole("alert")).toHaveTextContent(
+      "this account is a viewer",
+    );
+    expect(
+      within(await screen.findByRole("main")).queryByRole("alert"),
+    ).toBeNull();
+    expect(
+      within(list).queryByRole("status", { name: "Loading domains" }),
+    ).toBeNull();
+    expect(screen.queryByText(/No domains are registered/)).toBeNull();
     // A refusal is rendered where it happened, never as a bounce to the login
     // screen the caller is already past.
     expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
+  });
+
+  it("leaves the failed listing to the sidebar's alert on a screen other than Home", async () => {
+    serveSignedIn({
+      "/domains": () => {
+        throw new ApiProblem(403, "forbidden", "this account is a viewer");
+      },
+      "/graph": () => ({ nodes: [], edges: [], truncated: false }),
+    });
+
+    renderApp("/graph");
+
+    const list = await sidebar();
+    expect(await within(list).findByRole("alert")).toHaveTextContent(
+      "this account is a viewer",
+    );
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
   });
 
   it("routes the search box to the search screen", async () => {
@@ -361,7 +507,18 @@ describe("the layout", () => {
     expect(screen.queryByRole("link", { name: "GitHub" })).toBeNull();
     // And nothing to share on an instance with no origins to share to.
     expect(screen.queryByRole("button", { name: "Share changes" })).toBeNull();
-    expect(screen.getByRole("button", { name: /^Theme:/ })).toBeVisible();
+    // The old strip of Maintenance, width, text size, theme and help controls
+    // is gone: all of it lives in the avatar menu now.
+    for (const gone of [
+      /^Theme:/,
+      "Help",
+      "Use full width",
+      "Use large text",
+    ]) {
+      expect(screen.queryByRole("button", { name: gone })).toBeNull();
+    }
+    expect(screen.queryByRole("link", { name: "Maintenance" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Ada Lovelace" })).toBeVisible();
     expect(screen.getByRole("link", { name: "Fluid" })).toHaveAttribute(
       "href",
       "/",
@@ -371,11 +528,11 @@ describe("the layout", () => {
     expect(screen.queryByRole("link", { name: "Users" })).toBeNull();
 
     // And the pointer is told the same names the screen reader is, by the
-    // app's own tooltip rather than the browser's - so none of these three
+    // app's own tooltip rather than the browser's - so none of these
     // carries a `title` for a second label to be drawn from.
     for (const control of [
       screen.getByRole("button", { name: "Domains" }),
-      screen.getByRole("button", { name: /^Theme:/ }),
+      screen.getByRole("button", { name: "Ada Lovelace" }),
     ]) {
       expect(control).not.toHaveAttribute("title");
     }
@@ -397,12 +554,23 @@ describe("the layout", () => {
     await screen.findByRole("heading", { name: "Home" });
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Ada Lovelace" }));
+    await openAvatar(user);
 
-    // The header line says who, in the account's own name and its role, and is
-    // not something to press - it is what the rest of the menu is about.
-    expect(await screen.findByText("ada (admin)")).toBeVisible();
-    expect(screen.queryByRole("menuitem", { name: "ada (admin)" })).toBeNull();
+    // The header says who, in the account's own name and its role in words,
+    // and is not something to press - it is what the rest of the menu is about.
+    expect(
+      await screen.findByText("Admin on this instance", { exact: false }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("menuitem", { name: /Admin on this instance/ }),
+    ).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "Profile" })).toHaveAttribute(
+      "href",
+      "/profile",
+    );
+    expect(
+      screen.getByRole("menuitem", { name: "Maintenance" }),
+    ).toHaveAttribute("href", "/maintenance");
     // Then the two screens this session may reach, then the way out.
     expect(
       await screen.findByRole("menuitem", { name: "Users" }),
@@ -421,12 +589,15 @@ describe("the layout", () => {
     await screen.findByRole("heading", { name: "Home" });
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Ada Lovelace" }));
+    await openAvatar(user);
 
     // The editor's own identity, and the way out. The screens behind Users and
     // Settings both refuse anyone but an admin, and the frame offers no door
     // that will not open.
-    expect(await screen.findByText("ada (editor)")).toBeVisible();
+    expect(
+      await screen.findByText("Editor on this instance", { exact: false }),
+    ).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: "Maintenance" })).toBeVisible();
     expect(screen.getByRole("menuitem", { name: "Log out" })).toBeVisible();
     expect(screen.queryByRole("menuitem", { name: "Users" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Settings" })).toBeNull();
@@ -439,10 +610,8 @@ describe("the layout", () => {
     await screen.findByRole("heading", { name: "Home" });
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /^Theme:/ }));
-    await user.click(
-      await screen.findByRole("menuitemradio", { name: "Dark" }),
-    );
+    await openAvatar(user);
+    await user.click(screen.getByRole("menuitemradio", { name: "Dark" }));
 
     await waitFor(() => {
       expect(document.documentElement.dataset.theme).toBe("dark");
@@ -510,20 +679,25 @@ describe("the sidebar inside a domain", () => {
     renderApp("/d/eng");
 
     const nav = await screen.findByRole("navigation", { name: "Domain eng" });
-    // The domain row says where you are: its name goes to the domain page,
-    // and it is marked current because that page is what is open.
-    const row = await within(nav).findByRole("link", { name: "eng" });
+    // Overview goes to the domain's front page, and it is marked current
+    // because that page is what is open. The domain's name is not repeated:
+    // the bar's switcher names it.
+    const row = await within(nav).findByRole("link", { name: "Overview" });
     expect(row).toHaveAttribute("href", "/d/eng");
     expect(row).toHaveAttribute("aria-current", "page");
-    // And the control that moves you stands beside it, named for the act.
+    expect(within(nav).queryByRole("link", { name: "eng" })).toBeNull();
     expect(
-      within(nav).getByRole("button", { name: "Switch domain" }),
+      within(nav).getByRole("heading", { level: 2, name: "Engrams" }),
     ).toBeVisible();
-    // The way back to everything stays on screen rather than being a browser
-    // button somebody has to remember.
+    // The way across and the way back out are the top bar's switcher now,
+    // so the sidebar no longer carries either.
     expect(
-      within(nav).getByRole("link", { name: "All domains" }),
-    ).toHaveAttribute("href", "/");
+      within(nav).queryByRole("button", { name: /switch domain/i }),
+    ).toBeNull();
+    expect(within(nav).queryByRole("link", { name: "All domains" })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "eng, switch domain" }),
+    ).toBeVisible();
     // And below it, what this domain holds: its folders and its engrams.
     expect(
       await within(nav).findByRole("button", { name: "Expand notes" }),
@@ -539,6 +713,39 @@ describe("the sidebar inside a domain", () => {
     // MANIFEST is read on the domain page the row already links to.
     expect(within(nav).queryByRole("button", { name: /^Domain:/ })).toBeNull();
     expect(within(nav).queryByRole("link", { name: "MANIFEST" })).toBeNull();
+  });
+
+  it("draws each folder's engram count beside its name, kept out of the link's name", async () => {
+    serveInDomain();
+
+    renderApp("/d/eng");
+
+    const nav = await screen.findByRole("navigation", { name: "Domain eng" });
+    const folder = await within(nav).findByRole("link", { name: "notes" });
+    expect(folder).toHaveTextContent("notes12");
+    expect(within(folder).getByText("12")).toHaveAttribute(
+      "title",
+      "12 engrams",
+    );
+    expect(within(nav).getByText("12 engrams")).toHaveClass("sr-only");
+  });
+
+  it("draws no count for a folder a server sends none for", async () => {
+    serveInDomain({
+      "/domains/eng/tree": () => ({
+        domain: "eng",
+        path: "/",
+        folders: ["notes"],
+        engrams: [],
+      }),
+    });
+
+    renderApp("/d/eng");
+
+    const nav = await screen.findByRole("navigation", { name: "Domain eng" });
+    const folder = await within(nav).findByRole("link", { name: "notes" });
+    expect(folder).toHaveTextContent(/^notes$/);
+    expect(within(nav).queryByText(/engrams?$/)).toBeNull();
   });
 
   it("moves to another domain when the switcher picks one", async () => {
@@ -563,12 +770,12 @@ describe("the sidebar inside a domain", () => {
     renderApp("/d/eng");
     const user = userEvent.setup();
     await user.click(
-      await screen.findByRole("button", { name: "Switch domain" }),
+      await screen.findByRole("button", { name: "eng, switch domain" }),
     );
 
     // Every domain is offered with what it holds, which is what makes the
     // choice between them a choice rather than a guess.
-    const other = await screen.findByRole("menuitemradio", { name: /^ops/ });
+    const other = await screen.findByRole("menuitem", { name: /^ops/ });
     expect(other).toHaveTextContent("2");
     await user.click(other);
 
@@ -577,7 +784,7 @@ describe("the sidebar inside a domain", () => {
     ).toBeVisible();
     const nav = await screen.findByRole("navigation", { name: "Domain ops" });
     expect(
-      await within(nav).findByRole("link", { name: "ops" }),
+      await within(nav).findByRole("link", { name: "Overview" }),
     ).toHaveAttribute("aria-current", "page");
   });
 
@@ -603,14 +810,14 @@ describe("the sidebar inside a domain", () => {
     renderApp("/d/eng");
     const user = userEvent.setup();
     await user.click(
-      await screen.findByRole("button", { name: "Switch domain" }),
+      await screen.findByRole("button", { name: "eng, switch domain" }),
     );
 
     expect(
-      await screen.findByRole("menuitemradio", { name: /^ops/ }),
+      await screen.findByRole("menuitem", { name: /^ops/ }),
     ).toHaveTextContent("private");
     expect(
-      screen.getByRole("menuitemradio", { name: /^eng/ }),
+      screen.getByRole("menuitem", { name: /^eng/ }),
     ).not.toHaveTextContent("private");
   });
 
@@ -800,6 +1007,33 @@ describe("the sidebar inside a domain", () => {
     ).not.toHaveAttribute("aria-current");
   });
 
+  it("keeps a folder opened by hand open when the reader moves to a page off its path", async () => {
+    serveInDomain();
+
+    renderApp("/d/eng/e/alpha");
+    const nav = await sidebar();
+    const user = userEvent.setup();
+    // Neither page is in `notes`: the reader opens it on purpose.
+    await user.click(
+      await within(nav).findByRole("button", { name: "Expand notes" }),
+    );
+    expect(
+      await within(nav).findByRole("link", { name: "Beta" }),
+    ).toBeVisible();
+
+    await user.click(within(nav).getByRole("link", { name: "Old Way" }));
+    await waitFor(() => {
+      expect(
+        within(nav).getByRole("link", { name: "Old Way" }),
+      ).toHaveAttribute("aria-current", "page");
+    });
+
+    expect(
+      within(nav).getByRole("button", { name: "Collapse notes" }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(within(nav).getByRole("link", { name: "Beta" })).toBeVisible();
+  });
+
   it("opens the folder when the reader walks into it from the screen", async () => {
     serveInDomain();
 
@@ -815,18 +1049,23 @@ describe("the sidebar inside a domain", () => {
     // went, not only where they arrived.
     const body = await screen.findByRole("main");
     const user = userEvent.setup();
-    await user.click(within(body).getByRole("button", { name: "notes" }));
+    await user.click(
+      await within(body).findByRole("button", { name: "notes" }),
+    );
     await user.click(await within(body).findByRole("link", { name: /Beta/ }));
 
     await waitFor(() => {
       expect(folder).toHaveAttribute("aria-expanded", "true");
     });
-    expect(
-      await within(nav).findByRole("link", { name: "Beta" }),
-    ).toHaveAttribute("aria-current", "page");
+    // The engram screen is its own chunk, and the navigation holds the old
+    // screen until it arrives, so the row turns current with it.
+    const beta = await within(nav).findByRole("link", { name: "Beta" });
+    await waitFor(() => {
+      expect(beta).toHaveAttribute("aria-current", "page");
+    });
   });
 
-  it("fades a retired engram in the tree rather than dropping it", async () => {
+  it("sets a retired engram apart in the tree rather than dropping it", async () => {
     serveInDomain();
 
     renderApp("/d/eng");
@@ -835,7 +1074,10 @@ describe("the sidebar inside a domain", () => {
       name: "Old Way",
     });
     expect(retired).toBeVisible();
-    expect(retired.className).toContain("opacity-60");
+    // Slanted and in a lighter ink, not faded by opacity: the fade took the
+    // row under 4.5:1.
+    expect(retired.className).toContain("italic");
+    expect(retired.className).not.toContain("opacity-60");
   });
 
   it("keeps the MANIFEST out of the tree, and pins no row for it", async () => {
@@ -851,14 +1093,14 @@ describe("the sidebar inside a domain", () => {
     expect(within(nav).queryByText("MANIFEST")).toBeNull();
   });
 
-  it("marks the domain row current on the domain page only", async () => {
+  it("marks the Overview row current on the domain page only", async () => {
     serveInDomain();
 
     renderApp("/d/eng?tags=eng");
     let nav = await sidebar();
     // A filter keeps the page it is on: the domain page, still current.
     expect(
-      await within(nav).findByRole("link", { name: "eng" }),
+      await within(nav).findByRole("link", { name: "Overview" }),
     ).toHaveAttribute("aria-current", "page");
     cleanup();
 
@@ -866,7 +1108,7 @@ describe("the sidebar inside a domain", () => {
     nav = await sidebar();
     // A folder is its own page, and the folder's row is what is current.
     expect(
-      await within(nav).findByRole("link", { name: "eng" }),
+      await within(nav).findByRole("link", { name: "Overview" }),
     ).not.toHaveAttribute("aria-current");
     expect(
       await within(nav).findByRole("link", { name: "notes" }),
@@ -876,7 +1118,7 @@ describe("the sidebar inside a domain", () => {
     renderApp("/d/eng/e/alpha");
     nav = await sidebar();
     expect(
-      await within(nav).findByRole("link", { name: "eng" }),
+      await within(nav).findByRole("link", { name: "Overview" }),
     ).not.toHaveAttribute("aria-current");
   });
 
@@ -895,10 +1137,13 @@ describe("the sidebar inside a domain", () => {
 
     const alert = await within(await sidebar()).findByRole("alert");
     expect(alert).toHaveTextContent("this account may not browse eng");
-    // The row and its switch button survive the failure: one domain refusing
+    // Overview and the bar's switcher survive the failure: one domain refusing
     // to be browsed is not a reason to strand somebody in it.
     expect(
-      within(await sidebar()).getByRole("button", { name: "Switch domain" }),
+      within(await sidebar()).getByRole("link", { name: "Overview" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "eng, switch domain" }),
     ).toBeVisible();
   });
 });
@@ -965,6 +1210,31 @@ describe("the sidebar's own width", () => {
     );
   });
 
+  it("puts the fold in the sidebar's foot, after everything the sidebar lists", async () => {
+    serveInDomain();
+
+    renderApp("/d/eng/e/alpha");
+    const nav = await sidebar();
+    const launcher = await within(nav).findByRole("button", {
+      name: "New engram",
+    });
+    const collapse = within(nav).getByRole("button", {
+      name: "Collapse the sidebar",
+    });
+    // Below the tree and its launcher, in a foot of its own rather than
+    // floating above the list.
+    expect(
+      launcher.compareDocumentPosition(collapse) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    const buttons = within(nav).getAllByRole("button");
+    expect(buttons[buttons.length - 1]).toBe(collapse);
+    // A wide window has no drawer, so no drawer head either.
+    expect(
+      within(nav).queryByRole("button", { name: "Close the sidebar" }),
+    ).toBeNull();
+  });
+
   it("reads a stored rail preference at mount", async () => {
     localStorage.setItem("fluid.nav", "rail");
     serveSignedIn();
@@ -992,6 +1262,14 @@ describe("the sidebar's own width", () => {
 
     renderApp("/");
 
+    // The one control a narrow window offers says what the drawer is doing,
+    // with nothing beside it to contradict it, and points at the drawer only
+    // while there is one.
+    const toggle = await screen.findByRole("button", { name: "Domains" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).not.toHaveAttribute("aria-controls");
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-controls", "domain-sidebar");
     const nav = await screen.findByRole("navigation", { name: "Domains" });
     expect(
       await within(nav).findByRole("link", { name: /^eng/ }),
@@ -999,12 +1277,308 @@ describe("the sidebar's own width", () => {
     expect(
       screen.queryByRole("button", { name: "Expand the sidebar" }),
     ).toBeNull();
-    // And the one control a narrow window does offer says what the drawer is
-    // doing, with nothing beside it to contradict it.
-    expect(screen.getByRole("button", { name: "Domains" })).toHaveAttribute(
-      "aria-expanded",
-      "false",
+  });
+
+  it("opens the phone drawer as a modal dialog headed by the domain", async () => {
+    stubNarrowWindow();
+    serveInDomain();
+
+    renderApp("/d/eng/e/alpha");
+    const user = userEvent.setup();
+    const toggle = await screen.findByRole("button", { name: "Domains" });
+    // Shut, there is no drawer to reach.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const drawer = await screen.findByRole("dialog", { name: "eng" });
+    expect(drawer).toHaveAttribute("aria-modal", "true");
+    // The drawer takes the keyboard, and holds the tree for the current mode
+    // with no fold control: there is no rail on a phone.
+    expect(document.activeElement).toBe(drawer);
+    const nav = within(drawer).getByRole("navigation", { name: "Domain eng" });
+    expect(
+      await within(nav).findByRole("link", { name: "Overview" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Collapse the sidebar" }),
+    ).toBeNull();
+
+    // Tab never leaves it: from the last control it wraps to the first.
+    const close = within(drawer).getByRole("button", {
+      name: "Close the sidebar",
+    });
+    close.focus();
+    await user.tab({ shift: true });
+    expect(drawer.contains(document.activeElement)).toBe(true);
+    for (let i = 0; i < 12; i += 1) {
+      await user.tab();
+      expect(drawer.contains(document.activeElement)).toBe(true);
+    }
+
+    await user.click(close);
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    // The keyboard goes back to the control that opened it.
+    await waitFor(() => {
+      expect(document.activeElement).toBe(toggle);
+    });
+  });
+
+  it("shuts the drawer on Escape from anywhere in it, and on a followed link", async () => {
+    stubNarrowWindow();
+    serveInDomain();
+
+    renderApp("/d/eng/e/alpha");
+    const user = userEvent.setup();
+    const toggle = await screen.findByRole("button", { name: "Domains" });
+    await user.click(toggle);
+    await screen.findByRole("dialog", { name: "eng" });
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await waitFor(() => {
+      expect(document.activeElement).toBe(toggle);
+    });
+
+    await user.click(toggle);
+    const drawer = await screen.findByRole("dialog", { name: "eng" });
+    await user.click(
+      await within(drawer).findByRole("link", { name: "Overview" }),
     );
+    await screen.findByRole("heading", { level: 1, name: "eng" });
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("keeps the drawer open when Escape shuts a dialog opened from it, and returns to the launcher", async () => {
+    stubNarrowWindow();
+    serveInDomain();
+
+    renderApp("/d/eng/e/alpha");
+    const user = userEvent.setup();
+    const toggle = await screen.findByRole("button", { name: "Domains" });
+    await user.click(toggle);
+    const drawer = await screen.findByRole("dialog", { name: "eng" });
+    const launcher = await within(drawer).findByRole("button", {
+      name: "New engram",
+    });
+    await user.click(launcher);
+    await screen.findByRole("dialog", { name: /^New engram in/ });
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("dialog", { name: /^New engram in/ }),
+      ).toBeNull();
+    });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("dialog", { name: "eng" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(document.activeElement).toBe(launcher);
+    });
+  });
+
+  it("shuts the drawer for good when the window grows past the breakpoint", async () => {
+    let wide = false;
+    const listeners = new Set<(event: { matches: boolean }) => void>();
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: (query: string) => ({
+        get matches() {
+          return query.includes("min-width") ? wide : false;
+        },
+        media: query,
+        addEventListener: (
+          _: string,
+          fn: (event: { matches: boolean }) => void,
+        ) => {
+          if (query.includes("min-width")) {
+            listeners.add(fn);
+          }
+        },
+        removeEventListener: (
+          _: string,
+          fn: (event: { matches: boolean }) => void,
+        ) => {
+          listeners.delete(fn);
+        },
+      }),
+    });
+    serveInDomain();
+
+    renderApp("/d/eng/e/alpha");
+    const user = userEvent.setup();
+    const toggle = await screen.findByRole("button", { name: "Domains" });
+    await user.click(toggle);
+    await screen.findByRole("dialog", { name: "eng" });
+
+    act(() => {
+      wide = true;
+      listeners.forEach((fn) => {
+        fn({ matches: wide });
+      });
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    act(() => {
+      wide = false;
+      listeners.forEach((fn) => {
+        fn({ matches: wide });
+      });
+    });
+    // Narrow again, and the drawer stays shut until it is asked for.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("keeps folders opened by hand across the drawer and the column", async () => {
+    const resize = stubResizableWindow();
+    serveInDomain();
+
+    renderApp("/d/eng/e/alpha");
+    const user = userEvent.setup();
+    const toggle = await screen.findByRole("button", { name: "Domains" });
+    await user.click(toggle);
+    let drawer = await screen.findByRole("dialog", { name: "eng" });
+    await user.click(
+      await within(drawer).findByRole("button", { name: "Expand notes" }),
+    );
+    // Shut and opened again: the folder is still open.
+    await user.click(
+      within(drawer).getByRole("button", { name: "Close the sidebar" }),
+    );
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    await user.click(toggle);
+    drawer = await screen.findByRole("dialog", { name: "eng" });
+    expect(
+      await within(drawer).findByRole("button", { name: "Collapse notes" }),
+    ).toHaveAttribute("aria-expanded", "true");
+
+    // And the column past the breakpoint draws it open as well.
+    resize(true);
+    const nav = await sidebar();
+    expect(
+      await within(nav).findByRole("button", { name: "Collapse notes" }),
+    ).toBeVisible();
+    // Shut there, it is shut in the drawer too.
+    await user.click(
+      within(nav).getByRole("button", { name: "Collapse notes" }),
+    );
+    resize(false);
+    await user.click(toggle);
+    drawer = await screen.findByRole("dialog", { name: "eng" });
+    expect(
+      await within(drawer).findByRole("button", { name: "Expand notes" }),
+    ).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("keeps a dialog opened from the drawer, and its text, when the window grows", async () => {
+    const resize = stubResizableWindow();
+    serveInDomain();
+
+    renderApp("/d/eng/e/alpha");
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Domains" }));
+    const drawer = await screen.findByRole("dialog", { name: "eng" });
+    await user.click(
+      await within(drawer).findByRole("button", { name: "New engram" }),
+    );
+    const create = await screen.findByRole("dialog", {
+      name: /^New engram in/,
+    });
+    const title = within(create).getByRole("textbox", { name: /title/i });
+    await user.type(title, "Half typed");
+
+    resize(true);
+    // The drawer is gone, the dialog and what was typed in it are not.
+    expect(screen.queryByRole("dialog", { name: "eng" })).toBeNull();
+    const still = screen.getByRole("dialog", { name: /^New engram in/ });
+    expect(within(still).getByRole("textbox", { name: /title/i })).toHaveValue(
+      "Half typed",
+    );
+  });
+
+  it("names the drawer All domains outside a domain", async () => {
+    stubNarrowWindow();
+    serveSignedIn();
+
+    renderApp("/");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Domains" }),
+    );
+    const drawer = await screen.findByRole("dialog", { name: "All domains" });
+    expect(
+      within(drawer).getByRole("navigation", { name: "Domains" }),
+    ).toBeVisible();
+    expect(
+      within(drawer).getByRole("button", { name: "Close the sidebar" }),
+    ).toBeVisible();
+  });
+
+  it("gives the keyboard back to New engram when its dialog is dismissed", async () => {
+    serveInDomain();
+
+    renderApp("/d/eng/e/alpha");
+    const user = userEvent.setup();
+    const nav = await sidebar();
+    const launcher = await within(nav).findByRole("button", {
+      name: "New engram",
+    });
+    await user.click(launcher);
+    await screen.findByRole("dialog", { name: /^New engram in/ });
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(launcher);
+    });
+
+    // The same from the rail's own launcher.
+    await user.click(
+      within(nav).getByRole("button", { name: "Collapse the sidebar" }),
+    );
+    const rail = within(nav).getByRole("button", { name: "New engram" });
+    await user.click(rail);
+    await screen.findByRole("dialog", { name: /^New engram in/ });
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => {
+      expect(document.activeElement).toBe(rail);
+    });
+  });
+
+  it("offers New engram in the sidebar on an engram page but not on the front page", async () => {
+    serveInDomain();
+
+    renderApp("/d/eng");
+    let nav = await sidebar();
+    await within(nav).findByRole("link", { name: "Alpha" });
+    // The front page's engram list carries its own launcher.
+    expect(
+      within(nav).queryByRole("button", { name: "New engram" }),
+    ).toBeNull();
+    cleanup();
+
+    renderApp("/d/eng/e/alpha");
+    nav = await sidebar();
+    expect(
+      await within(nav).findByRole("button", { name: "New engram" }),
+    ).toBeVisible();
+    // A document glyph on every engram row, drawn and not spoken.
+    const alpha = within(nav).getByRole("link", { name: "Alpha" });
+    expect(alpha.querySelector("svg")?.getAttribute("class")).toContain(
+      "lucide-file-text",
+    );
+    expect(alpha).toHaveAttribute("aria-current", "page");
+    expect(
+      within(nav).getByRole("link", { name: "Overview" }),
+    ).not.toHaveAttribute("aria-current");
   });
 
   it("survives a move to another screen", async () => {
@@ -1097,24 +1671,31 @@ describe("the content's own width", () => {
 
     renderApp("/");
     const user = userEvent.setup();
-    const widen = await screen.findByRole("button", { name: "Use full width" });
-    // In the frame's own top bar rather than on the screen inside it: this is
-    // a choice about every screen, and it is drawn where the theme control is.
-    expect(widen.closest("header")).not.toBeNull();
-    expect(widen.closest("main")).toBeNull();
-    // The name says which way it will switch rather than which way it is, so
-    // a reader who hears it knows what pressing it does.
     expect(await screen.findByRole("main")).not.toHaveAttribute("data-width");
+    // In the frame's own avatar menu rather than on the screen inside it: this
+    // is a choice about every screen, and it is drawn with the theme.
+    const menu = await openAvatar(user);
+    const group = within(menu).getByRole("group", { name: "Width" });
+    expect(
+      within(group).getByRole("menuitemradio", { name: "Reading" }),
+    ).toBeChecked();
 
-    await user.click(widen);
+    await user.click(
+      within(group).getByRole("menuitemradio", { name: "Full" }),
+    );
 
     // One attribute on the frame is the whole of what the stylesheet reads:
     // the measure is lifted under it, everywhere, with no screen saying so.
-    expect(screen.getByRole("main")).toHaveAttribute("data-width", "full");
+    expect(screen.getByRole("main", { hidden: true })).toHaveAttribute(
+      "data-width",
+      "full",
+    );
     expect(
-      screen.getByRole("button", { name: "Use reading width" }),
-    ).toBeVisible();
+      within(group).getByRole("menuitemradio", { name: "Full" }),
+    ).toBeChecked();
     expect(localStorage.getItem("fluid.layout.width")).toBe("full");
+    // A choice in the Display group does not close the menu.
+    expect(screen.getByRole("menu")).toBeVisible();
   });
 
   it("reads a stored full width at mount", async () => {
@@ -1122,11 +1703,16 @@ describe("the content's own width", () => {
     serveSignedIn();
 
     renderApp("/");
+    const user = userEvent.setup();
+    const menu = await openAvatar(user);
 
     expect(
-      await screen.findByRole("button", { name: "Use reading width" }),
-    ).toBeVisible();
-    expect(screen.getByRole("main")).toHaveAttribute("data-width", "full");
+      within(menu).getByRole("menuitemradio", { name: "Full" }),
+    ).toBeChecked();
+    expect(screen.getByRole("main", { hidden: true })).toHaveAttribute(
+      "data-width",
+      "full",
+    );
   });
 
   it("lifts the frame's own cap at full width, header and body alike", async () => {
@@ -1139,7 +1725,8 @@ describe("the content's own width", () => {
     const headerRow = document.querySelector("header > div");
     expect(headerRow?.className).toContain("max-w-350");
 
-    await user.click(screen.getByRole("button", { name: "Use full width" }));
+    await openAvatar(user);
+    await user.click(screen.getByRole("menuitemradio", { name: "Full" }));
 
     // Full width means the window: dropping the details column and lifting
     // the measure while the frame keeps its cap would hand back the room and
@@ -1147,7 +1734,7 @@ describe("the content's own width", () => {
     expect(main.parentElement?.className).not.toContain("max-w-350");
     expect(headerRow?.className).not.toContain("max-w-350");
 
-    await user.click(screen.getByRole("button", { name: "Use reading width" }));
+    await user.click(screen.getByRole("menuitemradio", { name: "Reading" }));
     expect(main.parentElement?.className).toContain("max-w-350");
     expect(headerRow?.className).toContain("max-w-350");
   });
@@ -1158,11 +1745,12 @@ describe("the content's own width", () => {
 
     renderApp("/");
     const user = userEvent.setup();
-    await user.click(
-      await screen.findByRole("button", { name: "Use reading width" }),
-    );
+    await openAvatar(user);
+    await user.click(screen.getByRole("menuitemradio", { name: "Reading" }));
 
-    expect(screen.getByRole("main")).not.toHaveAttribute("data-width");
+    expect(screen.getByRole("main", { hidden: true })).not.toHaveAttribute(
+      "data-width",
+    );
     expect(localStorage.getItem("fluid.layout.width")).toBe("reading");
   });
 
@@ -1271,15 +1859,15 @@ describe("the text size", () => {
     const main = await screen.findByRole("main");
     expect(main).not.toHaveAttribute("data-text");
 
-    await user.click(screen.getByRole("button", { name: "Use large text" }));
+    await openAvatar(user);
+    await user.click(screen.getByRole("menuitemradio", { name: "Large" }));
 
     // One attribute on the frame is the whole of what the stylesheet reads,
     // for the rendered document and the editor alike.
     expect(main).toHaveAttribute("data-text", "large");
-    expect(
-      screen.getByRole("button", { name: "Use regular text" }),
-    ).toBeVisible();
+    expect(screen.getByRole("menuitemradio", { name: "Large" })).toBeChecked();
     expect(localStorage.getItem("fluid.layout.text")).toBe("large");
+    expect(screen.getByRole("menu")).toBeVisible();
   });
 
   it("reads a stored large text at mount, and goes back", async () => {
@@ -1292,8 +1880,11 @@ describe("the text size", () => {
       "data-text",
       "large",
     );
-    await user.click(screen.getByRole("button", { name: "Use regular text" }));
-    expect(screen.getByRole("main")).not.toHaveAttribute("data-text");
+    await openAvatar(user);
+    await user.click(screen.getByRole("menuitemradio", { name: "Regular" }));
+    expect(screen.getByRole("main", { hidden: true })).not.toHaveAttribute(
+      "data-text",
+    );
     expect(localStorage.getItem("fluid.layout.text")).toBe("regular");
   });
 
@@ -1312,7 +1903,7 @@ describe("the text size", () => {
   });
 });
 
-describe("the help menu", () => {
+describe("the Handbook and the shortcut map in the avatar menu", () => {
   it("leads to the Handbook in a new tab and to the shortcut map", async () => {
     serveSignedIn();
 
@@ -1320,7 +1911,7 @@ describe("the help menu", () => {
     await screen.findByRole("main");
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole("button", { name: "Help" }));
+    await openAvatar(user);
     const handbook = await screen.findByRole("menuitem", {
       name: "Handbook (opens in a new tab)",
     });
@@ -1345,34 +1936,40 @@ describe("the help menu", () => {
     expect(more).toHaveAttribute("target", "_blank");
   });
 
-  it("works from the keyboard alone", async () => {
+  it("opens the map from the keyboard and gives focus back to the avatar", async () => {
     serveSignedIn();
 
     renderApp("/");
     await screen.findByRole("main");
     const user = userEvent.setup();
 
-    screen.getByRole("button", { name: "Help" }).focus();
+    const avatar = await screen.findByRole("button", { name: "Ada Lovelace" });
+    avatar.focus();
     await user.keyboard("{Enter}");
-    await screen.findByRole("menu");
-    // Radix focuses the first item on open; one step down is the shortcuts row.
-    await user.keyboard("{ArrowDown}{Enter}");
+    await screen.findByRole("menuitem", { name: "Maintenance" });
+    await user.click(
+      screen.getByRole("menuitem", { name: /^Keyboard shortcuts/ }),
+    );
+    expect(
+      await screen.findByRole("dialog", { name: /keyboard shortcuts/i }),
+    ).toBeVisible();
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(avatar).toHaveFocus();
+    });
+  });
+
+  it("still opens the map with the question mark", async () => {
+    serveSignedIn();
+
+    renderApp("/");
+    await screen.findByRole("main");
+    const user = userEvent.setup();
+    await user.keyboard("?");
 
     expect(
       await screen.findByRole("dialog", { name: /keyboard shortcuts/i }),
     ).toBeVisible();
-  });
-
-  it("is there for an anonymous reader too", async () => {
-    serve({
-      "/auth/me": () => meResponse({ anonymous: true }),
-      "/domains": domainsResponse,
-    });
-
-    renderApp("/");
-    await screen.findByRole("main");
-
-    expect(screen.getByRole("button", { name: "Help" })).toBeVisible();
   });
 
   it("opens the Handbook from the palette", async () => {
@@ -1393,5 +1990,452 @@ describe("the help menu", () => {
       "noopener,noreferrer",
     );
     open.mockRestore();
+  });
+});
+
+/**
+ * The avatar menu (spec 4.3): one menu for who you are, Maintenance and the
+ * Display choices, as the avatar in the bar opens it.
+ */
+describe("the avatar menu", () => {
+  it("shows the initial, and names the person", async () => {
+    serveSignedIn();
+
+    renderApp("/");
+    const avatar = await screen.findByRole("button", { name: "Ada Lovelace" });
+
+    expect(avatar).toHaveTextContent("A");
+  });
+
+  it("changes the theme and keeps the menu open", async () => {
+    serveSignedIn();
+
+    renderApp("/");
+    const user = userEvent.setup();
+    const menu = await openAvatar(user);
+    const theme = within(menu).getByRole("group", { name: "Theme" });
+
+    await user.click(
+      within(theme).getByRole("menuitemradio", { name: "Dark" }),
+    );
+
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe("dark");
+    });
+    expect(screen.getByRole("menu")).toBeVisible();
+    expect(
+      within(theme).getByRole("menuitemradio", { name: "Dark" }),
+    ).toBeChecked();
+    // And a second choice in the same visit, without opening it again.
+    await user.click(
+      within(theme).getByRole("menuitemradio", { name: "Light" }),
+    );
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe("light");
+    });
+    expect(screen.getByRole("menu")).toBeVisible();
+  });
+
+  it("moves within a radio group with the left and right arrows", async () => {
+    serveSignedIn();
+
+    renderApp("/");
+    const user = userEvent.setup();
+    const menu = await openAvatar(user);
+    const theme = within(menu).getByRole("group", { name: "Theme" });
+    const system = within(theme).getByRole("menuitemradio", { name: "System" });
+    const light = within(theme).getByRole("menuitemradio", { name: "Light" });
+    const dark = within(theme).getByRole("menuitemradio", { name: "Dark" });
+
+    system.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(light).toHaveFocus();
+    await user.keyboard("{ArrowRight}");
+    expect(dark).toHaveFocus();
+    await user.keyboard("{ArrowRight}");
+    expect(system).toHaveFocus();
+    await user.keyboard("{ArrowLeft}");
+    expect(dark).toHaveFocus();
+    // Space or Enter chooses it, and the menu stays.
+    await user.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe("dark");
+    });
+    expect(screen.getByRole("menu")).toBeVisible();
+  });
+
+  it("closes on Escape and returns focus to the avatar", async () => {
+    serveSignedIn();
+
+    renderApp("/");
+    const user = userEvent.setup();
+    const avatar = await screen.findByRole("button", { name: "Ada Lovelace" });
+    await openAvatar(user);
+
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => {
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+    expect(avatar).toHaveFocus();
+  });
+
+  it("keeps the shortcut map on a phone and leaves the width choice to the desktop", async () => {
+    stubNarrowWindow();
+    serveSignedIn();
+
+    renderApp("/");
+    const user = userEvent.setup();
+    const menu = await openAvatar(user);
+
+    expect(
+      within(menu).getByRole("menuitem", { name: /^Keyboard shortcuts/ }),
+    ).toBeVisible();
+    expect(within(menu).queryByRole("group", { name: "Width" })).toBeNull();
+    expect(within(menu).getByRole("group", { name: "Theme" })).toBeVisible();
+  });
+
+  it("marks Maintenance as the current screen while you are on it", async () => {
+    serveSignedIn();
+
+    renderApp("/maintenance");
+    const user = userEvent.setup();
+    const menu = await openAvatar(user);
+
+    const item = within(menu).getByRole("menuitem", { name: "Maintenance" });
+    expect(item).toHaveAttribute("aria-current", "page");
+    expect(item.className).toContain("font-medium");
+    expect(item.className).toContain("h-11");
+    expect(
+      within(menu).getByRole("menuitem", { name: "Profile" }).className,
+    ).not.toContain("font-medium");
+    expect(
+      within(menu).getByRole("menuitem", { name: "Profile" }).className,
+    ).toContain("h-11");
+    expect(
+      within(menu).getByRole("menuitem", { name: "Profile" }),
+    ).not.toHaveAttribute("aria-current");
+  });
+
+  it("puts the keyboard on the first row when the menu is opened with Enter", async () => {
+    serveSignedIn();
+
+    renderApp("/");
+    const avatar = await screen.findByRole("button", { name: "Ada Lovelace" });
+    avatar.focus();
+    const user = userEvent.setup();
+    await user.keyboard("{Enter}");
+    await screen.findByRole("menuitem", { name: "Maintenance" });
+
+    await waitFor(() => {
+      expect(screen.getByRole("menuitem", { name: "Profile" })).toHaveFocus();
+    });
+  });
+
+  it("is a neutral circle with a way to log in for an anonymous reader", async () => {
+    serve({
+      "/auth/me": () => meResponse({ anonymous: true }),
+      "/domains": domainsResponse,
+    });
+
+    renderApp("/");
+    const user = userEvent.setup();
+    const menu = await openAvatar(user, "Viewing anonymously");
+
+    expect(within(menu).getByText("No account on this session")).toBeVisible();
+    expect(
+      within(menu).getByRole("menuitem", { name: "Log in" }),
+    ).toHaveAttribute("href", "/login");
+    // What works without an account stays.
+    expect(
+      within(menu).getByRole("menuitem", { name: "Maintenance" }),
+    ).toBeVisible();
+    expect(within(menu).getByRole("group", { name: "Theme" })).toBeVisible();
+    expect(
+      within(menu).getByRole("group", { name: "Text size" }),
+    ).toBeVisible();
+    expect(within(menu).getByRole("group", { name: "Width" })).toBeVisible();
+    expect(
+      within(menu).getByRole("menuitem", { name: /^Keyboard shortcuts/ }),
+    ).toBeVisible();
+    expect(
+      within(menu).getByRole("menuitem", { name: /^Handbook/ }),
+    ).toBeVisible();
+    // And nothing that needs an account.
+    for (const gone of ["Profile", "Users", "Settings", "Log out"]) {
+      expect(within(menu).queryByRole("menuitem", { name: gone })).toBeNull();
+    }
+  });
+});
+
+/**
+ * The domain switcher in the top bar (spec 4.1): the current domain by name,
+ * "All domains" outside one, and a menu with a filter field, the way home,
+ * every domain with its chip and count, a check on the current one, and
+ * "New domain" for an admin.
+ */
+describe("the domain switcher in the top bar", () => {
+  async function openSwitcher(name: string): Promise<HTMLElement> {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name }));
+    return screen.findByRole("menu");
+  }
+
+  it("reads All domains outside a domain and leads home with the count", async () => {
+    serveSignedIn({ "/reflection/domains": () => ({ domains: [] }) });
+    renderApp("/");
+    const menu = await openSwitcher("All domains, switch domain");
+    const home = await within(menu).findByRole("menuitem", {
+      name: /^All domains/,
+    });
+    expect(home).toHaveAttribute("href", "/");
+    expect(home).toHaveTextContent("1");
+  });
+
+  it("checks the current domain and no other", async () => {
+    serveInDomain({ "/reflection/domains": () => ({ domains: [] }) });
+    renderApp("/d/eng");
+    const menu = await openSwitcher("eng, switch domain");
+    const eng = await within(menu).findByRole("menuitem", { name: /^eng/ });
+    expect(eng).toHaveAttribute("aria-current", "true");
+    // Said in words too, for a reader that does not announce aria-current.
+    expect(eng).toHaveTextContent("(current)");
+    expect(eng).toHaveAttribute("href", "/d/eng");
+    expect(eng.querySelector("svg")).not.toBeNull();
+    const ops = within(menu).getByRole("menuitem", { name: /^ops/ });
+    expect(ops).not.toHaveAttribute("aria-current");
+    expect(ops.querySelector("svg")).toBeNull();
+  });
+
+  it("narrows the list as the filter is typed, and says when nothing matches", async () => {
+    serveInDomain({ "/reflection/domains": () => ({ domains: [] }) });
+    renderApp("/d/eng");
+    const menu = await openSwitcher("eng, switch domain");
+    const field = await within(menu).findByRole("searchbox", {
+      name: "Find a domain",
+    });
+    await waitFor(() => {
+      expect(field).toHaveFocus();
+    });
+    const user = userEvent.setup();
+    await user.type(field, "OP");
+    expect(field).toHaveValue("OP");
+    expect(within(menu).getByRole("menuitem", { name: /^ops/ })).toBeVisible();
+    expect(within(menu).queryByRole("menuitem", { name: /^eng/ })).toBeNull();
+    await user.type(field, "zz");
+    expect(within(menu).getByText("No domain matches.")).toBeVisible();
+    // The way home is never filtered away.
+    expect(
+      within(menu).getByRole("menuitem", { name: /^All domains/ }),
+    ).toBeVisible();
+  });
+
+  it("works from the keyboard: open, type, down into the list, Escape back", async () => {
+    serveInDomain({ "/reflection/domains": () => ({ domains: [] }) });
+    renderApp("/d/eng");
+    const trigger = await screen.findByRole("button", {
+      name: "eng, switch domain",
+    });
+    trigger.focus();
+    const user = userEvent.setup();
+    await user.keyboard("{Enter}");
+    const field = await screen.findByRole("searchbox", {
+      name: "Find a domain",
+    });
+    await waitFor(() => {
+      expect(field).toHaveFocus();
+    });
+    // A letter goes into the field, not to the menu's typeahead.
+    await user.keyboard("o");
+    expect(field).toHaveValue("o");
+    expect(field).toHaveFocus();
+    await user.keyboard("{ArrowDown}");
+    expect(
+      screen.getByRole("menuitem", { name: /^All domains/ }),
+    ).toHaveFocus();
+    // Up from the first row is back in the field.
+    await user.keyboard("{ArrowUp}");
+    expect(field).toHaveFocus();
+    await user.keyboard("{ArrowDown}{ArrowDown}{ArrowDown}");
+    expect(screen.getByRole("menuitem", { name: /^ops/ })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+    expect(trigger).toHaveFocus();
+  });
+
+  it("opens the one domain left by the filter on Enter", async () => {
+    serveInDomain({
+      "/reflection/domains": () => ({ domains: [] }),
+      "/domains/ops/tree": () => ({
+        domain: "ops",
+        path: "/",
+        folders: [],
+        engrams: [],
+      }),
+      "/domains/ops/manifest": () => ({ domain: "ops", markdown: "" }),
+      "/domains/ops/engrams": () => ({
+        mode: "text",
+        total: 0,
+        page: 1,
+        limit: 50,
+        count: 0,
+        hits: [],
+      }),
+    });
+    renderApp("/d/eng");
+    const menu = await openSwitcher("eng, switch domain");
+    const field = await within(menu).findByRole("searchbox", {
+      name: "Find a domain",
+    });
+    await waitFor(() => {
+      expect(field).toHaveFocus();
+    });
+    const user = userEvent.setup();
+    // Two matches: Enter does nothing yet.
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("menu")).toBeVisible();
+    await user.keyboard("op{Enter}");
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "ops" }),
+    ).toBeVisible();
+    await waitFor(() => {
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+  });
+
+  it("offers New domain to an admin only", async () => {
+    serveInDomain({ "/reflection/domains": () => ({ domains: [] }) });
+    renderApp("/d/eng");
+    const menu = await openSwitcher("eng, switch domain");
+    await within(menu).findByRole("menuitem", { name: /^eng/ });
+    expect(
+      within(menu).queryByRole("menuitem", { name: "New domain" }),
+    ).toBeNull();
+  });
+
+  it("opens the register dialog from New domain for an admin", async () => {
+    serveInDomain({
+      "/auth/me": () => meResponse({ user: userFixture({ role: "admin" }) }),
+      "/reflection/domains": () => ({ domains: [] }),
+      "/settings/github": () => ({ enabled: false, connected: false }),
+    });
+    renderApp("/d/eng");
+    const menu = await openSwitcher("eng, switch domain");
+    await userEvent.click(
+      await within(menu).findByRole("menuitem", { name: "New domain" }),
+    );
+    expect(await screen.findByRole("dialog")).toBeVisible();
+  });
+
+  it("lists a Reflection-only domain and marks Reflection, view only and private rows", async () => {
+    serveInDomain({
+      "/domains": () => ({
+        behavior: [],
+        domains: [
+          { name: "eng", kind: "file", engrams: 4, when_to_use: [] },
+          {
+            name: "ops",
+            kind: "file",
+            engrams: 2,
+            read_only: true,
+            when_to_use: [],
+          },
+          {
+            name: "lab",
+            kind: "file",
+            engrams: 1,
+            private: true,
+            when_to_use: [],
+          },
+        ],
+      }),
+      "/reflection/domains": () => ({
+        domains: [
+          {
+            domain: "eng",
+            state: "on",
+            right: "curate",
+            engrams_visible: true,
+            home: "here",
+            home_url: null,
+            open_threads: 0,
+          },
+          {
+            domain: "guild",
+            state: "on",
+            right: "edit",
+            engrams_visible: false,
+            home: "here",
+            home_url: null,
+            open_threads: 0,
+          },
+        ],
+      }),
+    });
+    renderApp("/d/eng");
+    const menu = await openSwitcher("eng, switch domain");
+    const guild = await within(menu).findByRole("menuitem", {
+      name: /^guild/,
+    });
+    // A domain reached only through its Reflection leads into it.
+    expect(guild).toHaveAttribute("href", "/d/guild/reflection");
+    expect(guild).toHaveTextContent("Reflection");
+    expect(
+      within(menu).getByRole("menuitem", { name: /^eng/ }),
+    ).toHaveTextContent("Reflection");
+    expect(
+      within(menu).getByRole("menuitem", { name: /^ops/ }),
+    ).toHaveTextContent("view only");
+    expect(
+      within(menu).getByRole("menuitem", { name: /^lab/ }),
+    ).toHaveTextContent("private");
+    // Four domains in all, the Reflection-only one included.
+    expect(
+      within(menu).getByRole("menuitem", { name: /^All domains/ }),
+    ).toHaveTextContent("4");
+  });
+});
+
+/**
+ * On a phone the bar has no room for the mode switch or a search field: the
+ * switch gets a row of its own under the bar, and search is an icon that
+ * opens the palette.
+ */
+describe("the top bar on a phone", () => {
+  it("puts the mode switch under the bar, and the search icon opens the palette", async () => {
+    stubNarrowWindow();
+    serveInDomain({
+      "/reflection/domains": () => ({ domains: [] }),
+      "/domains/eng/reflection": () => ({
+        domain: "eng",
+        enabled: true,
+        state: "on",
+        home: "local",
+        home_url: null,
+        right: "curate",
+        engrams_visible: true,
+        pending_engrams: [],
+      }),
+    });
+    renderApp("/d/eng");
+    const modes = await screen.findByRole("navigation", {
+      name: "Domain view",
+    });
+    const bar =
+      screen.getByRole("button", { name: "Domains" }).closest("header") ??
+      undefined;
+    expect(defined(bar, "the top bar").contains(modes)).toBe(false);
+    const icon = screen.getByRole("button", { name: "Open search" });
+    expect(icon).toHaveAttribute("aria-haspopup", "dialog");
+    await userEvent.click(icon);
+    expect(await screen.findByRole("dialog")).toBeVisible();
+    // Closing hands the focus back to the icon that opened it.
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    expect(icon).toHaveFocus();
   });
 });

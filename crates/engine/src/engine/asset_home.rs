@@ -5,6 +5,7 @@
 //! is the same for every home. The overlay projection of the engram
 //! attachments sits above this and is engram only.
 
+use super::fence::{DiskUndo, OnRefusal, RowOp, is_fence_refusal};
 use super::*;
 use crystalline_core::ContentKind;
 use crystalline_index::AssetTable;
@@ -13,6 +14,11 @@ use crystalline_index::AssetTable;
 /// with, after the quoted path. Public so a surface that answers this
 /// refusal with its own status matches exactly this one.
 pub const MOVE_ONTO_A_FILE: &str = "already holds a file; remove it first or pick another name";
+
+/// The end of the sentence a create-only upload onto an occupied path is
+/// refused with, after the quoted path. Public so a surface can answer this
+/// refusal with its own status (REST: 412).
+pub const ASSET_EXISTS: &str = "already holds a file; this upload only creates";
 
 /// Where a domain keeps the files of one kind of document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +117,23 @@ pub(crate) enum ReplaceRule {
     Allow,
     /// It may not, and the caller is told this sentence (`Forbidden`).
     Refuse(String),
+    /// The caller asked to only create: a file already there is refused with
+    /// [`ASSET_EXISTS`] (`Conflict`), whatever the caller's right.
+    CreateOnly,
+}
+
+impl ReplaceRule {
+    /// The refusal of a write onto `path`, which already holds a file, or
+    /// `None` when the write may replace it.
+    fn refusal(&self, path: &str) -> Option<EngineError> {
+        match self {
+            ReplaceRule::Allow => None,
+            ReplaceRule::Refuse(sentence) => Some(EngineError::Forbidden(sentence.clone())),
+            ReplaceRule::CreateOnly => {
+                Some(EngineError::Conflict(format!("'{path}' {ASSET_EXISTS}")))
+            }
+        }
+    }
 }
 
 /// What a write landed as.
@@ -202,14 +225,47 @@ impl Engine {
                 }
                 let modified = asset_modified(&abs);
                 let store = self.store.lock().await;
-                if let Some(row) = store.get_asset(home.table(), domain_id, path).await?
+                let seen = store.get_asset(home.table(), domain_id, path).await?;
+                if let Some(row) = &seen
                     && row.size == bytes.len() as u64
                     && row.modified == modified
                 {
-                    return Ok((bytes, row));
+                    return Ok((bytes, row.clone()));
                 }
                 let row = attachment_row(path, &bytes, modified)?;
-                store.upsert_asset(home.table(), domain_id, &row).await?;
+                match home {
+                    // A Reflection file's row heals behind the host-lock
+                    // fence like every other write of one; an instance that
+                    // no longer hosts the domain serves the bytes and leaves
+                    // the row to the host.
+                    AssetHome::Reflection => {
+                        drop(store);
+                        match self
+                            .commit_reflection_rows(
+                                domain_id,
+                                &[RowOp::HealAsset {
+                                    row: &row,
+                                    seen: seen.as_ref(),
+                                }],
+                                OnRefusal::read_heal(domain),
+                            )
+                            .await
+                        {
+                            Err(e) if is_fence_refusal(&e) => {}
+                            other => other?,
+                        }
+                    }
+                    // Only the domain's host heals an attachment's row; any
+                    // other instance serves the bytes and leaves the row.
+                    AssetHome::Engram => {
+                        if self.instance_id.is_empty()
+                            || self.hosted.read().unwrap().contains_key(domain)
+                            || !store.shares_database()
+                        {
+                            store.upsert_asset(home.table(), domain_id, &row).await?;
+                        }
+                    }
+                }
                 Ok((bytes, row))
             }
             (AssetHome::Engram, ContentSource::Virtual) => {
@@ -244,8 +300,10 @@ impl Engine {
     ///
     /// `replace` decides whether a file already at the path may be replaced;
     /// [`ReplaceRule::Refuse`] answers [`EngineError::Forbidden`] with its
-    /// sentence. The check runs under the lock that serialises the write, so
-    /// two racing writes cannot both find the path empty.
+    /// sentence and [`ReplaceRule::CreateOnly`] answers
+    /// [`EngineError::Conflict`] ending in [`ASSET_EXISTS`]. The check runs
+    /// under the lock that serialises the write, so two racing writes cannot
+    /// both find the path empty.
     ///
     /// Both kinds owe the home's after-change step afterwards
     /// (`Engine::after_asset_change`).
@@ -284,17 +342,62 @@ impl Engine {
                 // cannot report what it replaced, so this one stat stays, under
                 // the lock so no racing write can slip in after it.
                 let existed = abs.is_file();
-                if existed && let ReplaceRule::Refuse(sentence) = &replace {
-                    return Err(EngineError::Forbidden(sentence.clone()));
+                if existed && let Some(refusal) = replace.refusal(path) {
+                    return Err(refusal);
                 }
+                if !existed {
+                    self.refuse_only_elsewhere(
+                        domain,
+                        domain_id,
+                        ElsewhereRow::Asset(home.table(), path),
+                    )
+                    .await?;
+                }
+                let mut undo = DiskUndo::default();
+                undo.record(&abs)?;
                 write_bytes(&abs, &bytes)?;
                 // The modification instant is read back off the file rather
                 // than taken from the clock, so it is the same value the sync
                 // walker's stat prefilter compares against and an upload costs
                 // no re-hash on the next scan.
                 let row = attachment_row(path, &bytes, asset_modified(&abs))?;
-                let store = self.store.lock().await;
-                store.upsert_asset(home.table(), domain_id, &row).await?;
+                match home {
+                    // A Reflection file's row commits behind the host-lock
+                    // fence; a refusal puts the file back. The bytes are not
+                    // kept: the uploader still has them.
+                    AssetHome::Reflection => {
+                        self.commit_reflection_rows(
+                            domain_id,
+                            &[RowOp::PutAsset(&row)],
+                            OnRefusal::put_back(domain, undo),
+                        )
+                        .await?;
+                    }
+                    // An attachment's row commits behind the file domain's
+                    // host-lock fence; a refusal puts the file back.
+                    AssetHome::Engram => {
+                        let store = self.store.lock().await;
+                        store.begin().await?;
+                        let upserted = async {
+                            self.file_row_fence(&*store, domain_id, root).await?;
+                            store.upsert_asset(home.table(), domain_id, &row).await?;
+                            Ok::<(), EngineError>(())
+                        }
+                        .await;
+                        match upserted {
+                            Ok(()) => store.commit().await?,
+                            Err(e) => {
+                                let _ = store.rollback().await;
+                                drop(store);
+                                if super::fence::is_file_host_refusal(&e) {
+                                    undo.seal();
+                                    undo.put_back(domain, None);
+                                }
+                                return Err(e);
+                            }
+                        }
+                    }
+                }
                 WrittenAsset {
                     row,
                     created: !existed,
@@ -307,9 +410,9 @@ impl Engine {
                 // back rather than approximate it.
                 let previous = store.get_asset(home.table(), domain_id, path).await?;
                 if previous.is_some()
-                    && let ReplaceRule::Refuse(sentence) = &replace
+                    && let Some(refusal) = replace.refusal(path)
                 {
-                    return Err(EngineError::Forbidden(sentence.clone()));
+                    return Err(refusal);
                 }
                 store.upsert_asset(home.table(), domain_id, &row).await?;
                 // A failed blob write must leave the domain exactly as it found
@@ -376,14 +479,28 @@ impl Engine {
         validate_attachment_path(path)?;
         let (domain_id, source) = self.domain_source(domain).await?;
         let mut file_removed = false;
+        let mut undo = DiskUndo::default();
+        // Held until the row follows, so the fence's refusal puts the file
+        // back under the lock.
+        let mut _held = None;
         match (home, &source) {
             (AssetHome::Engram | AssetHome::Reflection, ContentSource::File { root }) => {
                 let abs = contained_asset_path(root, &home.on_disk_rel(root, path))?;
-                let lock = self.write_lock(&abs);
-                let _guard = lock.lock().await;
+                _held = Some(self.write_lock(&abs).lock_owned().await);
+                undo.record(&abs)?;
                 match std::fs::remove_file(&abs) {
                     Ok(()) => file_removed = true,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    // The row of a file only the previous host of a host
+                    // move has is the only shared copy of it: a delete here
+                    // must not drop it unseen. `--accept-disk` is the way.
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        self.refuse_only_elsewhere(
+                            domain,
+                            domain_id,
+                            ElsewhereRow::Asset(home.table(), path),
+                        )
+                        .await?;
+                    }
                     Err(source) => {
                         return Err(EngineError::Io {
                             path: abs.display().to_string(),
@@ -395,10 +512,60 @@ impl Engine {
             (AssetHome::Engram, ContentSource::Virtual) => {}
             (AssetHome::Reflection, ContentSource::Virtual) => return Err(home.no_virtual()),
         }
-        let row_removed = {
-            let store = self.store.lock().await;
-            store.delete_asset(home.table(), domain_id, path).await?
+        let row_removed = match home {
+            // Behind the host-lock fence; a refusal puts the file back.
+            AssetHome::Reflection => {
+                let had_row = self
+                    .store
+                    .lock()
+                    .await
+                    .get_asset(home.table(), domain_id, path)
+                    .await?
+                    .is_some();
+                self.commit_reflection_rows(
+                    domain_id,
+                    &[RowOp::DeleteAsset(path)],
+                    OnRefusal::put_back(domain, undo),
+                )
+                .await?;
+                had_row
+            }
+            // Behind the file domain's host-lock fence; a refusal puts the
+            // file back. A virtual domain's blob has no lock.
+            AssetHome::Engram => match &source {
+                ContentSource::File { root } => {
+                    let store = self.store.lock().await;
+                    store.begin().await?;
+                    let removed = async {
+                        self.file_row_fence(&*store, domain_id, root).await?;
+                        Ok::<bool, EngineError>(
+                            store.delete_asset(home.table(), domain_id, path).await?,
+                        )
+                    }
+                    .await;
+                    match removed {
+                        Ok(removed) => {
+                            store.commit().await?;
+                            removed
+                        }
+                        Err(e) => {
+                            let _ = store.rollback().await;
+                            drop(store);
+                            if super::fence::is_file_host_refusal(&e) {
+                                undo.seal();
+                                undo.put_back(domain, None);
+                            }
+                            return Err(e);
+                        }
+                    }
+                }
+                ContentSource::Virtual => {
+                    let store = self.store.lock().await;
+                    store.delete_asset(home.table(), domain_id, path).await?
+                }
+            },
         };
+        drop(_held);
         if !file_removed && !row_removed {
             return Err(EngineError::NotFound(home.missing(domain, path)));
         }
@@ -434,6 +601,7 @@ impl Engine {
             .await?;
         validate_attachment_path(from)?;
         validate_attachment_path(to)?;
+        refuse_extension_change(from, to)?;
         let (domain_id, source) = self.domain_source(domain).await?;
         let ContentSource::File { root } = &source else {
             return Err(match home {
@@ -450,21 +618,9 @@ impl Engine {
                 "'{from}' already is at '{to}'"
             )));
         }
-        let (first, second) = if src < dst {
-            (&src, &dst)
-        } else {
-            (&dst, &src)
-        };
-        let first = self.write_lock(first);
-        let second = self.write_lock(second);
-        let _first = first.lock().await;
-        // Two spellings of one file (a letter-case rename on a
-        // case-insensitive disk) share one lock: taken once, never twice.
-        let _second = if Arc::ptr_eq(&first, &second) {
-            None
-        } else {
-            Some(second.lock().await)
-        };
+        // Both locks in lock-key order; two spellings of one file (a
+        // letter-case rename on a case-insensitive disk) take its lock once.
+        let _locks = self.lock_files(&[&src, &dst]).await;
         let meta = match std::fs::metadata(&src) {
             Ok(meta) if meta.is_file() => meta,
             Ok(_) => return Err(EngineError::NotFound(home.missing(domain, from))),
@@ -478,8 +634,15 @@ impl Engine {
                 });
             }
         };
-        if dst.exists() {
+        // A letter-case rename on a case-insensitive disk finds the file
+        // itself at `to`: the same file, not another one to move onto.
+        let case_only = is_case_only_rename(&src, &dst, from, to);
+        if dst.exists() && !case_only {
             return Err(EngineError::Conflict(format!("'{to}' {MOVE_ONTO_A_FILE}")));
+        }
+        if !case_only {
+            self.refuse_only_elsewhere(domain, domain_id, ElsewhereRow::Asset(home.table(), to))
+                .await?;
         }
         // A rename keeps the modification instant, so a stored row that
         // matches the file's stat still describes the bytes at `to`.
@@ -511,32 +674,34 @@ impl Engine {
                 source,
             })?;
         }
+        // On a case-insensitive disk this one rename also changes the spelling
+        // of a case-only move, atomically.
         std::fs::rename(&src, &dst).map_err(|source| EngineError::Io {
             path: dst.display().to_string(),
             source,
         })?;
-        let rows_followed = self.move_asset_rows(home, domain_id, from, &row).await;
+        let rows_followed = self
+            .move_asset_rows(home, domain, domain_id, from, &row)
+            .await;
         let Err(e) = rows_followed else {
             self.after_asset_change(home, domain);
             return Ok(None);
         };
-        match self.undo_asset_rename(&dst, &src) {
-            Ok(()) => {
-                // The file is back; a row this move wrote for `to` goes, so
-                // the domain is as the move found it.
-                if let Err(failed) = self
-                    .store
-                    .lock()
-                    .await
-                    .delete_asset(home.table(), domain_id, to)
-                    .await
-                {
-                    tracing::warn!(
-                        "{} '{to}' in '{domain}': the row of an undone move could not be removed: {failed}",
-                        home.noun()
-                    );
-                }
-                Err(e)
+        // The rows of a move commit in one transaction or not at all, so a
+        // failed one wrote no row at `to`, and a row there (the new host's,
+        // after a fence refusal) stays.
+        let fenced = (home == AssetHome::Reflection && is_fence_refusal(&e))
+            || super::fence::is_file_host_refusal(&e);
+        match self.undo_asset_rename(&dst, &src, case_only) {
+            Ok(()) => Err(e),
+            Err(undo) if fenced => {
+                tracing::error!(
+                    "{} '{from}' in '{domain}' moved to '{to}' on this instance's disk, the move was refused because this instance no longer holds the domain's host lock ({e}), and the file could not be moved back ({undo})",
+                    home.noun()
+                );
+                Ok(Some(format!(
+                    "the file moved to '{to}' on this instance's disk and could not be moved back ({undo}); no row changed, since {e}"
+                )))
             }
             Err(undo) => {
                 tracing::warn!(
@@ -560,6 +725,7 @@ impl Engine {
     async fn move_asset_rows(
         &self,
         home: AssetHome,
+        domain: &str,
         domain_id: DomainId,
         from: &str,
         row: &AttachmentRow,
@@ -570,10 +736,41 @@ impl Engine {
                 "the rows of the move were not written (test failpoint)".into(),
             ));
         }
+        // A Reflection file's rows commit behind the host-lock fence. The
+        // caller undoes the rename on a refusal, so nothing is put back
+        // here.
+        if home == AssetHome::Reflection {
+            return self
+                .commit_reflection_rows(
+                    domain_id,
+                    &[RowOp::PutAsset(row), RowOp::DeleteAsset(from)],
+                    OnRefusal::put_back(domain, DiskUndo::default()),
+                )
+                .await;
+        }
+        let root = match self.content_source(domain)? {
+            ContentSource::File { root } => Some(root),
+            ContentSource::Virtual => None,
+        };
         let store = self.store.lock().await;
-        store.upsert_asset(home.table(), domain_id, row).await?;
-        store.delete_asset(home.table(), domain_id, from).await?;
-        Ok(())
+        store.begin().await?;
+        let moved = async {
+            // Behind the file domain's host-lock fence.
+            if let Some(root) = &root {
+                self.file_row_fence(&*store, domain_id, root).await?;
+            }
+            store.upsert_asset(home.table(), domain_id, row).await?;
+            store.delete_asset(home.table(), domain_id, from).await?;
+            Ok::<(), EngineError>(())
+        }
+        .await;
+        match moved {
+            Ok(()) => Ok(store.commit().await?),
+            Err(e) => {
+                let _ = store.rollback().await;
+                Err(e)
+            }
+        }
     }
 
     /// Put a moved file back where it was, never over a file that appeared
@@ -581,7 +778,7 @@ impl Engine {
     /// the path's lock, others do not): that answers `AlreadyExists` and
     /// leaves the moved file where it is. A narrow window between the check
     /// and the rename stays, as no portable rename refuses to replace.
-    fn undo_asset_rename(&self, dst: &Path, src: &Path) -> std::io::Result<()> {
+    fn undo_asset_rename(&self, dst: &Path, src: &Path, case_only: bool) -> std::io::Result<()> {
         #[cfg(any(test, feature = "testing"))]
         match self.asset_move_fault.lock().unwrap().take() {
             Some(AssetMoveFault::UndoFails) => {
@@ -593,7 +790,8 @@ impl Engine {
             Some(AssetMoveFault::FileAppears) => std::fs::write(src, b"new")?,
             _ => {}
         }
-        if src.symlink_metadata().is_ok() {
+        // After a case-only move the old spelling names the moved file itself.
+        if !case_only && src.symlink_metadata().is_ok() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
                 format!("'{}' holds a new file", src.display()),
@@ -636,6 +834,23 @@ impl Engine {
     }
 }
 
+/// A move keeps the file's extension, in any letter case: the bytes of a PNG
+/// renamed to `.jpg` would be served as `image/jpeg`. `flow.png` to
+/// `flow.PNG` is fine.
+pub(crate) fn refuse_extension_change(from: &str, to: &str) -> Result<()> {
+    let ext = |path: &str| {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        name.rsplit_once('.')
+            .map(|(_, ext)| ext.to_ascii_lowercase())
+    };
+    match ext(from) {
+        Some(kept) if ext(to).as_deref() != Some(kept.as_str()) => Err(EngineError::Invalid(
+            format!("'{from}' cannot move to '{to}': a move keeps the .{kept} extension"),
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// The row a moved file gets when its stored row still describes it: the
 /// same bytes at the new path, the mime read off the new name.
 fn moved_row(prior: AttachmentRow, to: &str) -> Result<AttachmentRow> {
@@ -655,6 +870,179 @@ fn moved_row(prior: AttachmentRow, to: &str) -> Result<AttachmentRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00flow";
+
+    async fn engine_over(root: &Path) -> Engine {
+        let store = crystalline_index::TursoStore::open_in_memory()
+            .await
+            .unwrap();
+        let mut config = GlobalConfig::default();
+        config
+            .domains
+            .insert("eng".to_string(), DomainEntry::file(root));
+        let engine = Engine::new(Arc::new(Mutex::new(store)), config, None, None);
+        engine.sync(None).await.unwrap();
+        engine
+    }
+
+    fn folds_case(dir: &Path) -> bool {
+        let probe = dir.join("Probe");
+        std::fs::create_dir(&probe).unwrap();
+        let folds = dir.join("probe").exists();
+        std::fs::remove_dir(&probe).unwrap();
+        folds
+    }
+
+    /// A symlink is another entry, never the same file: moving it onto its
+    /// target, or the target onto a symlink spelled in another case, is a
+    /// conflict that leaves every byte where it was.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlink_is_never_the_same_file_as_its_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = engine_over(tmp.path()).await;
+        let dir = tmp.path().join("assets");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("real.png"), PNG).unwrap();
+        std::os::unix::fs::symlink(dir.join("real.png"), dir.join("link.png")).unwrap();
+        std::fs::write(dir.join("b.png"), PNG).unwrap();
+        std::os::unix::fs::symlink(dir.join("b.png"), dir.join("B.png")).unwrap_or(());
+        let err = engine
+            .asset_move_in(
+                AssetHome::Engram,
+                "eng",
+                "assets/link.png",
+                "assets/real.png",
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, EngineError::Conflict(_)), "{err}");
+        assert_eq!(std::fs::read(dir.join("real.png")).unwrap(), PNG);
+        assert!(
+            dir.join("link.png")
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        if dir
+            .join("B.png")
+            .symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_symlink())
+        {
+            let err = engine
+                .asset_move_in(AssetHome::Engram, "eng", "assets/b.png", "assets/B.png")
+                .await
+                .unwrap_err();
+            assert!(matches!(err, EngineError::Conflict(_)), "{err}");
+            assert_eq!(std::fs::read(dir.join("b.png")).unwrap(), PNG);
+        }
+    }
+
+    /// Two files that differ in case on a case-sensitive disk are two files.
+    #[tokio::test]
+    async fn a_move_onto_a_file_of_another_case_is_a_conflict_where_the_disk_tells_them_apart() {
+        let tmp = tempfile::tempdir().unwrap();
+        if folds_case(tmp.path()) {
+            return;
+        }
+        let engine = engine_over(tmp.path()).await;
+        let dir = tmp.path().join("assets");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.png"), PNG).unwrap();
+        std::fs::write(dir.join("a.PNG"), b"other").unwrap();
+        let err = engine
+            .asset_move_in(AssetHome::Engram, "eng", "assets/a.png", "assets/a.PNG")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, EngineError::Conflict(_)), "{err}");
+        assert_eq!(std::fs::read(dir.join("a.PNG")).unwrap(), b"other");
+    }
+
+    /// Rows that cannot follow a case-only move undo it, whatever the disk.
+    #[tokio::test]
+    async fn a_case_only_move_whose_rows_fail_is_undone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = engine_over(tmp.path()).await;
+        let dir = tmp.path().join("assets");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("flow.png"), PNG).unwrap();
+        engine.sync(None).await.unwrap();
+        engine.fail_next_asset_move(false);
+        let err = engine
+            .asset_move_in(
+                AssetHome::Engram,
+                "eng",
+                "assets/flow.png",
+                "assets/flow.PNG",
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("test failpoint"), "{err}");
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["flow.png"]);
+    }
+
+    #[tokio::test]
+    async fn a_move_keeps_the_extension_in_both_homes_and_changes_nothing_when_refused() {
+        for home in [AssetHome::Engram, AssetHome::Reflection] {
+            let tmp = tempfile::tempdir().unwrap();
+            let engine = engine_over(tmp.path()).await;
+            let rel = |name: &str| home.on_disk_rel(tmp.path(), &format!("assets/{name}"));
+            let src = tmp.path().join(rel("flow.png"));
+            std::fs::create_dir_all(src.parent().unwrap()).unwrap();
+            std::fs::write(&src, PNG).unwrap();
+            engine.sync(None).await.unwrap();
+
+            for to in ["assets/flow.jpg", "assets/flow.png.jpg"] {
+                let err = engine
+                    .asset_move_in(home, "eng", "assets/flow.png", to)
+                    .await
+                    .unwrap_err();
+                assert!(
+                    matches!(&err, EngineError::Invalid(m) if m.contains("keeps the .png extension")),
+                    "{home:?} {to}: {err}"
+                );
+                assert_eq!(std::fs::read(&src).unwrap(), PNG, "{home:?} {to}");
+                assert!(!tmp.path().join(rel("flow.jpg")).exists());
+            }
+
+            // A letter-case rename, in place: works on either kind of disk.
+            engine
+                .asset_move_in(home, "eng", "assets/flow.png", "assets/flow.PNG")
+                .await
+                .unwrap();
+            let names: Vec<String> = std::fs::read_dir(src.parent().unwrap())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(
+                names,
+                ["flow.PNG"],
+                "{home:?}: the file carries the new case"
+            );
+            engine
+                .asset_move_in(home, "eng", "assets/flow.PNG", "assets/sub/flow.PNG")
+                .await
+                .unwrap();
+            assert!(
+                !std::fs::read_dir(src.parent().unwrap()).unwrap().any(|e| e
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("flow")),
+                "{home:?}: nothing is left behind"
+            );
+            assert_eq!(
+                std::fs::read(tmp.path().join(rel("sub/flow.PNG"))).unwrap(),
+                PNG
+            );
+        }
+    }
 
     #[test]
     fn the_engram_home_is_assets_at_the_domain_root() {

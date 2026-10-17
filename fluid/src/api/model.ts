@@ -12,7 +12,7 @@
 /** One account, as every route hands it back. Carries no password material. */
 export type { User } from "./gen";
 
-/** What an account may do: `viewer`, `editor` or `admin`. */
+/** What an account may do: `none`, `viewer`, `editor` or `admin`. */
 export type { Role } from "./gen";
 
 /** The capability probe: who the caller is and what this instance allows. */
@@ -131,8 +131,14 @@ export type { MembersResponse } from "./gen";
 /** One membership row: who, at what level, added by whom and when. */
 export type { DomainMember } from "./gen";
 
-/** What a member may do on one private domain: `viewer`, `editor` or `manager`. */
+/** What a member may do on one private domain: `none`, `viewer`, `editor` or `manager`. */
 export type { MemberLevel } from "./gen";
+
+/**
+ * The Reflection level beside a knowledge level: `default` (as knowledge),
+ * `reader` or `contributor`. Only raises what the knowledge level gives.
+ */
+export type { ReflectionLevel } from "./gen";
 
 /** What `PUT /domains/{domain}/members/{principal}` takes. */
 export type { MemberBody } from "./gen";
@@ -176,3 +182,16 @@ export type { MintedLinkResponse } from "./gen";
 
 /** One share-link standing on a draft: who redeemed it, and when it was made. */
 export type { OverlayGrant } from "./gen";
+
+/**
+ * One text the server kept when a co-editing room could not save it, or a
+ * thread comment a refused write kept: its id, kind, path, time and sender.
+ * Never the text itself.
+ */
+export type { KeptTextEntry } from "./gen";
+
+/** What `GET /domains/{domain}/kept` answers: the entries this caller may handle. */
+export type { KeptTextsResponse } from "./gen";
+
+/** One kept text with its text, as `GET /domains/{domain}/kept/{id}` answers. */
+export type { KeptTextResponse } from "./gen";

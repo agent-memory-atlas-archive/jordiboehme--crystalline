@@ -141,7 +141,7 @@ describe("the danger zone", () => {
       "admin",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await dangerZone();
 
     await userEvent.click(
@@ -182,8 +182,11 @@ describe("the danger zone", () => {
   it("draws neither the card nor its controls below admin", async () => {
     serve();
 
-    renderApp("/d/eng");
-    await screen.findByRole("heading", { level: 1, name: "eng" });
+    renderApp("/d/eng/settings");
+    await screen.findByRole("heading", {
+      level: 1,
+      name: "eng",
+    });
 
     expect(screen.queryByRole("region", { name: "Danger zone" })).toBeNull();
     expect(
@@ -208,7 +211,7 @@ describe("the danger zone", () => {
       "ada",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await dangerZone();
 
     // `set_visibility` asks for `Own` on this direction, which the owner has
@@ -239,7 +242,7 @@ describe("the danger zone", () => {
       "ada",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await dangerZone();
 
     // `DELETE /domains/{domain}` lets the owner of a private domain through as
@@ -264,7 +267,7 @@ describe("the danger zone", () => {
     );
     const user = userEvent.setup();
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await dangerZone();
     await user.keyboard("{Meta>}k{/Meta}");
     await user.click(
@@ -287,7 +290,7 @@ describe("the danger zone", () => {
       "boss",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await dangerZone();
 
     // Nobody owns it, so the owner clause has nothing to match and the right
@@ -319,7 +322,7 @@ describe("the danger zone", () => {
       "mgr",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     // The members card is proof the page settled and the read landed: a
     // manager administers the team and never decides who may see the domain.
     await screen.findByRole("region", { name: "Members" });
@@ -348,7 +351,7 @@ describe("the danger zone", () => {
       "admin",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await dangerZone();
     const trigger = within(card).getByRole("button", {
       name: "Unregister domain",
@@ -374,7 +377,7 @@ describe("the danger zone", () => {
   it("leaves focus where the blur path put it, not on the trigger", async () => {
     serve({}, "admin");
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await dangerZone();
     const trigger = within(card).getByRole("button", {
       name: "Unregister domain",
@@ -408,7 +411,7 @@ describe("the danger zone", () => {
   it("warns that a virtual domain's engrams go with it", async () => {
     serve({ "/domains": () => listingOf("virtual") }, "admin");
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await dangerZone();
 
     await userEvent.click(
@@ -439,7 +442,7 @@ describe("the danger zone", () => {
       "admin",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await dangerZone();
     await arm(card, "Unregister domain");
     await userEvent.click(
@@ -470,7 +473,7 @@ describe("the danger zone", () => {
       "admin",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await dangerZone();
     await arm(card, "Unregister domain");
     await userEvent.click(
@@ -488,7 +491,7 @@ describe("the danger zone", () => {
   it("arms the confirmation from the command palette's own row", async () => {
     serve({}, "admin");
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await dangerZone();
 
     const user = userEvent.setup();
@@ -510,7 +513,7 @@ describe("the danger zone", () => {
   it("focuses the typed field once the palette arms it, after the palette's own focus restore", async () => {
     serve({}, "admin");
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await dangerZone();
 
     const user = userEvent.setup();
@@ -543,7 +546,7 @@ describe("the danger zone", () => {
       "boss",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await dangerZone();
 
     // Which way the control points is the members read's answer, so it lands
@@ -592,7 +595,7 @@ describe("the danger zone", () => {
       "boss",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await dangerZone();
 
     expect(
@@ -643,7 +646,7 @@ describe("the danger zone", () => {
       "boss",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await dangerZone();
 
     await within(card).findByRole("button", { name: "Make private" });
@@ -665,7 +668,7 @@ describe("the danger zone", () => {
       }),
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await dangerZone();
 
     const trigger = await within(card).findByRole("button", {

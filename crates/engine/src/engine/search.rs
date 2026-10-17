@@ -95,10 +95,27 @@ impl Engine {
         // mode decision and the search, an accepted race of the same class as
         // already exists across two separate search calls.
         let provider = self.provider();
+        // The domains the mode is decided on: the ones the caller named, after
+        // visibility, or, with none named, the ones the caller may see. When
+        // they may see every domain this is the whole index, and the cached
+        // table-wide count answers. A caller who may see none of the named
+        // ones gets an empty answer anyway and still reports the mode a
+        // visible domain would.
+        let named: Option<&[String]> = match &scoped {
+            ScopedDomains::Only(domains) => Some(domains),
+            ScopedDomains::AsAsked if !p.domains.is_empty() => Some(&p.domains),
+            ScopedDomains::AsAsked | ScopedDomains::Nothing => None,
+        };
         let effective = {
             let store = self.store.lock().await;
-            self.effective_mode(&*store, requested, text.is_some(), provider.is_some())
-                .await?
+            self.effective_mode(
+                &*store,
+                requested,
+                text.is_some(),
+                provider.is_some(),
+                named,
+            )
+            .await?
         };
         query.mode = effective;
 
@@ -209,7 +226,7 @@ impl Engine {
         };
         let effective = {
             let store = self.store.lock().await;
-            self.effective_mode(&*store, SearchMode::Semantic, true, true)
+            self.effective_mode(&*store, SearchMode::Semantic, true, true, None)
                 .await?
         };
         if !matches!(effective, SearchMode::Semantic) {
@@ -392,12 +409,20 @@ impl Engine {
         }
     }
 
+    /// The mode a search runs in. Semantic and hybrid need a provider, a text and
+    /// vectors of the active model in range: `domains` names the domains the
+    /// search is limited to (their chunks are the range), `None` is the whole
+    /// index. A named domain whose engrams still wait for vectors therefore
+    /// answers as text, as the Reflection's search does, rather than running a
+    /// vector scan that finds nothing. The store's staleness gate reads the same
+    /// domains (`Store::search`), so the decision and the gate never disagree.
     async fn effective_mode(
         &self,
         store: &dyn Store,
         requested: SearchMode,
         has_text: bool,
         has_provider: bool,
+        domains: Option<&[String]>,
     ) -> Result<SearchMode> {
         if !matches!(requested, SearchMode::Semantic | SearchMode::Hybrid) {
             return Ok(requested);
@@ -405,7 +430,10 @@ impl Engine {
         if !has_text || !has_provider {
             return Ok(SearchMode::Text);
         }
-        let coverage = store.embedding_coverage().await?;
+        let coverage = match domains {
+            None => store.embedding_coverage().await?,
+            Some(names) => store.embedding_coverage_of_names(names).await?,
+        };
         if coverage.has_active_embeddings(&self.model_id) {
             Ok(requested)
         } else {

@@ -1070,6 +1070,7 @@ impl Engine {
                     acting,
                     None,
                     false,
+                    false,
                     |current| {
                         let text = holder.pairs.iter().fold(current.to_string(), |text, pair| {
                             without_ack(&text, FOLDER_PAIR_RULE, Some(pair))

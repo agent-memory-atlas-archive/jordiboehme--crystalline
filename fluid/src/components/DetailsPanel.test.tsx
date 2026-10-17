@@ -18,8 +18,10 @@ import { Tooltips } from "./primitives";
 const FRONTMATTER: EngramFrontmatter = {
   type: "guide",
   status: "current",
+  description: null,
   tags: ["protocol", "smoke"],
   salience: 0.7,
+  recordedAt: null,
   validFrom: null,
   validTo: null,
   staleAfter: null,
@@ -44,14 +46,28 @@ function draw(overrides: Partial<EngramFrontmatter> = {}) {
 }
 
 describe("DetailsPanel", () => {
-  test("status wears a filled chip, type a neutral one, tags link to search", () => {
+  test("status and type are on the page's meta line, not repeated here; tags link to search", () => {
     draw();
-    expect(screen.getByText("current").className).toContain("emerald");
-    expect(screen.getByText("guide")).toBeInTheDocument();
+    expect(screen.queryByText("current")).toBeNull();
+    expect(screen.queryByText("guide")).toBeNull();
     expect(screen.getByRole("link", { name: "#protocol" })).toHaveAttribute(
       "href",
       "/search?tags=protocol",
     );
+  });
+
+  test("states the recorded day, and has no row when the engram records none", () => {
+    draw({ recordedAt: "2026-09-12" });
+    expect(screen.getByText("Recorded")).toBeVisible();
+    // The long form, with the day as written kept in the title.
+    const day = screen.getByTitle("2026-09-12");
+    expect(day).toHaveTextContent(/12/);
+    expect(day).toHaveTextContent(/2026/);
+  });
+
+  test("has no Recorded row without a recorded day", () => {
+    draw();
+    expect(screen.queryByText("Recorded")).toBeNull();
   });
 
   test("absent validity renders no row at all - never a sentinel", () => {
@@ -130,8 +146,7 @@ describe("DetailsPanel", () => {
   });
 
   test("a field the engram leaves out has no row", () => {
-    draw({ type: null, tags: [], salience: null });
-    expect(screen.queryByText("Type")).toBeNull();
+    draw({ tags: [], salience: null });
     expect(screen.queryByText("Tags")).toBeNull();
     expect(screen.queryByText("Salience")).toBeNull();
     // The panel is still the panel: its own name and the address survive.

@@ -68,41 +68,6 @@ fn record(path: &str, permalink: &str, content: &str, sha: &str) -> EngramRecord
 
 // --- backend runner ----------------------------------------------------------
 
-#[cfg(feature = "postgres")]
-fn pg_url() -> Option<String> {
-    use std::sync::Once;
-    static NOTE: Once = Once::new();
-    match std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") {
-        Ok(u) if !u.is_empty() => Some(u),
-        _ => {
-            NOTE.call_once(|| {
-                eprintln!(
-                    "note: skipping the postgres parity leg (CRYSTALLINE_TEST_POSTGRES_URL is unset); turso only"
-                )
-            });
-            None
-        }
-    }
-}
-
-/// A distinct schema name per test invocation. The pid keeps runs apart, the
-/// counter keeps tests within a run apart; both stay well under Postgres's
-/// 63-byte identifier limit.
-/// A hash salt keeps a recycled pid from adopting a schema a panicking run left behind.
-#[cfg(feature = "postgres")]
-fn unique_schema() -> String {
-    use std::hash::{BuildHasher, RandomState};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "ct_{}_{}_{:x}",
-        std::process::id(),
-        n,
-        RandomState::new().hash_one(n)
-    )
-}
-
 /// Run a parity body against Turso (always) and Postgres (when configured),
 /// giving each backend a fresh, isolated store.
 macro_rules! parity {
@@ -115,16 +80,14 @@ macro_rules! parity {
             }
             #[cfg(feature = "postgres")]
             {
-                if let Some(url) = pg_url() {
-                    let schema = unique_schema();
-                    let store = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                        .await
-                        .expect("open the postgres test schema");
+                if let Some(scratch) = crate::pg::scratch("ct") {
+                    let store = crystalline_index::PostgresStore::open_in_schema(
+                        scratch.url(),
+                        scratch.name(),
+                    )
+                    .await
+                    .expect("open the postgres test schema");
                     $body(&store).await;
-                    store
-                        .drop_schema()
-                        .await
-                        .expect("drop the postgres test schema");
                 }
             }
         }
@@ -5437,6 +5400,62 @@ parity!(
     filter_only_orders_by_the_readers_choice
 );
 
+/// A filter-only page dates each hit with its `recorded_at` as stored, and
+/// an undated engram's hit carries none; a ranked search dates nothing, so a
+/// search answer keeps its shape.
+async fn filter_only_hits_carry_recorded_at(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(
+        root,
+        "jan.md",
+        "---\ntype: engram\ntitle: Jan\npermalink: jan\ntags:\n  - t\nstatus: current\nrecorded_at: 2026-01-01\n---\n\nharborword\n",
+    );
+    write(
+        root,
+        "undated.md",
+        "---\ntype: engram\ntitle: Undated\npermalink: undated\ntags:\n  - t\nstatus: current\n---\n\nharborword\n",
+    );
+    sync_domain(store, "eng", root).await.unwrap();
+    let listed = store
+        .search(&SearchQuery {
+            domains: Some(vec!["eng".to_string()]),
+            limit: 10,
+            page: 1,
+            ..SearchQuery::default()
+        })
+        .await
+        .unwrap();
+    let dated: Vec<(String, Option<String>)> = listed
+        .items
+        .iter()
+        .map(|h| (h.permalink.clone(), h.recorded_at.clone()))
+        .collect();
+    assert_eq!(
+        dated,
+        vec![
+            ("jan".to_string(), Some("2026-01-01".to_string())),
+            ("undated".to_string(), None),
+        ]
+    );
+    let json = serde_json::to_value(&listed.items[1]).unwrap();
+    assert!(json.get("recorded_at").is_none(), "{json}");
+    let found = store
+        .search(&SearchQuery {
+            domains: Some(vec!["eng".to_string()]),
+            mode: SearchMode::Text,
+            ..SearchQuery::text("harborword")
+        })
+        .await
+        .unwrap();
+    assert_eq!(found.items.len(), 2);
+    assert!(found.items.iter().all(|h| h.recorded_at.is_none()));
+}
+parity!(
+    a_filter_only_hit_carries_its_recorded_at,
+    filter_only_hits_carry_recorded_at
+);
+
 async fn neighbors_cross_domain(store: &dyn Store) {
     // domain2 holds the cross-domain target C.
     let d2 = tempfile::tempdir().unwrap();
@@ -6406,7 +6425,7 @@ async fn host_claim_and_contest(store: &dyn Store) {
         .claim_domain_host(did, "inst-a", "node-a", a_at, stale_before, false)
         .await
         .unwrap();
-    assert_eq!(claim, HostClaim::Acquired);
+    assert!(claim.is_acquired());
     let host = store.domain_host(did).await.unwrap().unwrap();
     assert_eq!(host.instance_id, "inst-a");
     assert_eq!(host.label, "node-a");
@@ -6425,7 +6444,9 @@ async fn host_claim_and_contest(store: &dyn Store) {
             assert_eq!(h.instance_id, "inst-a");
             assert_eq!(h.heartbeat_at, a_at);
         }
-        HostClaim::Acquired => panic!("B must not acquire a domain A holds with a fresh heartbeat"),
+        HostClaim::Acquired { .. } => {
+            panic!("B must not acquire a domain A holds with a fresh heartbeat")
+        }
     }
     assert_eq!(
         store.domain_host(did).await.unwrap().unwrap().instance_id,
@@ -6458,7 +6479,7 @@ async fn host_renew_takeover_release(store: &dyn Store) {
     let a_beat = "2026-07-03T10:00:25+00:00";
     assert!(
         store
-            .renew_domain_host(did, "inst-a", a_beat)
+            .renew_domain_host(did, "inst-a", "", a_beat)
             .await
             .unwrap()
     );
@@ -6468,7 +6489,7 @@ async fn host_renew_takeover_release(store: &dyn Store) {
     );
     assert!(
         !store
-            .renew_domain_host(did, "inst-b", a_beat)
+            .renew_domain_host(did, "inst-b", "", a_beat)
             .await
             .unwrap(),
         "a non-holder renew updates nothing"
@@ -6482,7 +6503,7 @@ async fn host_renew_takeover_release(store: &dyn Store) {
         .claim_domain_host(did, "inst-b", "node-b", b_at, stale_past, false)
         .await
         .unwrap();
-    assert_eq!(claim, HostClaim::Acquired);
+    assert!(claim.is_acquired());
     assert_eq!(
         store.domain_host(did).await.unwrap().unwrap().instance_id,
         "inst-b"
@@ -6495,7 +6516,7 @@ async fn host_renew_takeover_release(store: &dyn Store) {
         .claim_domain_host(did, "inst-a", "node-a", a2_at, stale_fresh, true)
         .await
         .unwrap();
-    assert_eq!(claim, HostClaim::Acquired);
+    assert!(claim.is_acquired());
     assert_eq!(
         store.domain_host(did).await.unwrap().unwrap().instance_id,
         "inst-a"
@@ -6507,19 +6528,32 @@ async fn host_renew_takeover_release(store: &dyn Store) {
         .claim_domain_host(did, "inst-a", "node-a", a3_at, stale_fresh, false)
         .await
         .unwrap();
-    assert_eq!(claim, HostClaim::Acquired);
+    assert!(claim.is_acquired());
     assert_eq!(
         store.domain_host(did).await.unwrap().unwrap().heartbeat_at,
         a3_at
     );
 
     // Release: a non-holder's release leaves the lock; the holder's clears it.
-    store.release_domain_host(did, "inst-b").await.unwrap();
+    let HostClaim::Acquired { token } = claim else {
+        unreachable!()
+    };
+    assert!(
+        !store
+            .release_domain_host(did, "inst-b", &token)
+            .await
+            .unwrap()
+    );
     assert!(
         store.domain_host(did).await.unwrap().is_some(),
         "a non-holder release does not clear the lock"
     );
-    store.release_domain_host(did, "inst-a").await.unwrap();
+    assert!(
+        store
+            .release_domain_host(did, "inst-a", &token)
+            .await
+            .unwrap()
+    );
     assert!(
         store.domain_host(did).await.unwrap().is_none(),
         "the holder's release clears the lock"
@@ -6528,6 +6562,96 @@ async fn host_renew_takeover_release(store: &dyn Store) {
 parity!(
     host_renews_takes_over_and_releases,
     host_renew_takeover_release
+);
+
+/// Two processes of one machine claim under one instance id: a one-shot
+/// command and this machine's daemon, or two commands. Every claim writes a
+/// new token, a re-claim by the same id too, and a release deletes the row
+/// only under the token its own claim read back, so the first process's
+/// release never deletes the second one's lock. A hand-back puts the token
+/// of the claim it replaced back instead of deleting.
+async fn host_release_names_its_claim(store: &dyn Store) {
+    let did = store
+        .upsert_domain("eng", Some("/k/eng"), DomainKind::File)
+        .await
+        .unwrap();
+    let stale_before = "2026-07-03T09:59:00+00:00";
+    // Both claims in the same instant: the token still differs.
+    let at = "2026-07-03T10:00:00+00:00";
+    let token = |claim: HostClaim| match claim {
+        HostClaim::Acquired { token } => token,
+        HostClaim::HeldByOther(h) => panic!("held by {h:?}"),
+    };
+    let first = token(
+        store
+            .claim_domain_host(did, "this-machine", "this-machine", at, stale_before, false)
+            .await
+            .unwrap(),
+    );
+    let second = token(
+        store
+            .claim_domain_host(did, "this-machine", "this-machine", at, stale_before, false)
+            .await
+            .unwrap(),
+    );
+    assert_ne!(first, second, "a re-claim writes a new token");
+    assert!(
+        !store
+            .release_domain_host(did, "this-machine", &first)
+            .await
+            .unwrap(),
+        "the first claim's release misses"
+    );
+    assert!(
+        store.domain_host(did).await.unwrap().is_some(),
+        "the second claim's lock stays"
+    );
+
+    // A hand-back gives the lock to the claim it replaced: the second
+    // claim's release then misses and the first one's matches.
+    let third = token(
+        store
+            .claim_domain_host(did, "this-machine", "this-machine", at, stale_before, false)
+            .await
+            .unwrap(),
+    );
+    assert!(
+        !store
+            .hand_back_domain_host(did, "this-machine", &second, &first)
+            .await
+            .unwrap(),
+        "a hand-back under a replaced token changes nothing"
+    );
+    assert!(
+        store
+            .hand_back_domain_host(did, "this-machine", &third, &second)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .release_domain_host(did, "this-machine", &third)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .release_domain_host(did, "another-machine", &second)
+            .await
+            .unwrap(),
+        "another instance's release never matches"
+    );
+    assert!(
+        store
+            .release_domain_host(did, "this-machine", &second)
+            .await
+            .unwrap()
+    );
+    assert!(store.domain_host(did).await.unwrap().is_none());
+}
+parity!(
+    host_release_names_its_claim_token,
+    host_release_names_its_claim
 );
 
 async fn seed_ids_stable(store: &dyn Store) {
@@ -7103,6 +7227,108 @@ async fn coverage_cache_invalidated_by_rollback(store: &dyn Store) {
 parity!(
     coverage_cache_invalidates_on_rollback,
     coverage_cache_invalidated_by_rollback
+);
+
+/// Coverage scoped to named domains counts only their chunks: one domain's
+/// vectors never make another domain's waiting chunks look searchable, the
+/// named list sums its members, and `None` is still the cached table-wide count.
+async fn coverage_in_counts_only_the_named_domains_body(store: &dyn Store) {
+    let embedded = tempfile::tempdir().unwrap();
+    write(
+        embedded.path(),
+        "a.md",
+        &engram("A", "a", "engram", "", "alpha alpha alpha body one"),
+    );
+    sync_domain(store, "emb", embedded.path()).await.unwrap();
+    let also = tempfile::tempdir().unwrap();
+    write(
+        also.path(),
+        "c.md",
+        &engram("C", "c", "engram", "", "gamma gamma gamma body three"),
+    );
+    sync_domain(store, "also", also.path()).await.unwrap();
+    let pending = tempfile::tempdir().unwrap();
+    write(
+        pending.path(),
+        "b.md",
+        &engram("B", "b", "engram", "", "beta beta beta body two"),
+    );
+    sync_domain(store, "wait", pending.path()).await.unwrap();
+    let emb = store.domain_id("emb").await.unwrap().unwrap();
+    let also = store.domain_id("also").await.unwrap().unwrap();
+    let wait = store.domain_id("wait").await.unwrap().unwrap();
+
+    let jobs = store
+        .chunks_needing_embedding("m8", Some(&[emb, also]), EMBED_PAGE_SIZE, None)
+        .await
+        .unwrap();
+    assert!(jobs.len() >= 2, "precondition: two domains hold chunks");
+    let rows: Vec<EmbeddingRow> = jobs
+        .iter()
+        .map(|j| EmbeddingRow {
+            chunk_id: j.chunk_id,
+            embedding: embed_one(&j.text, 8),
+            dims: 8,
+        })
+        .collect();
+    store.store_embeddings(&rows, "m8").await.unwrap();
+
+    let table = store.embedding_coverage().await.unwrap();
+    assert!(table.embedded_chunks > 0 && table.embedded_chunks < table.total_chunks);
+    let in_emb = store
+        .embedding_coverage_in(ChunkTable::Engram, Some(&[emb]))
+        .await
+        .unwrap();
+    assert!(
+        in_emb.total_chunks > 0
+            && in_emb.embedded_chunks == in_emb.total_chunks
+            && in_emb.has_active_embeddings("m8"),
+        "{in_emb:?}"
+    );
+    let in_wait = store
+        .embedding_coverage_in(ChunkTable::Engram, Some(&[wait]))
+        .await
+        .unwrap();
+    assert!(
+        in_wait.total_chunks > 0
+            && in_wait.embedded_chunks == 0
+            && !in_wait.has_active_embeddings("m8"),
+        "the waiting domain has no vectors, whatever the others hold: {in_wait:?}"
+    );
+    let in_both = store
+        .embedding_coverage_in(ChunkTable::Engram, Some(&[emb, also]))
+        .await
+        .unwrap();
+    assert_eq!(in_both.embedded_chunks, in_both.total_chunks);
+    assert_eq!(in_both.models.len(), 1, "one model, one entry: {in_both:?}");
+    assert_eq!(in_both.models[0].count, in_both.embedded_chunks);
+    let in_all = store
+        .embedding_coverage_in(ChunkTable::Engram, Some(&[emb, also, wait]))
+        .await
+        .unwrap();
+    assert_eq!(in_all, table, "naming every domain is the table-wide count");
+    let none = store
+        .embedding_coverage_in(ChunkTable::Engram, None)
+        .await
+        .unwrap();
+    assert_eq!(none, table);
+    let nobody = store
+        .embedding_coverage_in(ChunkTable::Engram, Some(&[]))
+        .await
+        .unwrap();
+    assert_eq!(nobody, EmbeddingCoverage::default());
+    // The reflection table answers the same question per domain.
+    assert_eq!(
+        store
+            .embedding_coverage_in(ChunkTable::Reflection, Some(&[emb]))
+            .await
+            .unwrap(),
+        store.reflection_coverage(emb).await.unwrap()
+    );
+}
+parity!(
+    coverage_in_counts_only_the_named_domains_on_both_backends,
+    coverage_in_counts_only_the_named_domains_body
 );
 
 /// The staleness label must stay byte-identical after the check consumes the
@@ -7880,6 +8106,77 @@ async fn browse_level_bounds(store: &dyn Store) {
 }
 parity!(browse_level_caps_rows_but_not_folders, browse_level_bounds);
 
+/// Each child folder of a level carries how many engrams sit under it at any
+/// depth, counted in the statement that names the folders: what the listing
+/// scoped to that folder totals, never the level's own count. A root file
+/// (the MANIFEST) is in no folder and so in no count.
+async fn browse_level_folder_counts(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for path in [
+        "MANIFEST.md",
+        "a.md",
+        "notes/n1.md",
+        "notes/n2.md",
+        "notes/deep/n3.md",
+        "notes/deep/er/n4.md",
+        "notes-misc/m.md",
+        "50%/p.md",
+    ] {
+        let permalink = path.trim_end_matches(".md");
+        write(
+            root,
+            path,
+            &engram(permalink, permalink, "engram", "", "b\n"),
+        );
+    }
+    sync_domain(store, "eng", root).await.unwrap();
+
+    // Capped to one row: the counts are not cut with it.
+    let top = store.browse_level("eng", None, 1, 1).await.unwrap();
+    assert_eq!(
+        top.folder_counts,
+        std::collections::BTreeMap::from([
+            ("50%".to_string(), 1),
+            ("notes".to_string(), 4),
+            ("notes-misc".to_string(), 1),
+        ]),
+        "recursive per folder, and no folder for a root file"
+    );
+    assert_eq!(
+        top.folders,
+        top.folder_counts.keys().cloned().collect::<Vec<_>>(),
+        "every folder named has its count"
+    );
+    let notes = store
+        .browse_level("eng", Some("notes/"), 1, 50)
+        .await
+        .unwrap();
+    assert_eq!(
+        notes.folder_counts,
+        std::collections::BTreeMap::from([("deep".to_string(), 2)])
+    );
+    // The depth moves the level's own count, never a folder's.
+    let deeper = store.browse_level("eng", None, 3, 50).await.unwrap();
+    assert_eq!(deeper.folder_counts, top.folder_counts);
+    // The listing scoped to the folder totals the same number.
+    let listed = store
+        .search(&SearchQuery {
+            domains: Some(vec!["eng".to_string()]),
+            path_prefix: Some("notes/".to_string()),
+            limit: 1,
+            page: 1,
+            ..SearchQuery::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(listed.total, 4);
+}
+parity!(
+    browse_level_counts_each_folder_recursively,
+    browse_level_folder_counts
+);
+
 /// Every path filter folds case, and both backends fold it the same way.
 ///
 /// SQLite-family `LIKE` is ASCII-case-insensitive while Postgres `LIKE` is
@@ -8404,8 +8701,10 @@ async fn reflection_rows_roundtrip(store: &dyn Store) {
         .upsert_domain("ops", Some("/k/ops"), DomainKind::File)
         .await
         .unwrap();
+    assert!(!store.has_reflection_rows(did).await.unwrap());
     let row = reflection_row("guides/deploying.md", "Deploying", "# Deploying\n");
     store.upsert_reflection(did, &row).await.unwrap();
+    assert!(store.has_reflection_rows(did).await.unwrap(), "a page row");
     assert_eq!(
         store
             .get_reflection(did, "guides/deploying.md")
@@ -8445,6 +8744,21 @@ async fn reflection_rows_roundtrip(store: &dyn Store) {
         store.list_reflections(did).await.unwrap().is_empty(),
         "clear_domain takes them"
     );
+    assert!(!store.has_reflection_rows(did).await.unwrap());
+    // A Reflection file alone is a row too.
+    store
+        .upsert_asset(
+            AssetTable::Reflection,
+            did,
+            &attachment("assets/pic.png", "sha", "image/png", 3),
+        )
+        .await
+        .unwrap();
+    assert!(store.has_reflection_rows(did).await.unwrap(), "a file row");
+    assert!(
+        store.has_reflection_rows(other).await.unwrap(),
+        "the other domain's page"
+    );
     assert_eq!(
         store.list_reflections(other).await.unwrap().len(),
         1,
@@ -8459,6 +8773,263 @@ async fn reflection_rows_roundtrip(store: &dyn Store) {
 parity!(
     reflection_rows_roundtrip_on_both_backends,
     reflection_rows_roundtrip
+);
+
+/// The gate's probe: base rows whose first path segment is the Reflection
+/// folder in any letter case, never a draft, never a sibling whose name only
+/// starts the same way (R82).
+async fn rows_under_reflections(store: &dyn Store) {
+    let did = store
+        .upsert_domain("eng", Some("/k/eng"), DomainKind::File)
+        .await
+        .unwrap();
+    let empty = store
+        .upsert_domain("ops", Some("/k/ops"), DomainKind::File)
+        .await
+        .unwrap();
+    for (i, path) in [
+        "notes/a.md",
+        "reflections/x.md",
+        "Reflections/y.md",
+        "reflectionsx/z.md",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        store
+            .upsert_engram(did, &record(path, &format!("p{i}"), "x", "sha"))
+            .await
+            .unwrap();
+    }
+    store
+        .upsert_overlay(did, "ada", &record("reflections/d.md", "d", "x", "sha"))
+        .await
+        .unwrap();
+    assert!(
+        !store
+            .file_stamps(did)
+            .await
+            .unwrap()
+            .contains_key("reflections/d.md"),
+        "the draft is no base row"
+    );
+    let mut under = store.engram_rows_under_reflections(did, 10).await.unwrap();
+    under.sort();
+    assert_eq!(under, ["Reflections/y.md", "reflections/x.md"]);
+    let one = store.engram_rows_under_reflections(did, 1).await.unwrap();
+    assert_eq!(one.len(), 1, "{one:?}");
+    assert!(
+        one[0] == "Reflections/y.md" || one[0] == "reflections/x.md",
+        "{one:?}"
+    );
+    assert!(store.has_engram_rows(did).await.unwrap());
+    assert!(!store.has_engram_rows(empty).await.unwrap());
+    assert!(
+        store
+            .engram_rows_under_reflections(empty, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+parity!(
+    rows_under_reflections_fold_case_and_skip_drafts,
+    rows_under_reflections
+);
+
+/// The stamps the sync's stat prefilter and the move screens read: every
+/// field of `list_reflections` but the page text.
+async fn reflection_stamps(store: &dyn Store) {
+    let did = store
+        .upsert_domain("eng", Some("/k/eng"), DomainKind::File)
+        .await
+        .unwrap();
+    for (path, title, content) in [
+        ("guides/deploying.md", "Deploying", "# Deploying\n"),
+        ("home.md", "Home", "# Home\n\nWelcome.\n"),
+    ] {
+        store
+            .upsert_reflection(did, &reflection_row(path, title, content))
+            .await
+            .unwrap();
+    }
+    let mut stamps: Vec<(String, String, String, u64, String)> = store
+        .list_reflection_stamps(did)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|s| (s.path, s.title, s.sha256, s.size, s.modified))
+        .collect();
+    stamps.sort();
+    let mut rows: Vec<(String, String, String, u64, String)> = store
+        .list_reflections(did)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.path, r.title, r.sha256, r.size, r.modified))
+        .collect();
+    rows.sort();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(stamps, rows);
+}
+parity!(reflection_stamps_carry_no_content, reflection_stamps);
+
+/// The facts a cited page's sources are held against, for the named
+/// permalinks only: base rows of the one domain, never a draft at the same
+/// permalink, never another domain's engram, and nothing for a permalink no
+/// row holds. Each answer carries the title, status, checksum and mtime the
+/// whole-domain stamps and descriptors give for it.
+async fn cited_engrams_by_permalink(store: &dyn Store) {
+    let did = store
+        .upsert_domain("eng", Some("/k/eng"), DomainKind::File)
+        .await
+        .unwrap();
+    let other = store
+        .upsert_domain("ops", Some("/k/ops"), DomainKind::File)
+        .await
+        .unwrap();
+    // A draft at a cited permalink, and a draft no base row stands under.
+    let mut draft = record("notes/n1.md", "notes/n1", "y", "shaDraft");
+    draft.title = "Draft title".to_string();
+    store.upsert_overlay(did, "ada", &draft).await.unwrap();
+    store
+        .upsert_overlay(
+            did,
+            "ada",
+            &record("notes/new.md", "notes/new", "y", "shaNew"),
+        )
+        .await
+        .unwrap();
+    for i in 0..5 {
+        let mut row = record(
+            &format!("notes/n{i}.md"),
+            &format!("notes/n{i}"),
+            "x",
+            &format!("sha{i}"),
+        );
+        row.title = format!("Note {i}");
+        row.stamp.mtime = 100 + i;
+        if i == 3 {
+            row.status = "superseded".to_string();
+        }
+        store.upsert_engram(did, &row).await.unwrap();
+    }
+    store
+        .upsert_engram(other, &record("notes/x.md", "notes/x", "x", "shaX"))
+        .await
+        .unwrap();
+
+    let asked: Vec<String> = [
+        "notes/n1",
+        "notes/n3",
+        "notes/x",
+        "notes/gone",
+        "notes/new",
+        "notes/n1",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    let mut got: Vec<(String, String, String, String, i64)> = store
+        .cited_engrams(did, &asked)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|c| (c.permalink, c.title, c.status, c.sha256, c.mtime))
+        .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        [
+            (
+                "notes/n1".to_string(),
+                "Note 1".to_string(),
+                "current".to_string(),
+                "sha1".to_string(),
+                101
+            ),
+            (
+                "notes/n3".to_string(),
+                "Note 3".to_string(),
+                "superseded".to_string(),
+                "sha3".to_string(),
+                103
+            ),
+        ]
+    );
+    assert!(store.cited_engrams(did, &[]).await.unwrap().is_empty());
+}
+parity!(
+    cited_engrams_are_read_by_permalink,
+    cited_engrams_by_permalink
+);
+
+/// Which paths hold a base engram row of the one domain: a base row is
+/// there, a path only an actor's draft or tombstone holds is not, the same
+/// path in another domain is not, an empty question has an empty answer and
+/// a path asked twice answers once.
+async fn base_paths_of_one_domain(store: &dyn Store) {
+    let did = store
+        .upsert_domain("eng", Some("/k/eng"), DomainKind::File)
+        .await
+        .unwrap();
+    let other = store
+        .upsert_domain("ops", Some("/k/ops"), DomainKind::File)
+        .await
+        .unwrap();
+    store
+        .upsert_engram(did, &record("notes/base.md", "notes/base", "x", "shaB"))
+        .await
+        .unwrap();
+    store
+        .upsert_overlay(
+            did,
+            "ada",
+            &record("notes/draft.md", "notes/draft", "y", "shaD"),
+        )
+        .await
+        .unwrap();
+    let mut gone = record("notes/tomb.md", "notes/tomb", "y", "shaT");
+    gone.tombstone = true;
+    store.upsert_overlay(did, "ada", &gone).await.unwrap();
+    store
+        .upsert_engram(
+            other,
+            &record("notes/elsewhere.md", "notes/elsewhere", "x", "shaE"),
+        )
+        .await
+        .unwrap();
+
+    let asked: Vec<String> = [
+        "notes/base.md",
+        "notes/draft.md",
+        "notes/tomb.md",
+        "notes/elsewhere.md",
+        "notes/nothing.md",
+        "notes/base.md",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    let got = store.base_paths(did, &asked).await.unwrap();
+    assert_eq!(
+        got,
+        std::collections::HashSet::from(["notes/base.md".to_string()]),
+        "only the base row of this domain, once"
+    );
+    assert!(store.base_paths(did, &[]).await.unwrap().is_empty());
+    assert_eq!(
+        store
+            .base_paths(other, &["notes/elsewhere.md".to_string()])
+            .await
+            .unwrap(),
+        std::collections::HashSet::from(["notes/elsewhere.md".to_string()]),
+        "the other domain's own row is its own"
+    );
+}
+parity!(
+    base_paths_answer_only_base_rows_of_the_domain,
+    base_paths_of_one_domain
 );
 
 // --- the sync routes `reflections/` (reflection core, Task 9) ----------------
@@ -11901,10 +12472,12 @@ fn every_engram_reading_sql_carries_an_actor_predicate() {
         census.failures.join("\n")
     );
     assert_eq!(
-        census.sites, 178,
+        census.sites, 188,
         "the engram statement census moved; every new one needs a predicate or a waiver. \
-         73 per backend in mod.rs (the `LIMIT 1` probe of `folder_holds_other` is the \
-         newest, on the base rows; before it the path listing of `overlay_paths`, on \
+         78 per backend in mod.rs (`BASE_PATH_SQL`, the folder counts' existence probe of one path, is the newest, on the base rows; before it `CITED_ENGRAM_SQL`, one cited engram by permalink, on the base rows; before it `ENGRAM_COVERAGE_SQL`, the coverage of one domain's engram chunks, waived below; before it the Reflection gate's two probes, \
+         `ENGRAM_ROWS_UNDER_REFLECTIONS_SQL` and `HAS_ENGRAM_ROWS_SQL`, are the newest, \
+         both on the base rows; before them the `LIMIT 1` probe of `folder_holds_other`, \
+         on the base rows; before it the path listing of `overlay_paths`, on \
          the caller's own actor; before it the permalink arm of `UPSERT_PROBE_SQL`, also \
          on the caller's own actor; before it the `engram_meta_value` delete of \
          `clear_domain`, waived below with the rest of that clear; before that the two unbinding \
@@ -11933,9 +12506,9 @@ fn every_engram_reading_sql_carries_an_actor_predicate() {
          that the reference now points at nothing"
     );
     assert_eq!(
-        census.waived, 30,
+        census.waived, 32,
         "the waiver list is meant to be short and deliberate; a new one needs its reason read. \
-         Fifteen per backend: the two statements of `clear_domain` that unbind the references \
+         Sixteen per backend: `ENGRAM_COVERAGE_SQL`, `-- actor: all` because a draft's chunks count toward coverage as they do toward the backlog, the two statements of `clear_domain` that unbind the references \
          from other domains into the rows about to go, `-- actor: all` because the clear takes \
          every actor's rows, the two `EXISTS` probes of `replace_contradictions`' pair \
          write, `-- actor: by id` because both ids are base rows (drafts are never \
@@ -12550,4 +13123,230 @@ async fn hybrid_search_blends_its_two_signals(store: &dyn Store) {
 parity!(
     hybrid_search_blends_its_two_signals_on_both_backends,
     hybrid_search_blends_its_two_signals
+);
+
+/// A host lock records the instance's name as its label: the first instance
+/// under a name keeps it bare, a second one under the same name adds the
+/// start of its id, and that stays so on every later claim. A lock written
+/// before labels (an empty label) reads back as the instance id.
+async fn a_host_label_is_the_name_with_a_short_id_on_a_clash(store: &dyn Store) {
+    let mut ids = Vec::new();
+    for name in ["eng", "ops", "web"] {
+        ids.push(
+            store
+                .upsert_domain(name, Some(&format!("/tmp/{name}")), DomainKind::File)
+                .await
+                .unwrap(),
+        );
+    }
+    let (now, stale_before) = crystalline_index::claim_window(90);
+    let claim = |domain: DomainId, id: &'static str, name: &'static str| {
+        let (now, stale_before) = (now.clone(), stale_before.clone());
+        async move {
+            crystalline_index::claim_host_marking_moves(
+                store,
+                domain,
+                id,
+                name,
+                &now,
+                &stale_before,
+                false,
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let first = claim(ids[0], "3f2a0000-aaaa", "build-box").await;
+    assert_eq!(first.label, "build-box");
+    let second = claim(ids[1], "9c1b0000-bbbb", "build-box").await;
+    assert_eq!(second.label, "build-box (9c1b)");
+    assert_eq!(
+        store.domain_host(ids[1]).await.unwrap().unwrap().label,
+        "build-box (9c1b)"
+    );
+    assert_eq!(
+        claim(ids[0], "3f2a0000-aaaa", "build-box").await.label,
+        "build-box",
+        "the first instance keeps the bare name"
+    );
+    // Only a shared database records the last host on the domain row.
+    if store.shares_database() {
+        assert_eq!(
+            store.last_domain_host(ids[0]).await.unwrap(),
+            Some(("3f2a0000-aaaa".to_string(), "build-box".to_string()))
+        );
+    }
+    // No name, or the id as the name, records the id.
+    assert_eq!(claim(ids[2], "old-host-id", "").await.label, "old-host-id");
+
+    // A row written before labels reads as its id.
+    store
+        .claim_domain_host(ids[2], "old-host-id", "", &now, &stale_before, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.domain_host(ids[2]).await.unwrap().unwrap().label,
+        "old-host-id"
+    );
+    let stats = store.domain_stats().await.unwrap();
+    let web = stats.iter().find(|d| d.name == "web").unwrap();
+    assert_eq!(web.host_label.as_deref(), Some("old-host-id"));
+}
+/// One instance shows one label: the label it is already recorded under
+/// stays when the instance that made it add its short id is gone, and a
+/// renewal writes it onto a lock that still carried an older label.
+async fn an_instance_keeps_its_label(store: &dyn Store) {
+    let mut ids = Vec::new();
+    for name in ["eng", "ops", "web"] {
+        ids.push(
+            store
+                .upsert_domain(name, Some(&format!("/tmp/{name}")), DomainKind::File)
+                .await
+                .unwrap(),
+        );
+    }
+    let (now, stale_before) = crystalline_index::claim_window(90);
+    let claim = |domain: DomainId, id: &'static str, name: &'static str| {
+        let (now, stale_before) = (now.clone(), stale_before.clone());
+        async move {
+            crystalline_index::claim_host_marking_moves(
+                store,
+                domain,
+                id,
+                name,
+                &now,
+                &stale_before,
+                true,
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let first = claim(ids[0], "3f2a0000-aaaa", "build-box").await;
+    let second = claim(ids[1], "9c1b0000-bbbb", "build-box").await;
+    assert_eq!(second.label, "build-box (9c1b)");
+    // The first instance's lock goes, and the second takes its domain, so
+    // no other instance is recorded under the bare name any more.
+    let token = match first.claim {
+        HostClaim::Acquired { token } => token,
+        other => panic!("{other:?}"),
+    };
+    store
+        .release_domain_host(ids[0], "3f2a0000-aaaa", &token)
+        .await
+        .unwrap();
+    assert_eq!(
+        claim(ids[0], "9c1b0000-bbbb", "build-box").await.label,
+        "build-box (9c1b)",
+        "the label it has stays"
+    );
+    // A lock written with an older label shows the current one after the
+    // next renewal.
+    store
+        .claim_domain_host(
+            ids[2],
+            "9c1b0000-bbbb",
+            "9c1b0000-bbbb",
+            &now,
+            &stale_before,
+            true,
+        )
+        .await
+        .unwrap();
+    assert!(
+        store
+            .renew_domain_host(ids[2], "9c1b0000-bbbb", "build-box (9c1b)", &now)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store.domain_host(ids[2]).await.unwrap().unwrap().label,
+        "build-box (9c1b)"
+    );
+}
+/// Two instances whose first claims raced both hold the bare name: the
+/// one with the greater id takes its short id when it resolves its label
+/// again (its next claim or renewal); the other keeps the bare name.
+async fn raced_twins_read_apart(store: &dyn Store) {
+    let mut ids = Vec::new();
+    for name in ["eng", "ops"] {
+        ids.push(
+            store
+                .upsert_domain(name, Some(&format!("/tmp/{name}")), DomainKind::File)
+                .await
+                .unwrap(),
+        );
+    }
+    let (now, stale_before) = crystalline_index::claim_window(90);
+    for (domain, id) in [(ids[0], "3f2a0000-aaaa"), (ids[1], "9c1b0000-bbbb")] {
+        store
+            .claim_domain_host(domain, id, "build-box", &now, &stale_before, false)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        crystalline_index::instance_label(store, "build-box", "9c1b0000-bbbb")
+            .await
+            .unwrap(),
+        "build-box (9c1b)"
+    );
+    assert_eq!(
+        crystalline_index::instance_label(store, "build-box", "3f2a0000-aaaa")
+            .await
+            .unwrap(),
+        "build-box"
+    );
+    // The renewal writes the short id onto the twin's lock. When the other
+    // goes down and comes back, the twin keeps its label: it never flips
+    // back to the bare name.
+    assert!(
+        store
+            .renew_domain_host(ids[1], "9c1b0000-bbbb", "build-box (9c1b)", &now)
+            .await
+            .unwrap()
+    );
+    let gone = crystalline_index::claim_window(91).1;
+    store
+        .claim_domain_host(ids[0], "3f2a0000-aaaa", "build-box", &gone, &gone, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        crystalline_index::instance_label(store, "build-box", "9c1b0000-bbbb")
+            .await
+            .unwrap(),
+        "build-box (9c1b)",
+        "the other is down"
+    );
+    store
+        .claim_domain_host(
+            ids[0],
+            "3f2a0000-aaaa",
+            "build-box",
+            &now,
+            &stale_before,
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        crystalline_index::instance_label(store, "build-box", "9c1b0000-bbbb")
+            .await
+            .unwrap(),
+        "build-box (9c1b)",
+        "and back up"
+    );
+}
+parity!(
+    raced_twins_read_apart_on_both_backends,
+    raced_twins_read_apart
+);
+
+parity!(
+    an_instance_keeps_its_label_on_both_backends,
+    an_instance_keeps_its_label
+);
+
+parity!(
+    a_host_label_is_the_name_with_a_short_id_on_a_clash_on_both_backends,
+    a_host_label_is_the_name_with_a_short_id_on_a_clash
 );

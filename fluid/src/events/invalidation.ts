@@ -20,7 +20,17 @@ import { domainTreeKey } from "../api/domain";
 import { DOMAINS_QUERY_KEY } from "../api/domains";
 import { engramDetailKey } from "../api/engram";
 import { domainEngramsRoot } from "../api/engrams";
-import type { ChangeEvent, DomainChange, EngramChange } from "../api/events";
+import type {
+  ChangeEvent,
+  DomainChange,
+  EngramChange,
+  ReflectionChange,
+} from "../api/events";
+import {
+  REFLECTION_DOMAINS_KEY,
+  reflectionKeys,
+  reflectionStatusKey,
+} from "../api/reflectionDomains";
 
 export type QueryKey = readonly unknown[];
 
@@ -61,6 +71,9 @@ export function keysForEngram(change: EngramChange): QueryKey[] {
   // IDCLEV level list are all built from this key.
   if (change.kind === "modified" && change.path === "MANIFEST.md") {
     keys.push(DOMAINS_QUERY_KEY);
+    // A Reflection switch is a MANIFEST change: this is how another tab's
+    // switch reaches an engram reader.
+    keys.push(reflectionStatusKey(change.domain), REFLECTION_DOMAINS_KEY);
   }
   return keys;
 }
@@ -75,12 +88,24 @@ export function keysForDomain(change: DomainChange): QueryKey[] {
   ];
 }
 
+/**
+ * A reflection event: the whole Reflection of its domain, its status (outside
+ * that prefix) and the listing whose rows count open threads. One prefix
+ * rather than per-path keys: a domain holds tens or hundreds of pages, and
+ * only what is on screen refetches.
+ */
+export function keysForReflection(change: ReflectionChange): QueryKey[] {
+  return reflectionKeys(change.domain);
+}
+
 export function keysFor(event: ChangeEvent): QueryKey[] | "everything" {
   switch (event.event) {
     case "engram":
       return keysForEngram(event.change);
     case "domain":
       return keysForDomain(event.change);
+    case "reflection":
+      return keysForReflection(event.change);
     case "reset":
       return "everything";
   }

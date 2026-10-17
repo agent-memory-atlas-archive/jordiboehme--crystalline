@@ -10,9 +10,9 @@
  */
 
 import type { ReactElement } from "react";
-import { Suspense, lazy } from "react";
+import { lazyPart } from "./lazyPart";
 
-const ShareDialogBody = lazy(() => import("./ShareDialogBody"));
+const ShareDialogBody = lazyPart(() => import("./ShareDialogBody"));
 
 export interface ShareDialogProps {
   /** The team domain whose local changes would be shared. */
@@ -25,7 +25,8 @@ export interface ShareDialogProps {
 
 export function ShareDialog(props: ShareDialogProps): ReactElement {
   return (
-    <Suspense
+    <ShareDialogBody
+      overlay
       fallback={
         // Plain markup rather than another Radix dialog: reaching for the
         // primitive here would defeat the point of keeping it out of this
@@ -36,8 +37,7 @@ export function ShareDialog(props: ShareDialogProps): ReactElement {
           </p>
         </div>
       }
-    >
-      <ShareDialogBody {...props} />
-    </Suspense>
+      {...props}
+    />
   );
 }

@@ -130,7 +130,9 @@ export function DraftLinkDialog({
               Links on this draft
             </h3>
             {links.isPending && (
-              <p className="mt-1 text-sm text-slate-500">Reading the links</p>
+              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                Reading the links
+              </p>
             )}
             {links.isError && (
               <p

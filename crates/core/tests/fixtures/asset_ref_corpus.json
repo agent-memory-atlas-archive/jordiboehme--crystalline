@@ -14,5 +14,6 @@
   { "name": "invalid escape stays raw", "body": "![s](assets/bad%zzname.png)", "refs": ["assets/bad%zzname.png"] },
   { "name": "utf8 sequence decodes", "body": "![s](assets/caf%C3%A9.png)", "refs": ["assets/café.png"] },
   { "name": "invalid utf8 stays raw", "body": "![s](assets/bad%FFname.png)", "refs": ["assets/bad%FFname.png"] },
-  { "name": "non-asset link ignored", "body": "[doc](docs/readme.md) ![i](https://example.com/a.png)", "refs": [] }
+  { "name": "non-asset link ignored", "body": "[doc](docs/readme.md) ![i](https://example.com/a.png)", "refs": [] },
+  { "name": "destination without an opening bracket counts", "body": "stray](assets/x/loose.png)", "refs": ["assets/x/loose.png"] }
 ]

@@ -9,12 +9,12 @@
  */
 
 import type { ReactElement } from "react";
-import { Suspense, lazy } from "react";
 
 import type { EngramDetail } from "../api/engram";
 import type { Backlink } from "../api/graph";
+import { lazyPart } from "./lazyPart";
 
-const RetireDialogBody = lazy(() => import("./RetireDialogBody"));
+const RetireDialogBody = lazyPart(() => import("./RetireDialogBody"));
 
 /**
  * The three statuses this dialog offers - the retire endpoint's own
@@ -29,12 +29,18 @@ export interface RetireDialogProps {
   engram: EngramDetail;
   /** Who points here, for the delete warning. */
   backlinks: Backlink[];
+  /**
+   * Whether "Delete permanently instead" is offered. False for a file
+   * domain's MANIFEST, which the server refuses to delete. Defaults to true.
+   */
+  canDelete?: boolean;
   onClose: () => void;
 }
 
 export function RetireDialog(props: RetireDialogProps): ReactElement {
   return (
-    <Suspense
+    <RetireDialogBody
+      overlay
       fallback={
         // Plain markup rather than another Radix dialog: reaching for the
         // primitive here would defeat the point of keeping it out of this
@@ -45,8 +51,7 @@ export function RetireDialog(props: RetireDialogProps): ReactElement {
           </p>
         </div>
       }
-    >
-      <RetireDialogBody {...props} />
-    </Suspense>
+      {...props}
+    />
   );
 }

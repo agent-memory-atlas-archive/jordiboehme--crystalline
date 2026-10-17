@@ -6,7 +6,17 @@
  * `data-theme` on `<html>` is what the pre-paint script in index.html sets and
  * what the theme provider keeps in step, and every `dark:` utility reads it.
  */
-@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+@custom-variant dark {
+  /*
+   * On screens only: paper is always light, whatever the reader picked for
+   * the screen, so no `dark:` utility reaches a printed page.
+   */
+  @media screen {
+    &:where([data-theme="dark"], [data-theme="dark"] *) {
+      @slot;
+    }
+  }
+}
 
 /*
  * The app's own design tokens. One accent (the C64 blue the Crystalline
@@ -28,19 +38,53 @@
   --color-accent-900: #2a1f5f;
   --color-accent-950: #1d1739;
 
-  --text-display: 1.5rem;
-  --text-display--line-height: 2rem;
-  --text-display--font-weight: 600;
+  --text-display: 1.875rem;
+  --text-display--line-height: 2.375rem;
+  --text-display--font-weight: 650;
+  --text-display--letter-spacing: -0.02em;
   --text-title: 1.25rem;
   --text-title--line-height: 1.75rem;
   --text-title--font-weight: 600;
+  --text-prose-h2: 1.3125rem;
+  --text-prose-h2--line-height: 1.75rem;
+  --text-prose-h2--font-weight: 620;
+  --text-prose-h3: 1.0625rem;
+  --text-prose-h3--line-height: 1.625rem;
+  --text-prose-h3--font-weight: 600;
   --text-section: 1.0625rem;
   --text-section--line-height: 1.5rem;
   --text-section--font-weight: 600;
-  --text-body: 0.9375rem;
-  --text-body--line-height: 1.65;
+  --text-body: 1rem;
+  --text-body--line-height: 1.72;
   --text-caption: 0.75rem;
   --text-caption--line-height: 1rem;
+}
+
+/*
+ * The surface and text tokens (spec 3.5) as utilities: `bg-canvas`,
+ * `border-hair`, `text-muted`, `text-link` and so on. `inline` keeps the
+ * utilities reading the custom properties below at use time, so the dark
+ * theme only has to redefine the properties.
+ */
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-chrome: var(--chrome);
+  --color-raised: var(--raised);
+  --color-sunken: var(--sunken);
+  --color-hair: var(--hair);
+  --color-hair-strong: var(--hair-strong);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-link: var(--link);
+  --color-accent-tint: var(--accent-tint);
+  --color-mark: var(--mark);
+  --color-mark-active: var(--mark-active);
+  --color-seg: var(--seg);
+  --color-seg-on: var(--seg-on);
+  --shadow-pop: var(--pop);
 }
 
 @layer base {
@@ -52,6 +96,30 @@
   :root,
   [data-theme="light"] {
     color-scheme: light;
+
+    /* Surfaces, lines and text levels; one set per theme (spec 3.5). */
+    --canvas: #ffffff;
+    --chrome: #fbfbfd;
+    --raised: #ffffff;
+    --sunken: #f1f5f9;
+    --hair: #e2e8f0;
+    --hair-strong: #cbd5e1;
+    --ink: #0f172a;
+    --ink-2: #1e293b;
+    --ink-3: #334155;
+    --muted: #64748b;
+    --faint: #94a3b8;
+    --link: var(--color-accent-700);
+    --link-line: var(--color-accent-300);
+    --accent-tint: var(--color-accent-100);
+    --mark: var(--color-amber-100);
+    --mark-rule: var(--color-amber-500);
+    --mark-active: var(--color-accent-200);
+    /* The mode switch's track and its raised half, and a menu's shadow. */
+    --seg: #f1f5f9;
+    --seg-on: #ffffff;
+    --pop:
+      0 10px 30px -8px rgb(15 23 42 / 0.18), 0 2px 6px rgb(15 23 42 / 0.06);
     /*
      * CodeMirror's highlight style is one static rule set for both schemes
      * (see `editor/setup.ts`), not a `dark:` utility, so a token color that
@@ -75,16 +143,70 @@
     --color-diff-word: var(--color-amber-200);
   }
 
-  [data-theme="dark"] {
-    color-scheme: dark;
-    --color-code-string: #b9afe6;
-    --color-diff-added: var(--color-emerald-950);
-    --color-diff-removed: var(--color-red-950);
-    --color-diff-word: var(--color-amber-900);
+  /* Screens only: the light set above is what paper gets. */
+  @media screen {
+    [data-theme="dark"] {
+      color-scheme: dark;
+
+      --canvas: #0d0f16;
+      --chrome: #0b0d13;
+      --raised: #151924;
+      --sunken: #1a1f2b;
+      --hair: #232937;
+      --hair-strong: #323a4c;
+      --ink: #eef0f5;
+      --ink-2: #dde1ea;
+      --ink-3: #c3c8d4;
+      --muted: #8b93a7;
+      --faint: #636b80;
+      --link: var(--color-accent-300);
+      --link-line: color-mix(
+        in srgb,
+        var(--color-accent-800) 60%,
+        var(--color-accent-500)
+      );
+      --accent-tint: color-mix(
+        in srgb,
+        var(--color-accent-400) 16%,
+        transparent
+      );
+      --mark: color-mix(in srgb, var(--color-amber-400) 16%, transparent);
+      --mark-rule: #d6a23a;
+      --mark-active: color-mix(
+        in srgb,
+        var(--color-accent-400) 32%,
+        transparent
+      );
+      --seg: #161a24;
+      --seg-on: #262c3b;
+      --pop: 0 16px 40px -10px rgb(0 0 0 / 0.7);
+
+      /*
+     * Dark leaves the blue-leaning slate for a neutral ink: the slate steps
+     * the screens already use for dark surfaces, lines and text are
+     * redefined here, so every `dark:bg-slate-900` and
+     * `dark:text-slate-300` in the app lands on the new tones. 500 stays,
+     * its text uses were tuned against the old canvas.
+     */
+      --color-slate-50: #f6f7fa;
+      --color-slate-100: #eef0f5;
+      --color-slate-200: #dde1ea;
+      --color-slate-300: #c3c8d4;
+      --color-slate-400: #8b93a7;
+      --color-slate-600: #4a5266;
+      --color-slate-700: #323a4c;
+      --color-slate-800: #232937;
+      --color-slate-900: #151924;
+      --color-slate-950: #0d0f16;
+      --color-code-string: #b9afe6;
+      --color-diff-added: var(--color-emerald-950);
+      --color-diff-removed: var(--color-red-950);
+      --color-diff-word: var(--color-amber-900);
+    }
   }
 
   body {
-    @apply bg-white text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100;
+    @apply bg-canvas text-ink antialiased;
   }
 }
 
@@ -98,6 +220,44 @@
  * stylesheet the bundle has to reach through the dependency tree for.
  */
 @layer components {
+  /*
+   * The two halves of the mode switch in the top bar (ReflectionModeSwitch):
+   * the current one, whichever kind of aria-current it carries, is the raised
+   * pill in bold. Here rather than as class strings, which the entry pays for.
+   */
+  .mode-half {
+    @apply inline-flex h-7 items-center justify-center gap-1.5 rounded-[7px] px-3 text-[13.5px] font-medium text-muted hover:text-ink;
+  }
+  /* The domain switcher's trigger and its menu (DomainSwitcher). */
+  .switcher-trigger {
+    @apply inline-flex h-8 min-w-0 shrink items-center gap-1.5 rounded-lg pr-2 pl-2.5 text-sm font-medium text-ink hover:bg-sunken data-[state=open]:bg-sunken;
+  }
+  .switcher-menu {
+    @apply z-50 max-h-(--radix-dropdown-menu-content-available-height) w-80 overflow-y-auto max-w-[calc(100vw-1rem)] rounded-xl border border-hair bg-raised p-1.5 text-[13.5px] shadow-pop;
+  }
+  /* The avatar in the top bar and in its menu (AvatarMenu): the initial in a circle. */
+  .avatar {
+    @apply inline-grid size-8 shrink-0 place-items-center rounded-full border border-accent-300/45 bg-accent-tint text-[13px] font-semibold text-accent-800 dark:text-accent-200;
+  }
+  .avatar[data-state="open"] {
+    @apply shadow-[0_0_0_3px_var(--accent-tint)];
+  }
+  .avatar-anon {
+    @apply border-hair-strong bg-sunken text-muted;
+  }
+  .avatar-lg {
+    @apply size-10 text-[15px];
+  }
+  .avatar-menu {
+    @apply z-50 w-[19.5rem] max-w-[calc(100vw-1rem)] max-h-(--radix-dropdown-menu-content-available-height) overflow-y-auto rounded-xl border border-hair bg-raised p-1.5 text-[13.5px] shadow-pop;
+  }
+  .avatar-grab {
+    @apply mx-auto mt-1 mb-2.5 h-1 w-9.5 rounded-sm bg-hair-strong md:hidden;
+  }
+  .mode-half[aria-current] {
+    @apply bg-seg-on font-semibold text-ink shadow-[0_1px_2px_rgb(15_23_42/0.08),0_0_0_1px_rgb(15_23_42/0.04)];
+  }
+
   .hljs-comment,
   .hljs-quote {
     color: #64748b;
@@ -156,57 +316,88 @@
     font-weight: 600;
   }
 
-  [data-theme="dark"] .hljs-comment,
-  [data-theme="dark"] .hljs-quote {
-    color: #94a3b8;
-  }
-
-  [data-theme="dark"] .hljs-keyword,
-  [data-theme="dark"] .hljs-selector-tag,
-  [data-theme="dark"] .hljs-literal,
-  [data-theme="dark"] .hljs-section,
-  [data-theme="dark"] .hljs-doctag,
-  [data-theme="dark"] .hljs-name,
-  [data-theme="dark"] .hljs-deletion {
-    color: #fca5a5;
-  }
-
-  [data-theme="dark"] .hljs-string,
-  [data-theme="dark"] .hljs-regexp,
-  [data-theme="dark"] .hljs-addition,
-  [data-theme="dark"] .hljs-attribute,
-  [data-theme="dark"] .hljs-meta .hljs-string {
-    color: #b9afe6;
-  }
-
-  [data-theme="dark"] .hljs-number,
-  [data-theme="dark"] .hljs-symbol,
-  [data-theme="dark"] .hljs-bullet,
-  [data-theme="dark"] .hljs-link,
-  [data-theme="dark"] .hljs-variable,
-  [data-theme="dark"] .hljs-template-variable {
-    color: #93c5fd;
-  }
-
   /*
-   * Fuchsia rather than the purple-300 the light-mode violet would suggest:
-   * that stop sat only 14.0 CIE76 units from the string color below (both
-   * pale lavenders, indistinguishable at 13px mono), which fuchsia clears to
-   * 24.6 without colliding with keyword red or attr yellow. See
-   * `theme/tokens.test.ts`'s hue-separation test.
+   * Comment quotes on a reflection page, painted with the CSS Custom
+   * Highlight API (`reflectionQuotes.ts`). The active quote is the thread a
+   * reader picked, painted on top of the rest.
    */
-  [data-theme="dark"] .hljs-title,
-  [data-theme="dark"] .hljs-class .hljs-title,
-  [data-theme="dark"] .hljs-type,
-  [data-theme="dark"] .hljs-built_in {
-    color: #f0abfc;
+  ::highlight(reflection-quote) {
+    background-color: var(--mark);
+    color: var(--ink);
+    text-decoration: underline;
+    text-decoration-color: var(--mark-rule);
+    text-decoration-thickness: 2px;
   }
 
-  [data-theme="dark"] .hljs-attr,
-  [data-theme="dark"] .hljs-selector-attr,
-  [data-theme="dark"] .hljs-selector-class,
-  [data-theme="dark"] .hljs-selector-id {
-    color: #fcd34d;
+  ::highlight(reflection-quote-active) {
+    background-color: var(--mark-active);
+    color: var(--ink);
+    text-decoration: underline;
+    text-decoration-color: var(--color-accent-400);
+    text-decoration-thickness: 2px;
+  }
+
+  /* The dark palette is for screens; paper keeps the light one. */
+  @media screen {
+    [data-theme="dark"] .hljs-comment,
+    [data-theme="dark"] .hljs-quote {
+      color: #94a3b8;
+    }
+
+    [data-theme="dark"] .hljs-keyword,
+    [data-theme="dark"] .hljs-selector-tag,
+    [data-theme="dark"] .hljs-literal,
+    [data-theme="dark"] .hljs-section,
+    [data-theme="dark"] .hljs-doctag,
+    [data-theme="dark"] .hljs-name,
+    [data-theme="dark"] .hljs-deletion {
+      color: #fca5a5;
+    }
+
+    [data-theme="dark"] .hljs-string,
+    [data-theme="dark"] .hljs-regexp,
+    [data-theme="dark"] .hljs-addition,
+    [data-theme="dark"] .hljs-attribute,
+    [data-theme="dark"] .hljs-meta .hljs-string {
+      color: #b9afe6;
+    }
+
+    [data-theme="dark"] .hljs-number,
+    [data-theme="dark"] .hljs-symbol,
+    [data-theme="dark"] .hljs-bullet,
+    [data-theme="dark"] .hljs-link,
+    [data-theme="dark"] .hljs-variable,
+    [data-theme="dark"] .hljs-template-variable {
+      color: #93c5fd;
+    }
+
+    /*
+     * Fuchsia rather than the purple-300 the light-mode violet would suggest:
+     * that stop sat only 14.0 CIE76 units from the string color below (both
+     * pale lavenders, indistinguishable at 13px mono), which fuchsia clears to
+     * 24.6 without colliding with keyword red or attr yellow. See
+     * `theme/tokens.test.ts`'s hue-separation test.
+     */
+    [data-theme="dark"] .hljs-title,
+    [data-theme="dark"] .hljs-class .hljs-title,
+    [data-theme="dark"] .hljs-type,
+    [data-theme="dark"] .hljs-built_in {
+      color: #f0abfc;
+    }
+
+    [data-theme="dark"] .hljs-attr,
+    [data-theme="dark"] .hljs-selector-attr,
+    [data-theme="dark"] .hljs-selector-class,
+    [data-theme="dark"] .hljs-selector-id {
+      color: #fcd34d;
+    }
+
+    /* A white diagram should not glare on the dark canvas. */
+    [data-theme="dark"] .measured img,
+    [data-theme="dark"] .edit-column .cm-content img,
+    [data-theme="dark"] .content-img {
+      filter: brightness(0.86);
+    }
   }
 
   /*
@@ -215,7 +406,7 @@
    * column. Applied to the container of a rendered document.
    */
   .measured > :not(.breakout) {
-    max-width: 70ch;
+    max-width: var(--measure, 720px);
   }
 
   /*
@@ -236,6 +427,23 @@
       max-width: none;
     }
   }
+
+  /*
+   * The editors' column: the same measure as the page it edits, so switching
+   * to Edit changes the controls and not the page. Full width lifts it and
+   * large text widens it, as they do for reading.
+   */
+  .edit-column {
+    max-width: var(--measure, 720px);
+  }
+  main[data-text="large"] .edit-column {
+    max-width: 1080px;
+  }
+  @media screen {
+    main[data-width="full"] .edit-column {
+      max-width: none;
+    }
+  }
 }
 
 @media screen {
@@ -251,6 +459,13 @@
    */
   main[data-text="large"] .measured {
     font-size: 1.5rem;
+    --measure: 1080px;
+    --text-display: 2.8125rem;
+    --text-display--line-height: 3.5625rem;
+    --text-prose-h2: 1.96875rem;
+    --text-prose-h2--line-height: 2.625rem;
+    --text-prose-h3: 1.59375rem;
+    --text-prose-h3--line-height: 2.4375rem;
     --text-2xl: 2.25rem;
     --text-2xl--line-height: 3rem;
     --text-xl: 1.875rem;
@@ -267,88 +482,211 @@
   }
 }
 
+/*
+ * Paper. A printed page is laid out as a document of its own: a title block
+ * on the first page, the text at a print size with page breaks kept out of
+ * code, tables, diagrams and pictures, the Notes or the Related section at
+ * the end, and a running header and footer in the page margins. The chrome
+ * (bars, sidebar, rail, menus, buttons, dialogs, threads) stays on screen.
+ * Paper is always light: the dark theme is screen-only (see the variant and
+ * the token block above).
+ *
+ * The margin boxes' look is here; their words and the first page's
+ * exceptions come from the page (`PrintPageStyle`). Chrome 131 and later draws them;
+ * Safari and Firefox draw no margin boxes, and the title block on the first
+ * page carries the address and the print date there.
+ */
+@page {
+  margin: 20mm 17mm 20mm;
+
+  @top-left {
+    font:
+      500 7.5pt / 1.3 ui-sans-serif,
+      system-ui,
+      sans-serif;
+    color: #64748b;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    vertical-align: bottom;
+    padding-bottom: 4mm;
+  }
+  @top-right {
+    font:
+      7.5pt / 1.3 ui-sans-serif,
+      system-ui,
+      sans-serif;
+    color: #64748b;
+    vertical-align: bottom;
+    padding-bottom: 4mm;
+  }
+  @bottom-left {
+    font:
+      7pt / 1.3 ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
+    color: #94a3b8;
+    vertical-align: top;
+    padding-top: 4mm;
+  }
+  @bottom-right {
+    font:
+      7.5pt / 1.3 ui-sans-serif,
+      system-ui,
+      sans-serif;
+    color: #64748b;
+    vertical-align: top;
+    padding-top: 4mm;
+  }
+}
+
+@layer base {
+  /*
+   * Print-only blocks carry `hidden`, which keeps them off the screen and out
+   * of the accessibility tree there. Here and in this layer, because the
+   * reset's own `[hidden]` rule is important in it.
+   */
+  @media print {
+    [hidden][data-print] {
+      display: block !important;
+    }
+  }
+}
+
 @media print {
-  /* The engram page prints as a document: title, metadata line, content. */
+  /* Every rem scales with the body: 10.5pt text, headings in proportion. */
+  html {
+    font-size: 10.5pt;
+  }
+  body {
+    background: #fff;
+  }
   main {
     max-width: none;
     padding: 0;
   }
+  /* The frame's own gutters go: the page margins are the gutters on paper. */
+  :has(> main) {
+    padding: 0 !important;
+    gap: 0 !important;
+  }
+
+  /* The chrome stays on screen. */
+  button,
+  input,
+  select,
+  textarea,
+  dialog,
+  [role="dialog"],
+  [role="menu"],
+  [role="tooltip"],
+  [data-radix-popper-content-wrapper],
+  .fixed,
+  [data-loading],
+  [data-ready-flash] {
+    display: none !important;
+  }
+  /* A task list's boxes are content: they say what is done. */
+  .measured input[type="checkbox"] {
+    display: inline-block !important;
+  }
+
+  /* The text: a calm leading, the light fills kept on paper. */
+  .measured {
+    line-height: 1.55;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  .measured :is(p, li) {
+    line-height: 1.55;
+    orphans: 3;
+    widows: 3;
+  }
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    break-after: avoid;
+    break-inside: avoid;
+  }
+  pre,
+  table,
+  figure,
+  img,
+  svg,
+  blockquote,
+  .print-note,
+  .print-related li {
+    break-inside: avoid;
+  }
+
+  /* Code wraps instead of running off the page. */
+  .measured pre,
+  .measured .breakout {
+    overflow: visible !important;
+  }
+  .measured pre,
+  .measured pre code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  /* Diagrams and pictures fit the width, as vectors where they are. */
+  .measured figure svg,
+  .measured img {
+    max-width: 100% !important;
+    height: auto;
+  }
+  .measured img {
+    max-height: 190mm;
+    object-fit: contain;
+  }
+
+  /*
+   * Links are text on paper. A link out of the app adds its address in small
+   * type after its words, where a reader of the page needs it; numbered notes
+   * would compete with the thread notes of a Reflection page.
+   */
   a {
-    color: inherit;
-    text-decoration: none;
+    color: inherit !important;
+    text-decoration: none !important;
+  }
+  a[data-print-url]::after {
+    content: " (" attr(data-print-url) ")";
+    font-size: 0.8em;
+    color: var(--muted);
+    overflow-wrap: anywhere;
+  }
+
+  /* A thread's quote and its number in the text. */
+  ::highlight(reflection-quote),
+  ::highlight(reflection-quote-active) {
+    background-color: var(--mark);
+    text-decoration: underline;
+    text-decoration-color: var(--mark-rule);
+    text-decoration-thickness: 1px;
+  }
+  .print-marker {
+    margin-left: 0.1em;
+    font-size: 0.7em;
+    font-weight: 600;
+    color: var(--color-amber-700);
+    line-height: 0;
+  }
+
+  /*
+   * A Reflection page that opens with its own title prints the title block
+   * instead: the block carries the title, the trail and the facts.
+   */
+  [data-print-fold]
+    > section:first-child
+    :is(h1[data-first-title], h1[data-first-title] ~ p[data-anchor-skip]) {
+    display: none;
   }
 }
 
-/*
- * The crystallizing gem: the markdown renderer's loading state. Three facet
- * glyphs share one grid cell and take turns, so the gem appears to fill in
- * as the chunk loads. Motion collapses to the mid facet when the reader
- * asked for reduced motion.
- */
-@keyframes gem-facet {
-  0%,
-  27% {
-    opacity: 1;
-  }
-  33%,
-  100% {
-    opacity: 0;
-  }
-}
-.gem-cycle > span {
-  grid-area: 1 / 1;
-  opacity: 0;
-  animation: gem-facet 1.2s steps(1, end) infinite;
-}
-.gem-cycle > span:nth-child(2) {
-  animation-delay: 0.4s;
-}
-.gem-cycle > span:nth-child(3) {
-  animation-delay: 0.8s;
-}
-@media (prefers-reduced-motion: reduce) {
-  .gem-cycle > span {
-    animation: none;
-  }
-  .gem-cycle > span:nth-child(2) {
-    opacity: 1;
-  }
-}
-
-/*
- * The crystallization front: the fallback sketches the incoming prose as
- * lines of amorphous shade blocks, and a solid layer sweeps across each
- * line, hardening it. Two identical monospace layers per line; the solid
- * one is revealed by an animated clip. Motion off = the amorphous sketch.
- */
-.crystal-line {
-  display: block;
-  position: relative;
-  overflow: hidden;
-  white-space: nowrap;
-  line-height: 1.6;
-}
-.crystal-line > .solid {
-  position: absolute;
-  inset: 0;
-  clip-path: inset(0 100% 0 0);
-  animation: crystal-front 2.1s ease-in-out infinite;
-}
-.crystal-line:nth-child(2) > .solid {
-  animation-delay: 0.35s;
-}
-.crystal-line:nth-child(3) > .solid {
-  animation-delay: 0.7s;
-}
-@keyframes crystal-front {
-  0% {
-    clip-path: inset(0 100% 0 0);
-  }
-  55%,
-  100% {
-    clip-path: inset(0 0 0 0);
-  }
-}
 @keyframes cursor-blink {
   0%,
   49% {
@@ -359,14 +697,33 @@
     opacity: 0;
   }
 }
-.crystal-cursor {
+.crystal-cursor,
+.loading-cursor {
   animation: cursor-blink 1s steps(1, end) infinite;
 }
-@media (prefers-reduced-motion: reduce) {
-  .crystal-line > .solid {
-    animation: none;
+
+/*
+ * READY.: the flash the layout lays over the content area when a loading
+ * block gave way to content. It holds, then fades out over the last part of
+ * its 400 ms (the component removes it at 400 ms).
+ */
+@keyframes ready-fade {
+  0%,
+  40% {
+    opacity: 1;
   }
-  .crystal-cursor {
+  100% {
+    opacity: 0;
+  }
+}
+.ready-flash {
+  animation: ready-fade 0.4s ease-out forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* The cursor stays still and READY. shows its 400 ms without the fade. */
+  .crystal-cursor,
+  .loading-cursor,
+  .ready-flash {
     animation: none;
   }
 }
@@ -514,5 +871,40 @@
   .section-flash {
     animation: none;
     background-color: var(--section-flash-wash);
+  }
+}
+
+/*
+ * Below the medium breakpoint the avatar menu is a bottom sheet (spec 4.5):
+ * the same popper, pinned to the foot of the window over a scrim. Radix sets
+ * its placement inline on a wrapper, so the sheet has to out-rank inline
+ * styles; `will-change` goes too, because it would make the wrapper the
+ * containing block of the scrim.
+ */
+@media (max-width: 47.99rem) {
+  [data-radix-popper-content-wrapper]:has(> .avatar-menu) {
+    position: fixed !important;
+    inset: auto 0 0 0 !important;
+    transform: none !important;
+    min-width: 0 !important;
+    will-change: auto !important;
+  }
+  [data-radix-popper-content-wrapper]:has(> .avatar-menu)::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background: rgb(15 23 42 / 0.4);
+  }
+  .avatar-menu {
+    width: 100%;
+    max-width: none;
+    max-height: 85vh;
+    max-height: 85dvh;
+    overflow-y: auto;
+    border-width: 1px 0 0;
+    border-radius: 16px 16px 0 0;
+    padding: 8px 10px calc(14px + env(safe-area-inset-bottom));
+    font-size: 15px;
   }
 }

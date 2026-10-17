@@ -1760,6 +1760,7 @@ async fn folding_a_draft_that_switches_reflection_on_seeds_the_pact() {
     let f = review_fixture().await;
     let on = MANIFEST.replace("status: stable\n", "status: stable\nreflection: on\n");
     f.draft("team", "alice", "MANIFEST.md", &on).await;
+    let mut rx = f.engine.changes().subscribe();
     f.engine
         .set_review_mode(
             "team",
@@ -1769,6 +1770,21 @@ async fn folding_a_draft_that_switches_reflection_on_seeds_the_pact() {
         )
         .await
         .unwrap();
+    // The fold is where the switch lands, so it is announced there, once.
+    let mut switched = Vec::new();
+    while let Ok(envelope) = rx.try_recv() {
+        if let crystalline_service::changes::Change::Reflection(change) = envelope.change {
+            switched.push((change.domain, change.path, change.kind));
+        }
+    }
+    assert_eq!(
+        switched,
+        vec![(
+            "team".to_string(),
+            String::new(),
+            crystalline_service::changes::ReflectionChangeKind::Switched
+        )]
+    );
     let root = f.root.join("team");
     assert_eq!(
         std::fs::read_to_string(root.join("MANIFEST.md")).unwrap(),
@@ -1784,6 +1800,70 @@ async fn folding_a_draft_that_switches_reflection_on_seeds_the_pact() {
             home: crystalline_service::ReflectionHome::Local
         }
     );
+}
+
+/// A fold whose MANIFEST draft switches the Reflection off saves and closes
+/// the domain's reflection rooms first, and tells their sockets why:
+/// `switched_off`, not the `internal` the sweep after it would say.
+#[tokio::test]
+async fn folding_a_draft_that_switches_reflection_off_closes_its_rooms_as_switched_off() {
+    let on = MANIFEST.replace("status: stable\n", "status: stable\nreflection: on\n");
+    let f = build_fixture(&on, true, true, None, false, false).await;
+    let root = f.root.join("team");
+    std::fs::create_dir_all(root.join("reflections/guides")).unwrap();
+    std::fs::write(
+        root.join("reflections/guides/a.md"),
+        "# A\n\n## One\n<!-- r:aaaa1111 -->\n\nFirst.\n",
+    )
+    .unwrap();
+    let sessions = CollabSessions::new(f.engine.clone());
+    f.engine.set_collab_sessions(&sessions);
+    let mut joined = sessions
+        .join_reflection("team", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    f.draft("team", "alice", "MANIFEST.md", MANIFEST).await;
+    f.engine
+        .set_review_mode(
+            "team",
+            None,
+            folds(&[("alice", FoldChoice::Fold)]),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("MANIFEST.md")).unwrap(),
+        MANIFEST,
+        "the switch-off was folded"
+    );
+    let reason = loop {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(10), joined.rx.recv())
+            .await
+            .expect("a control frame arrives in time")
+            .expect("the broadcast channel stays open");
+        let mut decoder = DecoderV1::from(frame.bytes.as_ref());
+        let closed = MessageReader::new(&mut decoder)
+            .flatten()
+            .find_map(|message| match message {
+                Message::Custom(tag, payload)
+                    if tag == crystalline_service::collab::control::CONTROL_TAG =>
+                {
+                    match crystalline_service::collab::control::decode(&payload) {
+                        Some(crystalline_service::collab::control::Control::Closed {
+                            reason,
+                            ..
+                        }) => Some(reason),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            });
+        if let Some(reason) = closed {
+            break reason;
+        }
+    };
+    assert_eq!(reason, "switched_off");
 }
 
 /// The fold seeds the pact before the switch lands, as the policy edit
@@ -1836,6 +1916,42 @@ async fn a_pact_that_cannot_be_seeded_refuses_the_fold_for_a_retry() {
     assert_eq!(
         std::fs::read_to_string(root.join("MANIFEST.md")).unwrap(),
         on
+    );
+}
+
+/// The seed comes before the rooms close: a fold whose pact cannot be seeded
+/// refuses with nothing changed, so a room that was open stays open. A fold
+/// that closed the rooms first would cut a co-editing session for a fold that
+/// then did not happen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_seed_refusal_closes_no_room() {
+    let f = review_fixture().await;
+    let sessions = CollabSessions::new(f.engine.clone());
+    f.engine.set_collab_sessions(&sessions);
+    let on = MANIFEST.replace("status: stable\n", "status: stable\nreflection: on\n");
+    f.draft("team", "alice", "MANIFEST.md", &on).await;
+    let _joined = sessions.join("team", "plan", None).await.unwrap();
+    assert_eq!(sessions.session_count().await, 1, "the room is open");
+    // A file where the folder would go: the seed cannot create it.
+    std::fs::write(f.root.join("team").join("reflections"), "in the way").unwrap();
+
+    let err = f
+        .engine
+        .set_review_mode(
+            "team",
+            None,
+            folds(&[("alice", FoldChoice::Fold)]),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+    assert!(err.contains("PACT.md could not be written"), "{err}");
+    assert_eq!(
+        sessions.session_count().await,
+        1,
+        "the refused fold left the room open"
     );
 }
 
@@ -5346,6 +5462,80 @@ async fn a_review_mode_discard_clears_exactly_the_named_drafts() {
     assert!(read.get("draft").is_none(), "{read}");
 }
 
+/// A discard that puts back a MANIFEST saying `reflection: on` (the folder's
+/// copy said off) moves the Reflection's mode through a targeted pass over
+/// that one file: the pages under `reflections/` leave the engram index and
+/// get their page rows at once, without a sync.
+#[tokio::test]
+async fn a_discard_that_puts_the_reflection_switch_back_makes_the_reflection_whole() {
+    let f = origin_fixture().await;
+    let root = f.domain_root("team");
+    let on = MANIFEST.replace("status: stable\n", "status: stable\nreflection: on\n");
+    std::fs::write(root.join("MANIFEST.md"), &on).unwrap();
+    std::fs::create_dir_all(root.join("reflections")).unwrap();
+    let page = "# B\n\nFor people.\n\n## Part\n<!-- r:aaaa1111 -->\n\nText.\n";
+    std::fs::write(root.join("reflections/b.md"), page).unwrap();
+    f.engine.sync(None).await.unwrap();
+    f.snapshot_origin("team");
+    for rel in ["MANIFEST.md", "plan.md", "reflections/b.md"] {
+        crystalline_remote::state::write_base_file(
+            &f.origins.join("team"),
+            rel,
+            &std::fs::read(root.join(rel)).unwrap(),
+        )
+        .unwrap();
+    }
+    // Switched off by hand and synced: the page is an engram now.
+    std::fs::write(root.join("MANIFEST.md"), MANIFEST).unwrap();
+    f.engine.sync(None).await.unwrap();
+    let rows = |f: &Fixture| {
+        let store = f.store.clone();
+        async move {
+            let store = store.lock().await;
+            let id = store.domain_id("team").await.unwrap().unwrap();
+            let engrams: Vec<String> = store.file_stamps(id).await.unwrap().into_keys().collect();
+            let pages: Vec<String> = store
+                .list_reflection_stamps(id)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|s| s.path)
+                .collect();
+            (engrams, pages)
+        }
+    };
+    let (engrams, pages) = rows(&f).await;
+    assert!(
+        engrams.contains(&"reflections/b.md".to_string()),
+        "{engrams:?}"
+    );
+    assert!(pages.is_empty(), "{pages:?}");
+
+    let report = f
+        .engine
+        .discard_local_changes(
+            "team",
+            &[DiscardTarget {
+                path: "MANIFEST.md".to_string(),
+                sha256: None,
+            }],
+            &ShareActor::Owner,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        report["restored"],
+        serde_json::json!(["MANIFEST.md"]),
+        "{report}"
+    );
+    let (engrams, pages) = rows(&f).await;
+    assert!(
+        !engrams.iter().any(|p| p.starts_with("reflections/")),
+        "{engrams:?}"
+    );
+    assert_eq!(pages, vec!["b.md"]);
+}
+
 /// A team domain lists the working tree against its base, diffs one path and
 /// puts it back, re-indexing exactly what moved.
 #[tokio::test]
@@ -6867,6 +7057,8 @@ fn every_instance_write_guard_meets_the_domain_flag() {
         "DomainView::for_write(",
         "DomainView::for_write_joined(",
         "refuse_read_only_domain(",
+        // The read-only half alone, for a preview that must claim no host lock.
+        "refuse_read_only_flag(",
         "domain_is_read_only(",
     ]
     .iter()
@@ -8691,4 +8883,389 @@ async fn the_close_folder_budget_starts_once_the_store_lock_is_held() {
         "700 ms waiting for the lock is not the probe's budget: {found:?}"
     );
     assert_eq!(found[0].folder, "planview");
+}
+
+/// **Two create-only uploads of one path by one actor: exactly one lands.**
+///
+/// In review mode the bytes go to the actor's files overlay, not through the
+/// folder's write path, so the overlay check and write need their own
+/// per-file lock. Two tabs of one account race on 50 fresh paths; each path
+/// answers one Ok and one create-only refusal, and the stored bytes are the
+/// winner's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_create_only_overlay_uploads_of_one_path_land_once() {
+    use crystalline_service::EngineError;
+    use crystalline_service::engine::ASSET_EXISTS;
+    let f = review_fixture().await;
+    for i in 0..50 {
+        let path = format!("assets/race-{i}.png");
+        let write = |bytes: &'static [u8]| {
+            let (engine, path) = (f.engine.clone(), path.clone());
+            tokio::spawn(async move {
+                engine
+                    .attachment_write_joined(
+                        "team",
+                        &path,
+                        bytes.to_vec(),
+                        &scope_of("alice"),
+                        None,
+                        true,
+                    )
+                    .await
+            })
+        };
+        let (a, b) = tokio::join!(write(b"first"), write(b"second"));
+        let (a, b) = (a.unwrap(), b.unwrap());
+        let winner: &[u8] = match (&a, &b) {
+            (Ok(_), Err(EngineError::Conflict(text))) if text.ends_with(ASSET_EXISTS) => b"first",
+            (Err(EngineError::Conflict(text)), Ok(_)) if text.ends_with(ASSET_EXISTS) => b"second",
+            _ => panic!("{path}: exactly one lands: {a:?} / {b:?}"),
+        };
+        let (bytes, _) = f
+            .engine
+            .attachment_read_as("team", &path, &scope_of("alice"))
+            .await
+            .unwrap();
+        assert_eq!(bytes, winner, "{path}");
+    }
+}
+
+fn alice() -> Scope {
+    Scope::User {
+        account: "alice".to_string(),
+        admin: false,
+    }
+}
+
+/// An engram whose file is gone from this disk (deleted by hand, not synced
+/// yet) in a domain that reviews changes: a signed-in reader still gets its
+/// body, as before, and an evolve sweep over the domain still answers. Only
+/// a write that would start a draft from that body is refused (see below).
+#[tokio::test]
+async fn a_review_read_of_an_engram_whose_file_is_missing_answers_the_body() {
+    let f = review_fixture().await;
+    std::fs::remove_file(f.domain_root("team").join("plan.md")).unwrap();
+    let read = f
+        .engine
+        .read_engram(
+            &ReadParams {
+                identifier: "plan".to_string(),
+                domain: Some("team".to_string()),
+                share_link: None,
+            },
+            &alice(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        read["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("as the team has it"),
+        "{read}"
+    );
+    let swept = f
+        .engine
+        .evolve_engrams(
+            &crystalline_service::params::EvolveParams {
+                domains: vec!["team".to_string()],
+                ..Default::default()
+            },
+            &alice(),
+        )
+        .await;
+    assert!(swept.is_ok(), "{swept:?}");
+}
+
+/// The same read over the JSON API and over MCP, as a signed-in account in a
+/// domain that reviews changes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_review_read_of_a_missing_file_answers_the_body_over_rest_and_mcp() {
+    let (f, addr, auth) = served_review_instance().await;
+    auth.add_user("alice", "alice", None, Role::Editor, "pw12345678")
+        .await
+        .unwrap();
+    std::fs::remove_file(f.domain_root("team").join("plan.md")).unwrap();
+
+    let session = crate::support::McpTestSession::open(
+        &addr,
+        Some(&auth.issue_mcp_token("alice", "t").await.unwrap().token),
+    )
+    .await;
+    let read = session
+        .call_tool(
+            "read_engram",
+            serde_json::json!({ "identifier": "plan", "domain": "team" }),
+        )
+        .await;
+    assert!(read.contains("as the team has it"), "{read}");
+
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let login = client
+        .post(format!("http://{addr}/api/v1/auth/login"))
+        .json(&serde_json::json!({ "name": "alice", "password": "pw12345678" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login.status(), 200);
+    let cookie = login
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find_map(|v| v.split(';').next()?.strip_prefix("fluid_session="))
+        .unwrap()
+        .to_string();
+    let resp = client
+        .get(format!("http://{addr}/api/v1/domains/team/engrams/plan"))
+        .header("cookie", format!("fluid_session={cookie}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("as the team has it"), "{body}");
+}
+
+/// Every write that would start a draft from the base reads the base
+/// first, and with the file gone from this disk the base it would read is
+/// the body alone. An edit, a save of what was read and a move are each
+/// refused with the way out, and no draft of either path is written.
+#[tokio::test]
+async fn no_draft_write_starts_from_the_body_of_a_missing_file() {
+    let f = review_fixture().await;
+    std::fs::remove_file(f.domain_root("team").join("plan.md")).unwrap();
+    let read = f
+        .engine
+        .read_engram(
+            &ReadParams {
+                identifier: "plan".to_string(),
+                domain: Some("team".to_string()),
+                share_link: None,
+            },
+            &alice(),
+        )
+        .await
+        .unwrap();
+    let body = read["content"].as_str().unwrap().to_string();
+    let refusals = [
+        f.engine
+            .edit_engram_as(
+                &EditParams {
+                    identifier: "plan".into(),
+                    domain: "team".into(),
+                    operation: "append".into(),
+                    content: Some("alice adds a line".into()),
+                    ..Default::default()
+                },
+                None,
+                &alice(),
+            )
+            .await
+            .map(|_| ()),
+        f.engine
+            .save_engram(
+                &crystalline_service::params::SaveParams {
+                    domain: "team".into(),
+                    identifier: "plan".into(),
+                    // A whole document, as an editor would send it; the
+                    // token is the one the read handed out.
+                    content: format!("{PLAN}\nalice saves a line\n"),
+                    expected_checksum: crate::support::sha256_hex(body.as_bytes()),
+                },
+                &alice(),
+            )
+            .await
+            .map(|_| ()),
+        f.engine
+            .move_engram(
+                &serde_json::from_value(serde_json::json!({
+                    "identifier": "plan",
+                    "domain": "team",
+                    "destination": "plans/plan",
+                }))
+                .unwrap(),
+                &alice(),
+            )
+            .await
+            .map(|_| ()),
+    ];
+    for refused in refusals {
+        let err = refused.expect_err("no draft starts from the body alone");
+        assert!(err.to_string().contains("is not on this disk"), "{err}");
+    }
+    let store = f.store.lock().await;
+    let did = store.domain_id("team").await.unwrap().unwrap();
+    for path in ["plan.md", "plans/plan.md"] {
+        assert!(
+            store
+                .overlay_entry(did, "alice", path)
+                .await
+                .unwrap()
+                .is_none(),
+            "{path}"
+        );
+    }
+}
+
+/// A browse level's per-folder counts follow this reader's drafts at any
+/// depth: a tombstone takes one away, a draft at a new path adds one, a draft
+/// over a base row adds none. The count is what the listing of that folder
+/// totals for the same reader.
+#[tokio::test]
+async fn a_folder_count_follows_the_readers_drafts_at_any_depth() {
+    let f = reviewed_origin_fixture().await;
+    let root = f.domain_root("team");
+    std::fs::create_dir_all(root.join("notes/deep")).unwrap();
+    for (path, permalink) in [
+        ("notes/a.md", "notes/a"),
+        ("notes/b.md", "notes/b"),
+        ("notes/deep/c.md", "notes/deep/c"),
+    ] {
+        std::fs::write(
+            root.join(path),
+            OLD.replace("permalink: old", &format!("permalink: {permalink}")),
+        )
+        .unwrap();
+    }
+    f.engine.sync(None).await.unwrap();
+    let owner = Scope::Unrestricted;
+    let who = Some("claude-code/2.0");
+    let counts = |browse: &serde_json::Value| browse["folder_counts"]["notes"].clone();
+    let params = crystalline_service::params::BrowseParams {
+        domain: "team".to_string(),
+        path: None,
+        depth: None,
+        glob: None,
+    };
+    let browse = || f.engine.browse_domain(&params, &owner);
+    assert_eq!(counts(&browse().await.unwrap()), serde_json::json!(3));
+
+    // Tombstones one and two levels down, a new draft two levels down, a
+    // draft over a base row.
+    for identifier in ["notes/a", "notes/deep/c"] {
+        f.engine
+            .delete_engram_as(
+                &DeleteParams {
+                    identifier: identifier.to_string(),
+                    domain: "team".to_string(),
+                    expected_checksum: None,
+                },
+                who,
+                &owner,
+            )
+            .await
+            .unwrap();
+    }
+    f.engine
+        .write_engram_as(
+            &WriteParams {
+                folder: Some("notes/deep".to_string()),
+                ..write_params("team", "Fresh", "- [idea] only the owner has it #team")
+            },
+            who,
+            &owner,
+        )
+        .await
+        .unwrap();
+    let checksum = f
+        .engine
+        .read_engram(&read("notes/b"), &owner)
+        .await
+        .unwrap()["checksum"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    f.engine
+        .save_engram(
+            &crystalline_service::params::SaveParams {
+                domain: "team".to_string(),
+                identifier: "notes/b".to_string(),
+                content: OLD
+                    .replace("permalink: old", "permalink: notes/b")
+                    .replace("title: Old", "title: B redrafted"),
+                expected_checksum: checksum,
+            },
+            &owner,
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        root.join("notes/a.md").exists() && root.join("notes/deep/c.md").exists(),
+        "drafts, not writes to the folder"
+    );
+    let level = browse().await.unwrap();
+    assert_eq!(counts(&level), serde_json::json!(2), "{level}");
+    let listed = f
+        .engine
+        .search_engrams_under(
+            &crystalline_service::params::SearchParams {
+                domains: vec!["team".to_string()],
+                limit: Some(1),
+                ..Default::default()
+            },
+            Some("notes"),
+            crystalline_index::SearchOrder::default(),
+            &owner,
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed["total"], counts(&level), "{listed}");
+
+    // Another reader holds no drafts here: their count is the base's, and
+    // their listing agrees.
+    let bea = account("bea");
+    let theirs = f.engine.browse_domain(&params, &bea).await.unwrap();
+    assert_eq!(counts(&theirs), serde_json::json!(3), "{theirs}");
+    let listed = f
+        .engine
+        .search_engrams_under(
+            &crystalline_service::params::SearchParams {
+                domains: vec!["team".to_string()],
+                limit: Some(1),
+                ..Default::default()
+            },
+            Some("notes"),
+            crystalline_index::SearchOrder::default(),
+            &bea,
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed["total"], serde_json::json!(3), "{listed}");
+
+    // The base row under a tombstone goes away (a pull removed the file):
+    // the tombstone it leaves behind takes nothing more from the folder.
+    std::fs::remove_file(root.join("notes/a.md")).unwrap();
+    f.engine.sync(None).await.unwrap();
+    let stale = {
+        let store = f.engine.store();
+        let store = store.lock().await;
+        let id = store.domain_id("team").await.unwrap().unwrap();
+        store
+            .overlay_entries(id, "owner")
+            .await
+            .unwrap()
+            .iter()
+            .any(|e| e.tombstone && e.path == "notes/a.md")
+    };
+    assert!(stale, "the tombstone outlives its base row");
+    let level = browse().await.unwrap();
+    // Base: notes/b and notes/deep/c; c tombstoned, deep/fresh drafted.
+    assert_eq!(counts(&level), serde_json::json!(2), "{level}");
+    let listed = f
+        .engine
+        .search_engrams_under(
+            &crystalline_service::params::SearchParams {
+                domains: vec!["team".to_string()],
+                limit: Some(1),
+                ..Default::default()
+            },
+            Some("notes"),
+            crystalline_index::SearchOrder::default(),
+            &owner,
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed["total"], counts(&level), "{listed}");
 }

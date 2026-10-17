@@ -11,9 +11,11 @@
  */
 
 import type { ReactElement } from "react";
-import { Suspense, lazy } from "react";
+import { lazyPart } from "./lazyPart";
 
-const ImportArchiveDialogBody = lazy(() => import("./ImportArchiveDialogBody"));
+const ImportArchiveDialogBody = lazyPart(
+  () => import("./ImportArchiveDialogBody"),
+);
 
 export interface ImportArchiveDialogProps {
   /** The domain the archive would be written into. */
@@ -25,7 +27,8 @@ export function ImportArchiveDialog(
   props: ImportArchiveDialogProps,
 ): ReactElement {
   return (
-    <Suspense
+    <ImportArchiveDialogBody
+      overlay
       fallback={
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40">
           <p className="rounded border border-slate-200 bg-white px-4 py-2 text-sm text-slate-600 shadow-xl dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
@@ -33,8 +36,7 @@ export function ImportArchiveDialog(
           </p>
         </div>
       }
-    >
-      <ImportArchiveDialogBody {...props} />
-    </Suspense>
+      {...props}
+    />
   );
 }

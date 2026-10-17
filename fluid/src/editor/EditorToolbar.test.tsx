@@ -22,6 +22,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { ATTACHMENT_ACCEPT } from "../api/files";
 import { Tooltips } from "../components/primitives";
 import { parsedState } from "../test/parse";
+import { AttachButton } from "./AttachButton";
 import { EditorToolbar } from "./EditorToolbar";
 import { frontmatterFold } from "./frontmatterFold";
 import { baseExtensions, docText, lineSeparatorFor } from "./setup";
@@ -519,6 +520,52 @@ describe("the attach verb", () => {
     );
 
     expect(opened).toEqual(["picker"]);
+  });
+
+  test("the attach button is the same control on its own", async () => {
+    const picked: File[][] = [];
+    const { container } = render(
+      <AttachButton
+        onAttach={(files) => {
+          picked.push(files);
+        }}
+      />,
+      { wrapper: Tooltips },
+    );
+    const input =
+      container.querySelector<HTMLInputElement>('input[type="file"]');
+    expect(input?.accept).toBe(ATTACHMENT_ACCEPT);
+    expect(input?.multiple).toBe(true);
+    const opened: string[] = [];
+    // Once: nothing opens a real dialog in jsdom, and the upload below clicks
+    // the input too.
+    input?.addEventListener(
+      "click",
+      (event) => {
+        event.preventDefault();
+        opened.push("picker");
+      },
+      { once: true },
+    );
+
+    const button = screen.getByRole("button", { name: "Attach a file" });
+    expect(button).toBeEnabled();
+    await userEvent.click(button);
+    const file = new File(["x"], "shot.png", { type: "image/png" });
+    await userEvent.upload(input as HTMLInputElement, file);
+
+    expect(opened).toEqual(["picker"]);
+    expect(picked).toEqual([[file]]);
+    expect(input?.value).toBe("");
+  });
+
+  test("the attach button on its own can be turned off", () => {
+    render(<AttachButton onAttach={() => undefined} disabled />, {
+      wrapper: Tooltips,
+    });
+    expect(
+      screen.getByRole("button", { name: "Attach a file" }),
+    ).toBeDisabled();
   });
 });
 

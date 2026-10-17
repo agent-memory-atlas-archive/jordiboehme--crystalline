@@ -179,6 +179,10 @@ pub struct DomainDoctor {
     /// which never take a host lock).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_instance_id: Option<String>,
+    /// The host's name for people (its public URL's host or hostname, the
+    /// id for a lock written before labels), when hosted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_label: Option<String>,
     /// The host's last heartbeat, RFC 3339, when hosted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_heartbeat_at: Option<String>,
@@ -1399,6 +1403,117 @@ pub struct DoctorReport {
     /// Why `--merge-desktop-state` stopped, such as a daemon from the
     /// private folder that still runs.
     pub merge_error: Option<String>,
+    /// Registered domains whose names differ only in letter case, as
+    /// pairs. Each is a warning, never a counted problem: both keep
+    /// working, and the remedy is a rename the person chooses.
+    pub case_twins: Vec<[String; 2]>,
+    /// The texts the server kept when a co-editing room could not save,
+    /// oldest first; only the `--domain` one's on a `--domain` run. Never a
+    /// problem and never touched by `--fix`: each is the last copy of
+    /// somebody's work, and only a person drops one (`crystalline kept
+    /// drop`). One older than [`crate::kept::STALE_DAYS`] days is a warning.
+    pub kept: Vec<KeptDoctor>,
+}
+
+/// One kept text in the `doctor` report.
+#[derive(Debug, Clone, Serialize)]
+pub struct KeptDoctor {
+    /// The id `crystalline kept show` and `drop` take.
+    pub id: String,
+    /// The domain the room belonged to.
+    pub domain: String,
+    /// Whose review draft it was kept from, `None` for the domain's own text.
+    pub owner: Option<String>,
+    /// Whether its domain was removed from this machine since.
+    pub removed: bool,
+    /// Whether this is an unfinished keep: a temporary file a keep left
+    /// when its process stopped. It may be the only copy.
+    pub unfinished: bool,
+    /// `engram` or `reflection`.
+    pub kind: crystalline_core::kept::KeptKind,
+    /// The engram's file path in its domain, or the page's path inside
+    /// `reflections/`.
+    pub path: String,
+    /// When it was kept, RFC 3339.
+    pub kept_at: String,
+    /// Its size in bytes.
+    pub bytes: u64,
+    /// The file it is in.
+    pub file: String,
+    /// Kept more than [`crate::kept::STALE_DAYS`] days ago.
+    pub stale: bool,
+    /// The human line's wording of what and when, kept off the JSON.
+    #[serde(skip)]
+    pub line: String,
+}
+
+/// The kept texts on this machine (only `domain_filter`'s when given), each
+/// marked stale when it is older than [`crate::kept::STALE_DAYS`] days at
+/// `now`. Read-only, whatever `--fix` says.
+fn check_kept(
+    found: Vec<crystalline_core::kept::KeptText>,
+    domain_filter: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<KeptDoctor> {
+    found
+        .into_iter()
+        .filter(|k| domain_filter.is_none_or(|d| k.domain == d))
+        .map(|k| {
+            let stale = now - k.kept_at > chrono::Duration::days(crate::kept::STALE_DAYS);
+            KeptDoctor {
+                line: format!(
+                    "{} {}, kept {}, {}",
+                    k.id,
+                    crate::kept::what(&k),
+                    crate::kept::when(&k),
+                    cmd::human_size(k.bytes)
+                ),
+                id: k.id.clone(),
+                domain: k.domain.clone(),
+                owner: k.owner.clone(),
+                removed: k.removed,
+                unfinished: k.unfinished,
+                kind: k.kind,
+                path: k.path.clone(),
+                kept_at: k.kept_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                bytes: k.bytes,
+                file: k.file.display().to_string(),
+                stale,
+            }
+        })
+        .collect()
+}
+
+/// The kept texts section of the human report.
+fn render_kept(out: &mut String, kept: &[KeptDoctor]) {
+    use std::fmt::Write as _;
+    if kept.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "kept texts:");
+    for k in kept {
+        if k.unfinished {
+            let _ = writeln!(
+                out,
+                "  [warning] {}: a keep that never finished, perhaps the only copy of this text: {}",
+                k.line, k.file
+            );
+        } else if k.stale {
+            let _ = writeln!(
+                out,
+                "  [warning] {}, more than {} days ago: {}",
+                k.line,
+                crate::kept::STALE_DAYS,
+                k.file
+            );
+        } else {
+            let _ = writeln!(out, "  {}: {}", k.line, k.file);
+        }
+    }
+    let _ = writeln!(
+        out,
+        "  a room could not save these; show one with crystalline kept show <id>, copy it back into its page or engram, then crystalline kept drop <id> (doctor never deletes them)"
+    );
 }
 
 /// A rename journal waiting in the state directory: a domain rename an
@@ -1593,6 +1708,9 @@ impl DoctorReport {
             .as_ref()
             .map_or(0, |m| m.conflicts.len() + m.not_moved.len());
         n += usize::from(self.merge_error.is_some());
+        // Kept texts never count: no `--fix` resolves one, so counting them
+        // would fail doctor until a person drops each, and an old one is a
+        // warning in its section instead.
         n
     }
 }
@@ -1850,6 +1968,9 @@ pub async fn run(
 
     let daemon_task = check_task(fix);
 
+    let kept = check_kept(crate::kept::scan_here(), domain_filter, chrono::Utc::now());
+    let case_twins = check_case_twins(cfg);
+
     Ok(DoctorReport {
         index,
         domains,
@@ -1872,6 +1993,8 @@ pub async fn run(
         desktop_states,
         merge,
         merge_error,
+        kept,
+        case_twins,
     })
 }
 
@@ -2680,6 +2803,7 @@ async fn check_domain_checks(
             && let Ok(Some(host)) = store.domain_host(domain_id).await
         {
             d.host_instance_id = Some(host.instance_id);
+            d.host_label = Some(host.label);
             d.host_heartbeat_at = Some(host.heartbeat_at);
         }
     }
@@ -4359,13 +4483,14 @@ pub fn render_human(report: &DoctorReport) -> String {
         let _ = writeln!(out, "{} ({})", d.name, d.path);
         // Ownership in a shared database: who hosts this file domain. Unhosted
         // domains print nothing extra.
-        if let Some(host) = &d.host_instance_id {
+        if let Some(id) = &d.host_instance_id {
+            let host = d.host_label.as_ref().unwrap_or(id);
             let hb = d
                 .host_heartbeat_at
                 .as_deref()
                 .map(|h| format!(" (last heartbeat {h})"))
                 .unwrap_or_default();
-            let _ = writeln!(out, "  hosted by instance {host}{hb}");
+            let _ = writeln!(out, "  hosted by {host}{hb}");
         }
         // A rebuild that was stamped and never cleared. Nothing was destroyed -
         // the rows below are the complete ones from before it - so the finding
@@ -5294,13 +5419,18 @@ pub fn render_human(report: &DoctorReport) -> String {
         }
     }
 
-    if let Some(names) = &report.names {
-        render_names(&mut out, names, report.fix);
-    }
+    render_names(
+        &mut out,
+        report.names.as_ref(),
+        &report.case_twins,
+        report.fix,
+    );
 
     if let Some(rename) = &report.rename {
         render_rename(&mut out, rename);
     }
+
+    render_kept(&mut out, &report.kept);
 
     // Advisory tag hygiene: near-duplicate clusters, never a counted problem.
     if let Some(t) = &report.tags
@@ -5472,9 +5602,15 @@ fn orphaned_domain_line(d: &OrphanedDomainDoctor) -> String {
 }
 
 /// The domain name section: nothing at all when there is nothing to say.
-fn render_names(out: &mut String, names: &NamesDoctor, fix: bool) {
+fn render_names(
+    out: &mut String,
+    names: Option<&NamesDoctor>,
+    case_twins: &[[String; 2]],
+    fix: bool,
+) {
     use std::fmt::Write as _;
-    let lines = name_lines(names, fix);
+    let mut lines = names.map(|n| name_lines(n, fix)).unwrap_or_default();
+    lines.extend(case_twins.iter().map(|[a, b]| case_twin_line(a, b)));
     if lines.is_empty() {
         return;
     }
@@ -5482,6 +5618,34 @@ fn render_names(out: &mut String, names: &NamesDoctor, fix: bool) {
     for line in lines {
         let _ = writeln!(out, "  {line}");
     }
+}
+
+/// The warning for two registered domains whose names differ only in
+/// letter case.
+fn case_twin_line(a: &str, b: &str) -> String {
+    format!(
+        "[warning] '{a}' and '{b}' differ only in letter case, so on a disk that ignores case \
+         they share one state folder (kept texts, drafts, origin state); rename one: \
+         crystalline domain rename {b} <new name>"
+    )
+}
+
+/// Every pair of registered domains whose names fold equal (see
+/// [`crystalline_core::config::registration::fold_domain_name`]), each pair
+/// in registration order. Registration refuses such a pair since 0.27.0;
+/// an older install may still hold one, and it keeps working.
+fn check_case_twins(cfg: &GlobalConfig) -> Vec<[String; 2]> {
+    use crystalline_core::config::registration::fold_domain_name;
+    let names: Vec<&String> = cfg.domains.keys().collect();
+    let mut pairs = Vec::new();
+    for (i, a) in names.iter().enumerate() {
+        for b in &names[i + 1..] {
+            if fold_domain_name(a) == fold_domain_name(b) {
+                pairs.push([a.to_string(), b.to_string()]);
+            }
+        }
+    }
+    pairs
 }
 
 /// One line per name finding, each naming its next step. Only the
@@ -5990,6 +6154,78 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    /// The host line names the host by its label; a report with no label
+    /// (an older daemon's answer) names the instance id.
+    #[test]
+    fn the_host_line_names_the_label_else_the_id() {
+        let mut report = report_with_orphans(IndexAccess::default(), &[]);
+        report.domains[0].host_instance_id = Some("3f2a-alpha".to_string());
+        report.domains[0].host_label = Some("build-box (3f2a)".to_string());
+        report.domains[0].host_heartbeat_at = Some("2026-10-16T10:00:00+00:00".to_string());
+        let out = render_human(&report);
+        assert!(
+            out.contains("  hosted by build-box (3f2a) (last heartbeat 2026-10-16T10:00:00+00:00)"),
+            "{out}"
+        );
+        report.domains[0].host_label = None;
+        let out = render_human(&report);
+        assert!(
+            out.contains("  hosted by 3f2a-alpha (last heartbeat"),
+            "{out}"
+        );
+    }
+
+    /// A `--domain` run lists that domain's kept texts only; one kept more
+    /// than 30 days before `now` is stale and rendered as a warning; none of
+    /// them is a problem.
+    #[test]
+    fn kept_texts_follow_the_domain_filter_and_old_ones_warn() {
+        use crystalline_core::kept::{self, KeptKind};
+        let dir = tempfile::tempdir().unwrap();
+        let now = chrono::Utc::now();
+        kept::write(
+            dir.path(),
+            "eng",
+            None,
+            KeptKind::Reflection,
+            "a.md",
+            now,
+            "x",
+        )
+        .unwrap();
+        kept::write(
+            dir.path(),
+            "ops",
+            None,
+            KeptKind::Engram,
+            "b.md",
+            now - chrono::Duration::days(31),
+            "y",
+        )
+        .unwrap();
+        let all = check_kept(kept::scan(dir.path()), None, now);
+        assert_eq!(
+            all.iter()
+                .map(|k| (k.domain.as_str(), k.stale))
+                .collect::<Vec<_>>(),
+            vec![("ops", true), ("eng", false)]
+        );
+        let eng = check_kept(kept::scan(dir.path()), Some("eng"), now);
+        assert_eq!(eng.len(), 1);
+        assert_eq!(eng[0].path, "a.md");
+        let report = DoctorReport {
+            kept: all,
+            ..DoctorReport::default()
+        };
+        assert_eq!(report.remaining_problems(), 0);
+        let out = render_human(&report);
+        assert!(
+            out.contains("[warning]") && out.contains("ops engram b.md"),
+            "{out}"
+        );
+        assert!(out.contains("eng reflection a.md"), "{out}");
     }
 
     /// A mismatch the daemon's facts show is a warning in the service

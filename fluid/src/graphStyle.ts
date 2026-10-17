@@ -63,13 +63,13 @@ export const HOVERED_CLASS = "hovered";
  *
  * `surface` has to be the color the canvas actually sits on, since the label
  * outline is a fake cut-out rather than real transparency: it is the container's
- * own background in `NeighborhoodGraph.tsx` - white, and slate-900 in the dark.
+ * own background in `NeighborhoodGraph.tsx` - white, and #151924 (the dark raised surface) in the dark.
  */
 export function graphStylesheet(dark: boolean): StylesheetJson {
   const ink = dark ? "#e2e8f0" : "#0f172a";
   const muted = dark ? "#94a3b8" : "#475569";
   const line = dark ? "#475569" : "#94a3b8";
-  const surface = dark ? "#0f172a" : "#ffffff";
+  const surface = dark ? "#151924" : "#ffffff";
   return [
     {
       selector: "node",

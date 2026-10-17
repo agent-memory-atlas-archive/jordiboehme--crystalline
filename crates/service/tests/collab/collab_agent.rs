@@ -35,38 +35,6 @@ use yrs::updates::decoder::{Decode, DecoderV1};
 use yrs::updates::encoder::Encode;
 use yrs::{ClientID, Doc, GetString, Options, ReadTxn, Text, Transact, Update};
 
-#[cfg(feature = "postgres")]
-fn pg_url() -> Option<String> {
-    use std::sync::Once;
-    static NOTE: Once = Once::new();
-    match std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") {
-        Ok(u) if !u.is_empty() => Some(u),
-        _ => {
-            NOTE.call_once(|| {
-                eprintln!(
-                    "note: skipping the postgres virtual-domain leg (CRYSTALLINE_TEST_POSTGRES_URL is unset); turso only"
-                )
-            });
-            None
-        }
-    }
-}
-
-/// A recycled pid must never adopt a schema a panicking run left behind.
-#[cfg(feature = "postgres")]
-fn unique_schema() -> String {
-    use std::hash::{BuildHasher, RandomState};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "ctv_{}_{}_{:x}",
-        std::process::id(),
-        n,
-        RandomState::new().hash_one(n)
-    )
-}
-
 /// Run a body against Turso (always) and Postgres (when configured), each with a
 /// fresh, isolated store handed to the engine as a trait object.
 macro_rules! both_backends {
@@ -80,19 +48,15 @@ macro_rules! both_backends {
             }
             #[cfg(feature = "postgres")]
             {
-                if let Some(url) = pg_url() {
-                    let schema = unique_schema();
-                    let pg = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                        .await
-                        .expect("open the postgres test schema");
+                if let Some(scratch) = crate::support::scratch_schema("ctv") {
+                    let pg = crystalline_index::PostgresStore::open_in_schema(
+                        scratch.url(),
+                        scratch.name(),
+                    )
+                    .await
+                    .expect("open the postgres test schema");
                     let store: Arc<Mutex<dyn Store>> = Arc::new(Mutex::new(pg));
                     $body(store).await;
-                    // Drop the schema through a fresh connection (the boxed store
-                    // no longer exposes the inherent drop_schema).
-                    let cleanup = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                        .await
-                        .unwrap();
-                    cleanup.drop_schema().await.unwrap();
                 }
             }
         }
@@ -995,6 +959,1242 @@ async fn an_edit_of_a_page_no_room_is_open_over_still_writes_the_file() {
     );
 }
 
+/// A move rewrites a link in an engram somebody has open by composing into
+/// the room, the way an edit does, and keeps what the person typed.
+///
+/// The typed line sits right under the link on purpose: a rewrite written to
+/// the file and merged into the room three ways collides with it there, and
+/// the person would get a conflict from a move they never saw. Composed from
+/// the live text, it cannot collide. Nothing is written behind the room; its
+/// own save writes both.
+#[tokio::test]
+async fn a_move_relinks_a_linker_open_in_a_room_and_keeps_the_typing() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    std::fs::write(
+        tmp.path().join("eng/beta.md"),
+        "---\ntype: engram\ntitle: Beta\npermalink: beta\ntags:\n  - eng\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# Beta\n\nSee [[alpha]].\n",
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "beta", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed while alpha moved").await;
+
+    let receipt = engine
+        .move_engram(
+            &crystalline_service::params::MoveParams {
+                identifier: "alpha".to_string(),
+                domain: "eng".to_string(),
+                destination: "gamma.md".to_string(),
+                destination_domain: None,
+                permalink: None,
+                update_links: None,
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect("the move lands");
+    assert_eq!(receipt["links_rewritten"], 1, "{receipt}");
+    assert_eq!(
+        receipt["rewritten"][0]["landed"], "live",
+        "the receipt says the rewrite went into the open room: {receipt}"
+    );
+
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/beta.md")).unwrap();
+    assert!(
+        on_disk.contains("See [[alpha]]."),
+        "nothing was written behind the room's back: {on_disk:?}"
+    );
+    resync(&joined, &doc).await;
+    let live = client_text(&doc);
+    assert!(
+        live.contains("See [[gamma]]."),
+        "the rewrite is in the document the person is looking at: {live:?}"
+    );
+    assert!(
+        live.contains("typed while alpha moved"),
+        "and what the person typed is still there: {live:?}"
+    );
+
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_secs(60))
+        .await;
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/beta.md")).unwrap();
+    assert!(
+        on_disk.contains("See [[gamma]].") && on_disk.contains("typed while alpha moved"),
+        "the room's save writes both: {on_disk:?}"
+    );
+}
+
+/// The linker every room test below opens: `beta`, linking `alpha`.
+const BETA: &str = "---\ntype: engram\ntitle: Beta\npermalink: beta\ntags:\n  - eng\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# Beta\n\nSee [[alpha]].\n";
+
+/// Move `alpha` to `gamma.md`, so every link to it follows.
+async fn move_alpha_to_gamma(engine: &Engine) -> Value {
+    engine
+        .move_engram(
+            &crystalline_service::params::MoveParams {
+                identifier: "alpha".to_string(),
+                domain: "eng".to_string(),
+                destination: "gamma.md".to_string(),
+                destination_domain: None,
+                permalink: None,
+                update_links: None,
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect("the move lands")
+}
+
+/// A room whose last connection left and whose final save ran saves nothing
+/// any more, even while it still stands in the registry for the moment
+/// before it is disposed. A move in that moment writes the linker's file, so
+/// its rewrite is not composed into a room nobody saves again.
+#[tokio::test]
+async fn a_move_writes_the_file_of_a_linker_whose_room_already_said_goodbye() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    std::fs::write(tmp.path().join("eng/beta.md"), BETA).unwrap();
+    engine.sync(None).await.unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "beta", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed before leaving").await;
+    assert!(
+        joined.session.remove_conn(joined.conn).await,
+        "the last one left"
+    );
+    joined.session.final_save().await;
+    // Not disposed yet: the socket's teardown disposes right after this.
+
+    let receipt = move_alpha_to_gamma(&engine).await;
+    assert_eq!(receipt["links_rewritten"], 1, "{receipt}");
+    assert!(
+        receipt["rewritten"][0].get("landed").is_none(),
+        "not a live landing: {receipt}"
+    );
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/beta.md")).unwrap();
+    assert!(
+        on_disk.contains("See [[gamma]].") && on_disk.contains("typed before leaving"),
+        "the rewrite is in the file, beside what the final save wrote: {on_disk:?}"
+    );
+}
+
+/// Between the last connection leaving and the room's final save, the room
+/// still saves what it holds: that final save is still to come. A move in
+/// that moment composes into the room, so the final save writes the typing
+/// and the rewrite together, instead of writing the file behind the room and
+/// leaving the final save to collide with it.
+#[tokio::test]
+async fn a_move_between_the_last_leave_and_the_final_save_lands_with_the_typing() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    std::fs::write(tmp.path().join("eng/beta.md"), BETA).unwrap();
+    engine.sync(None).await.unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "beta", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    // Right under the link, where a three-way merge of a file rewrite
+    // would collide with it.
+    append_line(&joined, &doc, "typed before leaving").await;
+    assert!(
+        joined.session.remove_conn(joined.conn).await,
+        "the last one left"
+    );
+
+    let receipt = move_alpha_to_gamma(&engine).await;
+    assert_eq!(receipt["rewritten"][0]["landed"], "live", "{receipt}");
+    joined.session.final_save().await;
+
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/beta.md")).unwrap();
+    assert!(
+        on_disk.contains("See [[gamma]].") && on_disk.contains("typed before leaving"),
+        "the final save wrote both: {on_disk:?}"
+    );
+}
+
+/// A room in conflict saves nothing until a person resolves it, and may then
+/// keep the other side. A move writes the linker's file instead of composing
+/// into such a room, so the rewrite does not hang on how the conflict ends.
+#[tokio::test]
+async fn a_move_writes_the_file_of_a_linker_whose_room_is_in_conflict() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let beta = tmp.path().join("eng/beta.md");
+    std::fs::write(&beta, BETA).unwrap();
+    engine.sync(None).await.unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "beta", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed in the room").await;
+    // Another writer appended a different line at the same place.
+    std::fs::write(&beta, format!("{BETA}written on disk\n")).unwrap();
+    engine.sync(None).await.unwrap();
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_secs(60))
+        .await;
+    let live = sessions
+        .live_text("eng", "beta", None)
+        .await
+        .expect("the room stands");
+    assert!(!live.saving, "the room is in conflict and saves nothing");
+
+    let receipt = move_alpha_to_gamma(&engine).await;
+    assert_eq!(receipt["links_rewritten"], 1, "{receipt}");
+    assert!(
+        receipt["rewritten"][0].get("landed").is_none(),
+        "not a live landing: {receipt}"
+    );
+    let on_disk = std::fs::read_to_string(&beta).unwrap();
+    assert!(
+        on_disk.contains("See [[gamma]].") && on_disk.contains("written on disk"),
+        "the rewrite is in the file: {on_disk:?}"
+    );
+}
+
+/// A move that keeps the engram's address (a new path, the same permalink) is
+/// allowed while the engram is open in the editor, and the room keeps saving
+/// to wherever the engram now lives: it saves by address, not by path. A move
+/// that changes the address closes the room with `moved` instead
+/// (`an_agent_move_over_mcp_closes_the_persons_room_with_moved`).
+#[tokio::test]
+async fn a_path_only_move_of_an_open_engram_keeps_the_rooms_typing() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed before the move").await;
+
+    engine
+        .move_engram(
+            &crystalline_service::params::MoveParams {
+                identifier: "alpha".to_string(),
+                domain: "eng".to_string(),
+                destination: "guides/alpha.md".to_string(),
+                destination_domain: None,
+                permalink: Some("keep".to_string()),
+                update_links: None,
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect("a path-only move is not refused by the open room");
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_secs(60))
+        .await;
+
+    assert!(
+        !tmp.path().join("eng/alpha.md").exists(),
+        "the old path is gone"
+    );
+    let moved = std::fs::read_to_string(tmp.path().join("eng/guides/alpha.md")).unwrap();
+    assert!(
+        moved.contains("typed before the move"),
+        "the room saved its typing at the new path: {moved:?}"
+    );
+    let live = sessions
+        .live_text("eng", "alpha", None)
+        .await
+        .expect("the room stands");
+    assert!(live.saving, "and raised no conflict");
+}
+
+/// **Task 41c.** A room's save that found the engram at its old path and
+/// then waited for that path's lock while a path-only move held it finds the
+/// file gone. The engram still answers to the room's address at its new
+/// path, so the save is made there instead of raising a deletion conflict.
+///
+/// Lined up on alpha's lock, which is first come, first served: the test
+/// holds it, the move queues on it, then the room's save does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_room_save_queued_behind_a_path_only_move_lands_at_the_new_path() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed while it moved").await;
+
+    let lock = engine.file_write_lock(&tmp.path().join("eng/alpha.md"));
+    let held = lock.clone().lock_owned().await;
+    let mover = {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            engine
+                .move_engram(
+                    &crystalline_service::params::MoveParams {
+                        identifier: "alpha".to_string(),
+                        domain: "eng".to_string(),
+                        destination: "guides/alpha.md".to_string(),
+                        destination_domain: None,
+                        permalink: Some("keep".to_string()),
+                        update_links: None,
+                    },
+                    &crystalline_service::Scope::Unrestricted,
+                )
+                .await
+        })
+    };
+    let waiting_for = |count: usize| {
+        let lock = lock.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(20), async {
+                // The map's handle, the test's, the guard's and this
+                // future's own make four; each queued writer adds one.
+                while Arc::strong_count(&lock) < count {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the writer queues on alpha's lock");
+        }
+    };
+    waiting_for(5).await;
+    let saver = {
+        let session = joined.session.clone();
+        tokio::spawn(async move {
+            session
+                .tick_save(Instant::now() + Duration::from_secs(60))
+                .await
+        })
+    };
+    waiting_for(6).await;
+    drop(held);
+    mover.await.unwrap().expect("the move lands");
+    saver.await.unwrap();
+
+    let moved = std::fs::read_to_string(tmp.path().join("eng/guides/alpha.md")).unwrap();
+    assert!(moved.contains("typed while it moved"), "{moved:?}");
+    assert!(!tmp.path().join("eng/alpha.md").exists());
+    let live = sessions.live_text("eng", "alpha", None).await.unwrap();
+    assert!(live.saving, "the room raised no conflict");
+}
+
+/// The files under `<state>/kept/eng/engram/` a closing room's text was kept
+/// in, for `beta.md`.
+fn kept_beta(tmp: &tempfile::TempDir) -> Vec<String> {
+    let dir = tmp.path().join("state/kept/eng/engram");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    entries
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("beta.md.")
+        })
+        .map(|path| std::fs::read_to_string(path).unwrap())
+        .collect()
+}
+
+/// Open `beta` in a room, type a line, and write a different line at the
+/// same place on disk, so the room's next save collides with the file.
+async fn beta_room_colliding_with_the_file(
+    tmp: &tempfile::TempDir,
+    engine: &Arc<Engine>,
+    sessions: &Arc<CollabSessions>,
+) -> Joined {
+    let beta = tmp.path().join("eng/beta.md");
+    std::fs::write(&beta, BETA).unwrap();
+    engine.sync(None).await.unwrap();
+    let joined = sessions.join("eng", "beta", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed in the room").await;
+    std::fs::write(&beta, format!("{BETA}written on disk\n")).unwrap();
+    engine.sync(None).await.unwrap();
+    joined
+}
+
+/// A room still in conflict when its last connection leaves saves nothing,
+/// so the server keeps its text, as it does for a refused last save.
+#[tokio::test]
+async fn a_room_still_in_conflict_at_its_close_keeps_its_text() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = beta_room_colliding_with_the_file(&tmp, &engine, &sessions).await;
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_secs(60))
+        .await;
+    assert!(
+        !sessions
+            .live_text("eng", "beta", None)
+            .await
+            .unwrap()
+            .saving
+    );
+
+    assert!(joined.session.remove_conn(joined.conn).await);
+    joined.session.final_save().await;
+    let kept = kept_beta(&tmp);
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert!(kept[0].contains("typed in the room"), "{kept:?}");
+}
+
+/// A room over a review draft keeps its unsaved text in its owner's draft
+/// folder, never beside the domain's own texts, so the kept-text listing
+/// gives it to that owner only.
+#[tokio::test]
+async fn a_draft_room_keeps_its_text_under_its_owner() {
+    let (tmp, engine, _scratch) = engine_fixture(true).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "alpha", Some("ada")).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "ada typed this in her draft").await;
+    // The owner locks the domain by hand: no save lands any more.
+    let manifest = tmp.path().join("eng/MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replacen("\n---\n", "\nread_only: on\n---\n", 1),
+    )
+    .unwrap();
+    assert!(joined.session.remove_conn(joined.conn).await);
+    joined.session.final_save().await;
+
+    let root = tmp.path().join("state/kept");
+    assert!(
+        !root.join("eng/engram").exists(),
+        "not beside the domain's own"
+    );
+    let found = crystalline_core::kept::scan(&root);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].owner.as_deref(), Some("ada"));
+    assert_eq!(found[0].path, "alpha.md");
+    let held = crystalline_core::kept::read(&found[0]).unwrap();
+    assert!(held.contains("ada typed this in her draft"), "{held}");
+    let ada = crystalline_service::Scope::User {
+        account: "ada".into(),
+        admin: false,
+    };
+    let bob = crystalline_service::Scope::User {
+        account: "bob".into(),
+        admin: false,
+    };
+    assert_eq!(engine.kept_texts("eng", &ada).await.unwrap().len(), 1);
+    assert!(engine.kept_texts("eng", &bob).await.unwrap().is_empty());
+}
+
+/// A room whose final pass itself runs into a conflict keeps its text too.
+#[tokio::test]
+async fn a_final_pass_that_ends_in_conflict_keeps_the_rooms_text() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = beta_room_colliding_with_the_file(&tmp, &engine, &sessions).await;
+
+    assert!(joined.session.remove_conn(joined.conn).await);
+    joined.session.final_save().await;
+    let kept = kept_beta(&tmp);
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert!(kept[0].contains("typed in the room"), "{kept:?}");
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/beta.md")).unwrap();
+    assert!(
+        on_disk.contains("written on disk") && !on_disk.contains("typed in the room"),
+        "the file keeps the other writer's text: {on_disk:?}"
+    );
+}
+
+/// An `append` edit of `identifier` in `eng`.
+fn append_to(identifier: &str, content: &str, expected_checksum: Option<&str>) -> EditParams {
+    EditParams {
+        identifier: identifier.to_string(),
+        ..append_edit(content, expected_checksum)
+    }
+}
+
+/// Replace the whole client document and send it, the way a person who
+/// selected everything and typed over it does.
+async fn replace_all(joined: &Joined, doc: &Doc, content: &str) {
+    let text = doc.get_or_insert_text("content");
+    let update = {
+        let mut txn = doc.transact_mut();
+        let len = text.get_string(&txn).encode_utf16().count() as u32;
+        text.remove_range(&mut txn, 0, len);
+        text.insert(&mut txn, 0, content);
+        txn.encode_update_v1()
+    };
+    joined
+        .session
+        .handle_frame(joined.conn, &frame_update(update))
+        .await;
+}
+
+/// The room over `alpha` in `eng` with its save refused: the person replaced
+/// the page with text that has no frontmatter, which the saver will not
+/// write. `overlay` is whose document the room is over.
+async fn alpha_room_whose_save_failed(
+    sessions: &Arc<CollabSessions>,
+    overlay: Option<&str>,
+) -> (Joined, Doc) {
+    room_whose_save_failed(sessions, "alpha", overlay).await
+}
+
+/// [`alpha_room_whose_save_failed`] over any engram of `eng`.
+async fn room_whose_save_failed(
+    sessions: &Arc<CollabSessions>,
+    permalink: &str,
+    overlay: Option<&str>,
+) -> (Joined, Doc) {
+    use crystalline_service::collab::control::{self, Control};
+    let joined = sessions.join("eng", permalink, overlay).await.unwrap();
+    let doc = sync_client(&joined).await;
+    publish_name(&joined, &doc, "Grace Hopper").await;
+    replace_all(&joined, &doc, "no frontmatter, typed by a person\n").await;
+    joined
+        .session
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
+        .await;
+    joined.session.tick_save(Instant::now()).await;
+    let live = sessions
+        .live_text("eng", permalink, overlay)
+        .await
+        .expect("the room stands");
+    assert!(!live.saving, "the room's save failed and it saves nothing");
+    (joined, doc)
+}
+
+/// **Task 41b.** An agent's edit of a page whose room is in conflict does
+/// not compose into the room: the room saves nothing until a person settles
+/// the conflict, and may then keep the other side. The edit lands in the
+/// file instead, and the receipt says the room is waiting, with the note an
+/// agent passes on.
+#[tokio::test]
+async fn an_edit_of_a_page_whose_room_is_in_conflict_lands_in_the_file() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = beta_room_colliding_with_the_file(&tmp, &engine, &sessions).await;
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_secs(60))
+        .await;
+    assert!(
+        !sessions
+            .live_text("eng", "beta", None)
+            .await
+            .unwrap()
+            .saving
+    );
+
+    let receipt = engine
+        .edit_engram_as(
+            &append_to("beta", "the agent added this", None),
+            None,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect("the edit lands");
+    assert_eq!(receipt["landed"], "file", "{receipt}");
+    assert_eq!(receipt["room"], "waiting", "{receipt}");
+    assert_eq!(
+        receipt["room_note"],
+        crystalline_service::engine::ROOM_WAITING_NOTE,
+        "{receipt}"
+    );
+    assert!(receipt["present"].is_array(), "{receipt}");
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/beta.md")).unwrap();
+    assert!(
+        on_disk.contains("the agent added this") && on_disk.contains("written on disk"),
+        "the edit is in the file: {on_disk:?}"
+    );
+    let live = sessions.live_text("eng", "beta", None).await.unwrap();
+    assert!(
+        live.text.contains("typed in the room") && !live.text.contains("the agent added this"),
+        "and the room keeps the person's text, untouched: {:?}",
+        live.text
+    );
+}
+
+/// **Task 41b.** The room saves when the edit looks, and falls into conflict
+/// before the edit composes. The compose decides again under the room's own
+/// lock, so the edit is not composed into a room that stopped saving: it
+/// lands in the file, and the room is waiting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_room_that_stops_saving_before_the_compose_gets_the_file_write() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = beta_room_colliding_with_the_file(&tmp, &engine, &sessions).await;
+    assert!(
+        sessions
+            .live_text("eng", "beta", None)
+            .await
+            .unwrap()
+            .saving
+    );
+
+    let (entered, release) = engine.hold_next_live_compose_until();
+    let editing = {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            engine
+                .edit_engram_as(
+                    &append_to("beta", "the agent added this", None),
+                    None,
+                    &crystalline_service::Scope::Unrestricted,
+                )
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(10), entered.notified())
+        .await
+        .expect("the edit reaches the room");
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_secs(60))
+        .await;
+    assert!(
+        !sessions
+            .live_text("eng", "beta", None)
+            .await
+            .unwrap()
+            .saving
+    );
+    release.notify_one();
+    let receipt = editing.await.unwrap().expect("the edit lands");
+    assert_eq!(receipt["landed"], "file", "{receipt}");
+    assert_eq!(receipt["room"], "waiting", "{receipt}");
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/beta.md")).unwrap();
+    assert!(on_disk.contains("the agent added this"), "{on_disk:?}");
+    let live = sessions.live_text("eng", "beta", None).await.unwrap();
+    assert!(
+        !live.text.contains("the agent added this"),
+        "{:?}",
+        live.text
+    );
+}
+
+/// **Task 41b, round 2.** A read shows what an edit would write to. A room in
+/// conflict does not save, so an edit goes to the file behind it; the read
+/// therefore answers the file and its checksum, says the room is waiting
+/// with a note to pass on, and names who is in there. A guarded edit with
+/// that checksum then lands in the file.
+#[tokio::test]
+async fn a_read_of_a_page_whose_room_is_in_conflict_answers_what_an_edit_writes_to() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = beta_room_colliding_with_the_file(&tmp, &engine, &sessions).await;
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_secs(60))
+        .await;
+    let path = tmp.path().join("eng/beta.md");
+
+    let read = engine
+        .read_engram(
+            &ReadParams {
+                identifier: "beta".to_string(),
+                domain: Some("eng".to_string()),
+                ..ReadParams::default()
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert!(read.get("live").is_none(), "{read}");
+    assert_eq!(read["room"], "waiting", "{read}");
+    assert_eq!(
+        read["room_note"],
+        crystalline_service::engine::ROOM_READ_NOTE,
+        "{read}"
+    );
+    assert!(read["present"].is_array(), "{read}");
+    assert_eq!(
+        read["checksum"].as_str().unwrap(),
+        sha256_hex_of(&std::fs::read_to_string(&path).unwrap()),
+        "the file's checksum: {read}"
+    );
+    let content = read["content"].as_str().unwrap_or_default();
+    assert!(
+        content.contains("written on disk") && !content.contains("typed in the room"),
+        "the file's text: {read}"
+    );
+
+    let receipt = engine
+        .edit_engram_as(
+            &append_to(
+                "beta",
+                "guarded by the read",
+                Some(read["checksum"].as_str().unwrap()),
+            ),
+            None,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect("the read's checksum guards the file write");
+    assert_eq!(receipt["landed"], "file", "{receipt}");
+    assert_eq!(receipt["room"], "waiting", "{receipt}");
+    assert_eq!(
+        receipt["room_note"],
+        crystalline_service::engine::ROOM_WAITING_NOTE,
+        "{receipt}"
+    );
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("guarded by the read")
+    );
+}
+
+/// **Task 41b, round 2.** The guarded verbs besides the edit read what the
+/// read read. A delete guarded with the checksum a read of a page whose room
+/// is in conflict handed out (the file's) is compared against the file, not
+/// against the room's text, and lands.
+#[tokio::test]
+async fn a_guarded_delete_past_a_room_in_conflict_compares_the_saved_version() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = beta_room_colliding_with_the_file(&tmp, &engine, &sessions).await;
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_secs(60))
+        .await;
+    let path = tmp.path().join("eng/beta.md");
+    let checksum = sha256_hex_of(&std::fs::read_to_string(&path).unwrap());
+
+    engine
+        .delete_engram(&crystalline_service::params::DeleteParams {
+            identifier: "beta".to_string(),
+            domain: "eng".to_string(),
+            expected_checksum: Some(checksum),
+        })
+        .await
+        .expect("the saved version's checksum guards the delete");
+    assert!(!path.exists());
+}
+
+/// **Task 41b.** A room whose save was refused saves nothing either, so an
+/// agent's edit goes to the file, not into the room.
+#[tokio::test]
+async fn an_edit_of_a_page_whose_room_cannot_save_lands_in_the_file() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let (_joined, _doc) = alpha_room_whose_save_failed(&sessions, None).await;
+
+    let receipt = engine
+        .edit_engram_as(
+            &append_edit("the agent added this", None),
+            None,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect("the edit lands");
+    assert_eq!(receipt["landed"], "file", "{receipt}");
+    assert_eq!(receipt["room"], "waiting", "{receipt}");
+    assert_eq!(receipt["present"], json!(["Grace Hopper"]), "{receipt}");
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/alpha.md")).unwrap();
+    assert!(
+        on_disk.contains("A rule about alpha.") && on_disk.contains("the agent added this"),
+        "{on_disk:?}"
+    );
+    let live = sessions.live_text("eng", "alpha", None).await.unwrap();
+    assert!(
+        !live.text.contains("the agent added this"),
+        "{:?}",
+        live.text
+    );
+}
+
+/// **Task 41b.** The same in a domain that reviews changes: the room over
+/// the agent's own draft cannot save, so the edit lands in the draft row,
+/// and the room is left as the person has it.
+#[tokio::test]
+async fn an_edit_of_a_draft_whose_room_cannot_save_lands_in_the_draft() {
+    let (tmp, engine, _scratch) = engine_fixture(true).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let (_joined, _doc) = alpha_room_whose_save_failed(&sessions, Some("owner")).await;
+
+    let receipt = engine
+        .edit_engram_as(
+            &append_edit("the agent added this", None),
+            None,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect("the edit lands");
+    assert_eq!(receipt["landed"], "file", "{receipt}");
+    assert_eq!(receipt["draft"], true, "{receipt}");
+    assert_eq!(receipt["room"], "waiting", "{receipt}");
+    // The draft is in the database, so the note says saved, not on disk.
+    assert!(
+        receipt["room_note"]
+            .as_str()
+            .is_some_and(|note| note.starts_with("your write is saved")),
+        "{receipt}"
+    );
+    let draft = engine
+        .overlay_draft_at("eng", "owner", "alpha.md")
+        .await
+        .unwrap()
+        .expect("the edit made the draft");
+    assert!(draft.content.contains("the agent added this"), "{draft:?}");
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("eng/alpha.md")).unwrap(),
+        ALPHA,
+        "the folder is untouched"
+    );
+    let live = sessions
+        .live_text("eng", "alpha", Some("owner"))
+        .await
+        .unwrap();
+    assert!(
+        !live.text.contains("the agent added this"),
+        "{:?}",
+        live.text
+    );
+}
+
+/// **Task 41b.** A room whose final save has run will not save again, even
+/// while it still stands in the registry for the moment before it is
+/// disposed. An edit in that moment writes the file, and says nothing about
+/// a room nobody is in any more.
+#[tokio::test]
+async fn an_edit_after_the_rooms_final_save_lands_in_the_file() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed before leaving").await;
+    assert!(joined.session.remove_conn(joined.conn).await);
+    joined.session.final_save().await;
+
+    let receipt = engine
+        .edit_engram_as(
+            &append_edit("the agent added this", None),
+            None,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect("the edit lands");
+    assert!(receipt.get("landed").is_none(), "{receipt}");
+    assert!(receipt.get("room").is_none(), "{receipt}");
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/alpha.md")).unwrap();
+    assert!(
+        on_disk.contains("typed before leaving") && on_disk.contains("the agent added this"),
+        "the final save's text and the edit: {on_disk:?}"
+    );
+}
+
+/// **Task 41b.** Somebody types between the edit's look at the room and its
+/// compose. The compose is refused, because the diff to a target computed
+/// from the old text would take their typing back, and the edit is applied
+/// again to what the room holds now. Their line stays and the agent's line
+/// lands once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn typing_between_the_look_and_the_compose_is_kept() {
+    let (_tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed first").await;
+
+    let (entered, release) = engine.hold_next_live_compose_until();
+    let editing = {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            engine
+                .edit_engram_as(
+                    &append_edit("the agent added this", None),
+                    None,
+                    &crystalline_service::Scope::Unrestricted,
+                )
+                .await
+        })
+    };
+    entered.notified().await;
+    append_line(&joined, &doc, "typed in the gap").await;
+    release.notify_one();
+    let receipt = editing.await.unwrap().expect("the edit lands");
+    assert_eq!(receipt["landed"], "live", "{receipt}");
+
+    let live = sessions.live_text("eng", "alpha", None).await.unwrap();
+    assert!(
+        live.text.contains("typed first") && live.text.contains("typed in the gap"),
+        "the typing stays: {:?}",
+        live.text
+    );
+    assert_eq!(
+        live.text.matches("the agent added this").count(),
+        1,
+        "the agent's line lands once: {:?}",
+        live.text
+    );
+}
+
+/// **Task 41b.** Somebody keeps typing through every try. The edit stops
+/// trying the room and writes the file, and the room takes the change in by
+/// its merge; nothing typed is taken back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_edit_that_never_finds_a_gap_in_the_typing_lands_in_the_file() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed first").await;
+
+    let mut gate = engine.hold_next_live_compose_until();
+    let editing = {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            engine
+                .edit_engram_as(
+                    &EditParams {
+                        identifier: "alpha".to_string(),
+                        domain: "eng".to_string(),
+                        operation: "find_replace".to_string(),
+                        find_text: Some("# Alpha".to_string()),
+                        content: Some("# Alpha, revised".to_string()),
+                        ..EditParams::default()
+                    },
+                    None,
+                    &crystalline_service::Scope::Unrestricted,
+                )
+                .await
+        })
+    };
+    for round in 0..3 {
+        tokio::time::timeout(Duration::from_secs(10), gate.0.notified())
+            .await
+            .expect("the edit tries the room again");
+        append_line(&joined, &doc, &format!("typed in gap {round}")).await;
+        let release = gate.1.clone();
+        if round < 2 {
+            gate = engine.hold_next_live_compose_until();
+        }
+        release.notify_one();
+    }
+    let receipt = editing.await.unwrap().expect("the edit lands");
+    // The edit went to the file, never into the room, so the receipt never
+    // says live. The room took the file in by its three-way merge (the
+    // title line and the typed lines are far enough apart not to collide),
+    // so nothing waits on the person and there is no room note.
+    assert_eq!(receipt["landed"], "file", "{receipt}");
+    assert!(receipt.get("room").is_none(), "{receipt}");
+
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/alpha.md")).unwrap();
+    assert!(on_disk.contains("# Alpha, revised"), "{on_disk:?}");
+    let live = sessions.live_text("eng", "alpha", None).await.unwrap();
+    assert!(live.text.contains("# Alpha, revised"), "{:?}", live.text);
+    for line in [
+        "typed first",
+        "typed in gap 0",
+        "typed in gap 1",
+        "typed in gap 2",
+    ] {
+        assert!(live.text.contains(line), "{line} stays: {:?}", live.text);
+    }
+}
+
+/// **Task 41b.** A guarded edit whose room moved between its look and its
+/// compose is refused as stale rather than tried again: the text its
+/// checksum named is gone. Nothing is composed and nothing is written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_guarded_edit_whose_room_moved_under_it_is_stale() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed first").await;
+    let checksum = sessions
+        .live_text("eng", "alpha", None)
+        .await
+        .unwrap()
+        .checksum;
+
+    let (entered, release) = engine.hold_next_live_compose_until();
+    let editing = {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            engine
+                .edit_engram_as(
+                    &append_edit("the agent added this", Some(&checksum)),
+                    None,
+                    &crystalline_service::Scope::Unrestricted,
+                )
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(10), entered.notified())
+        .await
+        .expect("the edit reaches the room");
+    append_line(&joined, &doc, "typed in the gap").await;
+    release.notify_one();
+    let err = editing.await.unwrap().expect_err("the guard is stale");
+    assert!(err.to_string().contains("stale edit"), "{err}");
+
+    let live = sessions.live_text("eng", "alpha", None).await.unwrap();
+    assert!(
+        !live.text.contains("the agent added this"),
+        "{:?}",
+        live.text
+    );
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("eng/alpha.md")).unwrap(),
+        ALPHA
+    );
+}
+
+/// **Task 41b.** The checksum rule on a virtual domain: the room over the
+/// row cannot save, so the edit goes to the row, guarded by the checksum of
+/// the room's text that the row never had. The live arm would have accepted
+/// it, so the row's compare and swap takes the row as it was just read.
+#[tokio::test]
+async fn a_checksum_read_from_a_virtual_room_that_cannot_save_guards_the_row_write() {
+    let scratch = crate::support::ScratchStateDir::acquire();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    let mut cfg = GlobalConfig::default();
+    cfg.domains
+        .insert("eng".to_string(), DomainEntry::virtual_domain());
+    cfg.service = Some(ServiceConfig {
+        response_format: Some(ResponseFormat::Json),
+        ..ServiceConfig::default()
+    });
+    let config_path = root.join("config.yaml");
+    crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
+    let store = TursoStore::open_in_memory().await.unwrap();
+    let engine = Arc::new(
+        Engine::new(Arc::new(Mutex::new(store)), cfg, None, Some(config_path))
+            .with_state_dir(root.join("state")),
+    );
+    engine
+        .write_engram(&wholesale_capture("Alpha", "A rule about alpha.", false))
+        .await
+        .expect("alpha lands");
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let (_joined, _doc) = alpha_room_whose_save_failed(&sessions, None).await;
+    let live_sum = sessions
+        .live_text("eng", "alpha", None)
+        .await
+        .unwrap()
+        .checksum;
+
+    let receipt = engine
+        .edit_engram_as(
+            &append_edit("guarded by the room's text", Some(&live_sum)),
+            None,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect("the room's checksum is accepted");
+    assert_eq!(receipt["landed"], "file", "{receipt}");
+    let stored = engine
+        .read_engram(
+            &ReadParams {
+                identifier: "alpha".to_string(),
+                domain: Some("eng".to_string()),
+                ..ReadParams::default()
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert!(
+        stored.get("live").is_none() && stored["room"] == "waiting",
+        "the read answers the row and names the waiting room: {stored}"
+    );
+    let row = engine
+        .engram_text("eng", "alpha")
+        .await
+        .expect("the row is there")
+        .content;
+    assert!(row.contains("guarded by the room's text"), "{row:?}");
+    drop(scratch);
+}
+
+/// The checksum the room over `alpha` stands for: the token a caller holds
+/// who read the page while that room still saved.
+async fn room_checksum(sessions: &CollabSessions) -> String {
+    sessions
+        .live_text("eng", "alpha", None)
+        .await
+        .expect("the room stands")
+        .checksum
+}
+
+/// **Task 41b.** A caller that read a page while its room could not save
+/// holds the checksum of the room's unsaved text, which the file never had.
+/// The edit then lands in the file, and that checksum is still accepted:
+/// the live arm would have accepted it, and the file is still the one the
+/// room last saved. A checksum of neither text is refused.
+#[tokio::test]
+async fn a_checksum_read_from_a_room_that_cannot_save_guards_the_file_write() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let (_joined, _doc) = alpha_room_whose_save_failed(&sessions, None).await;
+    let live_sum = room_checksum(&sessions).await;
+    let path = tmp.path().join("eng/alpha.md");
+    assert_ne!(
+        live_sum,
+        sha256_hex_of(&std::fs::read_to_string(&path).unwrap()),
+        "the room's text is not the file's"
+    );
+
+    let stale = engine
+        .edit_engram_as(
+            &append_edit("never written", Some(&"0".repeat(64))),
+            None,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect_err("a checksum of neither text is stale");
+    assert!(stale.to_string().contains("stale edit"), "{stale}");
+
+    let receipt = engine
+        .edit_engram_as(
+            &append_edit("guarded by the room's text", Some(&live_sum)),
+            None,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect("the room's checksum is accepted");
+    assert_eq!(receipt["landed"], "file", "{receipt}");
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        on_disk.contains("guarded by the room's text"),
+        "{on_disk:?}"
+    );
+    assert!(!on_disk.contains("never written"), "{on_disk:?}");
+
+    let file_sum = sha256_hex_of(&on_disk);
+    engine
+        .edit_engram_as(
+            &append_edit("guarded by the file", Some(&file_sum)),
+            None,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect("the file's own checksum is accepted too");
+}
+
+/// **Task 41b review.** The room's checksum stands for its text over the
+/// file it last saved. Once another writer changed that file, a caller
+/// holding the room's checksum has not seen the change, so the edit is
+/// refused as stale rather than written over it.
+#[tokio::test]
+async fn a_room_checksum_is_stale_once_another_writer_changed_the_file() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let (_joined, _doc) = alpha_room_whose_save_failed(&sessions, None).await;
+    let live_sum = room_checksum(&sessions).await;
+    let path = tmp.path().join("eng/alpha.md");
+    std::fs::write(&path, format!("{ALPHA}written by a third writer\n")).unwrap();
+
+    let err = engine
+        .edit_engram_as(
+            &append_edit("never written", Some(&live_sum)),
+            None,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect_err("the file moved past the room's base");
+    assert!(err.to_string().contains("stale edit"), "{err}");
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        on_disk.contains("written by a third writer") && !on_disk.contains("never written"),
+        "{on_disk:?}"
+    );
+}
+
+/// **Task 41b review.** The room closes between the overwrite's look and its
+/// compose. There is no room to refuse on behalf of any more, so the
+/// overwrite takes the ordinary path and replaces the file, as it does for
+/// a page nobody has open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_overwrite_whose_room_closed_before_the_compose_replaces_the_file() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed before leaving").await;
+
+    let (entered, release) = engine.hold_next_live_compose_until();
+    let writing = {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            engine
+                .write_engram_present(
+                    &wholesale_capture("Alpha", REPLACEMENT, true),
+                    None,
+                    &crystalline_service::Scope::Unrestricted,
+                    None,
+                    None,
+                )
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(10), entered.notified())
+        .await
+        .expect("the overwrite reaches the room");
+    assert!(joined.session.remove_conn(joined.conn).await);
+    joined.session.final_save().await;
+    sessions.dispose_if_empty(&joined.session).await;
+    release.notify_one();
+    let receipt = writing
+        .await
+        .unwrap()
+        .expect("the overwrite takes the ordinary path");
+    assert!(receipt.get("landed").is_none(), "{receipt}");
+    assert_eq!(receipt["action"], "written", "{receipt}");
+    let on_disk = std::fs::read_to_string(tmp.path().join("eng/alpha.md")).unwrap();
+    assert!(on_disk.contains(REPLACEMENT), "{on_disk:?}");
+}
+
+/// **Task 41b.** A wholesale replace of a page whose room cannot save is
+/// refused: it would land over text the room holds and nobody has saved,
+/// and composing it into the room would land nowhere. The refusal names who
+/// is in there, and neither the file nor the room moves.
+#[tokio::test]
+async fn an_overwrite_of_a_page_whose_room_cannot_save_is_refused_naming_who_is_in_there() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let (_joined, _doc) = alpha_room_whose_save_failed(&sessions, None).await;
+
+    let err = engine
+        .write_engram_present(
+            &wholesale_capture("Alpha", REPLACEMENT, true),
+            None,
+            &crystalline_service::Scope::Unrestricted,
+            None,
+            None,
+        )
+        .await
+        .expect_err("the replace is refused");
+    assert!(err.to_string().contains("Grace Hopper"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("eng/alpha.md")).unwrap(),
+        ALPHA,
+        "the file is untouched"
+    );
+    let live = sessions.live_text("eng", "alpha", None).await.unwrap();
+    assert!(!live.text.contains(REPLACEMENT), "{:?}", live.text);
+}
+
 /// Every verb that goes through the shared edit body meets the live document,
 /// not only `edit_engram`.
 ///
@@ -1004,11 +2204,10 @@ async fn an_edit_of_a_page_no_room_is_open_over_still_writes_the_file() {
 /// it - a retirement's receipt is about what it retired - so what this pins is
 /// the behaviour rather than the words.
 ///
-/// Driven in a REVIEWING domain, which is where a retirement actually takes
-/// that route: in a domain that takes changes directly `retire_engram_as`
-/// keeps its own file and virtual arms and never reaches the shared body, so a
-/// retirement there writes past an open room and the room meets it as the
-/// external change it is. See the report's concerns.
+/// Driven in a REVIEWING domain, where the room is over the actor's own
+/// draft. A domain that takes changes directly goes through the same shared
+/// body, and `a_retirement_in_a_direct_domain_composes_into_the_open_room`
+/// pins that side.
 #[tokio::test]
 async fn a_retirement_of_an_open_draft_lands_in_the_document_too() {
     let (_tmp, engine, _scratch) = engine_fixture(true).await;
@@ -1056,6 +2255,105 @@ async fn a_retirement_of_an_open_draft_lands_in_the_document_too() {
     assert!(
         draft.content.contains("status: archived") && draft.content.contains("a person typed this"),
         "{draft:?}"
+    );
+}
+
+/// A supersession whose successor is open in a room that cannot save: the
+/// reciprocal line goes to the successor's file, and a file that already
+/// carries it does not get it twice, whatever the room's text says.
+#[tokio::test]
+async fn a_successor_open_in_a_room_that_cannot_save_gets_its_supersedes_line_once() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let beta = tmp.path().join("eng/beta.md");
+    std::fs::write(&beta, format!("{BETA}\n- supersedes [[alpha]]\n")).unwrap();
+    engine.sync(None).await.unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let (_joined, _doc) = room_whose_save_failed(&sessions, "beta", None).await;
+
+    engine
+        .retire_engram(&crystalline_service::params::RetireParams {
+            domain: "eng".to_string(),
+            identifier: "alpha".to_string(),
+            status: "superseded".to_string(),
+            successor: Some("beta".to_string()),
+            valid_to: None,
+        })
+        .await
+        .expect("the retirement lands");
+    let on_disk = std::fs::read_to_string(&beta).unwrap();
+    assert_eq!(
+        on_disk.matches("supersedes [[alpha]]").count(),
+        1,
+        "{on_disk:?}"
+    );
+}
+
+/// A successor that already says it supersedes the retired engram is not
+/// written at all: no second line, and no fresh `generated` stamp either.
+#[tokio::test]
+async fn a_successor_that_already_says_so_is_left_as_it_is() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let beta = tmp.path().join("eng/beta.md");
+    let before = format!("{BETA}\n- supersedes [[alpha]]\n");
+    std::fs::write(&beta, &before).unwrap();
+    engine.sync(None).await.unwrap();
+
+    engine
+        .retire_engram(&crystalline_service::params::RetireParams {
+            domain: "eng".to_string(),
+            identifier: "alpha".to_string(),
+            status: "superseded".to_string(),
+            successor: Some("beta".to_string()),
+            valid_to: None,
+        })
+        .await
+        .expect("the retirement lands");
+    assert_eq!(std::fs::read_to_string(&beta).unwrap(), before);
+}
+
+/// The other way round: the room that cannot save holds the supersedes line
+/// and the file does not. The line goes to the file, where the edit lands.
+#[tokio::test]
+async fn a_successor_whose_unsaving_room_holds_the_line_gets_it_in_the_file() {
+    use crystalline_service::collab::control::{self, Control};
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let beta = tmp.path().join("eng/beta.md");
+    std::fs::write(&beta, BETA).unwrap();
+    engine.sync(None).await.unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "beta", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    replace_all(&joined, &doc, "no frontmatter\n\n- supersedes [[alpha]]\n").await;
+    joined
+        .session
+        .handle_frame(joined.conn, &control::encode(&Control::Flush))
+        .await;
+    joined.session.tick_save(Instant::now()).await;
+    assert!(
+        !sessions
+            .live_text("eng", "beta", None)
+            .await
+            .unwrap()
+            .saving
+    );
+
+    engine
+        .retire_engram(&crystalline_service::params::RetireParams {
+            domain: "eng".to_string(),
+            identifier: "alpha".to_string(),
+            status: "superseded".to_string(),
+            successor: Some("beta".to_string()),
+            valid_to: None,
+        })
+        .await
+        .expect("the retirement lands");
+    let on_disk = std::fs::read_to_string(&beta).unwrap();
+    assert_eq!(
+        on_disk.matches("supersedes [[alpha]]").count(),
+        1,
+        "{on_disk:?}"
     );
 }
 
@@ -2069,8 +3367,9 @@ fn no_engine_function_composes_into_a_room_under_a_file_write_lock() {
     /// Every way an engine function reaches into a room, all of which take
     /// the same session state lock the room's saver holds across the file
     /// lock: the writes (an engram's, a reflection's merge), the reads and
-    /// the disposals.
-    const ROOM_ENTRY_NEEDLES: [&str; 10] = [
+    /// the disposals, and the switch-off's close of a domain's reflection
+    /// rooms, which takes the registry and then each room's state.
+    const ROOM_ENTRY_NEEDLES: [&str; 15] = [
         ".apply_text(",
         ".apply_doc_text(",
         ".absorb_doc_change(",
@@ -2081,6 +3380,11 @@ fn no_engine_function_composes_into_a_room_under_a_file_write_lock() {
         ".touch_agent_presence(",
         ".dispose_domain(",
         ".dispose_domain_discarding(",
+        ".close_docs(",
+        ".close_reflection_rooms(",
+        ".close_reflection_rooms_if_switching_off(",
+        ".compose_while_saving(",
+        ".has_engram_rooms_in(",
     ];
 
     /// Every way an engine function takes a per-path write lock: the file's
@@ -2089,8 +3393,16 @@ fn no_engine_function_composes_into_a_room_under_a_file_write_lock() {
     /// read-modify-write, so both close the same cycle against the room's
     /// saver; watching only the spelling that says `write_lock` would leave
     /// every overlay arm unwatched. `lock_file` is the reflection pages'
-    /// spelling of the same lock.
-    const LOCK_NEEDLES: [&str; 3] = [".write_lock(", ".draft_lock(", ".lock_file("];
+    /// spelling of the same lock, `lock_files` takes several of them, and
+    /// `write_checked` takes a file's lock and hands it back for its caller
+    /// to hold across the reindex.
+    const LOCK_NEEDLES: [&str; 5] = [
+        ".write_lock(",
+        ".draft_lock(",
+        ".lock_file(",
+        ".lock_files(",
+        ".write_checked(",
+    ];
 
     // Per function, the first line that takes a per-path write lock and the
     // first that makes a room call. A comment mentioning either is not a call,
@@ -2441,3 +3753,211 @@ both_backends!(
     a_live_preview_for_a_domain_with_no_row_answers_none_and_registers_nothing,
     a_live_preview_for_a_domain_with_no_row_answers_none_and_registers_nothing_body
 );
+
+/// A draft never starts from the body alone. A file domain's index row
+/// holds an engram's body only, so with the file gone from this disk
+/// (deleted by hand before the next sync) there is no whole engram to start
+/// from: the edit is refused with the way out, and no draft is written.
+/// Before, the draft kept the body and lost the frontmatter (title, type,
+/// tags, permalink).
+#[tokio::test]
+async fn a_draft_never_starts_from_the_body_alone() {
+    let (tmp, engine, _scratch) = engine_fixture(true).await;
+    std::fs::remove_file(tmp.path().join("eng/alpha.md")).unwrap();
+    let ada = crystalline_service::Scope::User {
+        account: "ada".into(),
+        admin: false,
+    };
+    let edited = engine
+        .edit_engram_as(
+            &EditParams {
+                identifier: "alpha".into(),
+                domain: "eng".into(),
+                operation: "append".into(),
+                content: Some("ada adds a line".into()),
+                ..Default::default()
+            },
+            None,
+            &ada,
+        )
+        .await;
+    let store = engine.store();
+    let store = store.lock().await;
+    let did = store.domain_id("eng").await.unwrap().unwrap();
+    let draft = store.overlay_entry(did, "ada", "alpha.md").await.unwrap();
+    let err = edited.expect_err("no draft starts from the body alone");
+    assert!(
+        matches!(err, crystalline_service::EngineError::NotFound(_))
+            && err.to_string().contains("is not on this disk"),
+        "{err}"
+    );
+    assert!(draft.is_none(), "{draft:?}");
+}
+
+/// The `Closed` control the room's sockets were sent, skipping every other
+/// frame (the room's last save announces itself first).
+async fn closed_control(
+    rx: &mut broadcast::Receiver<Frame>,
+) -> crystalline_service::collab::control::Control {
+    use crystalline_service::collab::control::{self, Control};
+    loop {
+        let frame = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("a control frame arrives in time")
+            .expect("the broadcast channel stays open");
+        let mut decoder = DecoderV1::from(frame.bytes.as_ref());
+        for message in MessageReader::new(&mut decoder).flatten() {
+            if let Message::Custom(control::CONTROL_TAG, payload) = message
+                && let Some(found @ Control::Closed { .. }) = control::decode(&payload)
+            {
+                return found;
+            }
+        }
+    }
+}
+
+/// An agent's `move_engram` over MCP that gives an open engram a new
+/// permalink closes the person's room with `moved` and the new address,
+/// after the room saved what they typed. Before, the call was refused while
+/// the engram was open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agent_move_over_mcp_closes_the_persons_room_with_moved() {
+    use crystalline_service::collab::control::Control;
+    let (tmp, engine, _sessions, mut joined, _doc, _scratch) = a_person_typing_in_alpha().await;
+    let mut wire = Wire::to(engine.clone());
+    wire.open(modern(1, "server/discover", json!({}))).await;
+    let answer = wire
+        .call(modern(
+            2,
+            "tools/call",
+            json!({
+                "name": "move_engram",
+                "arguments": {
+                    "identifier": "alpha",
+                    "domain": "eng",
+                    "destination": "guides/alpha.md",
+                    "permalink": "path",
+                },
+            }),
+        ))
+        .await;
+    assert_ne!(answer["result"]["isError"], json!(true), "{answer}");
+    assert_eq!(
+        closed_control(&mut joined.rx).await,
+        Control::Closed {
+            reason: "moved".into(),
+            domain: None,
+            path: Some("guides/alpha.md".into()),
+            permalink: Some("guides/alpha".into()),
+        }
+    );
+    let moved = std::fs::read_to_string(tmp.path().join("eng/guides/alpha.md")).unwrap();
+    assert!(moved.contains("typed but never saved"), "{moved}");
+}
+
+/// A permalink move of an open engram on either backend: on Postgres the
+/// room's last save and the move's rows both pass the file domain's host-lock
+/// fence, and the room is closed with `moved` after its save landed.
+async fn a_move_closes_the_room_after_its_save_on_either_backend_body(
+    store: Arc<Mutex<dyn Store>>,
+) {
+    use crystalline_service::collab::control::Control;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("eng");
+    std::fs::create_dir_all(&dir).unwrap();
+    write_manifest(&dir, "eng");
+    std::fs::write(dir.join("alpha.md"), ALPHA).unwrap();
+    let mut cfg = GlobalConfig::default();
+    cfg.domains
+        .insert("eng".to_string(), DomainEntry::file(dir.clone()));
+    // An instance id, as a daemon has: on Postgres the walk then takes the
+    // file domain's host lock, and every write after it is fenced by it.
+    let engine = Arc::new(
+        Engine::new(store, cfg, None, None)
+            .with_state_dir(tmp.path().join("state"))
+            .with_instance_id("instance-a".to_string()),
+    );
+    engine.sync(None).await.unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed on either backend").await;
+    engine
+        .move_engram(
+            &crystalline_service::params::MoveParams {
+                identifier: "alpha".into(),
+                domain: "eng".into(),
+                destination: "moved/alpha.md".into(),
+                destination_domain: None,
+                permalink: Some("path".into()),
+                update_links: None,
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        closed_control(&mut joined.rx).await,
+        Control::Closed {
+            reason: "moved".into(),
+            domain: None,
+            path: Some("moved/alpha.md".into()),
+            permalink: Some("moved/alpha".into()),
+        }
+    );
+    let moved = std::fs::read_to_string(dir.join("moved/alpha.md")).unwrap();
+    assert!(moved.contains("typed on either backend"), "{moved}");
+    assert!(!dir.join("alpha.md").exists());
+}
+both_backends!(
+    a_move_closes_the_room_after_its_save_on_either_backend,
+    a_move_closes_the_room_after_its_save_on_either_backend_body
+);
+
+/// A review-mode move that names a new permalink readdresses the mover's own
+/// draft: their room over it is saved, closed with `moved` and the new
+/// address, and nobody else's draft room of the page is touched.
+#[tokio::test]
+async fn a_readdressing_draft_move_closes_the_movers_own_draft_room() {
+    use crystalline_service::collab::control::Control;
+    let (_tmp, engine, _scratch) = engine_fixture(true).await;
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut mine = sessions.join("eng", "alpha", Some("owner")).await.unwrap();
+    let mine_doc = sync_client(&mine).await;
+    append_line(&mine, &mine_doc, "the owner typed this").await;
+    let hers = sessions.join("eng", "alpha", Some("alice")).await.unwrap();
+    let _hers_doc = sync_client(&hers).await;
+    let receipt = engine
+        .move_engram(
+            &crystalline_service::params::MoveParams {
+                identifier: "alpha".into(),
+                domain: "eng".into(),
+                destination: "alpha.md".into(),
+                destination_domain: None,
+                permalink: Some("renamed".into()),
+                update_links: None,
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt["draft"], json!(true), "{receipt}");
+    assert_eq!(
+        closed_control(&mut mine.rx).await,
+        Control::Closed {
+            reason: "moved".into(),
+            domain: None,
+            path: Some("alpha.md".into()),
+            permalink: Some("renamed".into()),
+        }
+    );
+    assert!(!hers.session.is_disposed(), "alice's draft room stays open");
+    let moved = sessions
+        .join("eng", "renamed", Some("owner"))
+        .await
+        .unwrap();
+    let (live, _) = moved.session.snapshot().await;
+    assert!(live.contains("the owner typed this"), "{live}");
+}

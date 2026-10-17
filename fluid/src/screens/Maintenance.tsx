@@ -85,8 +85,14 @@ import {
 } from "../api/evolve";
 import { deleteAttachment } from "../api/files";
 import { useAuth } from "../auth/AuthContext";
-import { Skeleton } from "../components/Skeleton";
-import { BUTTON, Chip, FIELD, TOGGLE } from "../components/primitives";
+import { Loading } from "../components/Loading";
+import {
+  BUTTON,
+  CHROME_LINK,
+  Chip,
+  FIELD,
+  TOGGLE,
+} from "../components/primitives";
 import type { ChipVariant } from "../components/primitives";
 import { plural } from "../format";
 import { engramRoute } from "../paths";
@@ -286,7 +292,9 @@ export default function Maintenance() {
         </p>
       )}
 
-      {sweep.isPending && <Skeleton label="Sweeping the domains" rows={6} />}
+      {sweep.isPending && (
+        <Loading label="Sweeping the domains" subject="the domains" />
+      )}
 
       {sweep.error && (
         <p
@@ -673,7 +681,7 @@ function FindingRow({
         {anchored ? (
           <Link
             to={engramRoute(finding.domain, finding.permalink)}
-            className="text-sm text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400"
+            className={`text-sm ${CHROME_LINK}`}
           >
             {finding.title}
           </Link>
@@ -707,7 +715,7 @@ function FindingRow({
             <li>
               <Link
                 to={engramRoute(finding.domain, finding.counterpart.permalink)}
-                className="text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400"
+                className={CHROME_LINK}
               >
                 {finding.counterpart.title}
               </Link>

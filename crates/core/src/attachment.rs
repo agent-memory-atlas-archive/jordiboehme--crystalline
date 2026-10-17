@@ -255,26 +255,11 @@ pub(crate) fn link_targets(body: &str) -> Vec<String> {
     // rule the rest of the crate reads fences by. A plain toggle would treat a
     // shorter marker inside a longer fence as a close, which both leaks a
     // fenced reference and drops the genuine ones after the true close.
-    let mut fence: Option<(char, usize)> = None;
+    let mut fence = crate::parse::FenceTracker::new();
     for line in body.lines() {
         let text = line.trim_end_matches('\r');
-        match fence {
-            None => {
-                if let Some((c, n, _)) = crate::parse::fence_marker(text) {
-                    fence = Some((c, n));
-                    continue;
-                }
-            }
-            Some((fc, fcount)) => {
-                if let Some((c, n, _)) = crate::parse::fence_marker(text)
-                    && c == fc
-                    && n >= fcount
-                    && text.trim_start()[n..].trim().is_empty()
-                {
-                    fence = None;
-                }
-                continue;
-            }
+        if fence.in_fence(text) {
+            continue;
         }
         for target in line_link_targets(line) {
             if !refs.contains(&target) {

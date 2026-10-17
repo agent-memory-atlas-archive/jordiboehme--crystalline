@@ -141,6 +141,22 @@ function activeLines(view: EditorView): Set<number> {
 }
 
 function buildDecorations(view: EditorView): DecorationSet {
+  /*
+   * An opening `#` mark folds away with the space after it, so a heading
+   * starts at the same left edge as the text under it rather than one space
+   * in. Only a space or tab on the same line: a setext underline's mark is a
+   * line of its own, and its line break is not the mark's to take.
+   */
+  const markEnd = (node: SyntaxNodeRef): number => {
+    if (node.name !== "HeaderMark") {
+      return node.to;
+    }
+    const line = view.state.doc.lineAt(node.from);
+    const next = view.state.doc.sliceString(node.to, node.to + 1);
+    return node.from === line.from && (next === " " || next === "\t")
+      ? node.to + 1
+      : node.to;
+  };
   const decorations: Range<Decoration>[] = [];
   // A node that straddles two visible ranges is entered by both passes, and
   // the same replacement twice over is a decoration set the view rejects.
@@ -184,7 +200,7 @@ function buildDecorations(view: EditorView): DecorationSet {
                   node.to,
                 ),
               }).range(node.from, node.to)
-            : Decoration.replace({}).range(node.from, node.to),
+            : Decoration.replace({}).range(node.from, markEnd(node)),
         );
       },
     });

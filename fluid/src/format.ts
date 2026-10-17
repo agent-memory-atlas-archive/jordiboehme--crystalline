@@ -14,6 +14,32 @@ export function formatDay(value: string): string {
   return /^\d{4}-\d{2}-\d{2}/.test(value) ? value.slice(0, 10) : value;
 }
 
+/**
+ * A plain day in the reader's words, `12 Sep 2026`.
+ *
+ * Parsed by pattern and formatted in UTC, so the day written is the day shown
+ * in every time zone, the same promise {@link formatDay} makes. A value that
+ * is not a day comes back as written.
+ */
+export function formatDayLong(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (match === null) {
+    return value;
+  }
+  const date = new Date(
+    Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])),
+  );
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
 /** An RFC 3339 instant: a day, a `T`, and a time. */
 const INSTANT_SHAPE = /^\d{4}-\d{2}-\d{2}T/;
 

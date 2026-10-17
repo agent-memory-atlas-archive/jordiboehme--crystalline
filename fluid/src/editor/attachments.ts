@@ -1,6 +1,7 @@
 /**
- * Attaching a file to the engram being edited: the pre-check, the upload and
- * the reference that lands in the buffer.
+ * Attaching a file to the document being edited, an engram or a reflection:
+ * the pre-check, the upload and the reference that lands in the buffer. Where
+ * the bytes go and how the buffer links to them is the asset home's business.
  *
  * Three ways in - paste, drop and the toolbar's file picker - and one flow
  * behind them, because they differ only in where the `File` objects come from.
@@ -16,19 +17,23 @@
  */
 
 import type { Extension } from "@codemirror/state";
+import { StateEffect, StateField } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 
-import { problemDetail } from "../api/client";
+import { ApiProblem, problemDetail } from "../api/client";
+import type { AssetHome } from "../api/files";
 import {
   ALLOWED_ATTACHMENT_EXTENSIONS,
   MAX_ATTACHMENT_BYTES,
   freeAttachmentPath,
   isAllowedAttachment,
   isImageAttachment,
-  listAttachments,
-  uploadAttachment,
 } from "../api/files";
+import { engramAssetHome } from "./imageFormat";
 import { insertBlock } from "./toolbar";
+
+/** Said when a file arrives at a buffer whose session has ended. */
+const SESSION_ENDED = "The session ended, so the file was not added.";
 
 /** The ceiling in the words an author reads, matching the server's own. */
 const CEILING = "10 MiB";
@@ -70,16 +75,49 @@ export function transferFiles(
   return Array.from(transfer?.files ?? []);
 }
 
+/** Sent by a paste or a drop of files: the person chose where they go. */
+const placeCaret = StateEffect.define<null>();
+
+/** The user events that mean the person put the caret somewhere. */
+const CARET_EVENTS = ["select", "input", "delete", "move", "undo", "redo"];
+
+/**
+ * Whether the person has placed a caret or made a selection in this buffer
+ * yet: a click, a key that moves or selects, typing, or a paste or drop of
+ * files. A buffer that has only been opened has its caret at the very start,
+ * above the page's title, which nobody chose. Changes from the room or from
+ * code carry no user event and leave it as it is.
+ */
+export const caretPlaced = StateField.define<boolean>({
+  create: () => false,
+  update: (placed, tr) =>
+    placed ||
+    tr.effects.some((effect) => effect.is(placeCaret)) ||
+    CARET_EVENTS.some((event) => tr.isUserEvent(event)),
+});
+
 /** What one batch of files needs to become references in one buffer. */
-export interface UploadRequest {
-  domain: string;
+interface UploadBatch {
   files: readonly File[];
   view: EditorView;
   /** A refusal in words an author can act on; null clears a standing one. */
-  onError: (message: string | null) => void;
+  onError: (message: string | null, kind?: UploadProblemKind) => void;
   /** The instant the dated folder is derived from. Tests pin it. */
   now?: Date;
+  /**
+   * Runs right before the references are inserted, and may move the caret:
+   * a document with lines the reference must not land on steps past them
+   * here. Not run when nothing is inserted.
+   */
+  place?: (view: EditorView) => void;
 }
+
+/**
+ * One batch and where its files are stored: a home, or the domain whose
+ * engram files they become, which is the engram home of that domain.
+ */
+export type UploadRequest = UploadBatch &
+  ({ home: AssetHome; domain?: never } | { domain: string; home?: never });
 
 /**
  * Why something failed, in words: the server's own where the failure came from
@@ -92,13 +130,76 @@ function reasonOf(cause: unknown): string {
 }
 
 /**
+ * The refusals a name taken since the listing can explain. A 412 says so by
+ * itself: it answers only a create-only upload (`If-None-Match: *`) onto a
+ * path that holds a file.
+ */
+const TAKEN_STATUSES = new Set([403, 409, 412]);
+
+/**
+ * Store one file at `path`, and when the server refuses because somebody
+ * stored a file there since the listing, once more under the next free name.
+ *
+ * A 412 is a taken name with no further question. For a 403 or 409, whether
+ * the name was taken is decided by a fresh listing that now holds the path,
+ * never by the refusal's words: a 403 or 409 for any other reason (no right
+ * to add, a path the server will not take) is reported as the server sent
+ * it. A home that replaces (an engram's) never refuses a taken name, so for
+ * it this only ever adds one listing after a refusal. A fresh listing (or
+ * the path a 412 refused) goes to `onListed`, so the rest of the batch is
+ * named against it.
+ */
+async function uploadOnce(
+  home: AssetHome,
+  file: File,
+  path: string,
+  taken: readonly string[],
+  now: Date | undefined,
+  onListed: (paths: readonly string[]) => void,
+) {
+  try {
+    return await home.upload(path, file);
+  } catch (cause) {
+    if (!(cause instanceof ApiProblem) || !TAKEN_STATUSES.has(cause.status)) {
+      throw cause;
+    }
+    if (cause.status === 412) {
+      // The refused path counts as taken for the rest of the batch too.
+      onListed([path]);
+      return home.upload(
+        freeAttachmentPath(file.name, [...taken, path], now),
+        file,
+      );
+    }
+    let fresh: string[];
+    try {
+      fresh = (await home.list()).map((row) => row.path);
+    } catch {
+      throw cause;
+    }
+    onListed(fresh);
+    const wanted = path.toLowerCase();
+    if (!fresh.some((held) => held.toLowerCase() === wanted)) {
+      throw cause;
+    }
+    return home.upload(
+      freeAttachmentPath(file.name, [...taken, ...fresh], now),
+      file,
+    );
+  }
+}
+
+/**
  * Upload every file and insert one reference per stored file, at the cursor.
  *
- * The domain's listing is read once up front, because a free path has to be
- * free against what is already there: uploading is a create-or-REPLACE, so a
+ * The home's listing is read once up front, because a free path has to be
+ * free against what is already there: an engram's upload replaces, so a
  * collision that went unnoticed would silently overwrite somebody's file. A
- * listing that cannot be read is therefore fatal to the batch rather than
- * treated as an empty domain.
+ * Reflection upload is create-only, so the server refuses a collision, which
+ * `uploadOnce` answers. A listing that cannot be read is therefore fatal to
+ * the batch rather than treated as an empty domain. A
+ * batch whose every file is refused here reads no listing at all, and a
+ * buffer that is read-only (a room that has ended) starts nothing.
  *
  * Everything that went wrong is reported once at the end rather than one call
  * per failure: the screen holds a single line, so five dropped files with two
@@ -106,18 +207,46 @@ function reasonOf(cause: unknown): string {
  *
  * Resolves with how many references were inserted.
  */
+/**
+ * What an upload's sentence is about, beyond its words: "unlinked" when the
+ * only thing it reports is files that were stored but whose link could not
+ * be added because the buffer had gone. A screen that is still there shows
+ * the sentence either way; a report made after the screen went needs to
+ * know whether the upload finished at all.
+ */
+export type UploadProblemKind = "unlinked";
+
 export async function uploadAttachments(
   request: UploadRequest,
 ): Promise<number> {
-  const { domain, files, view, onError } = request;
+  const { files, view, onError } = request;
+  const home =
+    request.home === undefined ? engramAssetHome(request.domain) : request.home;
   onError(null);
   if (files.length === 0) {
     return 0;
   }
+  if (view.state.readOnly) {
+    onError(SESSION_ENDED);
+    return 0;
+  }
   const problems: string[] = [];
+  const wanted: File[] = [];
+  for (const file of files) {
+    const refusal = refuseAttachment(file);
+    if (refusal === null) {
+      wanted.push(file);
+    } else {
+      problems.push(refusal);
+    }
+  }
+  if (wanted.length === 0) {
+    onError(problems.join(" "));
+    return 0;
+  }
   let taken: string[];
   try {
-    taken = (await listAttachments(domain)).map((row) => row.path);
+    taken = (await home.list()).map((row) => row.path);
   } catch (cause) {
     onError(reasonOf(cause));
     return 0;
@@ -125,44 +254,106 @@ export async function uploadAttachments(
 
   const lines: string[] = [];
   const stored: string[] = [];
-  for (const file of files) {
-    const refusal = refuseAttachment(file);
-    if (refusal !== null) {
-      problems.push(refusal);
-      continue;
-    }
+  for (const file of wanted) {
     // Against this batch as well as against the domain: two files of the same
     // name dropped together must not both claim one path.
     const path = freeAttachmentPath(file.name, taken, request.now);
     try {
-      const uploaded = await uploadAttachment(domain, path, file);
+      const uploaded = await uploadOnce(
+        home,
+        file,
+        path,
+        taken,
+        request.now,
+        (fresh) => {
+          taken = [...taken, ...fresh];
+        },
+      );
       taken = [...taken, uploaded.path];
       stored.push(uploaded.path);
-      lines.push(attachmentMarkdown(file.name, uploaded.path));
+      lines.push(attachmentMarkdown(file.name, home.linkTo(uploaded.path)));
     } catch (cause) {
       problems.push(reasonOf(cause));
     }
   }
 
   let inserted = lines.length;
-  // The bytes are already stored by the time this runs, so a refused insertion
-  // is not a no-op the author can shrug off: it leaves a file in the domain
-  // that no engram references, which is the orphan the maintenance sweep would
-  // otherwise raise days later. `insertBlock` refuses over a folded
-  // frontmatter block, and a dispatch into a view that has been destroyed -
-  // the buffer was rebuilt while the upload was in flight - lands nowhere
-  // either. Both end here, naming the paths so they can be linked by hand or
-  // deleted.
-  if (lines.length > 0 && !insertBlock(view, lines)) {
-    inserted = 0;
-    problems.push(
-      `Uploaded to ${stored.join(", ")}, but the reference could not be inserted here: put the caret in the body and link it, or delete the file.`,
-    );
+  // The bytes are already stored by the time this runs, so a reference that
+  // cannot land is not a no-op the author can shrug off: it leaves a file
+  // nothing references, the orphan the maintenance sweep would otherwise
+  // raise days later. So every such case ends in a sentence naming the paths.
+  // A buffer that turned read-only on the way (a room that ended) gets its
+  // own: nobody can link there now. `insertBlock` refuses over a folded
+  // frontmatter block and gets the general sentence. A view that was
+  // destroyed on the way (its screen remounted or went) would take the
+  // dispatch and show nothing; it gets a sentence of its own that does not
+  // say "here", since the screen that started the upload may be gone and the
+  // sentence is then shown elsewhere (`useAttachmentUploads`).
+  // Set when the only problem is the stored files' missing link.
+  let unlinked = false;
+  if (lines.length > 0) {
+    if (view.state.readOnly) {
+      inserted = 0;
+      unlinked = problems.length === 0;
+      problems.push(
+        `Uploaded to ${stored.join(", ")}. The session ended, so no link was added. Add it when you edit the page again.`,
+      );
+    } else {
+      const live = view.dom.isConnected;
+      // Nobody chose a place yet (the file picker on a buffer only opened):
+      // the end of the text, on a line of its own, rather than above the
+      // title where the untouched caret sits. A buffer without the field (no
+      // paste and drop handlers) keeps the caret it has.
+      const atEnd = view.state.field(caretPlaced, false) === false;
+      if (live && !atEnd) {
+        request.place?.(view);
+      }
+      if (!live) {
+        inserted = 0;
+        unlinked = problems.length === 0;
+        problems.push(
+          `Uploaded to ${stored.join(", ")}, but the screen was closed before the link was added. Add the link when you edit again.`,
+        );
+      } else if (
+        !(atEnd ? appendBlock(view, lines) : insertBlock(view, lines))
+      ) {
+        inserted = 0;
+        problems.push(
+          `Uploaded to ${stored.join(", ")}, but the reference could not be inserted here: put the caret in the body and link it.`,
+        );
+      }
+    }
   }
   if (problems.length > 0) {
-    onError(problems.join(" "));
+    onError(problems.join(" "), unlinked ? "unlinked" : undefined);
   }
   return inserted;
+}
+
+/**
+ * Add `lines` at the end of the text, after one blank line, as one input
+ * step, and leave the caret at the end of the first of them. The text keeps
+ * ending in one line break. Positions count a line break as one, whatever
+ * the separator, as in `insertBlock`.
+ */
+function appendBlock(view: EditorView, lines: readonly string[]): boolean {
+  const { doc, lineBreak } = view.state;
+  const last = doc.line(doc.lines);
+  const before = doc.lines > 1 ? doc.line(doc.lines - 1) : null;
+  // Breaks still needed for a blank line between the text and the block.
+  const breaks =
+    last.length > 0 ? 2 : before === null || before.length === 0 ? 0 : 1;
+  const from = doc.length;
+  view.dispatch({
+    changes: {
+      from,
+      insert: `${lineBreak.repeat(breaks)}${lines.join(lineBreak)}${lineBreak}`,
+    },
+    selection: { anchor: from + breaks + (lines[0]?.length ?? 0) },
+    userEvent: "input",
+  });
+  view.focus();
+  return true;
 }
 
 /**
@@ -176,13 +367,20 @@ export async function uploadAttachments(
  * a browser fires no `drop` at all unless the dragover was prevented.
  */
 export function attachmentUploads(onFiles: (files: File[]) => void): Extension {
+  return [caretPlaced, handlers(onFiles)];
+}
+
+function handlers(onFiles: (files: File[]) => void): Extension {
   return EditorView.domEventHandlers({
-    paste(event) {
+    paste(event, view) {
       const files = transferFiles(event.clipboardData);
-      if (files.length === 0) {
+      // A read-only buffer is the editor's own business: it cancels the paste.
+      if (files.length === 0 || view.state.readOnly) {
         return false;
       }
       event.preventDefault();
+      // A paste goes where the caret is, so the caret counts as chosen.
+      view.dispatch({ effects: placeCaret.of(null) });
       onFiles(files);
       return true;
     },
@@ -198,6 +396,11 @@ export function attachmentUploads(onFiles: (files: File[]) => void): Extension {
         return false;
       }
       event.preventDefault();
+      // Taken, so the browser does not open the file in place of the page,
+      // but a read-only buffer gets nothing.
+      if (view.state.readOnly) {
+        return true;
+      }
       // Where it was dropped is where it belongs: the caret moves there first,
       // so the reference lands under the pointer rather than wherever the
       // caret happened to be left. A synthetic drop carrying no coordinates
@@ -207,9 +410,10 @@ export function attachmentUploads(onFiles: (files: File[]) => void): Extension {
         Number.isFinite(event.clientX) && Number.isFinite(event.clientY)
           ? view.posAtCoords({ x: event.clientX, y: event.clientY })
           : null;
-      if (at !== null) {
-        view.dispatch({ selection: { anchor: at } });
-      }
+      view.dispatch({
+        ...(at === null ? {} : { selection: { anchor: at } }),
+        effects: placeCaret.of(null),
+      });
       onFiles(files);
       return true;
     },

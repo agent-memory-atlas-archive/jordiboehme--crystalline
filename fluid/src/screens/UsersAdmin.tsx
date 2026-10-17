@@ -16,7 +16,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useRef, useState } from "react";
 
 import { problemDetail } from "../api/client";
-import type { PatchUserBody, Role, User } from "../api/model";
+import type { PatchUserBody, ReflectionLevel, Role, User } from "../api/model";
 import {
   USERS_QUERY_KEY,
   createUser,
@@ -26,12 +26,15 @@ import {
   resetPassword,
 } from "../api/users";
 import { useAuth } from "../auth/AuthContext";
+import { Loading } from "../components/Loading";
 import { BUTTON, CONTROL_HEIGHT, FIELD } from "../components/primitives";
+import { ReflectionLevelSelect } from "../components/ReflectionLevelSelect";
+import { raiseForNone, reflectionAfter } from "../components/reflectionLevels";
 import { formatDay } from "../format";
 import NotFound from "./NotFound";
 
 /** The roles an account can hold, least privileged first, as the API orders them. */
-const ROLES: Role[] = ["viewer", "editor", "admin"];
+const ROLES: Role[] = ["none", "viewer", "editor", "admin"];
 
 /** What the screen is currently saying, and whether it is bad news. */
 interface Notice {
@@ -198,6 +201,9 @@ function UsersPanel() {
                   Role
                 </th>
                 <th scope="col" className="px-2 py-2">
+                  Reflection
+                </th>
+                <th scope="col" className="px-2 py-2">
                   State
                 </th>
                 <th scope="col" className="px-2 py-2">
@@ -330,7 +336,13 @@ function AccountRow({
           id={`role-${account.name}`}
           value={account.role}
           onChange={(event) => {
-            onPatch({ role: event.target.value as Role });
+            const role = event.target.value as Role;
+            const reflection = raiseForNone(role, account.reflection);
+            onPatch(
+              reflection === account.reflection
+                ? { role }
+                : { role, reflection },
+            );
           }}
           className={FIELD}
         >
@@ -340,6 +352,17 @@ function AccountRow({
             </option>
           ))}
         </select>
+      </td>
+
+      <td className="px-2 py-2">
+        <ReflectionLevelSelect
+          label={`Reflection for ${account.name}`}
+          knowledge={account.role}
+          value={account.reflection}
+          onChange={(reflection) => {
+            onPatch({ reflection });
+          }}
+        />
       </td>
 
       <td className="px-2 py-2">
@@ -529,10 +552,12 @@ function CreateForm({
   const nameField = useId();
   const displayField = useId();
   const roleField = useId();
+  const reflectionField = useId();
   const passwordField = useId();
   const [name, setName] = useState("");
   const [display, setDisplay] = useState("");
   const [role, setRole] = useState<Role>("viewer");
+  const [reflection, setReflection] = useState<ReflectionLevel>("default");
   const [password, setPassword] = useState("");
 
   return (
@@ -555,12 +580,14 @@ function CreateForm({
             name,
             password,
             role,
+            ...(reflection === "default" ? {} : { reflection }),
             ...(display === "" ? {} : { display }),
           }).then(
             () => {
               setName("");
               setDisplay("");
               setRole("viewer");
+              setReflection("default");
               setPassword("");
             },
             // The refusal is already on screen, put there by the mutation
@@ -617,7 +644,9 @@ function CreateForm({
             id={roleField}
             value={role}
             onChange={(event) => {
-              setRole(event.target.value as Role);
+              const next = event.target.value as Role;
+              setRole(next);
+              setReflection((current) => reflectionAfter(next, current));
             }}
             className={FIELD}
           >
@@ -627,6 +656,22 @@ function CreateForm({
               </option>
             ))}
           </select>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label
+            htmlFor={reflectionField}
+            className="text-xs text-slate-500 dark:text-slate-400"
+          >
+            Reflection
+          </label>
+          <ReflectionLevelSelect
+            id={reflectionField}
+            label="Reflection"
+            knowledge={role}
+            value={reflection}
+            onChange={setReflection}
+          />
         </div>
 
         <div className="flex flex-col gap-1">
@@ -665,27 +710,9 @@ function CreateForm({
   );
 }
 
-/**
- * The shape of the table, while the table is on its way.
- *
- * A skeleton rather than a spinner: the listing is the screen, so what it
- * costs nothing to promise is where the rows will be. It is hidden from the
- * accessibility tree and named by the live region beside it instead, because
- * six grey bars are not something to read out.
- */
+/** The accounts listing's loading block, in the app's one loading look. */
 function AccountsSkeleton() {
-  return (
-    <div role="status" aria-busy="true" aria-label="Loading accounts">
-      <div aria-hidden="true" className="flex animate-pulse flex-col gap-2">
-        {[0, 1, 2].map((row) => (
-          <div
-            key={row}
-            className="h-8 rounded bg-slate-100 dark:bg-slate-800"
-          />
-        ))}
-      </div>
-    </div>
-  );
+  return <Loading label="Loading accounts" subject="the accounts" />;
 }
 
 /**
@@ -699,6 +726,9 @@ function withPatch(account: User, body: PatchUserBody): User {
   const next: User = { ...account };
   if (body.role !== undefined && body.role !== null) {
     next.role = body.role;
+  }
+  if (body.reflection !== undefined && body.reflection !== null) {
+    next.reflection = body.reflection;
   }
   if (body.display !== undefined && body.display !== null) {
     next.display = body.display;

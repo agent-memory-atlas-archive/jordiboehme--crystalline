@@ -13,7 +13,7 @@ import { ApiProblem, api, encodeSegment, engramPath } from "./client";
 import type { EngramDetail } from "./engram";
 import { readEngramDetail } from "./engram";
 import { pathPermalink } from "../permalink";
-import { asObject, asString, asStrings } from "./json";
+import { asArray, asObject, asString, asStrings } from "./json";
 import type {
   CreateEngramBody,
   MoveBody,
@@ -156,6 +156,35 @@ export interface MoveReceipt {
    * this empty.
    */
   attachmentWarnings: string[];
+  /**
+   * The engrams that still link the old address because the move could not
+   * rewrite them, each with the engine's reason. The move landed either way.
+   * Empty when every link followed, or from a server that does not say.
+   */
+  linksFailed: MoveLinkFailure[];
+}
+
+/** One engram a move could not relink, as the receipt names it. */
+export interface MoveLinkFailure {
+  domain: string;
+  path: string;
+  reason: string;
+}
+
+function readMoveLinkFailures(value: unknown): MoveLinkFailure[] {
+  return asArray(value).flatMap((entry) => {
+    const row = asObject(entry);
+    const path = asString(row?.path);
+    return path === null
+      ? []
+      : [
+          {
+            domain: asString(row?.domain) ?? "",
+            path,
+            reason: asString(row?.reason) ?? "",
+          },
+        ];
+  });
 }
 
 /**
@@ -186,6 +215,7 @@ export async function moveEngram(
         ? record.references_rewritten
         : 0,
     attachmentWarnings: asStrings(record?.attachment_warnings),
+    linksFailed: readMoveLinkFailures(record?.links_failed),
   };
 }
 

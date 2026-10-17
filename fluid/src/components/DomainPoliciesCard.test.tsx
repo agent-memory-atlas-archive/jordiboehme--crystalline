@@ -24,6 +24,7 @@ import {
   domainsResponse,
   manifestSectionsResponse,
   meResponse,
+  policyRow,
   renderApp,
   userFixture,
 } from "../test/harness";
@@ -149,13 +150,13 @@ describe("the domain policies card", () => {
   it("draws one row per registry key with its name, declared and effective values and the default marked", async () => {
     serve();
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await policiesCard();
 
     expect(
-      within(card).getByText("Every switch this MANIFEST can set"),
+      within(card).getByText(/^Every switch this MANIFEST can set/),
     ).toBeVisible();
-    const sharing = within(card).getByRole("row", { name: /^sharing/ });
+    const sharing = within(card).getByRole("group", { name: /^sharing/ });
     // Nothing in the frontmatter says anything about this key, which is a
     // different sentence from the value it is read as.
     expect(within(sharing).getByText("not declared")).toBeVisible();
@@ -178,7 +179,7 @@ describe("the domain policies card", () => {
         }),
     });
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await policiesCard();
 
     // A typo in the frontmatter is not an error the server refuses over, so
@@ -188,13 +189,39 @@ describe("the domain policies card", () => {
     ).toBeVisible();
   });
 
+  it("draws each key as a group with its meaning, its current value and one control", async () => {
+    serve();
+
+    renderApp("/d/eng/settings");
+    const card = await policiesCard();
+
+    const groups = within(card).getAllByRole("group");
+    expect(groups.length).toBeGreaterThan(0);
+    for (const group of groups) {
+      // The key names the group, and the sentence beside it says what the
+      // key does, so a reader never has to know the key to read the page.
+      expect(group.textContent ?? "").toMatch(/In the MANIFEST: /);
+    }
+    const sharing = within(card).getByRole("group", { name: /^sharing/ });
+    expect(
+      within(sharing).getByRole("combobox", { name: "sharing" }),
+    ).toHaveValue("proposal");
+    expect(within(sharing).getAllByRole("option").length).toBeGreaterThan(1);
+    // A free-text key has a value and no select.
+    const home = within(card).getByRole("group", { name: /^reflection_home/ });
+    expect(within(home).queryByRole("combobox")).toBeNull();
+    expect(card.querySelector("table")).toBeNull();
+  });
+
   it("renders a text-kind row as read-only text, never a select", async () => {
     serve();
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await policiesCard();
 
-    const domainName = within(card).getByRole("row", { name: /^domain_name/ });
+    const domainName = within(card).getByRole("group", {
+      name: /^domain_name/,
+    });
     expect(within(domainName).getByText("eng")).toBeVisible();
     expect(within(domainName).queryByRole("combobox")).toBeNull();
     expect(
@@ -205,7 +232,7 @@ describe("the domain policies card", () => {
   it("draws reflection as a select and reflection_home as read-only text with no 'Change name'", async () => {
     serve();
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await policiesCard();
 
     const reflection = within(card).getByRole("combobox", {
@@ -221,7 +248,7 @@ describe("the domain policies card", () => {
 
     // The server fills the home in when Reflection is switched on; nobody
     // types it, and it is not a name to change through a rename.
-    const home = within(card).getByRole("row", { name: /^reflection_home/ });
+    const home = within(card).getByRole("group", { name: /^reflection_home/ });
     expect(within(home).queryByRole("combobox")).toBeNull();
     expect(
       within(home).queryByRole("button", { name: "Change name" }),
@@ -232,9 +259,11 @@ describe("the domain policies card", () => {
   it("opens the rename dialog from a 'Change name' button beside domain_name, for the owner", async () => {
     serve();
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await policiesCard();
-    const domainName = within(card).getByRole("row", { name: /^domain_name/ });
+    const domainName = within(card).getByRole("group", {
+      name: /^domain_name/,
+    });
 
     await userEvent.click(
       within(domainName).getByRole("button", { name: "Change name" }),
@@ -280,9 +309,11 @@ describe("the domain policies card", () => {
       },
     });
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await policiesCard();
-    const domainName = within(card).getByRole("row", { name: /^domain_name/ });
+    const domainName = within(card).getByRole("group", {
+      name: /^domain_name/,
+    });
     await userEvent.click(
       within(domainName).getByRole("button", { name: "Change name" }),
     );
@@ -314,9 +345,11 @@ describe("the domain policies card", () => {
       }),
     });
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await policiesCard();
-    const domainName = within(card).getByRole("row", { name: /^domain_name/ });
+    const domainName = within(card).getByRole("group", {
+      name: /^domain_name/,
+    });
 
     expect(
       within(domainName).queryByRole("button", { name: "Change name" }),
@@ -329,9 +362,11 @@ describe("the domain policies card", () => {
         meResponse({ user: userFixture({ role: "admin" }), read_only: true }),
     });
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await policiesCard();
-    const domainName = within(card).getByRole("row", { name: /^domain_name/ });
+    const domainName = within(card).getByRole("group", {
+      name: /^domain_name/,
+    });
     const button = within(domainName).getByRole("button", {
       name: "Change name",
     });
@@ -353,9 +388,11 @@ describe("the domain policies card", () => {
       }),
     });
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await policiesCard();
-    const domainName = within(card).getByRole("row", { name: /^domain_name/ });
+    const domainName = within(card).getByRole("group", {
+      name: /^domain_name/,
+    });
     const button = await within(domainName).findByRole("button", {
       name: "Change name",
     });
@@ -376,7 +413,7 @@ describe("the domain policies card", () => {
         }),
     });
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await policiesCard();
 
     // A known word is a known word: whether it is also what holds is the
@@ -396,7 +433,7 @@ describe("the domain policies card", () => {
         init?.method === "PATCH" ? patched() : manifestWith({}),
     });
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await policiesCard();
 
     await userEvent.selectOptions(
@@ -413,7 +450,7 @@ describe("the domain policies card", () => {
     // The answer carries the manifest as it now reads, so the declared cell
     // moves without a second read of the route.
     expect(
-      await within(card).findByText("shared", { selector: "td" }),
+      await within(card).findByText("shared", { selector: "span" }),
     ).toBeVisible();
   });
 
@@ -427,7 +464,7 @@ describe("the domain policies card", () => {
         init?.method === "PATCH" ? patched() : manifestWith({}),
     });
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await policiesCard();
     const select = within(card).getByRole("combobox", { name: "sharing" });
 
@@ -479,7 +516,7 @@ describe("the domain policies card", () => {
           : manifestWith({}),
     });
 
-    const first = renderApp("/d/eng");
+    const first = renderApp("/d/eng/settings");
     let card = await policiesCard();
     await userEvent.selectOptions(
       within(card).getByRole("combobox", { name: "generated_indexes" }),
@@ -508,7 +545,7 @@ describe("the domain policies card", () => {
       },
     });
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     card = await policiesCard();
     const select = within(card).getByRole("combobox", {
       name: "generated_indexes",
@@ -528,7 +565,7 @@ describe("the domain policies card", () => {
         meResponse({ user: userFixture({ role: "admin" }), read_only: true }),
     });
 
-    const first = renderApp("/d/eng");
+    const first = renderApp("/d/eng/settings");
     let card = await policiesCard();
     const select = within(card).getByRole("combobox", { name: "sharing" });
 
@@ -544,14 +581,14 @@ describe("the domain policies card", () => {
       "/auth/me": () => meResponse({ user: userFixture({ role: "editor" }) }),
     });
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     card = await policiesCard();
 
     // A right this side only derived is not shown as a shut door: an account
     // that neither owns the domain nor administers the instance reads the
     // policies and is offered nothing.
     expect(within(card).queryByRole("combobox")).toBeNull();
-    expect(within(card).getByRole("row", { name: /^sharing/ })).toBeVisible();
+    expect(within(card).getByRole("group", { name: /^sharing/ })).toBeVisible();
   });
 
   it("on a locked domain only the read_only row can change, and the others say why", async () => {
@@ -559,7 +596,7 @@ describe("the domain policies card", () => {
       "/domains/eng/manifest": () =>
         manifestWith({ read_only: { declared: "on", effective: "on" } }),
     });
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await policiesCard();
     expect(
       within(card).getByRole("combobox", { name: "read_only" }),
@@ -577,7 +614,7 @@ describe("the domain policies card", () => {
 
   it("asks before it turns read_only on, and posts on confirm", async () => {
     serve();
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await policiesCard();
     await userEvent.selectOptions(
       within(card).getByRole("combobox", { name: "read_only" }),
@@ -607,13 +644,126 @@ describe("the domain policies card", () => {
         members: [],
       }),
     });
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await policiesCard();
     // Switching it on is the owner's, like switching it off (decision D10):
     // the row is read, never offered.
-    expect(within(card).getByRole("row", { name: /^read_only/ })).toBeVisible();
+    expect(
+      within(card).getByRole("group", { name: /^read_only/ }),
+    ).toBeVisible();
     expect(
       within(card).queryByRole("combobox", { name: "read_only" }),
     ).toBeNull();
+  });
+  it("brings the mode switch up once the reflection policy is switched on", async () => {
+    let on = false;
+    serve({
+      "/domains/eng/manifest": (_path, init) => {
+        if (init?.method === "PATCH") {
+          on = true;
+        }
+        return {
+          ...manifestWith({}),
+          sections: manifestSectionsResponse({
+            // The harness already carries a `reflection` row (0.26.0): swap
+            // it, never add a second row with the same key.
+            policies: defaultPolicyRows().map((row) =>
+              row.key === "reflection"
+                ? policyRow(
+                    "reflection",
+                    on ? "on" : null,
+                    on ? "on" : "off",
+                    ["off", "on"],
+                    "off",
+                    row.meaning,
+                  )
+                : row,
+            ),
+          }),
+        };
+      },
+      "/domains/eng/reflection": () => ({
+        domain: "eng",
+        enabled: on,
+        state: on ? "on" : "off",
+        home: "local",
+        home_url: null,
+        right: "curate",
+        engrams_visible: true,
+        pending_engrams: [],
+      }),
+      "/reflection/domains": () => ({ domains: [] }),
+    });
+
+    renderApp("/d/eng/settings");
+    const card = await policiesCard();
+    expect(
+      screen.queryByRole("navigation", { name: "Domain view" }),
+    ).toBeNull();
+    await userEvent.selectOptions(
+      within(card).getByRole("combobox", { name: "reflection" }),
+      "on",
+    );
+    // Ruling (Step 7, approved 2026-10-14): the switch-on asks first.
+    expect(
+      within(card).getByText(/pages for people under reflections\//),
+    ).toBeInTheDocument();
+    await userEvent.click(
+      within(card).getByRole("button", { name: "Turn on the Reflection" }),
+    );
+    expect(
+      await screen.findByRole("navigation", { name: "Domain view" }),
+    ).toBeVisible();
+  });
+
+  it("shows the note a switch-off answers with", async () => {
+    serve({
+      "/domains/eng/manifest": (_path, init) =>
+        init?.method === "PATCH"
+          ? {
+              ...manifestWith({}),
+              note: "Reflection is off. Share changes now offers the files in reflections/ as engram changes.",
+            }
+          : {
+              ...manifestWith({}),
+              sections: manifestSectionsResponse({
+                policies: defaultPolicyRows().map((row) =>
+                  row.key === "reflection"
+                    ? policyRow(
+                        "reflection",
+                        "on",
+                        "on",
+                        ["off", "on"],
+                        "off",
+                        row.meaning,
+                      )
+                    : row,
+                ),
+              }),
+            },
+      "/domains/eng/reflection": () => ({
+        domain: "eng",
+        enabled: true,
+        state: "on",
+        home: "here",
+        home_url: null,
+        right: "curate",
+        engrams_visible: true,
+        member: false,
+        pending_engrams: [],
+      }),
+      "/reflection/domains": () => ({ domains: [] }),
+    });
+    renderApp("/d/eng/settings");
+    const card = await policiesCard();
+    await userEvent.selectOptions(
+      within(card).getByRole("combobox", { name: "reflection" }),
+      "off",
+    );
+    expect(
+      await within(card).findByText(
+        /offers the files in reflections\/ as engram changes/,
+      ),
+    ).toBeVisible();
   });
 });

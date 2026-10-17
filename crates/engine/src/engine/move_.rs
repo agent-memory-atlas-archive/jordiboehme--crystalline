@@ -1,5 +1,30 @@
 use super::*;
-use crate::collab::session::RoomDoc;
+use crate::collab::session::{ComposeRefused, MoveClose, MovedTo, RoomDoc};
+
+/// What [`Engine::relink_engram`] rewrote in one linking engram.
+pub(super) struct Relinked {
+    /// How many references changed.
+    pub(super) references: usize,
+    /// The linker's permalink.
+    pub(super) permalink: String,
+    /// Whether the rewrite composed into an open room rather than the file
+    /// or the row.
+    pub(super) live: bool,
+}
+
+/// Name one linking page or engram a move could not rewrite, in the shape
+/// every move receipt's `links_failed` carries: `{ domain, path, reason }`.
+/// Shared by the engram move, the reflection move and the reflection file
+/// move, so the three receipts never drift apart. The caller logs it with
+/// the context it has.
+pub(super) fn note_link_failure(
+    failed: &mut Vec<Value>,
+    domain: &str,
+    path: &str,
+    e: &EngineError,
+) {
+    failed.push(json!({ "domain": domain, "path": path, "reason": e.to_string() }));
+}
 
 impl Engine {
     // --- move ----------------------------------------------------------------
@@ -50,6 +75,51 @@ impl Engine {
         self.move_engram_as(p, None, scope).await
     }
 
+    /// A move inside this actor's draft, under its two draft locks: its own
+    /// function, so the locks end with it and every later step of
+    /// [`Engine::move_engram_as`] (which closes rooms) runs with none held.
+    async fn move_draft_locked(
+        &self,
+        view: &DomainView<'_>,
+        p: &MoveParams,
+        draft: DraftMove<'_>,
+    ) -> Result<Value> {
+        let DraftMove {
+            who,
+            src,
+            src_source,
+            dest_rel,
+            cross,
+            asked,
+            mover,
+        } = draft;
+        // Two writes - a tombstone where the team's file is, an entry at
+        // the destination - so two draft locks, taken in key order so two
+        // moves that cross each other cannot each hold what the other
+        // wants. `move_within` refuses a cross-domain move outright, so
+        // both paths are this actor's own drafts in this one domain. See
+        // `Engine::draft_lock`.
+        let (first, second) = match src.path.as_str() <= dest_rel {
+            true => (src.path.as_str(), dest_rel),
+            false => (dest_rel, src.path.as_str()),
+        };
+        let low = self.draft_lock(&p.domain, who, first)?;
+        let _low = low.lock().await;
+        // A move onto its own path is the permalink-only rename (the caller
+        // refused a no-op one), and its one path is taken once rather than
+        // twice: one path is one lock.
+        let high = match first == second {
+            true => None,
+            false => Some(self.draft_lock(&p.domain, who, second)?),
+        };
+        let _high = match &high {
+            Some(lock) => Some(lock.lock().await),
+            None => None,
+        };
+        view.move_within(p, src, src_source, dest_rel, cross, asked, mover)
+            .await
+    }
+
     /// [`Engine::move_engram`] with the mover's identity, resolved by
     /// [`Engine::actor`] (or, for a draft, the composed identity) and written
     /// into the moved engram's `generated` block when the move changes its
@@ -64,6 +134,13 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
+        // One engram move at a time in this process. A move gathers the
+        // engrams that link it before it writes and rewrites them after it
+        // moved; two moves running at once could each find a linker the
+        // other has just moved away, and leave a link to the old address.
+        // Taken first, before any write ticket, so a move waiting here holds
+        // nothing a rename or another move waits for.
+        let _one_move = self.lock_moves().await;
         // Resolved once, before anything is written, and used twice below: to
         // look the destination up, and to bound the inbound rewrite.
         let hidden = self.hidden_for(scope).await?;
@@ -132,6 +209,11 @@ impl Engine {
         }
         let new_permalink = Self::moved_permalink(&src, &dest_rel, p.permalink.as_deref())?;
         let in_place = !cross && dest_rel == src.path;
+        // A file domain's MANIFEST never leaves its place, in a draft either:
+        // the domain needs it. A rename of its permalink in place keeps it.
+        if !in_place {
+            refuse_manifest_removal(&src_source, &src.path)?;
+        }
         if in_place && new_permalink == src.permalink {
             return Err(EngineError::Invalid(format!(
                 "'{}' already sits at '{dest_rel}' and answers to '{new_permalink}', so this \
@@ -152,6 +234,9 @@ impl Engine {
         // is compared in any letter case, as the write paths do: a
         // case-insensitive filesystem (the macOS and Windows defaults) opens
         // `manifest.md` as the very `MANIFEST.md` routing reads.
+        // The text the screens below read, kept so the move can tell whether
+        // the text it reads again under its locks is still that text.
+        let mut screened: Option<String> = None;
         if names_the_manifest(&dest_rel) {
             // In a reviewing domain the move writes the mover's draft, so the
             // text that lands is what they see: their own draft when they hold
@@ -172,6 +257,7 @@ impl Engine {
             // No MANIFEST stands there before the move.
             self.screen_manifest_write(&dest_domain, Some(""), &text)
                 .await?;
+            screened = Some(text);
         }
 
         // The third place a move can land, and it is two writes rather than
@@ -181,29 +267,6 @@ impl Engine {
         // which is the whole of review mode - the rename is reviewed like any
         // other change.
         if let Some(who) = overlay {
-            // Two writes - a tombstone where the team's file is, an entry at
-            // the destination - so two draft locks, taken in key order so two
-            // moves that cross each other cannot each hold what the other
-            // wants. `move_within` refuses a cross-domain move outright, so
-            // both paths are this actor's own drafts in this one domain. See
-            // `Engine::draft_lock`.
-            let (first, second) = match src.path <= dest_rel {
-                true => (src.path.as_str(), dest_rel.as_str()),
-                false => (dest_rel.as_str(), src.path.as_str()),
-            };
-            let low = self.draft_lock(&p.domain, who, first)?;
-            let _low = low.lock().await;
-            // A move onto its own path is the permalink-only rename (a no-op
-            // one was refused above), and its one path is taken once rather
-            // than twice: one path is one lock.
-            let high = match first == second {
-                true => None,
-                false => Some(self.draft_lock(&p.domain, who, second)?),
-            };
-            let _high = match &high {
-                Some(lock) => Some(lock.lock().await),
-                None => None,
-            };
             // A draft's permalink changes only when the caller names one. The
             // default rule stays out of review mode on purpose: a moved draft
             // is paired with the team's engram it came from by the address it
@@ -216,10 +279,50 @@ impl Engine {
                 .filter(|asked| !asked.trim().is_empty())
                 .map(|_| new_permalink.as_str());
             let mover = self.actor_for(client, overlay);
-            return view
-                .move_within(p, &src, &src_source, &dest_rel, cross, asked, &mover)
-                .await;
+            let draft = DraftMove {
+                who,
+                src: &src,
+                src_source: &src_source,
+                dest_rel: &dest_rel,
+                cross,
+                asked,
+                mover: &mover,
+            };
+            // A draft move that names a new permalink changes the address
+            // the mover's own room over the draft saves to, so that room is
+            // ended and fenced like a base room (see below), once the
+            // screens a draft move can be refused by have passed. A draft
+            // moves only inside its domain (`move_within`).
+            let readdressing = !cross && asked.is_some_and(|asked| asked != src.permalink);
+            let closing = if readdressing {
+                if dest_rel != src.path {
+                    view.refuse_taken_draft_destination(p, &src, &dest_rel)
+                        .await?;
+                }
+                self.close_room_for_move(
+                    &p.domain,
+                    RoomDoc::Engram(src.permalink.clone()),
+                    Some(who),
+                    MovedTo {
+                        domain: None,
+                        path: dest_rel.clone(),
+                        permalink: Some(new_permalink.clone()),
+                    },
+                )
+                .await
+            } else {
+                None
+            };
+            let moved = self.move_draft_locked(&view, p, draft).await?;
+            if let Some(closing) = closing {
+                closing.moved().await;
+            }
+            return Ok(moved);
         }
+
+        // A move onto the MANIFEST may move the destination's switch.
+        let switch_before =
+            names_the_manifest(&dest_rel).then(|| self.reflection_switch(&dest_domain));
 
         // After the overlay branch, so a move OUT of a reviewing domain keeps
         // its own refusal ("share the change first"), and before anything is
@@ -240,13 +343,18 @@ impl Engine {
         // address, which the unique index would otherwise refuse only at the
         // reindex - after the file had already landed.
         if !in_place {
-            self.ensure_dest_free(&dest_source, &dest_domain, &dest_rel)
-                .await?;
+            self.ensure_dest_free(
+                &dest_source,
+                &dest_domain,
+                &dest_rel,
+                &src_source,
+                &src.path,
+                cross,
+            )
+            .await?;
         }
         if readdressed {
             self.refuse_permalink_held(&dest_domain, &new_permalink, &src, cross)
-                .await?;
-            self.refuse_under_live_rooms(&p.domain, &[RoomDoc::Engram(src.permalink.clone())])
                 .await?;
         }
 
@@ -258,6 +366,33 @@ impl Engine {
         } else {
             Vec::new()
         };
+        // Every other domain the rewrite will write into is counted for the
+        // rest of the move, as the source and the destination are, so a
+        // rename of a linker's domain waits for the move instead of racing
+        // its rewrite. Entered once, up front, and never for a domain this
+        // move already holds: a rename that paused it would wait for this
+        // move while this move waited for the rename. A domain a rename has
+        // paused is not waited for: moves run one at a time, so waiting
+        // would hold every other move back for as long as the rename may
+        // take. Its linkers are not written and are named in the receipt.
+        let mut linker_tickets = Vec::new();
+        let mut paused: HashMap<String, EngineError> = HashMap::new();
+        for linker in &linkers {
+            let domain = linker.domain.as_str();
+            if domain == p.domain
+                || domain == dest_domain
+                || paused.contains_key(domain)
+                || linker_tickets.iter().any(|(held, _)| held == domain)
+            {
+                continue;
+            }
+            match self.try_enter_write(domain) {
+                Ok(ticket) => linker_tickets.push((domain.to_string(), ticket)),
+                Err(e) => {
+                    paused.insert(domain.to_string(), e);
+                }
+            }
+        }
         let spec = Relink {
             from_domain: &p.domain,
             from_permalink: &src.permalink,
@@ -266,9 +401,83 @@ impl Engine {
             to_permalink: &new_permalink,
         };
 
-        // Read here for the write, by the strict reader the MANIFEST check
-        // above uses too (see [`Engine::move_source_text`]).
+        // The source's and the destination's write locks, from the read of
+        // the source through the write, the removal and the reindex, as every
+        // other writer of either file takes them: an edit of the source
+        // cannot land between the read and the removal and be lost, nor after
+        // the removal and bring the source back. Both in lock key order; an
+        // in-place move takes one. A virtual end takes none, since the store
+        // writes it in one statement. Released before the attachments and the
+        // linkers, so the rewrite below never holds two file locks.
+        let src_abs = match &src_source {
+            ContentSource::File { root } => Some(join_rel(root, &src.path)),
+            ContentSource::Virtual => None,
+        };
+        let dest_abs = match &dest_source {
+            ContentSource::File { root } => Some(join_rel(root, &dest_rel)),
+            ContentSource::Virtual => None,
+        };
+        let held: Vec<&Path> = src_abs
+            .iter()
+            .chain(dest_abs.iter())
+            .map(PathBuf::as_path)
+            .collect();
+        // A move that changes the address the editor saves to ends the room
+        // over the engram: its text is saved first, and no room opens over
+        // the old address until the move is done (the fence). Its sockets
+        // are told where the engram went once the move has landed, and
+        // `internal` if it fails from here. After every screen, so a refused
+        // move leaves the room open; before the file locks, which a room's
+        // save takes. A path-only move keeps the room: it saves by address,
+        // and the address does not change.
+        let mut closing = if readdressed {
+            self.close_room_for_move(
+                &p.domain,
+                RoomDoc::Engram(src.permalink.clone()),
+                None,
+                MovedTo {
+                    domain: cross.then(|| dest_domain.clone()),
+                    path: dest_rel.clone(),
+                    permalink: Some(new_permalink.clone()),
+                },
+            )
+            .await
+        } else {
+            None
+        };
+        // The window R81 named, between the close and the locks: the fence
+        // keeps a room from opening in it.
+        self.take_room_screen_hold().await;
+        let _lock = self.lock_files(&held).await;
+        // The destination was free when it was checked above; it is asked
+        // again now that nobody else may write it.
+        if !in_place {
+            self.ensure_dest_free(
+                &dest_source,
+                &dest_domain,
+                &dest_rel,
+                &src_source,
+                &src.path,
+                cross,
+            )
+            .await?;
+        }
+
+        // Read here for the write, inside the locks, by the strict reader the
+        // MANIFEST check above uses too (see [`Engine::move_source_text`]).
         let original = self.move_source_text(&src_source, &src, &p.domain).await?;
+        // The screens above read the source before these locks were taken, so
+        // an edit may have landed in between. A text that changed since is
+        // screened again here, where it can no longer change. The screens
+        // take no file lock, so running them under these is safe.
+        if let Some(screened) = &screened
+            && *screened != original
+        {
+            self.refuse_read_only_switch_on(&dest_domain, &original, scope)
+                .await?;
+            self.screen_manifest_write(&dest_domain, Some(""), &original)
+                .await?;
+        }
         // A move writes the engram anew, so it lands as LF whatever line
         // endings it was read with, a plain rename included.
         let original = crystalline_core::to_lf(&original).into_owned();
@@ -295,6 +504,8 @@ impl Engine {
         // change this move announces at its tail.
         let moved_checksum: String;
 
+        // Set once the move has committed (see [`TellMoved`]).
+        let mut told: TellMoved;
         if cross {
             // Index the content into the destination source, then remove the
             // source.
@@ -326,15 +537,31 @@ impl Engine {
                 ContentSource::File { root } => {
                     let dest_abs = join_rel(root, &dest_rel);
                     write_file(&dest_abs, &content)?;
-                    let store = self.store.lock().await;
-                    let dest_id = store
-                        .upsert_domain(
+                    let indexed = async {
+                        let store = self.store.lock().await;
+                        let dest_id = store
+                            .upsert_domain(
+                                &dest_domain,
+                                Some(&root.to_string_lossy()),
+                                DomainKind::File,
+                            )
+                            .await?;
+                        self.reindex_file(&*store, dest_id, root, &dest_rel).await
+                    }
+                    .await;
+                    // The destination's host lock moved meanwhile: the file
+                    // written there goes again, and the source stays.
+                    if let Err(e) = indexed {
+                        return Err(self.refuse_file_change(
+                            e,
                             &dest_domain,
-                            Some(&root.to_string_lossy()),
-                            DomainKind::File,
-                        )
-                        .await?;
-                    self.reindex_file(&*store, dest_id, root, &dest_rel).await?;
+                            vec![(
+                                dest_abs.clone(),
+                                None,
+                                Some(crystalline_core::to_lf(&content).into_owned().into_bytes()),
+                            )],
+                        ));
+                    }
                 }
                 ContentSource::Virtual => {
                     let store = self.store.lock().await;
@@ -358,13 +585,35 @@ impl Engine {
             let store = self.store.lock().await;
             // One transaction for the source row, as the index half of a
             // delete has: the row, its children and the unbinding of every
-            // reference that named it land together.
+            // reference that named it land together, behind the source's
+            // host-lock fence.
             store.begin().await?;
+            if let ContentSource::File { root } = &src_source
+                && let Err(e) = self.file_row_fence(&*store, src.domain_id, root).await
+            {
+                let _ = store.rollback().await;
+                drop(store);
+                // The source's lock moved after the destination landed: the
+                // source file comes back, and the engram is in both places
+                // until one of them is removed.
+                return Err(self.refuse_file_change(
+                    e,
+                    &src.domain,
+                    vec![(
+                        join_rel(root, &src.path),
+                        Some(original.clone().into_bytes()),
+                        None,
+                    )],
+                ));
+            }
             if let Err(e) = store.delete_engram(src.domain_id, &src.path).await {
                 let _ = store.rollback().await;
                 return Err(e.into());
             }
             store.commit().await?;
+            // The engram has left the source: whatever fails from here, the
+            // room and later joins are told where it went.
+            told = TellMoved(closing.take());
         } else {
             // Same-domain rename: move the file when file-backed, then give the
             // row its new path and permalink in place, keeping its id. A move
@@ -393,11 +642,23 @@ impl Engine {
             if let ContentSource::File { root } = &src_source {
                 let src_abs = join_rel(root, &src.path);
                 let dest_abs = join_rel(root, &dest_rel);
+                // A letter-case rename on a case-insensitive disk renames the
+                // file first (atomic, and it stays on disk under one name or
+                // the other if the write fails), then writes the new text.
+                let case_only = !cross
+                    && !in_place
+                    && is_case_only_rename(&src_abs, &dest_abs, &src.path, &dest_rel);
+                if case_only {
+                    std::fs::rename(&src_abs, &dest_abs).map_err(|source| EngineError::Io {
+                        path: dest_abs.display().to_string(),
+                        source,
+                    })?;
+                }
                 match &moved_text {
                     Some(text) => write_file(&dest_abs, text)?,
                     None => write_bytes(&dest_abs, original.as_bytes())?,
                 }
-                if !in_place {
+                if !in_place && !case_only {
                     std::fs::remove_file(&src_abs).map_err(|source| EngineError::Io {
                         path: src_abs.display().to_string(),
                         source,
@@ -405,14 +666,69 @@ impl Engine {
                 }
             }
             let store = self.store.lock().await;
-            store
-                .readdress_engram(src.domain_id, &src.path, &dest_rel, &new_permalink)
-                .await?;
+            // The readdress and the reindex of a file domain commit behind
+            // its host-lock fence; a refusal puts both files back.
+            let put_back_files = |root: &Path| {
+                let written = moved_text
+                    .as_deref()
+                    .map_or(original.as_bytes().to_vec(), |t| {
+                        crystalline_core::to_lf(t).into_owned().into_bytes()
+                    });
+                let (src_abs, dest_abs) = (join_rel(root, &src.path), join_rel(root, &dest_rel));
+                if src_abs == dest_abs {
+                    vec![(src_abs, Some(original.clone().into_bytes()), Some(written))]
+                } else {
+                    vec![
+                        (dest_abs, None, Some(written)),
+                        (src_abs, Some(original.clone().into_bytes()), None),
+                    ]
+                }
+            };
+            let readdressed_row = async {
+                store.begin().await?;
+                let done = async {
+                    if let ContentSource::File { root } = &src_source {
+                        self.file_row_fence(&*store, src.domain_id, root).await?;
+                    }
+                    store
+                        .readdress_engram(src.domain_id, &src.path, &dest_rel, &new_permalink)
+                        .await?;
+                    Ok::<(), EngineError>(())
+                }
+                .await;
+                match done {
+                    Ok(()) => Ok(store.commit().await?),
+                    Err(e) => {
+                        let _ = store.rollback().await;
+                        Err(e)
+                    }
+                }
+            }
+            .await;
+            if let Err(e) = readdressed_row {
+                return Err(match &src_source {
+                    ContentSource::File { root } => {
+                        self.refuse_file_change(e, &src.domain, put_back_files(root))
+                    }
+                    ContentSource::Virtual => e,
+                });
+            }
+            // The row answers to its new address now: whatever fails from
+            // here, the room and later joins are told where it went.
+            told = TellMoved(closing.take());
             if let Some(text) = &moved_text {
                 match &src_source {
                     ContentSource::File { root } => {
-                        self.reindex_file(&*store, src.domain_id, root, &dest_rel)
-                            .await?;
+                        if let Err(e) = self
+                            .reindex_file(&*store, src.domain_id, root, &dest_rel)
+                            .await
+                        {
+                            return Err(self.refuse_file_change(
+                                e,
+                                &src.domain,
+                                put_back_files(root),
+                            ));
+                        }
                     }
                     ContentSource::Virtual => {
                         self.index_markdown(
@@ -436,6 +752,15 @@ impl Engine {
             }
         }
 
+        drop(_lock);
+        // The engram has moved: the room's sockets learn its new address now,
+        // and the fence lifts. A way out before the commit dropped the guard
+        // instead, which told the room `internal`; one after it leaves the
+        // telling to `told`'s drop.
+        if let Some(closing) = told.0.take() {
+            closing.moved().await;
+        }
+
         // The attachments follow the engram, now that the engram itself has
         // landed and the branch above has released its store lock. A
         // same-domain move carries nothing: an `assets/` reference is
@@ -452,25 +777,45 @@ impl Engine {
         // configured `identity.actor`), not the moving client. A referencing
         // engram that cannot be rewritten is logged and skipped rather than
         // failing the call: the move is committed by this line, and an error
-        // now would report a move that happened as one that did not.
+        // now would report a move that happened as one that did not. The
+        // receipt names it in `links_failed`, as a reflection move does.
         let linker_actor = self.actor(None);
         let mut rewritten: Vec<Value> = Vec::new();
+        let mut failed: Vec<Value> = Vec::new();
         let mut references = 0usize;
         for linker in &linkers {
+            if let Some(e) = paused.get(&linker.domain) {
+                tracing::warn!(
+                    domain = linker.domain.as_str(),
+                    path = linker.path.as_str(),
+                    "the move could not rewrite the references in this engram: {e}"
+                );
+                note_link_failure(&mut failed, &linker.domain, &linker.path, e);
+                continue;
+            }
             match self
                 .relink_engram(linker, &spec, &linker_actor, &hidden)
                 .await
             {
-                Ok(Some((count, permalink))) => {
-                    references += count;
-                    rewritten.push(json!({ "domain": linker.domain, "permalink": permalink }));
+                Ok(Some(relinked)) => {
+                    references += relinked.references;
+                    let mut entry =
+                        json!({ "domain": linker.domain, "permalink": relinked.permalink });
+                    // Written into a room somebody has open, which saves it.
+                    if relinked.live {
+                        entry["landed"] = json!("live");
+                    }
+                    rewritten.push(entry);
                 }
                 Ok(None) => {}
-                Err(e) => tracing::warn!(
-                    domain = linker.domain.as_str(),
-                    path = linker.path.as_str(),
-                    "the move could not rewrite the references in this engram: {e}"
-                ),
+                Err(e) => {
+                    tracing::warn!(
+                        domain = linker.domain.as_str(),
+                        path = linker.path.as_str(),
+                        "the move could not rewrite the references in this engram: {e}"
+                    );
+                    note_link_failure(&mut failed, &linker.domain, &linker.path, &e);
+                }
             }
         }
 
@@ -557,6 +902,16 @@ impl Engine {
                 audience: None,
             }));
         }
+        // Moving the last engram out of `reflections/`, or a file onto the
+        // MANIFEST, can move a Reflection's mode in either domain.
+        self.heal_reflection_rows_after(&p.domain, &src.path).await;
+        if cross || src.path != dest_rel {
+            self.heal_reflection_rows_after(&dest_domain, &dest_rel)
+                .await;
+        }
+        if let Some(before) = switch_before {
+            self.announce_switch_if_moved(&dest_domain, before, change_label(scope));
+        }
         // The new address may be what a link in another domain has been
         // waiting for. A draft move returned above, through `move_within`.
         if readdressed {
@@ -567,7 +922,8 @@ impl Engine {
         // `links_rewritten` counts engrams, as it always has; the references
         // inside them are `references_rewritten`, and `rewritten` names the
         // engrams so a caller can re-read what changed under it.
-        Ok(json!({
+        // `links_failed` appears only when a linker could not be rewritten.
+        let mut receipt = json!({
             "from": { "domain": p.domain, "permalink": src.permalink, "path": src.path },
             "to": { "domain": dest_domain, "permalink": dest_permalink, "path": dest_rel },
             "cross_domain": cross,
@@ -575,7 +931,11 @@ impl Engine {
             "references_rewritten": references,
             "rewritten": rewritten,
             "attachment_warnings": attachment_warnings,
-        }))
+        });
+        if !failed.is_empty() {
+            receipt["links_failed"] = json!(failed);
+        }
+        Ok(receipt)
     }
 
     /// The permalink a moved engram answers to at `dest_rel`.
@@ -692,41 +1052,49 @@ impl Engine {
         }
     }
 
-    /// Refuse a move while somebody has one of `docs` open in the co-editing
-    /// editor: a room saves back to the document it was opened over, so a
-    /// change underneath it would turn the editor's next save into a write
-    /// to an address that no longer exists. Base rooms only: a move in review
-    /// mode never reaches this, since it moves a draft. Checked before
-    /// anything moves.
+    /// End the room over `doc` for a move to `to`, after its last save,
+    /// and fence the document while the returned guard stands (see
+    /// [`CollabSessions::close_for_move`]). The move calls
+    /// [`MoveClose::moved`] once it has committed; dropped on any other way
+    /// out, the guard tells the room `internal`. `None` on an engine with no
+    /// rooms: nothing to close and nobody to fence out.
     ///
-    /// An engram room is keyed on the permalink it was opened under and saves
-    /// back to that permalink, so a move that changed it underneath would show
-    /// the person typing the engram as deleted, and a later engram taking the
-    /// old name would receive the save. A path-only move keeps the permalink
-    /// and needs no refusal, so the caller asks only on a permalink change.
-    pub(super) async fn refuse_under_live_rooms(
+    /// Runs after every screen that can refuse the move, so a refused move
+    /// leaves the room open, and before the file locks, which a room's save
+    /// takes.
+    ///
+    /// [`CollabSessions::close_for_move`]: crate::collab::session::CollabSessions::close_for_move
+    pub(super) async fn close_room_for_move(
         &self,
         domain: &str,
-        docs: &[RoomDoc],
+        doc: RoomDoc,
+        overlay: Option<&str>,
+        to: MovedTo,
+    ) -> Option<MoveClose> {
+        let rooms = self.collab_rooms()?;
+        Some(rooms.close_for_move(domain, &doc, overlay, to).await)
+    }
+
+    /// Refuse while a room is open over any of the reflection pages
+    /// `paths` (inside `reflections/`): a reflection room saves straight to
+    /// its file, so a delete, or a rewrite of its links, would race its next
+    /// save. A move of the page itself does not come here; it closes the
+    /// room instead (`Engine::close_room_for_move`).
+    pub(super) async fn refuse_under_live_pages(
+        &self,
+        domain: &str,
+        paths: &[String],
     ) -> Result<()> {
         let Some(rooms) = self.collab_rooms() else {
             return Ok(());
         };
-        for doc in docs {
-            if !rooms.has_live_doc(domain, doc, None).await {
-                continue;
+        for path in paths {
+            let doc = RoomDoc::Reflection(path.clone());
+            if rooms.has_live_doc(domain, &doc, None).await {
+                return Err(EngineError::Conflict(format!(
+                    "somebody is editing '{path}'; try again once the page is closed"
+                )));
             }
-            return Err(EngineError::Conflict(match doc {
-                RoomDoc::Engram(permalink) => format!(
-                    "'{permalink}' is open in the editor right now, and moving it would change the \
-                     address the editor saves to; close the editor and move it again"
-                ),
-                // A reflection room saves straight to its file: a move or a
-                // delete, or a rewrite of its links, would race its next save.
-                RoomDoc::Reflection(path) => {
-                    format!("somebody is editing '{path}'; try again once the page is closed")
-                }
-            }));
         }
         Ok(())
     }
@@ -790,72 +1158,195 @@ impl Engine {
     /// in its source of truth, then reindex it. Answers how many references
     /// changed and the engram's permalink, or `None` when its text held none
     /// after all - a content hit inside code, or a longer permalink.
+    ///
+    /// Written the way an edit writes, because an edit of the same engram may
+    /// run beside the move. A file is read, rewritten and reindexed under its
+    /// write lock, which every other writer of it takes too, so neither change
+    /// is lost. A virtual row is written by the store's compare and swap, and
+    /// a refused swap is applied again to the row stored now, as an unguarded
+    /// edit is.
+    ///
+    /// While a co-editing room that will save is open over the linker, the
+    /// room's text IS the engram, so the rewrite composes into it, the way an
+    /// edit's live arm does: computed from the live text, it never collides
+    /// with what a person is typing, and the room's own save writes it down
+    /// and announces it. Neither the file nor the row is written behind that
+    /// room, and the receipt marks the linker `landed: live`.
+    ///
+    /// A room that will not save what it is given (a conflict, a failed save,
+    /// or one whose last connection left, whose final save has run or is
+    /// running) gets nothing: the rewrite goes to the file or the row, and the
+    /// room meets it as an external change on its next save, by its compare
+    /// and swap and a three-way merge. The same holds when the room keeps
+    /// moving under the compose because somebody is typing.
+    ///
+    /// Lock order: the room first, holding nothing else, then the file lock,
+    /// then the store lock, as `edit_engram` takes them and as a room's save
+    /// takes them. The move holds no other file lock and no store lock while
+    /// it waits here, so an edit of this engram and the move cannot wait on
+    /// each other.
     pub(super) async fn relink_engram(
         &self,
         linker: &MoveLinker,
         spec: &Relink<'_>,
         actor: &str,
         hidden: &HashSet<String>,
-    ) -> Result<Option<(usize, String)>> {
+    ) -> Result<Option<Relinked>> {
+        // The live arm. The room is keyed on the linker's permalink, which
+        // the index knows; asked before any lock is taken, and only when a
+        // room over one of this domain's engrams is open at all.
+        if let Some(rooms) = self.collab_rooms()
+            && rooms.has_engram_rooms_in(&linker.domain).await
+            && let Some(desc) = self.descriptor_at(&linker.domain, &linker.path).await?
+        {
+            for attempt in 0..super::edit::UNGUARDED_EDIT_ATTEMPTS {
+                let Some(live) = rooms.live_text(&linker.domain, &desc.permalink, None).await
+                else {
+                    break;
+                };
+                let Some((edited, references)) = self
+                    .relinked_text(&live.text, linker, spec, actor, hidden)
+                    .await
+                else {
+                    // The room holds no such reference. When it saves, that
+                    // is what lands; when it does not, the source still may.
+                    if live.saving {
+                        return Ok(None);
+                    }
+                    break;
+                };
+                // Whether the room saves is decided again inside the compose,
+                // under the lock the compose holds; that is the decision that
+                // counts.
+                match rooms
+                    .compose_while_saving(
+                        &linker.domain,
+                        &desc.permalink,
+                        None,
+                        Some(&live.text),
+                        edited,
+                        actor,
+                        None,
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        return Ok(Some(Relinked {
+                            references,
+                            permalink: desc.permalink,
+                            live: true,
+                        }));
+                    }
+                    // Somebody is typing. Wait a moment before the next try,
+                    // a little longer each time, so a person typing steadily
+                    // still leaves a gap the rewrite can compose into.
+                    Err(ComposeRefused::Moved) => {
+                        if attempt + 1 < super::edit::UNGUARDED_EDIT_ATTEMPTS {
+                            tokio::time::sleep(super::edit::LIVE_RETRY_PAUSE * (1 << attempt))
+                                .await;
+                        }
+                        continue;
+                    }
+                    Err(ComposeRefused::NotSaving) => break,
+                }
+            }
+            tracing::debug!(
+                domain = linker.domain.as_str(),
+                path = linker.path.as_str(),
+                "the room over this linker will not take the move's rewrite, \
+                 so it goes to the source and the room merges it on its next save"
+            );
+        }
         let source = self.read_source(&linker.domain);
-        let text = match &source {
+        let (replaced, count, _lock) = match &source {
             ContentSource::File { root } => {
                 let abs = join_rel(root, &linker.path);
-                std::fs::read_to_string(&abs).map_err(|source| EngineError::Io {
+                let lock = self.lock_file(&abs).await;
+                let text = std::fs::read_to_string(&abs).map_err(|source| EngineError::Io {
                     path: abs.display().to_string(),
                     source,
-                })?
+                })?;
+                let Some((replaced, count)) =
+                    self.relinked_text(&text, linker, spec, actor, hidden).await
+                else {
+                    return Ok(None);
+                };
+                write_file(&abs, &replaced)?;
+                let store = self.store.lock().await;
+                self.reindex_file(&*store, linker.domain_id, root, &linker.path)
+                    .await?;
+                (replaced, count, Some(lock))
             }
             ContentSource::Virtual => {
-                let store = self.store.lock().await;
-                match store.engram_content(linker.domain_id, &linker.path).await? {
-                    Some(text) => text,
-                    None => return Ok(None),
+                let mut attempt = 0usize;
+                loop {
+                    attempt += 1;
+                    let stored = {
+                        let store = self.store.lock().await;
+                        match store.engram_content(linker.domain_id, &linker.path).await? {
+                            Some(text) => text,
+                            None => return Ok(None),
+                        }
+                    };
+                    // Compared against the bytes as stored, before the LF
+                    // pass below, as an edit compares them.
+                    let expected = sha256_hex(stored.as_bytes());
+                    let Some((replaced, count)) = self
+                        .relinked_text(&stored, linker, spec, actor, hidden)
+                        .await
+                    else {
+                        return Ok(None);
+                    };
+                    // The seam an edit's virtual arm has: a token nothing can
+                    // match, never retried. See `Engine::fail_next_source_edit`.
+                    let armed = self.take_armed_failure();
+                    // And the race seam, which is retried like a real race.
+                    // See `Engine::lose_next_relink_swap`.
+                    let lost = self.take_lost_relink_swap();
+                    let expected = if armed || lost {
+                        "0".repeat(64)
+                    } else {
+                        expected
+                    };
+                    let store = self.store.lock().await;
+                    let indexed = self
+                        .index_markdown(
+                            &*store,
+                            linker.domain_id,
+                            &linker.path,
+                            &replaced,
+                            virtual_stamp(&replaced),
+                            Some(&expected),
+                            true,
+                        )
+                        .await;
+                    drop(store);
+                    match indexed {
+                        Ok(_) => break (replaced, count, None),
+                        Err(e)
+                            if !armed
+                                && attempt < super::edit::UNGUARDED_EDIT_ATTEMPTS
+                                && super::edit::is_stale_edit(&e) =>
+                        {
+                            tracing::debug!(
+                                domain = linker.domain.as_str(),
+                                path = linker.path.as_str(),
+                                attempt,
+                                "a move's rewrite lost a race with another writer; \
+                                 applying it again to the stored text"
+                            );
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
             }
         };
-        // Rewritten as LF, the whole file, like every write.
-        let text = crystalline_core::to_lf(&text).into_owned();
-        let (relinked, count) =
-            crystalline_core::relink::relink(&text, &linker.domain, &linker.domain, spec);
-        if count == 0 {
-            return Ok(None);
-        }
-        let replaced = touch_generated(&relinked, actor, None, now_offset());
-        // The rewritten reference passes through the same funnel every other
-        // write's final text does: `spec.to_domain` is the destination's
-        // local name (moves are localized before they reach here), so
-        // without this a linker would carry `[[<local-name>:...]]` even where
-        // that local name is only an alias or a non-canonical spelling of the
-        // domain's declared name. Called before the store lock below is
-        // taken, since it may itself need the store.
-        let (replaced, _) = self.normalize_domain_spellings(&replaced, hidden).await;
-        let store = self.store.lock().await;
-        match &source {
-            ContentSource::File { root } => {
-                write_file(&join_rel(root, &linker.path), &replaced)?;
-                self.reindex_file(&*store, linker.domain_id, root, &linker.path)
-                    .await?;
-            }
-            ContentSource::Virtual => {
-                self.index_markdown(
-                    &*store,
-                    linker.domain_id,
-                    &linker.path,
-                    &replaced,
-                    virtual_stamp(&replaced),
-                    None,
-                    true,
-                )
-                .await?;
-            }
-        }
+        drop(_lock);
         let permalink = parse_engram(&replaced)
             .ok()
             .and_then(|engram| engram.frontmatter.permalink)
             .filter(|permalink| !permalink.is_empty())
             .unwrap_or_else(|| crystalline_core::path_permalink(&linker.path));
-        drop(store);
         // The linker's own text changed, possibly in another domain, so its
         // page follows too.
         self.announce(Change::Engram(EngramChanged {
@@ -869,7 +1360,41 @@ impl Engine {
             draft_of: None,
             audience: None,
         }));
-        Ok(Some((count, permalink)))
+        Ok(Some(Relinked {
+            references: count,
+            permalink,
+            live: false,
+        }))
+    }
+
+    /// The linker's text with the moved engram's references rewritten,
+    /// stamped and normalized, and how many references changed; `None` when
+    /// none did.
+    async fn relinked_text(
+        &self,
+        text: &str,
+        linker: &MoveLinker,
+        spec: &Relink<'_>,
+        actor: &str,
+        hidden: &HashSet<String>,
+    ) -> Option<(String, usize)> {
+        // Rewritten as LF, the whole file, like every write.
+        let text = crystalline_core::to_lf(text);
+        let (relinked, count) =
+            crystalline_core::relink::relink(&text, &linker.domain, &linker.domain, spec);
+        if count == 0 {
+            return None;
+        }
+        let replaced = touch_generated(&relinked, actor, None, now_offset());
+        // The rewritten reference passes through the same funnel every other
+        // write's final text does: `spec.to_domain` is the destination's
+        // local name (moves are localized before they reach here), so
+        // without this a linker would carry `[[<local-name>:...]]` even where
+        // that local name is only an alias or a non-canonical spelling of the
+        // domain's declared name. Called before the store lock is taken,
+        // since it may itself need the store.
+        let (replaced, _) = self.normalize_domain_spellings(&replaced, hidden).await;
+        Some((replaced, count))
     }
 
     /// Rename a tag to `new`, or (with `merge`) fold it into an existing `new`,
@@ -917,9 +1442,16 @@ impl Engine {
         }
         // A retag of one read-only domain is refused; across every domain it
         // skips the read-only ones and names them (decision D7).
+        // A dry run only previews: it meets the read-only check, never the
+        // host gate, which may claim a lock.
         if let Some(d) = domain {
-            self.refuse_read_only_domain(d, &crate::scope::Scope::Unrestricted)
-                .await?;
+            if dry_run {
+                self.refuse_read_only_flag(d, &crate::scope::Scope::Unrestricted)
+                    .await?;
+            } else {
+                self.refuse_read_only_domain(d, &crate::scope::Scope::Unrestricted)
+                    .await?;
+            }
         }
         let old_f = old.trim().to_lowercase();
         let new_f = new.trim().to_lowercase();
@@ -980,11 +1512,39 @@ impl Engine {
         // the list is built: `listed`, the dry run, the rewrite loop, the count
         // and the alias recording all read from it, so one filter covers all of
         // them and no later addition can forget it.
-        let (targets, read_only_skipped) = {
+        let (targets, read_only_skipped, hosted_elsewhere_skipped) = {
             let store = self.store.lock().await;
             let mut found = store.engrams_with_tag(&old_f, domain).await?;
             drop(store);
             found.retain(|d| !unregistered.contains(&d.domain));
+            // Across every domain, a file domain another instance writes on
+            // this shared database is left out and named, never claimed: its
+            // files are that instance's. A named domain met the host gate
+            // above (or, for a dry run, is previewed as it stands).
+            let mut elsewhere: Vec<String> = Vec::new();
+            if domain.is_none() {
+                let mut here: HashMap<String, bool> = HashMap::new();
+                let mut kept = Vec::with_capacity(found.len());
+                for d in found {
+                    let writes = match here.get(&d.domain) {
+                        Some(known) => *known,
+                        None => {
+                            let known = self.writes_domain_here(&d.domain, !dry_run).await;
+                            here.insert(d.domain.clone(), known);
+                            known
+                        }
+                    };
+                    if writes {
+                        kept.push(d);
+                    }
+                }
+                found = kept;
+                elsewhere = here
+                    .into_iter()
+                    .filter_map(|(name, writes)| (!writes).then_some(name))
+                    .collect();
+                elsewhere.sort();
+            }
             // A read-only domain is left out here too, for the same reason:
             // one filter covers the dry run, the rewrite and the alias
             // recording into its MANIFEST. Asked once per domain, after the
@@ -1009,7 +1569,7 @@ impl Engine {
                 .filter_map(|(name, is_locked)| is_locked.then_some(name))
                 .collect();
             skipped.sort();
-            (kept, skipped)
+            (kept, skipped, elsewhere)
         };
         let listed: Vec<Value> = targets
             .iter()
@@ -1023,6 +1583,9 @@ impl Engine {
             });
             if !read_only_skipped.is_empty() {
                 dry["read_only_skipped"] = json!(read_only_skipped);
+            }
+            if !hosted_elsewhere_skipped.is_empty() {
+                dry["hosted_elsewhere_skipped"] = json!(hosted_elsewhere_skipped);
             }
             return Ok(dry);
         }
@@ -1093,6 +1656,9 @@ impl Engine {
         });
         if !read_only_skipped.is_empty() {
             response["read_only_skipped"] = json!(read_only_skipped);
+        }
+        if !hosted_elsewhere_skipped.is_empty() {
+            response["hosted_elsewhere_skipped"] = json!(hosted_elsewhere_skipped);
         }
 
         // Record the fold as a tag alias in each affected domain's MANIFEST, once
@@ -1193,9 +1759,36 @@ impl Engine {
         dest_source: &ContentSource,
         dest_domain: &str,
         dest_rel: &str,
+        src_source: &ContentSource,
+        src_rel: &str,
+        cross: bool,
     ) -> Result<()> {
         let taken = match dest_source {
-            ContentSource::File { root } => join_rel(root, dest_rel).exists(),
+            // The source file itself at the destination (a letter-case rename
+            // on a case-insensitive disk) is not a collision.
+            ContentSource::File { root } => {
+                let dest_abs = join_rel(root, dest_rel);
+                // Never across domains: overlapping roots are not one domain.
+                let itself = !cross
+                    && matches!(src_source, ContentSource::File { root: r }
+                        if is_case_only_rename(&join_rel(r, src_rel), &dest_abs, src_rel, dest_rel));
+                let taken = dest_abs.exists() && !itself;
+                if !taken && !itself {
+                    // A destination whose file is missing here may still
+                    // be the row of an engram only the previous host of a
+                    // host move has.
+                    let dest_id = self.store.lock().await.domain_id(dest_domain).await?;
+                    if let Some(dest_id) = dest_id {
+                        self.refuse_only_elsewhere(
+                            dest_domain,
+                            dest_id,
+                            ElsewhereRow::Engram(dest_rel),
+                        )
+                        .await?;
+                    }
+                }
+                taken
+            }
             ContentSource::Virtual => {
                 let store = self.store.lock().await;
                 let dest_id = store
@@ -1255,6 +1848,33 @@ impl Engine {
                 })
             }
             ContentSource::Virtual => self.load_content(src_source, src).await,
+        }
+    }
+}
+
+/// What [`Engine::move_draft_locked`] moves, and for whom.
+struct DraftMove<'a> {
+    who: &'a str,
+    src: &'a EngramDescriptor,
+    src_source: &'a ContentSource,
+    dest_rel: &'a str,
+    cross: bool,
+    asked: Option<&'a str>,
+    mover: &'a str,
+}
+
+/// A move's room guard once the move has committed: from then on the
+/// document is at its new address whatever a later step answers, so a way
+/// out that drops this tells the room `moved` (in a task, since a drop
+/// cannot wait) instead of the `internal` an uncommitted move's guard sends.
+struct TellMoved(Option<MoveClose>);
+
+impl Drop for TellMoved {
+    fn drop(&mut self) {
+        if let Some(closing) = self.0.take()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            runtime.spawn(closing.moved());
         }
     }
 }

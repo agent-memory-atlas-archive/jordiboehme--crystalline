@@ -14,7 +14,7 @@
 //! (see [`CURRENT_STATUS_CLASS`]), so a domain written before the vocabulary
 //! flip and a foreign OKF bundle both stay first-class.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use async_trait::async_trait;
@@ -1241,6 +1241,11 @@ pub struct SearchHit {
     /// engram is untagged. Every hit passively teaches the querying agent the
     /// existing vocabulary. Observation-kind hits carry their engram's tags.
     pub tags: Vec<String>,
+    /// The engram's `recorded_at` as stored, on a filter-only page (the
+    /// listing, which sorts by it); `None` on a ranked search and for an
+    /// undated engram, and then left out of the answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recorded_at: Option<String>,
     /// Whether the hit is the engram or one of its observations.
     #[serde(flatten)]
     pub kind: HitKind,
@@ -1471,6 +1476,11 @@ pub struct BrowseLevel {
     /// byte order. Derived from the distinct first path segment below the
     /// prefix rather than from `engrams`, so the cap never hides a folder.
     pub folders: Vec<String>,
+    /// How many engrams each of `folders` holds, recursively: every base row
+    /// under the folder at any depth, which is the number the paged listing
+    /// scoped to that folder reports. Counted in the same grouped statement
+    /// that names the folders, so it costs no query of its own.
+    pub folder_counts: BTreeMap<String, usize>,
     /// How many engrams the level holds, counted under exactly the filter that
     /// selected `engrams`. Larger than `engrams.len()` means the cap cut the
     /// listing.
@@ -1923,7 +1933,59 @@ pub struct EmbeddingCoverage {
     pub models: Vec<ChunkModelCount>,
 }
 
+/// One group of the coverage aggregate: the chunk rows that share a model and
+/// a width, with how many of them carry a vector. A chunk not embedded yet has
+/// no model and no width, so it lands in the one group whose `embedded` is 0.
+/// Each backend maps its rows into these and [`EmbeddingCoverage::from_groups`]
+/// is the one fold, for every table and for any set of domains.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoverageGroup {
+    /// The embedding model, empty for chunks without a vector.
+    pub model: String,
+    /// The vector width, 0 for chunks without a vector.
+    pub dims: usize,
+    /// Chunk rows in the group.
+    pub chunks: usize,
+    /// Chunk rows in the group that carry an embedding.
+    pub embedded: usize,
+}
+
 impl EmbeddingCoverage {
+    /// Fold coverage groups into one snapshot. Every group counts toward the
+    /// totals; only a group with vectors and a model becomes a `models` entry,
+    /// and groups that share a model and width (the same model in two domains)
+    /// merge into one. Entries run most chunks first, then by model and width,
+    /// so the order never depends on how the database returned the rows.
+    pub fn from_groups(groups: impl IntoIterator<Item = CoverageGroup>) -> Self {
+        let mut total_chunks = 0usize;
+        let mut embedded_chunks = 0usize;
+        let mut by_model: std::collections::BTreeMap<(String, usize), usize> =
+            std::collections::BTreeMap::new();
+        for g in groups {
+            total_chunks += g.chunks;
+            embedded_chunks += g.embedded;
+            if g.embedded == 0 || g.model.is_empty() {
+                continue;
+            }
+            *by_model.entry((g.model, g.dims)).or_default() += g.embedded;
+        }
+        let mut models: Vec<ChunkModelCount> = by_model
+            .into_iter()
+            .map(|((model, dims), count)| ChunkModelCount { model, dims, count })
+            .collect();
+        models.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| a.model.cmp(&b.model))
+                .then(a.dims.cmp(&b.dims))
+        });
+        Self {
+            total_chunks,
+            embedded_chunks,
+            models,
+        }
+    }
+
     /// Embedded chunks produced by the given model.
     pub fn embedded_for(&self, model: &str) -> usize {
         self.models
@@ -2085,6 +2147,11 @@ pub struct DomainStats {
     /// about what is in the rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rebuild_kind: Option<String>,
+    /// The rows a walk kept after a host move on a shared database because
+    /// this instance's disk does not have them, while that is unresolved
+    /// and the count is not zero ([`HostMove`]). `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub only_elsewhere: Option<OnlyElsewhere>,
 }
 
 /// Which rebuild verb is stamping a domain's marker: `reindex --full`, which
@@ -2121,6 +2188,11 @@ pub struct DomainHost {
     pub label: String,
     /// The host's last heartbeat, RFC 3339.
     pub heartbeat_at: String,
+    /// The token of the claim that wrote the row (its `acquired_at`), which
+    /// a release compares before it deletes. Never serialized: it is the
+    /// holder's to keep, not something an answer shows.
+    #[serde(skip)]
+    pub(crate) token: String,
 }
 
 /// The outcome of a [`Store::claim_domain_host`]: this instance acquired (or
@@ -2128,11 +2200,155 @@ pub struct DomainHost {
 /// it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum HostClaim {
-    /// This instance holds the host lock now.
-    Acquired,
+    /// This instance holds the host lock now, under `token`: the claim's own
+    /// `acquired_at`, new on every claim, a re-claim by the same instance
+    /// id included. Only a release that names this token deletes the row
+    /// ([`Store::release_domain_host`]), so a process whose claim another
+    /// claim under the same id replaced cannot release the newer one.
+    Acquired {
+        /// The claim's token. Never serialized: it is the holder's to keep.
+        #[serde(skip)]
+        token: String,
+    },
     /// Another instance holds it and the claim did not qualify for takeover
     /// (not stale, no `take_over`).
     HeldByOther(DomainHost),
+}
+
+impl HostClaim {
+    /// Whether this instance holds the lock after the claim.
+    pub fn is_acquired(&self) -> bool {
+        matches!(self, HostClaim::Acquired { .. })
+    }
+}
+
+/// A new claim token: the claim's time, so the column still reads as when
+/// the lock was acquired, then a random part, so two claims in the same
+/// instant (two processes of one machine) never share a token.
+pub(crate) fn claim_token(now: &str) -> String {
+    format!("{now} {}", uuid::Uuid::new_v4().simple())
+}
+
+/// The rows of a file domain that the last complete walk did not see on
+/// the disk of the instance that hosts it now, kept because the domain was
+/// taken over on a shared database and the previous host's disk may have
+/// them (see [`HostMove`]). Counts only, never content.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct OnlyElsewhere {
+    /// The label of the instance that held the domain before, when known.
+    pub previous_host: Option<String>,
+    /// Engram rows.
+    pub engrams: u64,
+    /// Engram attachment rows (files under `assets/`).
+    pub attachments: u64,
+    /// Reflection page rows, the pact included.
+    pub pages: u64,
+    /// Reflection file rows (files under `reflections/assets/`).
+    pub files: u64,
+}
+
+impl OnlyElsewhere {
+    /// Every row counted, of every kind.
+    pub fn total(&self) -> u64 {
+        self.engrams + self.attachments + self.pages + self.files
+    }
+
+    /// The one line a person reads for `domain` on the instance that hosts
+    /// it, in the sync report and in `crystalline status`, with the two ways
+    /// to end it.
+    pub fn line(&self, domain: &str) -> String {
+        format!(
+            "{}; copy the domain folder over or restore it, then sync, or drop them with: crystalline sync --domain {domain} --accept-disk",
+            self.what()
+        )
+    }
+
+    /// The line on an instance that does not host the domain: the rows are
+    /// the host's to resolve, so it names the host instead of a remedy that
+    /// would be refused here.
+    pub fn line_elsewhere(&self, host: &str) -> String {
+        format!(
+            "{}; {host} hosts this domain, so resolve it there",
+            self.what()
+        )
+    }
+
+    /// The line on an instance that does not host the domain while the host
+    /// sends no heartbeat: the lock is stale, so this instance can take the
+    /// domain over and resolve it here.
+    pub fn line_stale_host(&self, host: &str, domain: &str) -> String {
+        format!(
+            "{}; {host} hosts this domain but sends no heartbeat, so take it over with: crystalline sync --domain {domain} --take-over",
+            self.what()
+        )
+    }
+
+    /// "1 engram and 2 Reflection files exist only on alpha".
+    fn what(&self) -> String {
+        let count =
+            |n: u64, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        let engrams = if self.attachments > 0 {
+            format!(
+                "{}, {}",
+                count(self.engrams, "engram", "engrams"),
+                count(self.attachments, "attachment", "attachments")
+            )
+        } else {
+            count(self.engrams, "engram", "engrams")
+        };
+        let reflection = count(
+            self.pages + self.files,
+            "Reflection file",
+            "Reflection files",
+        );
+        let host = self.previous_host.as_deref().unwrap_or("another instance");
+        format!("{engrams} and {reflection} exist only on {host}")
+    }
+}
+
+/// The stored text of a [`HostMove`], the JSON both backends keep in
+/// `domain.host_move`.
+pub(crate) fn host_move_text(host_move: &HostMove) -> String {
+    serde_json::to_string(host_move).unwrap_or_default()
+}
+
+/// A [`HostMove`] read back from `domain.host_move`. Text that does not
+/// read as one (a newer binary's shape) counts as a move with nothing
+/// counted yet, so a walk keeps rows rather than dropping them.
+pub(crate) fn parse_host_move(text: &str) -> Option<HostMove> {
+    Some(serde_json::from_str(text).unwrap_or_else(|_| HostMove {
+        at: String::new(),
+        claimant: None,
+        walked: false,
+        only_elsewhere: OnlyElsewhere::default(),
+    }))
+}
+
+/// What a domain's stats report from its stored host move: the counts once
+/// a walk found rows missing, else nothing.
+pub(crate) fn reported_elsewhere(text: Option<&str>) -> Option<OnlyElsewhere> {
+    let host_move = parse_host_move(text?)?;
+    (host_move.walked && host_move.only_elsewhere.total() > 0).then_some(host_move.only_elsewhere)
+}
+
+/// An unresolved host move of a file domain on a shared database: this
+/// instance took the domain's host lock from another instance, or from no
+/// known one, and its disk may lack files the previous host wrote. While a
+/// domain carries one, a complete walk keeps every row it does not see and
+/// counts them into [`HostMove::only_elsewhere`]; a complete walk that sees
+/// every row, or one run with `--accept-disk`, clears it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct HostMove {
+    /// When the move was marked, RFC 3339.
+    pub at: String,
+    /// The instance whose claim marked the move. Only a walk by that
+    /// instance ends it; `None` in a mark from before the field.
+    #[serde(default)]
+    pub claimant: Option<String>,
+    /// Whether a complete walk has counted the rows since.
+    pub walked: bool,
+    /// What that walk did not see.
+    pub only_elsewhere: OnlyElsewhere,
 }
 
 /// One binary attachment's metadata: an asset stored under a domain's `assets/`
@@ -2168,6 +2384,37 @@ pub struct ReflectionRow {
     pub title: String,
     /// The whole file.
     pub content: String,
+    /// Lowercase hex SHA-256 of the file.
+    pub sha256: String,
+    /// Byte length.
+    pub size: u64,
+    /// Last modification instant, RFC 3339.
+    pub modified: String,
+}
+
+/// One engram a Reflection section cites, as [`Store::cited_engrams`]
+/// answers it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CitedEngram {
+    /// The permalink the source names.
+    pub permalink: String,
+    /// The engram's title.
+    pub title: String,
+    /// The engram's status, as written.
+    pub status: String,
+    /// Lowercase hex SHA-256 of the file, the checksum a source records.
+    pub sha256: String,
+    /// Seconds since the epoch of the file's last change.
+    pub mtime: i64,
+}
+
+/// A [`ReflectionRow`] without its `content`: [`Store::list_reflection_stamps`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReflectionStamp {
+    /// The path inside `reflections/`.
+    pub path: String,
+    /// The reflection's title.
+    pub title: String,
     /// Lowercase hex SHA-256 of the file.
     pub sha256: String,
     /// Byte length.
@@ -2378,9 +2625,6 @@ pub fn merge_vocabularies(parts: Vec<Vocabulary>) -> Vocabulary {
 /// backend can implement the same trait.
 #[async_trait]
 pub trait Store: Send + Sync {
-    /// Apply any pending schema migrations. Idempotent.
-    async fn migrate(&self) -> Result<()>;
-
     /// Register or update a domain by name, root path and kind, returning its
     /// id. A file domain passes `Some(path)`; a virtual domain passes `None`,
     /// since its engrams live in the database with no filesystem root. The name
@@ -2552,6 +2796,47 @@ pub trait Store: Send + Sync {
     /// The recorded file stamps for a domain, keyed by domain-relative path.
     async fn file_stamps(&self, domain: DomainId) -> Result<HashMap<String, FileStamp>>;
 
+    /// Up to `limit` paths of the domain's base engram rows whose first path
+    /// segment is the Reflection's folder in any ASCII letter case, in no
+    /// particular order. The Reflection gate's fast path (R82): a domain that
+    /// records engrams and none under the folder has nothing pending, which
+    /// this answers without loading every [`Store::file_stamps`] entry.
+    async fn engram_rows_under_reflections(
+        &self,
+        domain: DomainId,
+        limit: usize,
+    ) -> Result<Vec<String>>;
+
+    /// Whether the domain has any base engram row. A synced domain always
+    /// records its `MANIFEST.md`, so `false` means the index holds no row of
+    /// it and the files on disk decide what is pending.
+    async fn has_engram_rows(&self, domain: DomainId) -> Result<bool>;
+
+    /// Whether the domain's Reflection has any row: a page, the pact or a
+    /// file under `reflections/assets/`. Two `LIMIT 1` seeks, never a
+    /// listing, so the check after every change under `reflections/` costs
+    /// the same however many pages the Reflection holds.
+    async fn has_reflection_rows(&self, domain: DomainId) -> Result<bool>;
+
+    /// Which of `paths` hold a base engram row in `domain`: the existence
+    /// probe a browse level's folder counts ask of a reader's drafts and
+    /// tombstones. One `LIMIT 1` seek of the unique `(domain_id, path,
+    /// actor)` per distinct path, reading no body, so it costs the reader's
+    /// overlay, never the domain.
+    async fn base_paths(&self, domain: DomainId, paths: &[String]) -> Result<HashSet<String>>;
+
+    /// The base engram rows of `domain` holding one of `permalinks`, with
+    /// what a cited source is held against: title, status, checksum and
+    /// mtime. A permalink no base row holds has no answer, a permalink named
+    /// twice answers once, and the order is unspecified. One index seek per
+    /// distinct permalink, so a page citing a few engrams never reads the
+    /// whole domain's [`Store::file_stamps`].
+    async fn cited_engrams(
+        &self,
+        domain: DomainId,
+        permalinks: &[String],
+    ) -> Result<Vec<CitedEngram>>;
+
     /// Insert or update one engram, replacing its observations, relations, links
     /// and tags. Returns the engram id. A duplicate permalink (a different path
     /// already owning the permalink) is a [`crate::IndexError::Constraint`].
@@ -2701,9 +2986,9 @@ pub trait Store: Send + Sync {
     /// Three bounded queries rather than one unbounded listing, which is what
     /// keeps a navigation tree affordable on a domain of tens of thousands of
     /// engrams: the row page is `LIMIT`ed, the count runs under exactly the
-    /// same filter so the two can never disagree, and the folder names come
-    /// from a `DISTINCT` over the path column alone - no bodies are read to
-    /// learn that a folder exists.
+    /// same filter so the two can never disagree, and the folder names and
+    /// their counts come from a `GROUP BY` over the path column alone - no
+    /// bodies are read to learn that a folder exists.
     ///
     /// `path_prefix` carries its trailing slash (`notes/`) and is matched as a
     /// literal, so a folder named `50%` or `a_b` is a folder rather than a
@@ -2723,11 +3008,9 @@ pub trait Store: Send + Sync {
     /// while a folder listing promises the folder. Whoever renders "N engrams in
     /// this folder" wants the second one.
     ///
-    /// If a tree ever needs the recursive number beside the level's, it is one
-    /// more bounded query on a filter this method already builds: the same
-    /// `count(*)` under the prefix clause alone, without the depth cut. It is
-    /// deliberately not returned today, because nothing drawing a tree has asked
-    /// for it and an unused count is a query per request.
+    /// The recursive number per child folder is in `folder_counts`: the folder
+    /// names already come from a scan of every row under the prefix, so the
+    /// same statement groups them by first segment and counts each group.
     async fn browse_level(
         &self,
         domain: &str,
@@ -3021,8 +3304,38 @@ pub trait Store: Send + Sync {
     async fn prune_embeddings_except_in(&self, table: ChunkTable, model: &str) -> Result<usize>;
 
     /// Embedding coverage of `table`: total chunks, embedded chunks and a
-    /// per-model breakdown.
-    async fn embedding_coverage_of(&self, table: ChunkTable) -> Result<EmbeddingCoverage>;
+    /// per-model breakdown. With `domains` named, only those domains' chunks
+    /// count, read fresh; a domain that does not exist counts nothing. With
+    /// `None` it is the table-wide snapshot, served from a cache every
+    /// mutator that can change an embedding drops. This is the one place the
+    /// count is made: [`Store::embedding_coverage_of`],
+    /// [`Store::embedding_coverage`] and [`Store::reflection_coverage`] are
+    /// this call with fixed arguments.
+    async fn embedding_coverage_in(
+        &self,
+        table: ChunkTable,
+        domains: Option<&[DomainId]>,
+    ) -> Result<EmbeddingCoverage>;
+
+    /// [`Store::embedding_coverage_in`] on the engram chunks of the domains
+    /// called `names`. A name that is not a registered domain counts nothing.
+    /// The one place names become ids for a search: the engine's mode decision
+    /// and the store's staleness gate both read it, so they cannot disagree.
+    async fn embedding_coverage_of_names(&self, names: &[String]) -> Result<EmbeddingCoverage> {
+        let mut ids = Vec::with_capacity(names.len());
+        for name in names {
+            if let Some(id) = self.domain_id(name).await? {
+                ids.push(id);
+            }
+        }
+        self.embedding_coverage_in(ChunkTable::Engram, Some(&ids))
+            .await
+    }
+
+    /// [`Store::embedding_coverage_in`] over the whole table.
+    async fn embedding_coverage_of(&self, table: ChunkTable) -> Result<EmbeddingCoverage> {
+        self.embedding_coverage_in(table, None).await
+    }
 
     /// [`Store::chunks_needing_embedding_in`] on the engram chunks.
     async fn chunks_needing_embedding(
@@ -3048,8 +3361,10 @@ pub trait Store: Send + Sync {
             .await
     }
 
-    /// [`Store::embedding_coverage_of`] the engram chunks: what engram search's
-    /// mode decision and staleness gate, `status` and the backlog read (R55).
+    /// [`Store::embedding_coverage_of`] the engram chunks: what `status` and
+    /// the backlog read, and what a search that names no domain decides its
+    /// mode and staleness on (R55). A search that names domains reads
+    /// [`Store::embedding_coverage_in`] of those domains instead (R88).
     async fn embedding_coverage(&self) -> Result<EmbeddingCoverage> {
         self.embedding_coverage_of(ChunkTable::Engram).await
     }
@@ -3481,6 +3796,11 @@ pub trait Store: Send + Sync {
     /// Every reflection row of a domain, ordered by path in byte order.
     async fn list_reflections(&self, domain: DomainId) -> Result<Vec<ReflectionRow>>;
 
+    /// Every reflection row of a domain without its text, ordered by path in
+    /// byte order: what the sync's stat prefilter and the move screens read,
+    /// which have no use for the page itself.
+    async fn list_reflection_stamps(&self, domain: DomainId) -> Result<Vec<ReflectionStamp>>;
+
     /// Replace one page's chunk rows with a freshly computed set, carrying over
     /// the vector of any chunk whose fingerprint is unchanged, so an edit
     /// re-embeds only the sections that changed. Called by
@@ -3497,8 +3817,12 @@ pub trait Store: Send + Sync {
     /// A reflection search reads it for its mode decision and its staleness
     /// gate, so a domain whose pages are not embedded yet answers as text
     /// while another domain's are. [`Store::embedding_coverage_of`] stays the
-    /// table-wide count that status, the backlog and engram search read.
-    async fn reflection_coverage(&self, domain: DomainId) -> Result<EmbeddingCoverage>;
+    /// table-wide count that status and the backlog read. This is
+    /// [`Store::embedding_coverage_in`] on the reflection chunks of `domain`.
+    async fn reflection_coverage(&self, domain: DomainId) -> Result<EmbeddingCoverage> {
+        self.embedding_coverage_in(ChunkTable::Reflection, Some(&[domain]))
+            .await
+    }
 
     /// The vector half of a reflection search (R60): the closest chunk of
     /// each section of one domain's pages embedded by `model` at
@@ -3539,23 +3863,114 @@ pub trait Store: Send + Sync {
         take_over: bool,
     ) -> Result<HostClaim>;
 
-    /// Refresh this instance's heartbeat on a lock it holds. Returns `true` when
+    /// Refresh this instance's heartbeat on a lock it holds, and its label
+    /// unless `label` is empty, so every lock of one instance shows the one
+    /// label it uses now. Returns `true` when
     /// a row was updated (this instance still holds it), `false` when it does not
     /// (another instance took over), which tells the daemon to stop hosting.
     async fn renew_domain_host(
         &self,
         domain: DomainId,
         instance_id: &str,
+        label: &str,
         now: &str,
     ) -> Result<bool>;
 
-    /// Release a lock this instance holds (graceful shutdown). A no-op when this
-    /// instance is not the current holder, so a released takeover never deletes
-    /// the new host's lock.
-    async fn release_domain_host(&self, domain: DomainId, instance_id: &str) -> Result<()>;
+    /// The labels `instance_id` is recorded under already (on a lock it
+    /// holds, or on a domain it last hosted), each once.
+    async fn own_labels(&self, instance_id: &str) -> Result<Vec<String>>;
+
+    /// The instance ids holding a lock under `label` whose heartbeat is not
+    /// older than `stale_before`.
+    async fn live_label_holders(&self, label: &str, stale_before: &str) -> Result<Vec<String>>;
+
+    /// Release a lock this instance holds (graceful shutdown, or the end of a
+    /// one-shot command's walk): a compare-and-delete on `token`, the one
+    /// its claim returned ([`HostClaim::Acquired`]). A no-op when the row
+    /// names another holder or another claim's token, so a released takeover
+    /// never deletes the new host's lock, and a process of this machine
+    /// never deletes the lock a later claim under the same id took (this
+    /// machine's daemon after a command's claim, or a second command).
+    /// `true` when the row was deleted.
+    async fn release_domain_host(
+        &self,
+        domain: DomainId,
+        instance_id: &str,
+        token: &str,
+    ) -> Result<bool>;
+
+    /// Give the lock back to the claim it was taken over from under the same
+    /// instance id: when the row still carries `token`, put `previous` back
+    /// as its token, so that claim's own release still matches. A no-op when
+    /// another claim replaced `token` meanwhile. `true` when it was put back.
+    async fn hand_back_domain_host(
+        &self,
+        domain: DomainId,
+        instance_id: &str,
+        token: &str,
+        previous: &str,
+    ) -> Result<bool>;
 
     /// The current holder of a file domain's host lock, or `None` when unheld.
     async fn domain_host(&self, domain: DomainId) -> Result<Option<DomainHost>>;
+
+    /// [`Store::domain_host`] read for a walk about to apply: inside the
+    /// caller's write transaction the lock row stays as read until it ends
+    /// (`FOR SHARE` on Postgres), so a claim of the domain waits for the
+    /// apply to commit instead of landing in the middle of it. A Turso
+    /// database belongs to one instance, so the plain read is the same.
+    async fn domain_host_held(&self, domain: DomainId) -> Result<Option<DomainHost>>;
+
+    /// Write the domain's host move only when its stored text still is
+    /// `expected`, the text the caller read ([`Store::host_move_text`]):
+    /// `false` and nothing written when another writer changed it in
+    /// between. The stored text is compared as stored, so a mark in an older
+    /// or newer shape matches the read of it.
+    async fn swap_host_move(
+        &self,
+        domain: DomainId,
+        expected: Option<&str>,
+        next: Option<&HostMove>,
+    ) -> Result<bool>;
+
+    /// The domain's host move as stored, JSON text, or `None`.
+    async fn host_move_text(&self, domain: DomainId) -> Result<Option<String>>;
+
+    /// Clear the domain's rebuild marker only when it still is the one
+    /// stamped at `started` ([`Store::begin_rebuild`]): a marker another
+    /// run stamped since stays.
+    async fn end_rebuild_stamped(&self, domain: DomainId, started: &str) -> Result<()>;
+
+    /// The instance that last acquired a file domain's host lock, as
+    /// `(instance id, label)`, or `None` when none was recorded. Kept on the
+    /// domain row, so it outlives a release, which deletes the lock row.
+    async fn last_domain_host(&self, domain: DomainId) -> Result<Option<(String, String)>>;
+
+    /// Whether another instance than `instance_id` is recorded under
+    /// `label`, as a lock's holder or as a domain's last host: two instances
+    /// on one machine name, or behind one address, would show the same name,
+    /// so the later one adds a short id ([`crate::instance_label`]).
+    async fn label_taken(&self, label: &str, instance_id: &str) -> Result<bool>;
+
+    /// Record the instance that just acquired a file domain's host lock.
+    async fn set_last_domain_host(
+        &self,
+        domain: DomainId,
+        instance_id: &str,
+        label: &str,
+    ) -> Result<()>;
+
+    /// The domain's unresolved host move, or `None`.
+    async fn host_move(&self, domain: DomainId) -> Result<Option<HostMove>> {
+        Ok(self
+            .host_move_text(domain)
+            .await?
+            .and_then(|text| parse_host_move(&text)))
+    }
+
+    /// Set or (with `None`) clear the domain's host move. Inside an open
+    /// write transaction it commits or rolls back with it.
+    async fn set_host_move(&self, domain: DomainId, host_move: Option<&HostMove>) -> Result<()>;
 
     // --- batch control -------------------------------------------------------
     // These let the sync engine wrap its whole write phase in one transaction
@@ -3738,7 +4153,53 @@ mod meta_value_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::ChunkTable;
+    use super::{ChunkModelCount, ChunkTable, CoverageGroup, EmbeddingCoverage};
+
+    fn group(model: &str, dims: usize, chunks: usize, embedded: usize) -> CoverageGroup {
+        CoverageGroup {
+            model: model.to_string(),
+            dims,
+            chunks,
+            embedded,
+        }
+    }
+
+    #[test]
+    fn from_groups_orders_most_chunks_first_and_skips_groups_with_no_vectors() {
+        let cov = EmbeddingCoverage::from_groups([
+            group("", 0, 5, 0),
+            group("small", 8, 2, 2),
+            group("big", 8, 4, 3),
+            group("ghost", 8, 6, 0),
+            group("alpha", 4, 2, 2),
+        ]);
+        assert_eq!(cov.total_chunks, 19);
+        assert_eq!(cov.embedded_chunks, 7);
+        let models: Vec<(&str, usize, usize)> = cov
+            .models
+            .iter()
+            .map(|m| (m.model.as_str(), m.dims, m.count))
+            .collect();
+        // Most embedded first, then model, then width; no group without vectors.
+        assert_eq!(
+            models,
+            vec![("big", 8, 3), ("alpha", 4, 2), ("small", 8, 2)]
+        );
+    }
+
+    #[test]
+    fn from_groups_merges_the_same_model_and_width_across_groups() {
+        let cov = EmbeddingCoverage::from_groups([group("m", 8, 3, 2), group("m", 8, 2, 1)]);
+        assert_eq!(cov.total_chunks, 5);
+        assert_eq!(
+            cov.models,
+            vec![ChunkModelCount {
+                model: "m".into(),
+                dims: 8,
+                count: 3
+            }]
+        );
+    }
 
     #[test]
     fn the_embed_passes_walk_the_engram_table_first() {

@@ -20,12 +20,17 @@
  * error to raise. This dialog is the only surface still mounted at that
  * moment - the navigation unmounts it - so the notice is held here and the
  * author leaves it themselves.
+ *
+ * The same holds for links the move could not rewrite: the receipt's
+ * `links_failed` names every engram that still links the old address, and
+ * the list stays on screen until the author goes on, as the page move dialog
+ * keeps its own list.
  */
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Dialog } from "radix-ui";
 import type { ReactElement } from "react";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useNavigate } from "react-router";
 
 import { problemDetail } from "../api/client";
@@ -69,6 +74,9 @@ export default function MoveDialogBody({
   const [matchPermalink, setMatchPermalink] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [warned, setWarned] = useState<MoveReceipt | null>(null);
+  // The list of engrams that still link the old address, which the button
+  // that leaves the dialog points at: a long list can scroll it off screen.
+  const unlinkedId = useId();
 
   const destFile = destinationFile(destination);
   // In a reviewing domain the move lands in the author's draft, which keeps
@@ -142,9 +150,13 @@ export default function MoveDialogBody({
         ...(updatePermalink ? { new_permalink: "path" } : {}),
       }),
     onSuccess: (receipt) => {
-      if (receipt.attachmentWarnings.length > 0) {
-        // The move landed; what it could not carry is the whole message, and
-        // travelling now would take it off the screen before it was read.
+      if (
+        receipt.attachmentWarnings.length > 0 ||
+        receipt.linksFailed.length > 0
+      ) {
+        // The move landed; what it could not carry or relink is the whole
+        // message, and travelling now would take it off the screen before it
+        // was read.
         setWarned(receipt);
         return;
       }
@@ -176,45 +188,72 @@ export default function MoveDialogBody({
     >
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-slate-900/40" />
-        <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded border border-slate-200 bg-white p-4 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+        <Dialog.Content className="fixed top-1/2 left-1/2 z-50 max-h-[calc(100vh-4rem)] w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded border border-slate-200 bg-white p-4 shadow-xl dark:border-slate-700 dark:bg-slate-900">
           <Dialog.Title className="text-lg font-semibold">
             Move {engram.title}
           </Dialog.Title>
           <Dialog.Description className="mt-1 text-sm text-slate-500 dark:text-slate-400">
             {warned === null
               ? "Every link to it follows it to the new address."
-              : "The engram moved. These attachments did not come with it."}
+              : warned.attachmentWarnings.length > 0
+                ? "The engram moved. These attachments did not come with it."
+                : "The engram moved."}
           </Dialog.Description>
           {warned !== null ? (
             <div className="mt-3 flex flex-col gap-3">
-              {/*
+              {warned.attachmentWarnings.length > 0 && (
+                /*
                 Amber on purpose, not the red the form branch gives a refusal:
                 the move landed, and this names what it could not carry rather
                 than something that failed. The two tones are the difference
                 between "go and look at this" and "this did not happen", and
                 borrowing the error red would make a move that succeeded read
                 as a move that broke.
-              */}
-              <div
-                role="alert"
-                className="rounded bg-amber-50 px-2 py-1 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100"
-              >
-                <ul className="list-disc pl-4">
-                  {/* Keyed by position as well as text: a warning is a
+                */
+                <div
+                  role="alert"
+                  className="rounded bg-amber-50 px-2 py-1 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100"
+                >
+                  <ul className="list-disc pl-4">
+                    {/* Keyed by position as well as text: a warning is a
                       sentence the server composed, not an identity this side
                       can lean on, and two identical sentences would collide as
                       one key. The list arrives whole and is never reordered or
                       filtered, so the position is stable for as long as it is
                       on screen. */}
-                  {warned.attachmentWarnings.map((warning, index) => (
-                    <li key={`${index}-${warning}`}>{warning}</li>
-                  ))}
-                </ul>
-              </div>
+                    {warned.attachmentWarnings.map((warning, index) => (
+                      <li key={`${index}-${warning}`}>{warning}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {warned.linksFailed.length > 0 && (
+                // A status, as on the page move dialog: the move landed, and
+                // this names where a link still points at the old address.
+                <div id={unlinkedId} role="status" className="text-sm">
+                  <p>These engrams still link the old address:</p>
+                  <ul className="list-disc pl-5">
+                    {warned.linksFailed.map((linker, index) => (
+                      <li key={`${index}-${linker.domain}-${linker.path}`}>
+                        <span className="font-mono">
+                          {linker.domain !== "" &&
+                          linker.domain !== engram.domain
+                            ? `${linker.domain} / ${linker.path}`
+                            : linker.path}
+                        </span>
+                        {linker.reason !== "" ? ` (${linker.reason})` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <div className="flex justify-end">
                 <button
                   type="button"
                   autoFocus
+                  aria-describedby={
+                    warned.linksFailed.length > 0 ? unlinkedId : undefined
+                  }
                   onClick={() => {
                     settle(warned);
                   }}

@@ -3056,3 +3056,212 @@ async fn resolve_conflict_cannot_unlock_a_locally_locked_team_domain() {
         assert!(eng.domain_is_read_only("brand").await, "{path} {keep}");
     }
 }
+
+// --- write_reflection against an open room ----------------------------------
+
+/// An engine over one file domain, `eng`, with Reflection on and the page
+/// `guides/a.md`, the shape `collab_saves.rs::reflection_fixture` builds. The
+/// integration test files share no helpers, so the pieces are copied.
+async fn reflection_room_engine() -> (
+    tempfile::TempDir,
+    Arc<Engine>,
+    crate::support::ScratchStateDir,
+) {
+    let scratch = crate::support::ScratchStateDir::acquire();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("eng");
+    std::fs::create_dir_all(dir.join("reflections/guides")).unwrap();
+    std::fs::create_dir_all(dir.join("reflections/.reflected/guides")).unwrap();
+    std::fs::write(
+        dir.join("MANIFEST.md"),
+        "---\ntype: manifest\ntitle: eng\npermalink: manifest\ntags:\n  - manifest\nstatus: current\nrecorded_at: 2026-01-01\nreflection: on\n---\n\n# eng\n\n## Scope\n\n- Everything about eng\n\n## When to Use\n\n- Route here\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("reflections/guides/a.md"),
+        "# A\n\n## One\n<!-- r:aaaa1111 -->\n\nFirst.\n\n## Two\n<!-- r:bbbb2222 -->\n\nSecond.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("reflections/.reflected/guides/a.md"),
+        "## One\n<!-- r:aaaa1111 -->\n\nFirst.\n\n",
+    )
+    .unwrap();
+    let mut cfg = config(false);
+    cfg.domains.insert(
+        "eng".into(),
+        crystalline_core::config::DomainEntry::file(dir),
+    );
+    let store = TursoStore::open_in_memory().await.unwrap();
+    let engine = Arc::new(Engine::new(Arc::new(Mutex::new(store)), cfg, None, None));
+    engine.sync(None).await.unwrap();
+    (tmp, engine, scratch)
+}
+
+/// The next control on a room's receiver, skipping sync and awareness frames.
+async fn next_room_control(
+    rx: &mut tokio::sync::broadcast::Receiver<crystalline_service::collab::session::Frame>,
+) -> crystalline_service::collab::control::Control {
+    use yrs::sync::{Message, MessageReader};
+    use yrs::updates::decoder::DecoderV1;
+    loop {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+            .await
+            .expect("a control frame arrives in time")
+            .expect("the broadcast channel stays open");
+        let mut decoder = DecoderV1::from(frame.bytes.as_ref());
+        for message in MessageReader::new(&mut decoder).flatten() {
+            if let Message::Custom(crystalline_service::collab::control::CONTROL_TAG, payload) =
+                message
+                && let Some(found) = crystalline_service::collab::control::decode(&payload)
+            {
+                return found;
+            }
+        }
+    }
+}
+
+/// A client doc synced against the room, as a browser's provider is.
+async fn room_client(joined: &crystalline_service::collab::session::Joined) -> yrs::Doc {
+    use yrs::sync::{Message, MessageReader, SyncMessage};
+    use yrs::updates::decoder::{Decode, DecoderV1};
+    use yrs::updates::encoder::Encode;
+    use yrs::{ReadTxn, Transact};
+    let doc = yrs::Doc::with_options(yrs::Options {
+        offset_kind: yrs::OffsetKind::Utf16,
+        ..yrs::Options::default()
+    });
+    let sv = doc.transact().state_vector();
+    let replies = joined
+        .session
+        .handle_frame(
+            joined.conn,
+            &Message::Sync(SyncMessage::SyncStep1(sv)).encode_v1(),
+        )
+        .await;
+    let mut decoder = DecoderV1::from(replies[0].as_slice());
+    let messages: Vec<Message> = MessageReader::new(&mut decoder)
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let Message::Sync(SyncMessage::SyncStep2(update)) = &messages[0] else {
+        panic!("step1 is answered with step2");
+    };
+    doc.transact_mut()
+        .apply_update(yrs::Update::decode_v1(update).unwrap())
+        .unwrap();
+    doc
+}
+
+/// Replace the whole text of the room's document and send it.
+async fn room_replace_all(
+    joined: &crystalline_service::collab::session::Joined,
+    doc: &yrs::Doc,
+    content: &str,
+) {
+    use yrs::sync::{Message, SyncMessage};
+    use yrs::updates::encoder::Encode;
+    use yrs::{GetString, Text, Transact};
+    let text = doc.get_or_insert_text("content");
+    let update = {
+        let mut txn = doc.transact_mut();
+        let len = text.get_string(&txn).encode_utf16().count() as u32;
+        text.remove_range(&mut txn, 0, len);
+        text.insert(&mut txn, 0, content);
+        txn.encode_update_v1()
+    };
+    joined
+        .session
+        .handle_frame(
+            joined.conn,
+            &Message::Sync(SyncMessage::Update(update)).encode_v1(),
+        )
+        .await;
+}
+
+/// The MCP `write_reflection` answers what became of an open room: a healthy
+/// room takes the write in live and names who is present; a room holding an
+/// unresolved conflict of its own is told nothing, the write lands in the file
+/// and the answer says the room is waiting, with the note that explains it.
+#[tokio::test]
+async fn write_reflection_over_mcp_reports_the_room() {
+    use crystalline_service::collab::control::Control;
+    use crystalline_service::collab::session::{CollabSessions, SAVE_DEBOUNCE_MS};
+    use yrs::{GetString, Transact};
+    let (tmp, engine, _scratch) = reflection_room_engine().await;
+    let path = tmp.path().join("eng/reflections/guides/a.md");
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let mut joined = sessions
+        .join_reflection("eng", "guides/a.md", "ada")
+        .await
+        .unwrap();
+    let (client, _server) = connect(engine.clone()).await;
+
+    // A healthy room takes the write in live.
+    let live = call(
+        client.peer(),
+        "write_reflection",
+        json!({
+            "domain": "eng",
+            "path": "guides/a.md",
+            "operation": "replace_section",
+            "section": "## Two",
+            "content": "Second, from the agent.\n",
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(live["landed"], "live", "{live}");
+    assert!(live.get("present").is_some(), "{live}");
+    assert!(live.get("room").is_none(), "{live}");
+    // The room already holds what the file holds, so there is nothing to save.
+    let (text, dirty) = joined.session.snapshot().await;
+    assert!(text.contains("Second, from the agent."), "{text}");
+    assert!(!dirty, "the live write left nothing to save");
+
+    let doc = room_client(&joined).await;
+    // A change outside Crystalline collides with unsaved typing on one line:
+    // the room's save raises its edit conflict.
+    let mine = doc
+        .get_or_insert_text("content")
+        .get_string(&doc.transact())
+        .replace("First.", "First, by a person.");
+    room_replace_all(&joined, &doc, &mine).await;
+    let outside = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("First.", "First, from outside.");
+    std::fs::write(&path, outside).unwrap();
+    joined
+        .session
+        .tick_save(
+            std::time::Instant::now() + std::time::Duration::from_millis(SAVE_DEBOUNCE_MS + 100),
+        )
+        .await;
+    loop {
+        match next_room_control(&mut joined.rx).await {
+            Control::Conflict { .. } => break,
+            Control::Merged => {}
+            other => panic!("a conflict, not {other:?}"),
+        }
+    }
+    let waiting = call(
+        client.peer(),
+        "write_reflection",
+        json!({
+            "domain": "eng",
+            "path": "guides/a.md",
+            "operation": "replace_section",
+            "section": "## Two",
+            "content": "Second, again.\n",
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(waiting["landed"], "file", "{waiting}");
+    assert_eq!(waiting["room"], "waiting", "{waiting}");
+    assert_eq!(
+        waiting["room_note"],
+        crystalline_service::engine::ROOM_WAITING_NOTE,
+        "{waiting}"
+    );
+}

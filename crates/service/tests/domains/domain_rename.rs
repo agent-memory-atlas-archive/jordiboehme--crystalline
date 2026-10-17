@@ -24,38 +24,6 @@ use crystalline_service::rest::{AuthStore, MemberLevel, Role};
 use crystalline_service::{DomainAccess, Scope};
 use tokio::sync::Mutex;
 
-#[cfg(feature = "postgres")]
-fn pg_url() -> Option<String> {
-    use std::sync::Once;
-    static NOTE: Once = Once::new();
-    match std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") {
-        Ok(u) if !u.is_empty() => Some(u),
-        _ => {
-            NOTE.call_once(|| {
-                eprintln!(
-                    "note: skipping the postgres rename leg (CRYSTALLINE_TEST_POSTGRES_URL is unset); turso only"
-                )
-            });
-            None
-        }
-    }
-}
-
-/// A recycled pid must never adopt a schema a panicking run left behind.
-#[cfg(feature = "postgres")]
-fn unique_schema() -> String {
-    use std::hash::{BuildHasher, RandomState};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "ren_{}_{}_{:x}",
-        std::process::id(),
-        n,
-        RandomState::new().hash_one(n)
-    )
-}
-
 /// Run a body against Turso (always) and Postgres (when configured).
 macro_rules! both_backends {
     ($name:ident, $body:path) => {
@@ -68,17 +36,15 @@ macro_rules! both_backends {
             }
             #[cfg(feature = "postgres")]
             {
-                if let Some(url) = pg_url() {
-                    let schema = unique_schema();
-                    let pg = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                        .await
-                        .expect("open the postgres test schema");
+                if let Some(scratch) = crate::support::scratch_schema("ren") {
+                    let pg = crystalline_index::PostgresStore::open_in_schema(
+                        scratch.url(),
+                        scratch.name(),
+                    )
+                    .await
+                    .expect("open the postgres test schema");
                     let store: Arc<Mutex<dyn Store>> = Arc::new(Mutex::new(pg));
                     $body(store).await;
-                    let cleanup = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                        .await
-                        .unwrap();
-                    cleanup.drop_schema().await.unwrap();
                 }
             }
         }
@@ -166,6 +132,7 @@ impl Machine {
             .with_state_dir(self.state())
             .with_origins_dir(self.state().join("origins"))
             .with_env_overlay(overlay);
+        let engine = crate::support::as_this_machine(engine, &self.store).await;
         if with_access {
             let auth = AuthStore::open(&self.state().join("web-auth.db"))
                 .await
@@ -384,6 +351,7 @@ async fn a_local_rename_moves_everything_and_keeps_the_id_body(store: Arc<Mutex<
             "auth_tables",
             "origins_dir",
             "overlays_dir",
+            "kept_dir",
             "provision_receipt",
             "config"
         ],
@@ -479,6 +447,7 @@ async fn a_leftover_journal_is_completed_before_the_first_sync_body(store: Arc<M
         RenameStep::AuthTables,
         RenameStep::OriginsDir,
         RenameStep::OverlaysDir,
+        RenameStep::KeptDir,
         RenameStep::ProvisionReceipt,
         RenameStep::Config,
     ];
@@ -1142,6 +1111,29 @@ both_backends!(
 /// step.
 async fn a_shared_index_another_instance_uses_refuses_body(store: Arc<Mutex<dyn Store>>) {
     let m = machine(store).await;
+    // The fixture's engine ran as this machine and holds the locks on a
+    // shared database; the two instances of this test are others.
+    {
+        let store = m.store.lock().await;
+        for name in [&m.eng, &m.ops] {
+            if let Some(id) = store.domain_id(name).await.unwrap() {
+                // A release names its claim's token: claim once more as
+                // this machine and give that claim back.
+                let now = "2026-01-01T00:00:00+00:00";
+                let crystalline_index::HostClaim::Acquired { token } = store
+                    .claim_domain_host(id, crate::support::THIS_MACHINE, "", now, now, true)
+                    .await
+                    .unwrap()
+                else {
+                    panic!("a take-over acquires");
+                };
+                store
+                    .release_domain_host(id, crate::support::THIS_MACHINE, &token)
+                    .await
+                    .unwrap();
+            }
+        }
+    }
     let cfg = crystalline_service::overlay::load_file(&m.config_path()).unwrap();
     let other = Engine::new(m.store.clone(), cfg.clone(), None, None)
         .with_instance_id("inst-b".to_string());
@@ -1881,6 +1873,7 @@ async fn a_full_rename_a_crash_stopped_is_finished_body(store: Arc<Mutex<dyn Sto
                 "auth_tables",
                 "origins_dir",
                 "overlays_dir",
+                "kept_dir",
                 "provision_receipt",
                 "config"
             ]),
@@ -2599,4 +2592,331 @@ async fn a_local_rename_of_a_locked_domain_is_allowed_body(store: Arc<Mutex<dyn 
 both_backends!(
     a_local_rename_of_a_locked_domain_is_allowed,
     a_local_rename_of_a_locked_domain_is_allowed_body
+);
+
+/// A move that would rewrite a link in a domain being renamed does not wait
+/// for that rename: the linker is not written, it is named in the receipt at
+/// once, and the move finishes while the rename is still running. Waiting
+/// would hold every other move back for as long as the rename may take
+/// (moves run one at a time). No index row comes back under the old name.
+async fn a_move_skips_a_linker_whose_domain_is_being_renamed_body(store: Arc<Mutex<dyn Store>>) {
+    let m = machine(store).await;
+    let engine = m.engine(true).await;
+    // A write into ops is running when the rename starts, so the rename has
+    // paused ops and waits for that write before its first step.
+    let write_hold = engine.hold_next_write();
+    let writer = {
+        let engine = engine.clone();
+        let ops = m.ops.clone();
+        tokio::spawn(async move {
+            engine
+                .write_engram(&write_params(&ops, "Note", "written before the rename"))
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(20), write_hold.reached())
+        .await
+        .expect("the write into ops is counted and held");
+    let renamer = {
+        let engine = engine.clone();
+        let ops = m.ops.clone();
+        tokio::spawn(async move {
+            engine
+                .rename_domain_local(&ops, "runbooks", NameOrigin::Explicit, &Scope::Unrestricted)
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !engine.is_renaming(&m.ops) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the rename has paused ops");
+
+    let mover = {
+        let engine = engine.clone();
+        let eng = m.eng.clone();
+        tokio::spawn(async move {
+            engine
+                .move_engram(
+                    &MoveParams {
+                        identifier: "alpha".to_string(),
+                        domain: eng,
+                        destination: "gamma.md".to_string(),
+                        destination_domain: None,
+                        permalink: None,
+                        update_links: None,
+                    },
+                    &Scope::Unrestricted,
+                )
+                .await
+        })
+    };
+    let receipt = tokio::time::timeout(Duration::from_secs(10), mover)
+        .await
+        .expect("the move does not wait for the rename")
+        .unwrap()
+        .expect("the move itself lands");
+    assert!(
+        std::fs::read_to_string(m.root.join("ops/pager.md"))
+            .unwrap()
+            .contains(&format!("[[{}:alpha]]", m.eng)),
+        "nothing was rewritten in the paused domain"
+    );
+    let failed = receipt["links_failed"].as_array().expect("{receipt}");
+    assert_eq!(failed.len(), 1, "{receipt}");
+    assert_eq!(failed[0]["domain"], m.ops, "{receipt}");
+    assert_eq!(failed[0]["path"], "pager.md", "{receipt}");
+    assert!(
+        failed[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("is being renamed"),
+        "{receipt}"
+    );
+
+    write_hold.release();
+    writer.await.unwrap().unwrap();
+    renamer.await.unwrap().unwrap();
+    assert_eq!(
+        domain_id(&m.store, &m.ops).await,
+        None,
+        "no index row came back under the old name"
+    );
+}
+both_backends!(
+    a_move_skips_a_linker_whose_domain_is_being_renamed,
+    a_move_skips_a_linker_whose_domain_is_being_renamed_body
+);
+
+/// A move that relinks an engram in its own source domain never asks that
+/// domain for a second ticket: a rename that paused the source waits for the
+/// move, and a move waiting for that rename would stall both until the wait
+/// ran out.
+async fn a_move_relinking_in_its_own_domain_finishes_while_a_rename_waits_body(
+    store: Arc<Mutex<dyn Store>>,
+) {
+    let m = machine(store).await;
+    std::fs::write(
+        m.root.join("eng/beta.md"),
+        engram("Beta", "beta", "See [[alpha]] first."),
+    )
+    .unwrap();
+    let engine = m.engine(true).await;
+    engine.sync(None).await.unwrap();
+
+    // The move is held right after its source counted it.
+    let write_hold = engine.hold_next_write();
+    let mover = {
+        let engine = engine.clone();
+        let eng = m.eng.clone();
+        tokio::spawn(async move {
+            engine
+                .move_engram(
+                    &MoveParams {
+                        identifier: "alpha".to_string(),
+                        domain: eng,
+                        destination: "gamma.md".to_string(),
+                        destination_domain: None,
+                        permalink: None,
+                        update_links: None,
+                    },
+                    &Scope::Unrestricted,
+                )
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(20), write_hold.reached())
+        .await
+        .expect("the move is counted in its source and held");
+
+    let renamer = {
+        let engine = engine.clone();
+        let (eng, platform) = (m.eng.clone(), m.platform.clone());
+        tokio::spawn(async move {
+            engine
+                .rename_domain_local(&eng, &platform, NameOrigin::Explicit, &Scope::Unrestricted)
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !engine.is_renaming(&m.eng) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the rename has paused the source domain");
+
+    write_hold.release();
+    let receipt = tokio::time::timeout(Duration::from_secs(10), mover)
+        .await
+        .expect("the move finishes while the rename waits for it")
+        .unwrap()
+        .expect("the move lands");
+    assert_eq!(receipt["links_rewritten"], 2, "{receipt}");
+    assert!(receipt.get("links_failed").is_none(), "{receipt}");
+    assert!(
+        std::fs::read_to_string(m.root.join("eng/beta.md"))
+            .unwrap()
+            .contains("See [[gamma]] first."),
+        "the same-domain linker is rewritten"
+    );
+    renamer.await.unwrap().unwrap();
+}
+both_backends!(
+    a_move_relinking_in_its_own_domain_finishes_while_a_rename_waits,
+    a_move_relinking_in_its_own_domain_finishes_while_a_rename_waits_body
+);
+
+/// A rename onto a name that differs from another domain's only in letter
+/// case is refused before any step: the two would share one state folder on
+/// a disk that ignores case. Nothing moves and no journal is left.
+async fn a_rename_onto_another_domains_name_in_other_case_is_refused_body(
+    store: Arc<Mutex<dyn Store>>,
+) {
+    let m = machine(store).await;
+    let engine = m.engine(true).await;
+    let before = std::fs::read_to_string(m.config_path()).unwrap();
+    let err = engine
+        .rename_domain_local("eng", "OPS", NameOrigin::Explicit, &Scope::Unrestricted)
+        .await
+        .expect_err("a case twin of ops is refused");
+    assert!(
+        matches!(err, EngineError::Conflict(_))
+            && err
+                .to_string()
+                .contains("'OPS' differs from the domain 'ops' only in letter case"),
+        "{err}"
+    );
+    assert_eq!(std::fs::read_to_string(m.config_path()).unwrap(), before);
+    assert!(!m.journal().exists());
+}
+both_backends!(
+    a_rename_onto_another_domains_name_in_other_case_is_refused,
+    a_rename_onto_another_domains_name_in_other_case_is_refused_body
+);
+
+/// A domain renamed to its own name in another letter case keeps working,
+/// and its state folders follow under the new spelling, through a
+/// temporary name, so a disk that ignores case never loses them: the kept
+/// texts and the draft journal are there, byte for byte, under `Eng`.
+async fn a_case_only_rename_moves_the_state_folders_body(store: Arc<Mutex<dyn Store>>) {
+    let m = machine(store).await;
+    let engine = m.engine(true).await;
+    let kept_root = m.state().join("kept");
+    crystalline_core::kept::write(
+        &kept_root,
+        "eng",
+        None,
+        crystalline_core::kept::KeptKind::Engram,
+        "alpha.md",
+        chrono::Utc::now(),
+        "typed",
+    )
+    .unwrap();
+    let journal = m.state().join("overlays/eng/someone");
+    std::fs::create_dir_all(&journal).unwrap();
+    std::fs::write(journal.join("note.md"), "draft").unwrap();
+
+    let report = engine
+        .rename_domain_local("eng", "Eng", NameOrigin::Explicit, &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert_eq!(report["domain"], "Eng", "{report}");
+    let listed = |dir: PathBuf| -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect()
+    };
+    assert_eq!(listed(kept_root.clone()), vec!["Eng".to_string()]);
+    assert_eq!(listed(m.state().join("overlays")), vec!["Eng".to_string()]);
+    let found = crystalline_core::kept::scan(&kept_root);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].domain, "Eng");
+    assert_eq!(crystalline_core::kept::read(&found[0]).unwrap(), "typed");
+    assert_eq!(
+        std::fs::read_to_string(m.state().join("overlays/Eng/someone/note.md")).unwrap(),
+        "draft"
+    );
+}
+both_backends!(
+    a_case_only_rename_moves_the_state_folders,
+    a_case_only_rename_moves_the_state_folders_body
+);
+
+/// A rename a crash stopped after its texts moved, finished by a restart or
+/// by sending the same rename again, keeps the renamed domain's kept texts
+/// under the new name: neither the replay of the step nor the registration
+/// check sets them aside, recorded step or not.
+async fn a_finished_rename_keeps_its_kept_texts_under_the_new_name_body(
+    store: Arc<Mutex<dyn Store>>,
+) {
+    for (step, unrecorded, resend) in [
+        (RenameStep::KeptDir, false, false),
+        (RenameStep::KeptDir, true, false),
+        (RenameStep::KeptDir, true, true),
+        (RenameStep::ProvisionReceipt, true, true),
+    ] {
+        let tag = format!("-k{step:?}{unrecorded}{resend}").to_lowercase();
+        let m = machine_tagged(store.clone(), &tag).await;
+        let kept_root = m.state().join("kept");
+        crystalline_core::kept::write(
+            &kept_root,
+            &m.eng,
+            None,
+            crystalline_core::kept::KeptKind::Engram,
+            "alpha.md",
+            chrono::Utc::now(),
+            "typed",
+        )
+        .unwrap();
+        let engine = m.engine(true).await;
+        engine.fail_rename_after(Some(step));
+        engine
+            .rename_domain_local(
+                &m.eng,
+                &m.platform,
+                NameOrigin::Explicit,
+                &Scope::Unrestricted,
+            )
+            .await
+            .expect_err("the failpoint stops the rename");
+        drop(engine);
+        if unrecorded {
+            let mut journal: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(m.journal()).unwrap()).unwrap();
+            journal["done"].as_array_mut().unwrap().pop();
+            std::fs::write(m.journal(), serde_json::to_vec(&journal).unwrap()).unwrap();
+        }
+        let restarted = m.engine(false).await;
+        if resend {
+            restarted
+                .rename_domain_local(
+                    &m.eng,
+                    &m.platform,
+                    NameOrigin::Explicit,
+                    &Scope::Unrestricted,
+                )
+                .await
+                .unwrap();
+        } else {
+            restarted.recover_rename_journal().await.unwrap().unwrap();
+        }
+        let found = crystalline_core::kept::scan(&kept_root);
+        assert_eq!(found.len(), 1, "{step:?} {unrecorded} {resend}: {found:?}");
+        assert_eq!(
+            found[0].domain, m.platform,
+            "{step:?} {unrecorded} {resend}"
+        );
+        assert!(
+            !found[0].removed,
+            "{step:?} {unrecorded} {resend}: set aside"
+        );
+    }
+}
+both_backends!(
+    a_finished_rename_keeps_its_kept_texts_under_the_new_name,
+    a_finished_rename_keeps_its_kept_texts_under_the_new_name_body
 );

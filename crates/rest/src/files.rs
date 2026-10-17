@@ -38,10 +38,10 @@ use crystalline_index::AttachmentRow;
 
 use super::auth::Identity;
 use super::{
-    ApiError, ApiPath, ProblemDetail, REVALIDATE, RestState, if_none_match_matches,
+    ApiError, ApiPath, ProblemDetail, REVALIDATE, RestState, create_only, if_none_match_matches,
     refuse_read_only, require_domain_read, require_domain_write,
 };
-use crate::engine::EngineError;
+use crate::engine::{ASSET_EXISTS, EngineError};
 
 /// The `Content-Security-Policy` every attachment is served under: no origin
 /// may be reached for anything, and the response is sandboxed into a unique
@@ -325,7 +325,12 @@ pub(crate) fn attachment_response(
                    is not touched, which is what `draft` in the answer says. \
                    With `X-Crystalline-Join` naming a live join the bytes \
                    follow it into the OWNER's files overlay instead, to be \
-                   folded or discarded with the draft that references them.",
+                   folded or discarded with the draft that references them.\n\n\
+                   With `If-None-Match: *` the upload only creates: a path \
+                   that already holds a file is refused with 412. On a domain \
+                   that reviews changes that is the file the caller sees \
+                   there (its own draft bytes, or a reviewed file it has not \
+                   deleted).",
     params(
         ("domain" = String, Path, description = "The registered domain."),
         (
@@ -344,6 +349,13 @@ pub(crate) fn attachment_response(
                            overlay rather than the caller's own. A key naming \
                            no live join of this account's is refused 403 and \
                            nothing is stored.",
+        ),
+        (
+            "If-None-Match" = Option<String>,
+            Header,
+            description = "`*` to only create: a path that already holds a \
+                           file is refused with 412 and left as it is. Any \
+                           other value is 422.",
         ),
     ),
     request_body(
@@ -388,6 +400,20 @@ pub(crate) fn attachment_response(
             content_type = "application/problem+json",
         ),
         (
+            status = 409,
+            description = "The path is a file only the previous host of a host \
+                           move has; the detail names the remedy.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 412,
+            description = "`If-None-Match: *` and the path already holds a \
+                           file; nothing was stored. Pick another name.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
             status = 413,
             description = "The body is over the 10 MiB limit this API accepts, \
                            which is also the attachment size ceiling.",
@@ -396,7 +422,8 @@ pub(crate) fn attachment_response(
         ),
         (
             status = 422,
-            description = "A teaching refusal from a domain that reviews \
+            description = "`If-None-Match` carried something other than `*`; \
+                           or a teaching refusal from a domain that reviews \
                            changes: a write into the folder the team reviewed \
                            rather than into a draft, a path where a share-link \
                            shows somebody else's draft and this session has \
@@ -418,6 +445,7 @@ pub async fn write(
 ) -> Result<Json<UploadedAttachment>, ApiError> {
     require_domain_write(&state, &identity, &domain).await?;
     refuse_read_only(&state)?;
+    let create_only = create_only(&headers)?;
     // Through this account's own view of the domain: on a domain that reviews
     // changes the bytes land in that account's overlay and the folder the team
     // reviewed is not touched, which is what `draft` in the answer says.
@@ -434,6 +462,7 @@ pub async fn write(
             body.to_vec(),
             &identity.scope(),
             join.as_ref(),
+            create_only,
         )
         .await
         .map_err(malformed_path_is_a_bad_request)?;
@@ -508,6 +537,14 @@ pub async fn write(
         (
             status = 404,
             description = "No such domain, or no attachment at that path.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 409,
+            description = "The file is one only the previous host of a host move \
+                           has, whose row a delete here would drop; the detail \
+                           names the remedy.",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -600,11 +637,17 @@ pub async fn list(
 ///
 /// The distinction this preserves is the one a client acts on: 400 means the
 /// request itself is malformed and the caller can correct it, 404 means the
-/// address is fine and nothing is there. Every other variant keeps its usual
-/// status.
-fn malformed_path_is_a_bad_request(e: EngineError) -> ApiError {
+/// address is fine and nothing is there. A create-only upload onto a path
+/// that holds a file is 412, its own precondition having failed. Every other
+/// variant keeps its usual status (a write onto a path only the previous
+/// host of a host move has is 409 there).
+pub(crate) fn malformed_path_is_a_bad_request(e: EngineError) -> ApiError {
     match e {
         EngineError::Invalid(detail) => ApiError::bad_request(detail),
+        // A create-only upload onto a path that holds a file.
+        EngineError::Conflict(detail) if detail.ends_with(ASSET_EXISTS) => {
+            ApiError::precondition_failed_plain(detail)
+        }
         other => other.into(),
     }
 }

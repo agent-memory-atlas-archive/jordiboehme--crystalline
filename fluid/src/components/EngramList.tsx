@@ -24,11 +24,13 @@ import { Link } from "react-router";
 import { problemDetail } from "../api/client";
 import type { EngramPage, EngramRow } from "../api/engrams";
 import { hasNextPage as envelopeHasNext } from "../api/engrams";
+import { formatDayLong } from "../format";
 import { RETIRED_CLASS, isRetired } from "../lifecycle";
 import { engramRoute } from "../paths";
 import { ENGRAM_PREFETCH } from "../prefetch";
 import { snippetParts, stripSnippetMarkup } from "../snippet";
 import EndOfLine from "./EndOfLine";
+import { Loading } from "./Loading";
 import { Chip, statusVariant } from "./primitives";
 
 /** How tall one row is, in pixels. The tests scroll by it, so it is exported. */
@@ -84,6 +86,17 @@ export interface EngramListProps {
    * repeat that domain on every row; a search that swept several has to say it.
    */
   showDomain?: boolean;
+  /**
+   * The domain front page's look (spec 5.3): rows split by hairlines with no
+   * box around them, the folder beside the title, the description under it
+   * and the type on the right. Search keeps the boxed list.
+   */
+  plain?: boolean;
+  /**
+   * A row this list leaves out: the domain's front page is its MANIFEST, so
+   * the MANIFEST is not listed again under itself.
+   */
+  skip?: ((row: EngramRow) => boolean) | undefined;
 }
 
 export function EngramList({
@@ -95,6 +108,8 @@ export function EngramList({
   summary,
   emptyActions,
   showDomain = false,
+  plain = false,
+  skip,
 }: EngramListProps) {
   const scroller = useRef<HTMLDivElement>(null);
 
@@ -107,10 +122,10 @@ export function EngramList({
   });
   const { data, hasNextPage, isFetchingNextPage, fetchNextPage } = query;
 
-  const rows = useMemo(
-    () => data?.pages.flatMap((page) => page.hits) ?? [],
-    [data],
-  );
+  const rows = useMemo(() => {
+    const all = data?.pages.flatMap((page) => page.hits) ?? [];
+    return skip === undefined ? all : all.filter((row) => !skip(row));
+  }, [data, skip]);
   const total = data?.pages[data.pages.length - 1]?.total ?? rows.length;
 
   // The virtualizer hands back functions rather than values, which the React
@@ -164,11 +179,7 @@ export function EngramList({
   }, [drawn, rows.length, hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   if (query.isPending) {
-    return (
-      <p className="py-6 text-sm text-slate-500 dark:text-slate-400">
-        Loading engrams
-      </p>
-    );
+    return <Loading compact label="Loading engrams" className="py-6" />;
   }
 
   if (query.error) {
@@ -207,7 +218,11 @@ export function EngramList({
       */}
       <div
         ref={scroller}
-        className="max-h-[60vh] overflow-y-auto rounded border border-slate-200 dark:border-slate-800"
+        className={
+          plain
+            ? "max-h-[60vh] overflow-y-auto border-t border-hair"
+            : "max-h-[60vh] overflow-y-auto rounded border border-slate-200 dark:border-slate-800"
+        }
       >
         <ul
           aria-label={label}
@@ -228,6 +243,7 @@ export function EngramList({
                 offset={item.start}
                 highlight={highlight}
                 showDomain={showDomain}
+                plain={plain}
               />
             );
           })}
@@ -235,9 +251,7 @@ export function EngramList({
         {!hasNextPage && rows.length > 0 && scrolled && <EndOfLine />}
       </div>
       {isFetchingNextPage && (
-        <p className="pt-2 text-xs text-slate-500 dark:text-slate-400">
-          Loading more
-        </p>
+        <Loading compact label="Loading more" className="pt-2" />
       )}
     </div>
   );
@@ -261,16 +275,30 @@ function Row({
   offset,
   highlight,
   showDomain,
+  plain,
 }: {
   row: EngramRow;
   offset: number;
   highlight: string[];
   showDomain: boolean;
+  plain: boolean;
 }) {
   const retired = isRetired(row.status);
   const path = showDomain ? `${row.domain}/${row.permalink}` : row.permalink;
   const tags = row.tags.slice(0, MAX_ROW_TAGS);
   const overflow = row.tags.length - tags.length;
+  if (plain) {
+    return (
+      <PlainRow
+        row={row}
+        offset={offset}
+        path={path}
+        retired={retired}
+        tags={tags}
+        overflow={overflow}
+      />
+    );
+  }
   return (
     <li
       className={`absolute top-0 left-0 w-full px-1 ${retired ? RETIRED_CLASS : ""}`}
@@ -331,6 +359,97 @@ function Row({
               className="shrink-0 text-slate-500 dark:text-slate-400"
             >
               +{overflow}
+            </span>
+          )}
+        </span>
+      </Link>
+    </li>
+  );
+}
+
+/**
+ * One row in the front page's look: title and folder, then the description
+ * and the tags, with the type and a status worth naming on the right. The
+ * link's name is the boxed row's, so a reader hears the same thing in both.
+ */
+function PlainRow({
+  row,
+  offset,
+  path,
+  retired,
+  tags,
+  overflow,
+}: {
+  row: EngramRow;
+  offset: number;
+  path: string;
+  retired: boolean;
+  tags: string[];
+  overflow: number;
+}) {
+  const cut = row.permalink.lastIndexOf("/");
+  const folder = cut === -1 ? null : row.permalink.slice(0, cut);
+  return (
+    <li
+      className={`absolute top-0 left-0 w-full border-b border-hair ${retired ? RETIRED_CLASS : ""}`}
+      style={{
+        height: `${String(ENGRAM_ROW_HEIGHT)}px`,
+        transform: `translateY(${String(offset)}px)`,
+      }}
+    >
+      <Link
+        to={engramRoute(row.domain, row.permalink)}
+        {...ENGRAM_PREFETCH}
+        aria-label={`${row.title}, ${path}`}
+        className="flex h-full items-center gap-3 rounded px-1.5 hover:bg-sunken focus-visible:ring-2 focus-visible:ring-accent-600 focus-visible:outline-none dark:focus-visible:ring-accent-400"
+      >
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="flex min-w-0 items-baseline gap-2">
+            <span className="truncate font-semibold text-ink">{row.title}</span>
+            {folder !== null && (
+              <span className="truncate font-mono text-xs text-muted">
+                {folder}
+              </span>
+            )}
+          </span>
+          <span className="flex min-w-0 items-baseline gap-1.5 text-sm text-slate-600 dark:text-muted">
+            {row.snippet !== null && (
+              <span className="min-w-0 truncate">
+                {stripSnippetMarkup(row.snippet)}
+              </span>
+            )}
+            {tags.map((tag) => (
+              // Hidden on a phone, where the description needs the width.
+              <span
+                key={tag}
+                className="hidden shrink-0 text-xs text-muted sm:inline"
+              >
+                #{tag}
+              </span>
+            ))}
+            {overflow > 0 && (
+              <span
+                title={row.tags.join(" ")}
+                className="hidden shrink-0 text-xs text-muted sm:inline"
+              >
+                +{overflow}
+              </span>
+            )}
+          </span>
+        </span>
+        <span className="flex shrink-0 items-center gap-1.5 text-xs">
+          {row.type !== null && <Chip>{row.type}</Chip>}
+          {row.status !== null && (
+            <span {...(retired ? { title: "A retired status" } : {})}>
+              <Chip variant={statusVariant(row.status)}>{row.status}</Chip>
+            </span>
+          )}
+          {row.recordedAt !== null && (
+            <span
+              className="ml-1 text-muted tabular-nums"
+              title={row.recordedAt}
+            >
+              {formatDayLong(row.recordedAt)}
             </span>
           )}
         </span>

@@ -10,22 +10,31 @@
  */
 
 import type { ReactElement } from "react";
-import { Suspense, lazy } from "react";
+import { lazyPart } from "./lazyPart";
 
-const CreateEngramDialogBody = lazy(() => import("./CreateEngramDialogBody"));
+const CreateEngramDialogBody = lazyPart(
+  () => import("./CreateEngramDialogBody"),
+);
 
 export interface CreateEngramDialogProps {
   domain: string;
   /** The folder the launcher was looking at; "" is the root. */
   initialFolder: string;
   onClose: () => void;
+  /**
+   * Where the keyboard goes back to when the dialog is dismissed without a
+   * create: its launcher. The lazy body loses radix's own return, which
+   * would otherwise drop focus on the document.
+   */
+  returnFocusTo?: HTMLElement | null;
 }
 
 export function CreateEngramDialog(
   props: CreateEngramDialogProps,
 ): ReactElement {
   return (
-    <Suspense
+    <CreateEngramDialogBody
+      overlay
       fallback={
         // Plain markup rather than another Radix dialog: reaching for the
         // primitive here would defeat the point of keeping it out of this
@@ -37,8 +46,7 @@ export function CreateEngramDialog(
           </p>
         </div>
       }
-    >
-      <CreateEngramDialogBody {...props} />
-    </Suspense>
+      {...props}
+    />
   );
 }

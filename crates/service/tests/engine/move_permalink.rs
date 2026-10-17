@@ -890,3 +890,280 @@ async fn a_cross_domain_move_writes_referencing_links_with_the_canonical_destina
         f.unresolved("notes").await
     );
 }
+
+// --- a move and the writers of a linking engram --------------------------------
+
+/// An edit of a linking engram that runs beside a move of the engram it links
+/// keeps both changes, whichever of the two reaches the file first.
+///
+/// The move rewrites the linker under the file's write lock, which the edit
+/// takes too, so the two serialize. Two worker threads and a start offset
+/// that changes per round, so the rounds do not all take one schedule; the
+/// deterministic proof is the engine's
+/// `a_relink_waits_for_the_linkers_write_lock`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_edit_during_a_move_is_not_overwritten() {
+    for round in 0..20usize {
+        let f = Arc::new(Fixture::new().await);
+        seed(
+            f.notes(),
+            "target.md",
+            &engram("Target", "target", "the target body"),
+        );
+        seed(
+            f.notes(),
+            "linker.md",
+            &engram("Linker", "linker", "See [[target]] for details."),
+        );
+        f.sync().await;
+
+        let edit = EditParams {
+            identifier: "linker".to_string(),
+            domain: "notes".to_string(),
+            operation: "append".to_string(),
+            content: Some(format!("Edited in round {round}.\n")),
+            ..EditParams::default()
+        };
+        let mover = {
+            let f = f.clone();
+            tokio::spawn(async move {
+                for _ in 0..round % 4 {
+                    tokio::task::yield_now().await;
+                }
+                f.mv("target", "notes", "moved.md", None, None).await
+            })
+        };
+        let editor = {
+            let f = f.clone();
+            tokio::spawn(async move {
+                for _ in 0..(round / 4) % 4 {
+                    tokio::task::yield_now().await;
+                }
+                f.engine.edit_engram(&edit).await.map_err(|e| e.to_string())
+            })
+        };
+        let (moved, edited) = tokio::join!(mover, editor);
+        moved
+            .unwrap()
+            .unwrap_or_else(|e| panic!("round {round}: the move lands: {e}"));
+        edited
+            .unwrap()
+            .unwrap_or_else(|e| panic!("round {round}: the edit lands: {e}"));
+
+        let linker = read(f.notes(), "linker.md");
+        assert!(
+            linker.contains("See [[moved]] for details."),
+            "round {round}: the link follows the move: {linker}"
+        );
+        assert!(
+            linker.contains(&format!("Edited in round {round}.")),
+            "round {round}: and the edit is still there: {linker}"
+        );
+    }
+}
+
+/// A virtual linker is rewritten by the store's compare and swap, the way an
+/// edit writes it, never last-write-wins over a row that changed under it.
+///
+/// The seam makes the compare refuse, as a conflict: the move still lands,
+/// the linker keeps the text it had rather than taking a rewrite computed
+/// from a row that is gone, and the receipt names it.
+#[tokio::test]
+async fn a_refused_swap_leaves_a_virtual_linker_as_it_was() {
+    let f = Fixture::new().await;
+    for (title, body) in [
+        ("Target", "the target body"),
+        ("Pointer", "points at [[target]]"),
+    ] {
+        f.engine
+            .write_engram(&WriteParams {
+                domain: "vault".to_string(),
+                title: title.to_string(),
+                content: body.to_string(),
+                folder: None,
+                engram_type: None,
+                tags: Vec::new(),
+                status: None,
+                metadata: None,
+                overwrite: false,
+                share_link: None,
+                model: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    f.engine.fail_next_source_edit();
+    let receipt = f
+        .mv("target", "vault", "kept/target.md", None, None)
+        .await
+        .expect("the move itself lands");
+    assert_eq!(receipt["to"]["permalink"], "kept/target", "{receipt}");
+    assert_eq!(receipt["links_rewritten"], 0, "{receipt}");
+    let failed = &receipt["links_failed"][0];
+    assert_eq!(failed["domain"], "vault", "{receipt}");
+    assert_eq!(failed["path"], "pointer.md", "{receipt}");
+    assert!(
+        failed["reason"].as_str().unwrap().contains("stale edit"),
+        "{receipt}"
+    );
+    let pointer = f.content("vault", "pointer").await;
+    assert!(
+        pointer.contains("points at [[target]]"),
+        "a refused swap writes nothing: {pointer}"
+    );
+}
+
+/// After a move landed, a linking engram whose references cannot be
+/// rewritten is named in the receipt, the way a reflection move names its
+/// pages, and the move is not reported as failed. A receipt with nothing to
+/// name carries no `links_failed` at all.
+#[tokio::test]
+async fn an_engram_move_names_a_linker_it_could_not_rewrite() {
+    let f = Fixture::new().await;
+    seed(
+        f.notes(),
+        "target.md",
+        &engram("Target", "target", "the target body"),
+    );
+    seed(
+        f.notes(),
+        "linker.md",
+        &engram("Linker", "linker", "See [[target]] for details."),
+    );
+    seed(
+        f.notes(),
+        "other.md",
+        &engram("Other", "other", "Also [[target]]."),
+    );
+    f.sync().await;
+    // Not UTF-8 any more: the rewrite cannot read it.
+    std::fs::write(
+        f.notes().join("linker.md"),
+        b"---\ntitle: Linker\n---\n\xff\xfe [[target]]\n",
+    )
+    .unwrap();
+
+    let receipt = f
+        .mv("target", "notes", "moved.md", None, None)
+        .await
+        .expect("the move itself lands");
+    assert_eq!(receipt["links_rewritten"], 1, "{receipt}");
+    let failed = receipt["links_failed"].as_array().expect("{receipt}");
+    assert_eq!(failed.len(), 1, "{receipt}");
+    assert_eq!(failed[0]["domain"], "notes", "{receipt}");
+    assert_eq!(failed[0]["path"], "linker.md", "{receipt}");
+    assert!(
+        failed[0]["reason"].as_str().is_some_and(|r| !r.is_empty()),
+        "{receipt}"
+    );
+    assert!(read(f.notes(), "other.md").contains("Also [[moved]]."));
+
+    let receipt = f
+        .mv("other", "notes", "elsewhere.md", None, None)
+        .await
+        .unwrap();
+    assert!(receipt.get("links_failed").is_none(), "{receipt}");
+}
+
+/// A virtual linker whose swap lost a race with another writer is rewritten
+/// again from the row stored now, as an unguarded edit is, and the receipt
+/// counts it rewritten.
+#[tokio::test]
+async fn a_lost_swap_of_a_virtual_linker_is_applied_again() {
+    let f = Fixture::new().await;
+    for (title, body) in [
+        ("Target", "the target body"),
+        ("Pointer", "points at [[target]]"),
+    ] {
+        f.engine
+            .write_engram(&WriteParams {
+                domain: "vault".to_string(),
+                title: title.to_string(),
+                content: body.to_string(),
+                folder: None,
+                engram_type: None,
+                tags: Vec::new(),
+                status: None,
+                metadata: None,
+                overwrite: false,
+                share_link: None,
+                model: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    f.engine.lose_next_relink_swap();
+    let receipt = f
+        .mv("target", "vault", "kept/target.md", None, None)
+        .await
+        .expect("the move lands");
+    assert_eq!(receipt["links_rewritten"], 1, "{receipt}");
+    assert!(receipt.get("links_failed").is_none(), "{receipt}");
+    let pointer = f.content("vault", "pointer").await;
+    assert!(
+        pointer.contains("points at [[kept/target]]"),
+        "the second try wrote the rewrite: {pointer}"
+    );
+}
+
+/// Two moves of engrams that link each other, run at once on two workers,
+/// leave neither old file in place and no link to an old address. The
+/// deterministic proof is the engine's
+/// `crossing_moves_leave_no_link_to_an_old_address`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn crossing_moves_leave_no_dangling_link() {
+    for round in 0..10usize {
+        let f = Arc::new(Fixture::new().await);
+        seed(
+            f.notes(),
+            "alpha.md",
+            &engram("Alpha", "alpha", "See [[beta]]."),
+        );
+        seed(
+            f.notes(),
+            "beta.md",
+            &engram("Beta", "beta", "Back to [[alpha]]."),
+        );
+        f.sync().await;
+        let first = {
+            let f = f.clone();
+            tokio::spawn(async move {
+                for _ in 0..round % 3 {
+                    tokio::task::yield_now().await;
+                }
+                f.mv("alpha", "notes", "gamma.md", None, None).await
+            })
+        };
+        let second = {
+            let f = f.clone();
+            tokio::spawn(async move { f.mv("beta", "notes", "delta.md", None, None).await })
+        };
+        let (first, second) = tokio::join!(first, second);
+        first
+            .unwrap()
+            .unwrap_or_else(|e| panic!("round {round}: {e}"));
+        second
+            .unwrap()
+            .unwrap_or_else(|e| panic!("round {round}: {e}"));
+
+        assert!(!f.notes().join("alpha.md").exists(), "round {round}");
+        assert!(!f.notes().join("beta.md").exists(), "round {round}");
+        assert!(
+            read(f.notes(), "gamma.md").contains("See [[delta]]."),
+            "round {round}: {}",
+            read(f.notes(), "gamma.md")
+        );
+        assert!(
+            read(f.notes(), "delta.md").contains("Back to [[gamma]]."),
+            "round {round}: {}",
+            read(f.notes(), "delta.md")
+        );
+        assert!(
+            f.unresolved("notes").await.is_empty(),
+            "round {round}: {:?}",
+            f.unresolved("notes").await
+        );
+    }
+}

@@ -15,7 +15,7 @@ import { yCollab } from "y-codemirror.next";
 import { Awareness } from "y-protocols/awareness";
 import * as Y from "yjs";
 
-import { frontmatterFold, unfoldEffect } from "./frontmatterFold";
+import { frontmatterFold } from "./frontmatterFold";
 import { baseExtensions, docText, lineSeparatorFor } from "./setup";
 import {
   CODE_SKELETON,
@@ -384,14 +384,6 @@ describe("the folded frontmatter", () => {
     const v = folded(FOLDED_DOC, 0, FOLDED_DOC.length);
     expect(toggleInline(v, "**")).toBe(false);
     expect(docText(v.state)).toBe(FOLDED_DOC);
-  });
-
-  test("nothing is guarded once the block is unfolded", () => {
-    const v = folded(FOLDED_DOC, 0);
-    v.dispatch({ effects: unfoldEffect.of(true) });
-    cycleHeading(v, 2);
-    // The yaml is on screen now, so it is ordinary text to format.
-    expect(docText(v.state)).toBe(`## ${FOLDED_DOC}`);
   });
 
   test("Raw mode has no fold and formats the frontmatter like any text", () => {

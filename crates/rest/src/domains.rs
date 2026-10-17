@@ -191,9 +191,11 @@ pub struct TreeQuery {
                    `GET /domains/{domain}/engrams?path=...` counts the same \
                    folder recursively and reports the larger number. Neither \
                    is the other's approximation - a level states a fact about \
-                   the rows it drew, a folder listing promises the folder - so \
-                   a client that means to say \"N engrams in this folder\" \
-                   takes that number from the listing.\n\n`folders` \
+                   the rows it drew, a folder listing promises the folder. \
+                   `folder_counts` carries that recursive number for each of \
+                   `folders`, the reader's drafts included, so a tree can say \
+                   \"N engrams in this folder\" without one listing per \
+                   folder.\n\n`folders` \
                    is never cut, so a truncated level still names every folder \
                    a reader can descend into. A `glob` narrows the engrams \
                    this level returned, so on a truncated level it selects \
@@ -209,6 +211,7 @@ pub struct TreeQuery {
                 "domain": "eng",
                 "path": "/",
                 "folders": ["notes"],
+                "folder_counts": { "notes": 12 },
                 "engrams": [{
                     "permalink": "alpha",
                     "title": "Alpha",

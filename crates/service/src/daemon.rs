@@ -481,7 +481,10 @@ pub async fn run_serve(
     if let Ok(state) = config::state_dir() {
         engine = engine.with_state_dir(state);
     }
-    let engine = Arc::new(engine);
+    // The name other instances show for this one: the public URL's host, else
+    // this machine's hostname.
+    let name = engine.config().instance_name();
+    let engine = Arc::new(engine.with_instance_label(name));
     tokio::spawn(crate::engine::run_embed_worker(engine.clone(), embed_rx));
     // Its own task, never a shutdown step: a model download or a scoring
     // batch in flight is abandoned by `Departure`'s exit, not waited for.
@@ -1278,7 +1281,7 @@ async fn run_watcher(
     let mut domains: Vec<(String, PathBuf)> = Vec::new();
     for (name, root) in startup {
         match engine.claim_host(&name, take_over).await {
-            Ok(HostClaim::Acquired) => {
+            Ok(HostClaim::Acquired { .. }) => {
                 if let Err(err) = watcher.watch(&root, RecursiveMode::Recursive) {
                     tracing::warn!(
                         "could not watch domain '{name}' at {}: {err}",
@@ -1289,7 +1292,8 @@ async fn run_watcher(
             }
             Ok(HostClaim::HeldByOther(host)) => {
                 tracing::info!(
-                    "domain '{name}' is hosted by instance {} (last heartbeat {}); not watching, serving read-from-database only",
+                    "domain '{name}' is hosted by {} (instance {}, last heartbeat {}); not watching, serving read-from-database only",
+                    host.label,
                     host.instance_id,
                     host.heartbeat_at
                 );
@@ -1309,13 +1313,22 @@ async fn run_watcher(
             _ = wait_true(&mut shutdown) => break,
             event = new_roots.recv() => {
                 match event {
+                    Some(WatchEvent::Add(name, _)) if domains.iter().any(|(n, _)| *n == name) => {
+                        // A domain this daemon watches already and took back
+                        // from another instance: its watch never stopped, but
+                        // what changed on disk while another host held it was
+                        // not walked here, so one catch-up sync walks it now.
+                        if let Err(err) = engine.sync(Some(name.as_str())).await {
+                            tracing::warn!("catch-up sync of domain '{name}' taken back failed: {err}");
+                        }
+                    }
                     Some(WatchEvent::Add(name, root)) => {
                         if !domains.iter().any(|(n, _)| *n == name) {
                             // Claim the host lock before arming, as at startup: a
                             // domain another live instance hosts is not watched
                             // here and is served read-from-database only.
                             match engine.claim_host(&name, false).await {
-                                Ok(HostClaim::Acquired) => {
+                                Ok(HostClaim::Acquired { .. }) => {
                                     let armed = match watcher.watch(&root, RecursiveMode::Recursive) {
                                         Ok(()) => true,
                                         Err(err) => {
@@ -1345,7 +1358,8 @@ async fn run_watcher(
                                 }
                                 Ok(HostClaim::HeldByOther(host)) => {
                                     tracing::info!(
-                                        "new domain '{name}' is hosted by instance {}; not watching, serving read-from-database only",
+                                        "new domain '{name}' is hosted by {} (instance {}); not watching, serving read-from-database only",
+                                        host.label,
                                         host.instance_id
                                     );
                                 }
@@ -2648,7 +2662,11 @@ async fn health() -> axum::Json<Value> {
 /// Renew this instance's host locks every `secs` seconds until shutdown, so a
 /// live host is never mistaken for stale. The first tick is consumed so renewal
 /// starts one interval in, after the startup claims have settled.
-async fn run_heartbeat(engine: Arc<Engine>, secs: u64, mut shutdown: watch::Receiver<bool>) {
+pub(crate) async fn run_heartbeat(
+    engine: Arc<Engine>,
+    secs: u64,
+    mut shutdown: watch::Receiver<bool>,
+) {
     let mut ticker = tokio::time::interval(Duration::from_secs(secs.max(1)));
     ticker.tick().await;
     loop {
@@ -3677,6 +3695,75 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A domain the watcher already watches, handed to it again because
+    /// this daemon took its lock back from another instance, gets one
+    /// catch-up sync: what changed on disk while another host held it was
+    /// never walked here, and its watch saw nothing new.
+    #[tokio::test]
+    async fn a_domain_taken_back_gets_a_catch_up_walk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("a.md"),
+            "---\ntype: engram\ntitle: A\npermalink: a\nstatus: stable\n---\n\n# A\n",
+        )
+        .unwrap();
+        let mut cfg = crystalline_core::config::GlobalConfig::default();
+        cfg.domains.insert(
+            "eng".to_string(),
+            crystalline_core::config::DomainEntry::file(root.clone()),
+        );
+        let store = crystalline_index::TursoStore::open_in_memory()
+            .await
+            .unwrap();
+        let (watch_tx, watch_rx) = tokio::sync::mpsc::unbounded_channel();
+        let engine = Arc::new(
+            Engine::new(
+                Arc::new(tokio::sync::Mutex::new(store)),
+                cfg,
+                None,
+                Some(tmp.path().join("config.yaml")),
+            )
+            .with_instance_id("this-machine".to_string())
+            .with_watch_channel(watch_tx.clone()),
+        );
+        let (stop, stopped) = watch::channel(false);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let watcher = tokio::spawn(run_watcher(
+            engine.clone(),
+            vec![("eng".to_string(), root.clone())],
+            false,
+            stopped,
+            watch_rx,
+            ready_tx,
+        ));
+        ready_rx.await.unwrap();
+        let indexed = || async {
+            let store = engine.store();
+            let store = store.lock().await;
+            match store.domain_id("eng").await.unwrap() {
+                Some(id) => store.file_stamps(id).await.unwrap().contains_key("a.md"),
+                None => false,
+            }
+        };
+        assert!(!indexed().await, "arming a watch walks nothing");
+        watch_tx
+            .send(WatchEvent::Add("eng".to_string(), root.clone()))
+            .unwrap();
+        let mut walked = false;
+        for _ in 0..100 {
+            if indexed().await {
+                walked = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let _ = stop.send(true);
+        let _ = watcher.await;
+        assert!(walked, "the domain taken back is walked once");
+    }
 
     /// The default filter quiets the model download library's crates, which
     /// log every transfer step at info (dozens of lines a second during a

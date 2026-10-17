@@ -785,6 +785,14 @@ export function syncStatusKey(domain: string): readonly unknown[] {
 }
 
 /**
+ * The mutation key of a domain's "Sync now", so a surface beside the sync
+ * card can tell that the last one failed without owning the mutation.
+ */
+export function syncPullKey(domain: string): readonly unknown[] {
+  return ["domains", domain, "sync", "pull"];
+}
+
+/**
  * The cache key of one domain's share plan, and the one key in this app that
  * deliberately sits outside the `["domains", ...]` family.
  *

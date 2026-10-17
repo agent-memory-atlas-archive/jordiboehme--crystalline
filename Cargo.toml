@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.26.0"
+version = "0.27.0"
 authors = ["Jordi Böhme <jordi@boehme-lopez.de>"]
 edition = "2024"
 license = "MPL-2.0"
@@ -170,7 +170,7 @@ getrandom = "0.4.3"
 # Default features drag aes, bzip2, lzma, ppmd, zstd and xz in; the archives
 # this reads and writes are deflate only, and flate2 is already in the graph
 # through crates/remote, so the lean deflate backend is the whole need.
-zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 # The Fluid web bundle, compiled into the binary (crates/service, behind the
 # `fluid-ui` feature). This crate has no default features, and all three named
@@ -219,6 +219,10 @@ url = "2.5.8"
 # engine, which reads a request's headers but never serves one. Same crate,
 # same version as the re-export.
 http = "1.5.0"
+# The machine's hostname, which names this instance to people on a shared
+# database when no `service.public_url` is set. Already in the lock through
+# sqlx's Postgres driver; only `std` is needed here.
+whoami = { version = "2.1.3", default-features = false, features = ["std"] }
 
 insta = { version = "1.48.0", features = ["yaml"] }
 assert_cmd = "2.2.2"

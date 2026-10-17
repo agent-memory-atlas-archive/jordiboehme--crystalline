@@ -28,9 +28,9 @@ import { StateField } from "@codemirror/state";
 import type { DecorationSet } from "@codemirror/view";
 import { Decoration, EditorView, WidgetType } from "@codemirror/view";
 
-import { attachmentUrl } from "../api/files";
+import type { AssetResolver } from "../api/files";
 import type { ImageFormat } from "./imageFormat";
-import { imageRefsIn, imageStyle } from "./imageFormat";
+import { engramAssetHome, imageRefsIn, imageStyle } from "./imageFormat";
 import { parseAdvanced } from "./parseProgress";
 
 /** What a file that will not load says, in the editor's own quiet voice. */
@@ -93,7 +93,10 @@ class ImagePreviewWidget extends WidgetType {
   }
 }
 
-function buildPreviews(state: EditorState, domain: string): DecorationSet {
+function buildPreviews(
+  state: EditorState,
+  assets: AssetResolver,
+): DecorationSet {
   const widgets: Range<Decoration>[] = [];
   const doc = state.doc;
   syntaxTree(state).iterate({
@@ -101,13 +104,16 @@ function buildPreviews(state: EditorState, domain: string): DecorationSet {
       if (node.name !== "Image") {
         return;
       }
-      for (const ref of imageRefsIn(doc.sliceString(node.from, node.to))) {
+      for (const ref of imageRefsIn(
+        doc.sliceString(node.from, node.to),
+        assets.resolve,
+      )) {
         widgets.push(
           Decoration.widget({
             widget: new ImagePreviewWidget(
               // The fragment is a view concern the files route never sees, so
               // only the path travels; the format stays here and is drawn.
-              attachmentUrl(domain, ref.path),
+              assets.url(ref.path),
               ref.format,
             ),
             block: true,
@@ -148,13 +154,17 @@ const previewTheme = EditorView.baseTheme({
   "&dark .cm-image-error": { color: "var(--color-slate-400)" },
 });
 
-/** Inline previews of the attachment images `domain` holds. */
-export function imagePreviews(domain: string): Extension {
+/**
+ * Inline previews of the attachment images a document references: a domain's
+ * engram files when handed a domain, or whatever the resolver resolves.
+ */
+export function imagePreviews(source: string | AssetResolver): Extension {
+  const assets = typeof source === "string" ? engramAssetHome(source) : source;
   const field = StateField.define<DecorationSet>({
-    create: (state) => buildPreviews(state, domain),
+    create: (state) => buildPreviews(state, assets),
     update: (value, tr) =>
       tr.docChanged || parseAdvanced(tr)
-        ? buildPreviews(tr.state, domain)
+        ? buildPreviews(tr.state, assets)
         : value,
     provide: (f) => EditorView.decorations.from(f),
   });

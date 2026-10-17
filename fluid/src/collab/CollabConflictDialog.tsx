@@ -21,6 +21,8 @@ export interface CollabConflictDialogProps {
   /** The live buffer, in session space. */
   mine: string;
   onResolve: (choice: "mine" | "theirs") => void;
+  /** Why the last choice did not reach the room, shown in the dialog. */
+  problem?: string | null;
   /** Keep editing: the conflict stays pending and saving stays suspended. */
   onClose: () => void;
 }
@@ -48,6 +50,7 @@ export function CollabConflictDialog({
   mine,
   onResolve,
   onClose,
+  problem = null,
 }: CollabConflictDialogProps): ReactElement {
   const deleted = conflict.kind === "deleted";
   return (
@@ -72,6 +75,14 @@ export function CollabConflictDialog({
           <Dialog.Description className="mt-1 text-sm text-slate-600 dark:text-slate-300">
             {conflict.detail}
           </Dialog.Description>
+          {problem !== null && (
+            <p
+              role="alert"
+              className="mt-2 rounded bg-red-50 px-2 py-1 text-sm text-red-800 dark:bg-red-950 dark:text-red-200"
+            >
+              {problem}
+            </p>
+          )}
           <div className={deleted ? "mt-3" : "mt-3 grid gap-3 sm:grid-cols-2"}>
             {!deleted && (
               <div>

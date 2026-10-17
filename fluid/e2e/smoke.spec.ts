@@ -150,11 +150,15 @@ test("the sidebar collapse control is desktop only", async ({ page }) => {
   // exercises the thing it is meant to guard.
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("./");
-  await page.getByRole("button", { name: "Domains" }).click();
+  await page.getByRole("button", { name: "Domains", exact: true }).click();
   await expect(page.getByRole("navigation", { name: "Domains" })).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Collapse the sidebar" }),
   ).toBeHidden();
+  // The drawer has its own way shut, in its head.
+  await expect(
+    page.getByRole("button", { name: "Close the sidebar" }),
+  ).toBeVisible();
 
   await page.setViewportSize({ width: 1280, height: 900 });
   await expect(
@@ -162,12 +166,12 @@ test("the sidebar collapse control is desktop only", async ({ page }) => {
   ).toBeVisible();
 });
 
-test("the Help menu reaches the Handbook and the shortcut map and gives focus back", async ({
+test("the avatar menu reaches the Handbook and the shortcut map and gives focus back", async ({
   page,
 }) => {
   await page.goto("./");
-  const help = page.getByRole("button", { name: "Help", exact: true });
-  await help.click();
+  const avatar = page.locator("header button.avatar");
+  await avatar.click();
   const handbook = page.getByRole("menuitem", {
     name: "Handbook (opens in a new tab)",
   });
@@ -176,22 +180,51 @@ test("the Help menu reaches the Handbook and the shortcut map and gives focus ba
     "https://jordiboehme.github.io/crystalline/",
   );
   await page.keyboard.press("Escape");
+  await expect(avatar).toBeFocused();
 
   // A menu item opens a dialog: twice, so the second open is served from the
-  // cached chunk. Escape must hand focus back to the Help button and leave the
+  // cached chunk. Escape must hand focus back to the avatar and leave the
   // page clickable (Radix sets pointer-events: none on the body while a menu
   // and a dialog overlap, and a mishandled close can leave it there).
   for (let round = 0; round < 2; round += 1) {
-    await help.click();
+    await avatar.click();
     await page.getByRole("menuitem", { name: /^Keyboard shortcuts/ }).click();
     await expect(
       page.getByRole("dialog", { name: /keyboard shortcuts/i }),
     ).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toBeHidden();
-    await expect(help).toBeFocused();
+    await expect(avatar).toBeFocused();
     await expect(page.locator("body")).not.toHaveCSS("pointer-events", "none");
   }
+});
+
+test("the Display choices change the page and keep the avatar menu open", async ({
+  page,
+}) => {
+  await page.goto("./");
+  await page.locator("header button.avatar").click();
+  const menu = page.getByRole("menu");
+  await menu
+    .getByRole("group", { name: "Theme" })
+    .getByRole("menuitemradio", { name: "Dark" })
+    .click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(menu).toBeVisible();
+  await menu
+    .getByRole("group", { name: "Text size" })
+    .getByRole("menuitemradio", { name: "Large" })
+    .click();
+  await expect(menu).toBeVisible();
+  await expect(page.getByRole("main", { includeHidden: true })).toHaveAttribute(
+    "data-text",
+    "large",
+  );
+
+  // Both are remembered: a reload comes back dark and large.
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(page.getByRole("main")).toHaveAttribute("data-text", "large");
 });
 
 /**
@@ -200,9 +233,7 @@ test("the Help menu reaches the Handbook and the shortcut map and gives focus ba
  */
 async function topBarBoxes(page: Page, width: number) {
   await page.setViewportSize({ width, height: 780 });
-  await expect(
-    page.getByRole("button", { name: "Help", exact: true }),
-  ).toBeVisible();
+  await expect(page.locator("header button.avatar")).toBeVisible();
   // Wait for the new width to be the page's own and for two frames to lay
   // out under it, so the boxes below are read after the resize rather than
   // just before it (a failure here that does not repeat is a read that came
@@ -220,8 +251,12 @@ async function topBarBoxes(page: Page, width: number) {
   );
   return page.evaluate(() => {
     const row = document.querySelector("header > div");
-    const input =
+    const field =
       document.querySelector<HTMLInputElement>("input[type=search]");
+    // Below the large breakpoint the field is hidden and an icon that opens
+    // the palette stands in for it.
+    const input = field && field.getClientRects().length > 0 ? field : null;
+    const icon = document.querySelector('[aria-label="Open search"]');
     const style = input ? getComputedStyle(input) : null;
     const typing = input
       ? input.clientWidth -
@@ -241,6 +276,12 @@ async function topBarBoxes(page: Page, width: number) {
       rowOverflow: row ? row.scrollWidth - row.clientWidth : 0,
       accountRight: account ? account.right : null,
       hasSearch: input !== null,
+      hasSearchIcon: icon !== null && icon.getClientRects().length > 0,
+      modes: document.querySelector('header nav[aria-label="Domain view"]')
+        ? "bar"
+        : document.querySelector('nav[aria-label="Domain view"]')
+          ? "row"
+          : "none",
       typing,
       // What a failure needs to say which number moved.
       innerWidth: window.innerWidth,
@@ -267,8 +308,42 @@ async function topBarBoxes(page: Page, width: number) {
   });
 }
 
+/** The domain whose Reflection is on, so the bar carries the mode switch. */
+const PAGES_DOMAIN = process.env.FLUID_E2E_REFLECTION_DOMAIN ?? "smoke-pages";
+
+for (const inDomain of [false, true]) {
+  for (const width of [360, 768, 1024]) {
+    test(`the top bar fits ${width} px ${inDomain ? "inside a domain with both modes" : "on the home screen"}`, async ({
+      page,
+    }) => {
+      if (inDomain) {
+        await page.goto(`d/${PAGES_DOMAIN}`);
+        // The switch draws itself from a read of its own; wait for it.
+        await expect(
+          page.getByRole("navigation", { name: "Domain view" }),
+        ).toBeVisible();
+      }
+      const boxes = await topBarBoxes(page, width);
+      await test.info().attach("boxes", {
+        body: JSON.stringify(boxes),
+        contentType: "application/json",
+      });
+      expect(boxes.rowOverflow).toBeLessThanOrEqual(0);
+      expect(boxes.accountRight!).toBeLessThanOrEqual(boxes.viewport);
+      // The field from the large breakpoint up, the icon below it.
+      expect(boxes.hasSearch).toBe(width >= 1024);
+      expect(boxes.hasSearchIcon).toBe(width < 1024);
+      // The mode switch sits in the bar from the medium breakpoint up and in
+      // a row of its own under it on a phone; outside a domain, nowhere.
+      expect(boxes.modes).toBe(
+        inDomain ? (width >= 768 ? "bar" : "row") : "none",
+      );
+    });
+  }
+}
+
 for (const share of [false, true]) {
-  for (const width of [360, 640, 767, 768]) {
+  for (const width of [360, 640, 767, 768, 1024]) {
     test(`the top bar fits ${width} px${share ? " with Share and a long name" : ""}`, async ({
       page,
     }) => {
@@ -304,18 +379,21 @@ for (const share of [false, true]) {
         body: JSON.stringify(boxes),
         contentType: "application/json",
       });
-      expect(boxes.hasSearch).toBe(true);
+      expect(boxes.hasSearch || boxes.hasSearchIcon).toBe(true);
       expect(boxes.accountRight).not.toBeNull();
       expect(boxes.accountRight!).toBeLessThanOrEqual(boxes.viewport);
       expect(boxes.rowOverflow).toBeLessThanOrEqual(0);
-      // The room left to type in: the box minus its padding. 40 px is about
-      // five characters, the least that still reads as a field.
+      // The room left to type in, where there is a field: the box minus its
+      // padding. 40 px is about five characters, the least that still reads
+      // as a field.
       //
       // Headless hides the scrollbar, which a visible one takes 15 px of the
       // width from: the field is checked with that scrollbar counted, so a
       // layout that only fits without it fails here too.
       const SCROLLBAR = 15;
-      expect(boxes.typing - SCROLLBAR).toBeGreaterThanOrEqual(40);
+      if (boxes.hasSearch) {
+        expect(boxes.typing - SCROLLBAR).toBeGreaterThanOrEqual(40);
+      }
       if (share) {
         // A refetch the app starts while the page closes must not fail the
         // test from a canned handler that has nothing left to answer.
@@ -330,9 +408,11 @@ test("the Rename dialog opens from the domain page and can be cancelled", async 
 }) => {
   await page.goto(`d/${DOMAIN}`);
 
-  // "Rename domain" is the launcher; the smoke signs in as the admin
-  // `run-smoke.sh` creates through setup, who sees it on every domain here.
-  await page.getByRole("button", { name: "Rename domain" }).click();
+  // "Rename domain" is the launcher, a row of the front page's More actions
+  // menu; the smoke signs in as the admin `run-smoke.sh` creates through
+  // setup, who sees it on every domain here.
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Rename domain" }).click();
 
   const dialog = page.getByRole("dialog", { name: "Rename domain" });
   await expect(dialog).toBeVisible();
@@ -356,11 +436,12 @@ test("the Rename dialog opens from the domain page and can be cancelled", async 
 test("the same rename dialog also opens from the policies card's 'Change name'", async ({
   page,
 }) => {
-  await page.goto(`d/${DOMAIN}`);
+  await page.goto(`d/${DOMAIN}/settings`);
 
   // A second launcher for the one dialog above, not a second dialog: the
-  // accessible name is distinct from the header's own "Rename domain" so
-  // this test can address it on its own.
+  // accessible name is distinct from the menu's own "Rename domain" so
+  // this test can address it on its own. The policies live on the domain's
+  // settings screen.
   const policies = page.getByRole("region", { name: "Domain policies" });
   await policies.getByRole("button", { name: "Change name" }).click();
 
@@ -472,8 +553,9 @@ test("an undeclared MANIFEST section explains itself and can be started", async 
   // The fixture MANIFEST declares Scope and When to Use and nothing else, so
   // Tag aliases is the box with nothing in it. What it says and the example it
   // shows are the server's own registry, which is the half a jsdom test cannot
-  // reach: there the payload is a fixture, here it is the daemon.
-  await page.goto(`d/${DOMAIN}`);
+  // reach: there the payload is a fixture, here it is the daemon. The
+  // configuration sections are started from the domain's settings screen.
+  await page.goto(`d/${DOMAIN}/settings`);
   const aliases = page.getByRole("region", { name: "Tag aliases" });
   await expect(
     aliases.getByText(/Spellings that fold into one canonical tag/),
@@ -584,27 +666,32 @@ test("a read-only domain shows its lock and offers no edit until the owner switc
   await expect(page.getByText("read-only", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Edit" })).toHaveCount(0);
 
-  // The owner (the smoke's admin) switches it off in the domain policies...
-  await page.goto(`d/${LOCKED_DOMAIN}`);
+  // The owner (the smoke's admin) switches it off in the domain policies,
+  // on the domain's settings screen...
+  await page.goto(`d/${LOCKED_DOMAIN}/settings`);
   const policies = page.getByRole("region", { name: "Domain policies" });
-  await policies
-    .getByRole("combobox", { name: "read_only" })
-    .selectOption("off");
-  await expect(page.getByText("read-only", { exact: true })).toHaveCount(0);
+  const lock = policies.getByRole("combobox", { name: "read_only" });
+  await lock.selectOption("off");
+  await expect(lock).toHaveValue("off");
+  await page.goto(`d/${LOCKED_DOMAIN}`);
   await expect(page.getByRole("button", { name: "New engram" })).toBeVisible();
+  await expect(page.getByText("read-only", { exact: true })).toHaveCount(0);
 
   // ...and on again, which asks first, so the journey ends as it started.
-  await policies
-    .getByRole("combobox", { name: "read_only" })
-    .selectOption("on");
+  await page.goto(`d/${LOCKED_DOMAIN}/settings`);
+  await lock.selectOption("on");
   await policies.getByRole("button", { name: "Turn on read-only" }).click();
+  await expect(lock).toHaveValue("on");
+  await page.goto(`d/${LOCKED_DOMAIN}`);
   await expect(page.getByText("read-only", { exact: true })).toBeVisible();
 });
 
 test("the neighborhood graph draws a canvas", async ({ page }) => {
   await openEngram(page, "Lantern Protocol");
 
-  await page.getByRole("button", { name: "Show the neighborhood" }).click();
+  // The switches live in the details rail's Explore block.
+  const explore = page.getByRole("region", { name: "Explore" });
+  await explore.getByRole("button", { name: "Show the neighborhood" }).click();
   // The drawing arrives with a lazy chunk, so the canvas is what says the
   // renderer both loaded and attached.
   await expect(page.locator("canvas").first()).toBeVisible();
@@ -644,6 +731,35 @@ test("the command palette opens on the keyboard and jumps", async ({
   ).toBeVisible();
 });
 
+test("the command palette recovers when its chunk fails once", async ({
+  page,
+}) => {
+  // The first request for the palette's chunk is refused, as a dropped
+  // connection would; every later one goes through.
+  let refused = 0;
+  await page.route(/CommandPaletteBody-[^/]*\.js$/, async (route) => {
+    if (refused === 0) {
+      refused += 1;
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.keyboard.press("ControlOrMeta+k");
+
+  const card = page.getByRole("dialog", { name: "Not loaded" });
+  await expect(card).toBeVisible();
+  await expect(card.getByRole("button", { name: "Try again" })).toBeFocused();
+
+  await card.getByRole("button", { name: "Try again" }).click();
+
+  await expect(
+    page.getByPlaceholder("Jump to a domain, or find an engram by title"),
+  ).toBeVisible();
+  expect(refused).toBe(1);
+});
+
 test("an engram is created, edited, saved and retired", async ({ page }) => {
   await page
     .locator("main")
@@ -667,13 +783,20 @@ test("an engram is created, edited, saved and retired", async ({ page }) => {
   await addTag.fill("smoke");
   await addTag.press("Enter");
 
-  // Save waits for the validation gate to clear, then lands.
+  // Save waits for the validation gate to clear, then lands. The Save
+  // button stands only on a solo buffer with unsaved text; in a room the
+  // server saves on its own and Mod-S flushes it, so the keyboard is the one
+  // way that reaches both surfaces.
   const saveButton = page.getByRole("button", { name: "Save" });
-  await expect(saveButton).toBeEnabled();
-  await saveButton.click();
-  await expect(page.getByText("Saved")).toBeVisible();
+  if ((await saveButton.count()) > 0) {
+    await expect(saveButton).toBeEnabled();
+    await saveButton.click();
+  } else {
+    await source.press("ControlOrMeta+s");
+  }
+  await expect(page.getByText("Saved", { exact: true })).toBeVisible();
 
-  // The read view shows what was written. Close wears whichever shape the
+  // The read view shows what was written. Done wears whichever shape the
   // surface earns: a link in a room, where the server owns the write and
   // leaving is all this control can promise, and a button on the solo
   // surface, where it asks about unsaved text before it goes. The save above
@@ -681,8 +804,8 @@ test("an engram is created, edited, saved and retired", async ({ page }) => {
   // leaves at once - and this journey reaches whichever shape the daemon
   // gives it a room for.
   await page
-    .getByRole("link", { name: "Close" })
-    .or(page.getByRole("button", { name: "Close" }))
+    .getByRole("link", { name: "Done", exact: true })
+    .or(page.getByRole("button", { name: "Done", exact: true }))
     .click();
   await expect(engramTitle(page)).toHaveText("Smoke Journey");
   await expect(page.locator("article")).toContainText("A smoke-written line.");
@@ -724,8 +847,11 @@ test("two browsers co-edit one engram and the save lands once", async ({
   // Presence: each side lists the other by display name, and BOTH remote
   // cursors are visible - the spec's own wording. A cursor renders on the
   // OTHER browser once its owner focuses the buffer.
-  await expect(presence(pageA).getByText(PEER, { exact: true })).toBeVisible();
-  await expect(presence(pageB).getByText(USER, { exact: true })).toBeVisible();
+  // The avatars show initials; the list's own name carries every name, one
+  // entry each, the local author marked "(you)".
+  const listed = (name: string) => new RegExp(`(?:: |, )${name}(?:,|$)`);
+  await expect(presence(pageA)).toHaveAccessibleName(listed(PEER));
+  await expect(presence(pageB)).toHaveAccessibleName(listed(USER));
   await editorA.click();
   await expect(pageB.locator(".cm-ySelectionCaret")).toBeVisible();
   await editorB.click();
@@ -760,7 +886,10 @@ test("two browsers co-edit one engram and the save lands once", async ({
   // typed line exactly once - two copies would be the shared document applied
   // twice - and then everything holds steady while the room idles past its
   // debounce.
-  await pageA.getByRole("button", { name: "Save" }).click();
+  // No Save button in a room: the server saves on its own, and Mod-S asks
+  // it to now.
+  await expect(pageA.getByRole("button", { name: "Save" })).toHaveCount(0);
+  await editorA.press("ControlOrMeta+s");
   await expect
     .poll(async () => (await detail()).content)
     .toContain("smoke-collab line");
@@ -804,9 +933,12 @@ test("a domain is registered, filled from an archive and unregistered", async ({
   //
   // Reached the way every other journey reaches a domain: from the home screen
   // and its card. Inside a domain the sidebar is that domain's own tree rather
-  // than the listing, and `All domains` is the way back out of it that the
-  // sidebar itself offers.
-  await page.getByRole("link", { name: "All domains" }).click();
+  // than the listing, and `All domains` in the top bar's switcher is the way
+  // back out of it.
+  await page
+    .getByRole("button", { name: `${RESTORE_DOMAIN}, switch domain` })
+    .click();
+  await page.getByRole("menuitem", { name: /^All domains/ }).click();
   await page
     .locator("main")
     .getByRole("link", { name: DOMAIN, exact: true })
@@ -814,16 +946,19 @@ test("a domain is registered, filled from an archive and unregistered", async ({
   await expect(
     page.getByRole("heading", { name: DOMAIN, level: 1 }),
   ).toBeVisible();
+  // A row of the front page's More actions menu.
+  await page.getByRole("button", { name: "More actions" }).click();
   const [download] = await Promise.all([
     page.waitForEvent("download"),
-    page.getByRole("link", { name: "Download archive" }).click(),
+    page.getByRole("menuitem", { name: "Download archive" }).click(),
   ]);
   expect(download.suggestedFilename()).toBe(`${DOMAIN}-archive.zip`);
   const archivePath = await download.path();
 
   // And straight back up into the new domain: a dry run first, which is the
   // whole point of the two-step dialog, then the write it described.
-  await page.getByRole("link", { name: "All domains" }).click();
+  await page.getByRole("button", { name: `${DOMAIN}, switch domain` }).click();
+  await page.getByRole("menuitem", { name: /^All domains/ }).click();
   await page
     .locator("main")
     .getByRole("link", { name: RESTORE_DOMAIN, exact: true })
@@ -831,7 +966,8 @@ test("a domain is registered, filled from an archive and unregistered", async ({
   await expect(
     page.getByRole("heading", { name: RESTORE_DOMAIN, level: 1 }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Import archive" }).click();
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Import archive" }).click();
   await page.getByLabel("Archive file").setInputFiles(archivePath);
   await page.getByRole("button", { name: "Preview" }).click();
 
@@ -844,8 +980,7 @@ test("a domain is registered, filled from an archive and unregistered", async ({
       .getByRole("row", { name: /MANIFEST\.md/ }),
   ).toContainText("ignored");
 
-  // `Import` exactly, which is the only control here that writes: `Import
-  // archive` is the launcher on the screen behind the dialog.
+  // `Import` exactly, which is the only control here that writes.
   await page.getByRole("button", { name: "Import", exact: true }).click();
   await expect(
     page.getByRole("table", { name: "What the import did" }),
@@ -871,7 +1006,9 @@ test("a domain is registered, filled from an archive and unregistered", async ({
   // Unregistering, behind the second press that says what is lost - and what
   // is not: the files stay, which is the sentence the spec pins. The control
   // lives in the danger zone, behind the domain's own name typed into the
-  // field it opens.
+  // field it opens, on the domain's settings screen, reached from the menu.
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Domain settings" }).click();
   const dangerZone = page.getByRole("region", { name: "Danger zone" });
   await dangerZone.getByRole("button", { name: "Unregister domain" }).click();
   await expect(dangerZone.getByText(/files stay on disk/i)).toBeVisible();
@@ -894,6 +1031,13 @@ test("a domain is registered, filled from an archive and unregistered", async ({
 test("the station launches from the C64 screen and returns to the same page", async ({
   page,
 }) => {
+  // The station is the one journey that loads a whole game: its lazy chunk,
+  // a WebGL context and a generated room. Each of those waits below has been
+  // seen to outrun the 15 s default on a machine under heavy load, so the
+  // three launch waits get a bounded 45 s of their own and the journey 150 s.
+  // A launch that never completes still fails, just later.
+  test.setTimeout(150_000);
+  const LAUNCH = { timeout: 45_000 };
   // Signed in by `beforeEach`.
   const route = `/d/${DOMAIN}/e/${DEEP_PERMALINK}`;
   // Relative, so the goto stays under the base; `route` keeps its slash for
@@ -909,8 +1053,8 @@ test("the station launches from the C64 screen and returns to the same page", as
     page.getByRole("dialog", { name: "About Crystalline" }),
   ).toBeVisible();
   await page.getByRole("link", { name: 'LOAD"GAME",8,1' }).click();
-  await expect(page).toHaveURL(new RegExp(`/%CF%80${route}$`));
-  await expect(page.locator("canvas")).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/%CF%80${route}$`), LAUNCH);
+  await expect(page.locator("canvas")).toBeVisible(LAUNCH);
   await expect(page.getByText("?DEVICE NOT PRESENT ERROR")).toHaveCount(0);
   // Log the renderer once, so the CI job shows what drew the canvas.
   const renderer = await page.evaluate(() => {
@@ -925,7 +1069,7 @@ test("the station launches from the C64 screen and returns to the same page", as
   // sound, and skips on any key; the connecting screen follows and skips
   // the same way.
   const opening = page.getByRole("dialog", { name: "Opening" });
-  await expect(opening).toBeVisible();
+  await expect(opening).toBeVisible(LAUNCH);
   await page.keyboard.press("Shift");
   await expect(opening).toHaveCount(0);
   const connecting = page.getByRole("dialog", { name: "Connecting" });
@@ -937,6 +1081,7 @@ test("the station launches from the C64 screen and returns to the same page", as
   // only the mouse hint).
   await expect(page.locator('[data-hud="status"]')).toContainText(
     "DEEP GAMMA NOTE",
+    LAUNCH,
   );
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog", { name: "Paused" })).toBeVisible();

@@ -19,6 +19,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use tokio::sync::broadcast;
 
+/// How long an answer read from records another instance may change is
+/// trusted before it is read again. The event stream re-resolves who may see
+/// a domain after it; the Reflection gate re-reads the engram rows it
+/// remembers after it on a database other instances share, whose writes this
+/// instance never hears announced. What can leak inside the window on the
+/// stream is a domain name and a path, never content.
+pub const VISIBILITY_TTL: Duration = Duration::from_secs(10);
+
 /// How many events the ring keeps for replay. A tab away for a larger burst
 /// gets a `reset` (one refetch of every active query), which is the soft
 /// failure this whole design prefers.
@@ -132,12 +140,52 @@ pub struct DomainChanged {
     pub audience: Option<DomainAudience>,
 }
 
-/// One announcement on the bus. The wire's third event, `reset`, is the
+/// What happened in a domain's Reflection, as the `reflection` event says it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReflectionChangeKind {
+    /// A page's text or bookkeeping changed: a write, a settle, a room's
+    /// save, or a link that followed another page or file.
+    Changed,
+    /// A page moved; `from` is where it was.
+    Moved,
+    Deleted,
+    /// A thread on the page was opened, answered, resolved or reopened.
+    Threads,
+    /// A file under `reflections/assets/` was added, replaced, removed or
+    /// moved; `path` is the file, `from` its old path on a move.
+    Files,
+    /// The switch moved, or on a shared database the instance that serves
+    /// the Reflection changed (its host lock moved); `path` is empty.
+    Switched,
+}
+
+/// One change in a domain's Reflection, as a session that may read it hears
+/// it. A path and a kind, never text and never an engram name, so a person
+/// with knowledge `none` may hear it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ReflectionChanged {
+    pub domain: String,
+    /// Inside `reflections/`, after the change; empty for `switched`.
+    pub path: String,
+    pub kind: ReflectionChangeKind,
+    /// `moved`, and `files` on a move: the path before.
+    pub from: Option<String>,
+    /// Who made the change, as a display label; null for a link that
+    /// followed, a room save with no single typist, and the machine owner.
+    pub actor: Option<String>,
+    /// As on [`EngramChanged::audience`]. Never on the wire.
+    #[serde(skip)]
+    pub audience: Option<DomainAudience>,
+}
+
+/// One announcement on the bus. The wire's fourth event, `reset`, is the
 /// route's own and never rides the bus.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Change {
     Engram(EngramChanged),
     Domain(DomainChanged),
+    Reflection(ReflectionChanged),
 }
 
 impl Change {
@@ -146,6 +194,7 @@ impl Change {
         match self {
             Change::Engram(_) => "engram",
             Change::Domain(_) => "domain",
+            Change::Reflection(_) => "reflection",
         }
     }
 
@@ -153,6 +202,7 @@ impl Change {
         match self {
             Change::Engram(change) => &change.domain,
             Change::Domain(change) => &change.domain,
+            Change::Reflection(change) => &change.domain,
         }
     }
 
@@ -161,6 +211,7 @@ impl Change {
         let slot = match self {
             Change::Engram(change) => &mut change.audience,
             Change::Domain(change) => &mut change.audience,
+            Change::Reflection(change) => &mut change.audience,
         };
         if slot.is_none() {
             *slot = Some(audience.clone());
@@ -170,7 +221,7 @@ impl Change {
     pub fn draft_of(&self) -> Option<&str> {
         match self {
             Change::Engram(change) => change.draft_of.as_deref(),
-            Change::Domain(_) => None,
+            Change::Domain(_) | Change::Reflection(_) => None,
         }
     }
 
@@ -180,6 +231,7 @@ impl Change {
         match self {
             Change::Engram(change) => change.audience.as_ref(),
             Change::Domain(change) => change.audience.as_ref(),
+            Change::Reflection(change) => change.audience.as_ref(),
         }
     }
 
@@ -189,6 +241,7 @@ impl Change {
         match self {
             Change::Engram(change) => serde_json::to_string(change),
             Change::Domain(change) => serde_json::to_string(change),
+            Change::Reflection(change) => serde_json::to_string(change),
         }
     }
 }
@@ -616,6 +669,38 @@ mod tests {
             panic!()
         };
         assert_eq!(events[0].change.audience(), None);
+    }
+
+    #[test]
+    fn a_reflection_event_is_named_reflection_and_carries_its_path() {
+        let change = Change::Reflection(ReflectionChanged {
+            domain: "eng".to_string(),
+            path: "ops/a.md".to_string(),
+            kind: ReflectionChangeKind::Moved,
+            from: Some("guides/a.md".to_string()),
+            actor: Some("jordi".to_string()),
+            audience: None,
+        });
+        assert_eq!(change.name(), "reflection");
+        assert_eq!(change.domain(), "eng");
+        assert_eq!(change.draft_of(), None);
+        let data: serde_json::Value = serde_json::from_str(&change.data().unwrap()).unwrap();
+        assert_eq!(
+            data,
+            serde_json::json!({ "domain": "eng", "path": "ops/a.md", "kind": "moved", "from": "guides/a.md", "actor": "jordi" })
+        );
+        let switched = Change::Reflection(ReflectionChanged {
+            domain: "eng".to_string(),
+            path: String::new(),
+            kind: ReflectionChangeKind::Switched,
+            from: None,
+            actor: None,
+            audience: None,
+        });
+        let data: serde_json::Value = serde_json::from_str(&switched.data().unwrap()).unwrap();
+        // Fluid drops a frame whose path is not a string: an empty one it keeps.
+        assert_eq!(data["path"], "");
+        assert_eq!(data["kind"], "switched");
     }
 
     #[test]

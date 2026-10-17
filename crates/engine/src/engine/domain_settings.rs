@@ -249,6 +249,16 @@ impl Engine {
         if switching_on && overlay.is_none() {
             self.seed_pact(domain).await?;
         }
+        let switch_before = self.reflection_switch(domain);
+        // A switch-off saves and closes the domain's reflection rooms first,
+        // after every check that can still refuse this edit and while the
+        // state is still on, so each room's last save lands in its page. A
+        // refused switch-off never gets here and closes nobody's room. If the
+        // write below fails after this, the rooms' text is in the pages
+        // already; their editors reopen them.
+        if switching_off && overlay.is_none() {
+            self.close_reflection_rooms(domain).await;
+        }
         self.apply_source_edit(
             &desc,
             &source,
@@ -261,6 +271,10 @@ impl Engine {
         )
         .await?;
         self.refresh_routing_cache().await;
+        // A draft moves no switch: the folder's MANIFEST decides.
+        if overlay.is_none() {
+            self.announce_switch_if_moved(domain, switch_before, change_label(scope));
+        }
         let markdown = match overlay.as_deref() {
             None => self.manifest_markdown(domain).await?,
             Some(who) => {

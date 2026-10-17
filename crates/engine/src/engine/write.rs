@@ -1,4 +1,5 @@
 use super::*;
+use crate::collab::session::RoomDoc;
 use crate::domain_view::Occupant;
 
 impl Engine {
@@ -241,6 +242,15 @@ impl Engine {
             }
         }
         match view.occupant_at(domain_id, source, &path).await? {
+            // A folder write onto a path whose file is missing here may
+            // land over the row of an engram only the previous host of a
+            // host move has. A draft writes its own row and never that one.
+            Occupant::Free
+                if view.actor().is_none() && matches!(source, ContentSource::File { .. }) =>
+            {
+                self.refuse_only_elsewhere(domain, domain_id, ElsewhereRow::Engram(&path))
+                    .await?;
+            }
             Occupant::Free => {}
             Occupant::Engram {
                 permalink: held,
@@ -569,32 +579,80 @@ impl Engine {
             // capture's document, and the rules are owed their say about it
             // exactly as an edit of the MANIFEST gets it.
             let manifest_text = names_the_manifest(&path).then(|| markdown.clone());
-            let applied = rooms
-                .apply_text(&p.domain, &permalink, overlay, markdown, &actor, peer)
+            // Only into a room that will save it. A room in conflict, with a
+            // failed save, or whose final save has run may never write what
+            // it is given, and writing the file behind it would land over
+            // text it holds and nobody has saved. So the replace is refused
+            // there, naming who is in the room. A replacement was computed
+            // from no text, so there is no base to check. A room that closed
+            // since the look above is no room at all: the replace then takes
+            // the ordinary path below, as it does for a page nobody has open.
+            self.take_live_compose_hold().await;
+            match rooms
+                .compose_while_saving(
+                    &p.domain,
+                    &permalink,
+                    overlay,
+                    None,
+                    markdown.clone(),
+                    &actor,
+                    peer,
+                )
                 .await
-                .map_err(EngineError::Conflict)?;
-            if let Some(text) = manifest_text {
-                note_manifest_findings(&mut receipt, &text, domain_verify_config(&source).as_ref());
+            {
+                Ok(applied) => {
+                    if let Some(text) = manifest_text {
+                        note_manifest_findings(
+                            &mut receipt,
+                            &text,
+                            domain_verify_config(&source).as_ref(),
+                        );
+                    }
+                    if overlay.is_some() {
+                        receipt["draft"] = json!(true);
+                    }
+                    if let Some(owner) = view.joined() {
+                        receipt["joined"] = json!(format!("landed in {owner}'s draft"));
+                    }
+                    // Where it went, in the words the live edit says it in:
+                    // `present` names who is about to watch the page change
+                    // under them.
+                    receipt["landed"] = json!("live");
+                    receipt["present"] = json!(applied.participants);
+                    // The tails, and which of them this arm owes: none of
+                    // them. The generated folder indexes, the embedding nudge
+                    // and - for a virtual domain whose MANIFEST is the one
+                    // engram whose text is also configuration - the routing
+                    // cache all describe bytes that are nowhere yet, so all
+                    // three belong to the room's saver, which runs them when
+                    // the text lands (`Engine::save_engram`), pinned end to
+                    // end by
+                    // `a_virtual_manifest_replaced_in_its_room_reaches_the_routing_cache`.
+                    return Ok(receipt);
+                }
+                Err(_) if !rooms.has_live_room(&p.domain, &permalink, overlay).await => {}
+                Err(_) => {
+                    let mine = match peer {
+                        Some(peer) => {
+                            rooms
+                                .touch_agent_presence(&p.domain, &permalink, overlay, peer)
+                                .await
+                        }
+                        None => None,
+                    };
+                    let present = rooms
+                        .participants(
+                            &p.domain,
+                            &RoomDoc::Engram(permalink.clone()),
+                            overlay,
+                            mine,
+                        )
+                        .await;
+                    return Err(EngineError::Conflict(unsaving_room_refusal(
+                        &p.domain, &permalink, &present,
+                    )));
+                }
             }
-            if overlay.is_some() {
-                receipt["draft"] = json!(true);
-            }
-            if let Some(owner) = view.joined() {
-                receipt["joined"] = json!(format!("landed in {owner}'s draft"));
-            }
-            // Where it went, in the words the live edit says it in: `present`
-            // names who is about to watch the page change under them.
-            receipt["landed"] = json!("live");
-            receipt["present"] = json!(applied.participants);
-            // The tails, and which of them this arm owes: none of them. The
-            // generated folder indexes, the embedding nudge and - for a
-            // virtual domain whose MANIFEST is the one engram whose text is
-            // also configuration - the routing cache all describe bytes that
-            // are nowhere yet, so all three belong to the room's saver, which
-            // runs them when the text lands (`Engine::save_engram`), pinned
-            // end to end by
-            // `a_virtual_manifest_replaced_in_its_room_reaches_the_routing_cache`.
-            return Ok(receipt);
         }
 
         // The whole existence-check-then-write under one lock: the check and
@@ -715,6 +773,24 @@ impl Engine {
                 }
                 .await;
                 if let Err(e) = indexed {
+                    // The host lock moved while the file was written: the
+                    // text is kept and the path put back, as long as it still
+                    // holds what this write left there.
+                    if super::fence::is_file_host_refusal(&e) {
+                        return Err(self.refuse_file_write(
+                            e,
+                            &p.domain,
+                            &abs,
+                            previous.as_deref(),
+                            crystalline_core::to_lf(&markdown).as_bytes(),
+                            Some(super::fence::EngramKeep {
+                                rel: &path,
+                                text: &markdown,
+                                account: crate::scope::overlay_actor(scope),
+                                actor: &actor,
+                            }),
+                        ));
+                    }
                     put_back(&abs, previous.as_deref());
                     return Err(e);
                 }
@@ -765,7 +841,7 @@ impl Engine {
         // engram, the source of its routing bullets, so refresh the cache the
         // sync `routing_text` reads; a MANIFEST of either kind may declare a
         // new name.
-        self.after_source_write(&source, &path).await;
+        self.after_source_write(&p.domain, &source, &path).await;
         // The new engram belongs in its folder's generated index.
         self.refresh_index_files(&p.domain).await;
         self.nudge_embed();
@@ -870,7 +946,12 @@ impl Engine {
             None => None,
         };
         let present = rooms
-            .participants(&p.domain, &permalink, overlay, mine)
+            .participants(
+                &p.domain,
+                &RoomDoc::Engram(permalink.clone()),
+                overlay,
+                mine,
+            )
             .await;
         Some(LiveWriteTarget { permalink, present })
     }
@@ -927,6 +1008,44 @@ impl Engine {
         p: &SaveParams,
         scope: &crate::scope::Scope,
         join: Option<&crate::join::Join>,
+    ) -> Result<Value> {
+        self.save_engram_closing(p, scope, join, true).await
+    }
+
+    /// [`Engine::save_engram`] for a co-editing room over the folder's own
+    /// document. The room holds its guard across this call, and the registry
+    /// is never taken under a room's guard (lock order: registry, then
+    /// session), so this save does not close the reflection rooms itself:
+    /// the room closes them before it takes its guard for the save.
+    ///
+    /// A save that resolved the room's address to a path and then waited for
+    /// that path's lock while a path-only move held it finds the file gone,
+    /// though the engram is still there under the same address. So a miss is
+    /// asked once more: when the address now answers with a file that is
+    /// there, the save is made again, once, at that path, instead of the room
+    /// raising a deletion nobody made.
+    pub(crate) async fn save_engram_from_room(&self, p: &SaveParams) -> Result<Value> {
+        let scope = &crate::scope::Scope::Unrestricted;
+        match self.save_engram_closing(p, scope, None, false).await {
+            Err(EngineError::NotFound(missing)) => {
+                if self.engram_text(&p.domain, &p.identifier).await.is_ok() {
+                    return self.save_engram_closing(p, scope, None, false).await;
+                }
+                Err(EngineError::NotFound(missing))
+            }
+            other => other,
+        }
+    }
+
+    /// The body of [`Engine::save_engram_joined`]. `close_rooms` says whether a
+    /// MANIFEST save that switches the Reflection off closes the domain's
+    /// reflection rooms before it writes: every caller but a room's own save.
+    async fn save_engram_closing(
+        &self,
+        p: &SaveParams,
+        scope: &crate::scope::Scope,
+        join: Option<&crate::join::Join>,
+        close_rooms: bool,
     ) -> Result<Value> {
         if self.read_only {
             return Err(EngineError::ReadOnly);
@@ -1001,6 +1120,8 @@ impl Engine {
                 .save_into_overlay(&view, p, &desc, &source, scope)
                 .await;
         }
+        let switch_before =
+            is_manifest_path(&desc.path).then(|| self.reflection_switch(&desc.domain));
 
         // The single point this save's text funnels through before it lands:
         // a cross-domain link spelled with an alias or a non-canonical local
@@ -1015,13 +1136,27 @@ impl Engine {
         match &source {
             ContentSource::File { root } => {
                 let abs = join_rel(root, &desc.path);
+                // A MANIFEST that switches the Reflection off closes its rooms
+                // first, while it is still on. Only for a save that will land:
+                // a stale token is refused by the swap below, and closing
+                // nobody's room for it is the point of reading it here.
+                if close_rooms
+                    && switch_before == Some(crystalline_core::ReflectionSwitch::On)
+                    && std::fs::read(&abs)
+                        .is_ok_and(|bytes| sha256_hex(&bytes) == p.expected_checksum)
+                {
+                    self.close_reflection_rooms_if_switching_off(&desc.domain, Some(&content))
+                        .await;
+                }
                 // Held across the comparison, the write and the reindex. See
-                // `Engine::write_lock`.
-                let _lock = match self
+                // `Engine::write_lock`. What the save replaced, read under the
+                // same lock, is kept so a save the host-lock fence refuses
+                // puts the file back.
+                let (_lock, before) = match self
                     .write_checked(&abs, Swap::Expect(&p.expected_checksum), &content)
                     .await?
                 {
-                    Ok(lock) => lock,
+                    Ok(locked) => locked,
                     Err(SwapRefused::Stale { found }) => {
                         return Err(EngineError::Conflict(stale_edit_message(
                             &p.expected_checksum,
@@ -1044,9 +1179,27 @@ impl Engine {
                         )));
                     }
                 };
-                let store = self.store.lock().await;
-                self.reindex_file(&*store, desc.domain_id, root, &desc.path)
-                    .await?;
+                let indexed = {
+                    let store = self.store.lock().await;
+                    self.reindex_file(&*store, desc.domain_id, root, &desc.path)
+                        .await
+                };
+                if let Err(e) = indexed {
+                    let actor = crate::scope::overlay_actor(scope).unwrap_or_default();
+                    return Err(self.refuse_file_write(
+                        e,
+                        &desc.domain,
+                        &abs,
+                        before.as_deref().map(str::as_bytes),
+                        crystalline_core::to_lf(&content).as_bytes(),
+                        Some(super::fence::EngramKeep {
+                            rel: &desc.path,
+                            text: &content,
+                            account: crate::scope::overlay_actor(scope),
+                            actor: &actor,
+                        }),
+                    ));
+                }
             }
             ContentSource::Virtual => {
                 let stamp = virtual_stamp(&content);
@@ -1107,7 +1260,11 @@ impl Engine {
 
         // A save can rewrite a MANIFEST or the titles a folder index lists,
         // same as an edit.
-        self.after_source_write(&source, &desc.path).await;
+        self.after_source_write(&desc.domain, &source, &desc.path)
+            .await;
+        if let Some(before) = switch_before {
+            self.announce_switch_if_moved(&desc.domain, before, change_label(scope));
+        }
         self.refresh_index_files(&desc.domain).await;
         self.nudge_embed();
 
@@ -1251,7 +1408,7 @@ impl Engine {
         // mirror path. See `Engine::draft_lock`.
         let lock = self.draft_lock(&desc.domain, who, &desc.path)?;
         let _guard = lock.lock().await;
-        let current = view.text_at(source, desc).await?.ok_or_else(|| {
+        let current = view.text_for_draft(source, desc).await?.ok_or_else(|| {
             EngineError::NotFound(format!(
                 "no engram '{}' in domain '{}'",
                 p.identifier, desc.domain
@@ -1322,6 +1479,39 @@ impl Engine {
         content: &str,
         scope: &crate::scope::Scope,
     ) -> Result<Value> {
+        self.restore_engram_closing(domain, path, content, scope, true)
+            .await
+    }
+
+    /// [`Engine::restore_engram`] for a co-editing room over the folder's own
+    /// document, which holds its guard across the call: it never closes the
+    /// reflection rooms, for the reason [`Engine::save_engram_from_room`]
+    /// gives. A room restores a MANIFEST only after it was deleted, which
+    /// had switched the Reflection off already.
+    pub(crate) async fn restore_engram_from_room(
+        &self,
+        domain: &str,
+        path: &str,
+        content: &str,
+    ) -> Result<Value> {
+        self.restore_engram_closing(
+            domain,
+            path,
+            content,
+            &crate::scope::Scope::Unrestricted,
+            false,
+        )
+        .await
+    }
+
+    async fn restore_engram_closing(
+        &self,
+        domain: &str,
+        path: &str,
+        content: &str,
+        scope: &crate::scope::Scope,
+        close_rooms: bool,
+    ) -> Result<Value> {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
@@ -1335,8 +1525,15 @@ impl Engine {
         if is_manifest_path(&normalize_rel(path)) {
             self.screen_manifest_write(domain, None, content).await?;
         }
-        self.restore_engram_in_view(&view, domain, path, content)
-            .await
+        self.restore_engram_in_view(
+            &view,
+            domain,
+            path,
+            content,
+            change_label(scope),
+            close_rooms,
+        )
+        .await
     }
 
     /// [`Engine::restore_engram`] through a view somebody already built.
@@ -1345,13 +1542,16 @@ impl Engine {
     /// the overlay document it is a room over, or the one a direct domain
     /// keeps - and no scope to derive one from. A request reaches it through
     /// the verb above, with the view its scope routed to; both write exactly
-    /// what they always wrote.
+    /// what they always wrote. `actor` is the label the change events carry:
+    /// the verb's account, and nobody for a room.
     pub(crate) async fn restore_engram_in_view(
         &self,
         view: &DomainView<'_>,
         domain: &str,
         path: &str,
         content: &str,
+        actor: Option<String>,
+        close_rooms: bool,
     ) -> Result<Value> {
         if self.read_only {
             return Err(EngineError::ReadOnly);
@@ -1401,6 +1601,13 @@ impl Engine {
             note_unmirrored(&mut receipt, warning);
             return Ok(receipt);
         }
+        let switch_before = is_manifest_path(path).then(|| self.reflection_switch(domain));
+        // A restored MANIFEST that switches the Reflection off closes its
+        // rooms first, while it is still on (a draft returned above).
+        if close_rooms && switch_before == Some(crystalline_core::ReflectionSwitch::On) {
+            self.close_reflection_rooms_if_switching_off(domain, Some(content))
+                .await;
+        }
         match &source {
             ContentSource::File { root } => {
                 let abs = join_rel(root, path);
@@ -1408,9 +1615,31 @@ impl Engine {
                 // file write. See `Engine::write_lock`.
                 let lock = self.write_lock(&abs);
                 let _guard = lock.lock().await;
+                let before = std::fs::read(&abs).ok();
                 write_file(&abs, content)?;
-                let store = self.store.lock().await;
-                self.reindex_file(&*store, domain_id, root, path).await?;
+                let indexed = {
+                    let store = self.store.lock().await;
+                    self.reindex_file(&*store, domain_id, root, path).await
+                };
+                if let Err(e) = indexed {
+                    // A room's restore keeps nothing itself: the room holds the
+                    // text and keeps it when it closes unsaved. A verb's
+                    // restore keeps what it sent.
+                    let keep = actor.as_ref().map(|account| super::fence::EngramKeep {
+                        rel: path,
+                        text: content,
+                        account: Some(account.clone()),
+                        actor: account,
+                    });
+                    return Err(self.refuse_file_write(
+                        e,
+                        domain,
+                        &abs,
+                        before.as_deref(),
+                        crystalline_core::to_lf(content).as_bytes(),
+                        keep,
+                    ));
+                }
             }
             ContentSource::Virtual => {
                 let stamp = virtual_stamp(content);
@@ -1419,7 +1648,10 @@ impl Engine {
                     .await?;
             }
         }
-        self.after_source_write(&source, path).await;
+        self.after_source_write(domain, &source, path).await;
+        if let Some(before) = switch_before {
+            self.announce_switch_if_moved(domain, before, actor.clone());
+        }
         self.refresh_index_files(domain).await;
 
         // Read back after the reindex, exactly as a save does: the index takes
@@ -1441,7 +1673,6 @@ impl Engine {
                 });
             receipt_permalink(found, path.trim_end_matches(".md").to_string())
         };
-        // The function takes a view and no scope, so nobody is named.
         self.announce(Change::Engram(EngramChanged {
             domain: domain.to_string(),
             permalink: permalink.clone(),
@@ -1449,7 +1680,7 @@ impl Engine {
             kind: ChangeKind::Added,
             from: None,
             checksum: Some(sha256_hex(content.as_bytes())),
-            actor: None,
+            actor,
             draft_of: None,
             audience: None,
         }));
@@ -2005,6 +2236,19 @@ impl Engine {
 const MANIFEST_CAPTURE_REFUSAL: &str = "a new engram cannot be written at the domain root as MANIFEST.md: in this domain that file is the MANIFEST, which routing reads. Change it with edit_engram, or pick another title or a folder";
 
 /// The one collision message, which every surface hands the caller as it is.
+/// The refusal of a wholesale replace of an engram whose open room will not
+/// save what it holds, naming who is in there.
+fn unsaving_room_refusal(domain: &str, permalink: &str, present: &[String]) -> String {
+    let present = if present.is_empty() {
+        "nobody has published a name".to_string()
+    } else {
+        present.join(", ")
+    };
+    format!(
+        "the engram '{permalink}' in domain '{domain}' is open in the editor (present: {present}) and its room is not saving right now: its save is in conflict or was refused, or it is closing. A full replace was refused so it cannot land over their unsaved text, and nothing was written. Use edit_engram for a targeted change, or replace it once the room saves again or has closed"
+    )
+}
+
 fn collision_message(permalink: &str, domain: &str, at: &str) -> String {
     format!(
         "permalink '{permalink}' already exists in domain '{domain}' (at {at}); pass overwrite=true to replace"

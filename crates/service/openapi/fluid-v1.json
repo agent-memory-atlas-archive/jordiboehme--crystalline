@@ -751,7 +751,7 @@
           "reflection"
         ],
         "summary": "Upgrade to a real-time co-editing session on one reflection.",
-        "description": "WebSocket upgrade for the same y-sync + awareness protocol the engram room speaks, over a reflection page. The Reflection's edit right is required (curate for `PACT.md`), not engram access, plus a live session cookie and a same-host Origin header; a read-only instance or domain refuses. There is no draft overlay: every save lands in the file. The room text is the page without its `reflection:` frontmatter block, for every participant, and the checksum in `hello` and `save_state` is the file's. Section ids are added when the room closes. A save records as the author of a changed section the signed-in account of each connection that sent an edit since the save before; the names in awareness are for display only. Refusals are problem+json.",
+        "description": "WebSocket upgrade for the same y-sync + awareness protocol the engram room speaks, over a reflection page. The Reflection's edit right is required (curate for `PACT.md`), not engram access, plus a live session cookie and a same-host Origin header; a read-only instance or domain refuses. There is no draft overlay: every save lands in the file. The room text is the page without its `reflection:` frontmatter block, for every participant, and the checksum in `hello` and `save_state` is the file's. Section ids are added when the room closes. A save records as the author of a changed section the signed-in account of each connection that sent an edit since the save before; the names in awareness are for display only. Refusals are problem+json.\n\nThe room ends with the same `closed` control the engram room sends. A move of the page, or a rename of its domain, ends it with reason `moved` after the room saved its text (or the server kept it), and the control carries the new `path`, plus `domain` when the domain changed. While a move runs, a join over the old path is refused with 409.",
         "operationId": "join_reflection_room",
         "parameters": [
           {
@@ -808,7 +808,7 @@
             }
           },
           "409": {
-            "description": "The Reflection is not here.",
+            "description": "The Reflection is not here, or a move of this page is running.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -846,7 +846,7 @@
           "engrams"
         ],
         "summary": "Upgrade to a real-time co-editing session on one engram.",
-        "description": "WebSocket upgrade for the y-sync + awareness protocol over the engram's shared text. Editor role, a live session cookie and a same-host Origin header are all required and checked before the upgrade; a read-only instance refuses like every write. CSRF headers do not apply to the upgrade GET. Refusals are problem+json.\n\nA room is one document. In a domain that reviews changes that means one person's draft of the page: your own by default, and somebody else's when `overlay` names them - which needs both a live share-link of theirs and a live join this session opened on it, because seeing a draft and editing it are two steps. What is typed in such a room lands in that person's draft, to be folded or discarded with it.",
+        "description": "WebSocket upgrade for the y-sync + awareness protocol over the engram's shared text. Editor role, a live session cookie and a same-host Origin header are all required and checked before the upgrade; a read-only instance refuses like every write. CSRF headers do not apply to the upgrade GET. Refusals are problem+json.\n\nA room is one document. In a domain that reviews changes that means one person's draft of the page: your own by default, and somebody else's when `overlay` names them - which needs both a live share-link of theirs and a live join this session opened on it, because seeing a draft and editing it are two steps. What is typed in such a room lands in that person's draft, to be folded or discarded with it.\n\nBeside the y-sync messages the server sends JSON controls as y-protocols custom message 4. A room ends with `{\"kind\": \"closed\", \"reason\": ...}` followed by close code 4404; do not reconnect. The reasons are `deleted`, `moved`, `switched_off`, `left` and `internal`. `moved` means the engram got a new address (a move with a new permalink or domain, or a rename of its domain): the room saved its text first (or the server kept it), and the control carries the new `path` and `permalink`, plus `domain` when the domain changed. While a move runs, a join over the old address is refused with 409.",
         "operationId": "collab_join",
         "parameters": [
           {
@@ -903,6 +903,16 @@
           },
           "404": {
             "description": "No such engram.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "On a shared database, another instance hosts this file domain and writes it; the detail names it. Or a move of this engram is running.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2273,7 +2283,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The engine's page envelope, unchanged. Under `path`, its `total` is the folder's recursive count, not the tree's per-level one.",
+            "description": "The engine's page envelope, unchanged. Under `path`, its `total` is the folder's recursive count, not the tree's per-level one. A hit carries its engram's `recorded_at` as written, and none when the engram has no date.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2287,6 +2297,7 @@
                       "engram_type": "engram",
                       "kind": "engram",
                       "permalink": "alpha",
+                      "recorded_at": "2026-01-31",
                       "score": 1.0,
                       "snippet": "The first engram in this domain.",
                       "status": "stable",
@@ -2434,7 +2445,7 @@
             }
           },
           "409": {
-            "description": "That permalink is already taken in this domain.",
+            "description": "That permalink is already taken in this domain, or an overwrite lands on an engram only the previous host of a host move has (the detail names the remedy).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2856,6 +2867,16 @@
               }
             }
           },
+          "409": {
+            "description": "The engram is one only the previous host of a host move has, whose row a delete here would drop; the detail names the remedy.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
           "412": {
             "description": "The `If-Match` token is stale. The body carries the version the server holds now, so a client can decide whether losing it is really what it meant.",
             "content": {
@@ -3208,7 +3229,7 @@
           "attachments"
         ],
         "summary": "Upload an attachment, creating or replacing it.",
-        "description": "Editor only. The request body is the raw file - not multipart - and the declared content type is ignored: the extension allowlist decides the mime, at upload and at every later read.\n\nThe path must start with `assets/`, hold no `.`, `..` or hidden segment, no backslash, colon, `#` or `%`, be at most 256 bytes and end in an allowlisted extension; anything else is 400 naming the rule. The domain is marked as owing a consolidation sweep, because a person just added something the agent has not read yet.\n\nOn a domain that reviews changes the bytes land in the caller's own files overlay and the folder the team reviewed is not touched, which is what `draft` in the answer says. With `X-Crystalline-Join` naming a live join the bytes follow it into the OWNER's files overlay instead, to be folded or discarded with the draft that references them.",
+        "description": "Editor only. The request body is the raw file - not multipart - and the declared content type is ignored: the extension allowlist decides the mime, at upload and at every later read.\n\nThe path must start with `assets/`, hold no `.`, `..` or hidden segment, no backslash, colon, `#` or `%`, be at most 256 bytes and end in an allowlisted extension; anything else is 400 naming the rule. The domain is marked as owing a consolidation sweep, because a person just added something the agent has not read yet.\n\nOn a domain that reviews changes the bytes land in the caller's own files overlay and the folder the team reviewed is not touched, which is what `draft` in the answer says. With `X-Crystalline-Join` naming a live join the bytes follow it into the OWNER's files overlay instead, to be folded or discarded with the draft that references them.\n\nWith `If-None-Match: *` the upload only creates: a path that already holds a file is refused with 412. On a domain that reviews changes that is the file the caller sees there (its own draft bytes, or a reviewed file it has not deleted).",
         "operationId": "write_attachment",
         "parameters": [
           {
@@ -3234,6 +3255,18 @@
             "name": "X-Crystalline-Join",
             "in": "header",
             "description": "The key of a live join this session opened on a draft share-link (`POST /draft-links/join`). It routes the upload into the draft owner's files overlay rather than the caller's own. A key naming no live join of this account's is refused 403 and nothing is stored.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "description": "`*` to only create: a path that already holds a file is refused with 412 and left as it is. Any other value is 422.",
             "required": false,
             "schema": {
               "type": [
@@ -3305,6 +3338,26 @@
               }
             }
           },
+          "409": {
+            "description": "The path is a file only the previous host of a host move has; the detail names the remedy.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`If-None-Match: *` and the path already holds a file; nothing was stored. Pick another name.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
           "413": {
             "description": "The body is over the 10 MiB limit this API accepts, which is also the attachment size ceiling.",
             "content": {
@@ -3316,7 +3369,7 @@
             }
           },
           "422": {
-            "description": "A teaching refusal from a domain that reviews changes: a write into the folder the team reviewed rather than into a draft, a path where a share-link shows somebody else's draft and this session has not joined it, or a caller with no account of their own and so no draft to write into. The detail is the sentence that says what to do instead.",
+            "description": "`If-None-Match` carried something other than `*`; or a teaching refusal from a domain that reviews changes: a write into the folder the team reviewed rather than into a draft, a path where a share-link shows somebody else's draft and this session has not joined it, or a caller with no account of their own and so no draft to write into. The detail is the sentence that says what to do instead.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3403,6 +3456,16 @@
           },
           "404": {
             "description": "No such domain, or no attachment at that path.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The file is one only the previous host of a host move has, whose row a delete here would drop; the detail names the remedy.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3572,6 +3635,204 @@
           },
           "404": {
             "description": "No such domain or engram.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/domains/{domain}/kept": {
+      "get": {
+        "tags": [
+          "domains"
+        ],
+        "summary": "The texts the server kept for this domain when a room could not save.",
+        "description": "When the last person leaves a co-editing room and its final save is refused or ends in a conflict, the server keeps the room's text in its state folder. This lists them. A Reflection page's text needs `edit` on the Reflection (`curate` for PACT.md), an engram's text needs write access to the engrams; each entry is listed only for a caller who holds its own right. A text kept from a review draft is listed for the draft's owner only (`draft: true`). The Reflection's state plays no part: a text kept because the Reflection was switched off is listed too.",
+        "operationId": "list_kept_texts",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The kept texts this caller may handle.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeptTextsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The anonymous viewer of a domain it reads.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Neither write access to the engrams nor edit access to the Reflection.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain, or none this caller may see.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/domains/{domain}/kept/{id}": {
+      "get": {
+        "tags": [
+          "domains"
+        ],
+        "summary": "One kept text with its text.",
+        "description": "The same rights as the listing, decided for this entry's kind. An entry this caller may not handle answers 404, like an id that names none.",
+        "operationId": "read_kept_text",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id from the listing.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The entry and its text.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeptTextResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The anonymous viewer of a domain it reads.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Neither write access to the engrams nor edit access to the Reflection.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain or kept text for this caller.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "domains"
+        ],
+        "summary": "Delete one kept text, once its text is back where it belongs.",
+        "description": "The same rights as reading it. The server never deletes a kept text on its own; this is the only way one goes, besides removing the file by hand.",
+        "operationId": "delete_kept_text",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id from the listing.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "401": {
+            "description": "The anonymous viewer of a domain it reads.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Neither write access to the engrams nor edit access to the Reflection, or this instance is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain or kept text for this caller.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4387,7 +4648,7 @@
         },
         "responses": {
           "200": {
-            "description": "The move receipt: where the engram came from, where it landed, whether the move crossed domains and which references followed it.\n\n`to.permalink` is the address the engram answers to after the move, which is not always the one it went in with: a permalink in step with the path follows the file, and `new_permalink` can ask for another.\n\n`links_rewritten` counts the engrams whose references were rewritten, `references_rewritten` the references inside them, and `rewritten` names those engrams by domain and permalink.\n\n`attachment_warnings` lists the attachments the move could not carry, one sentence each and empty when everything travelled; those files stay whole in the source domain.",
+            "description": "The move receipt: where the engram came from, where it landed, whether the move crossed domains and which references followed it.\n\n`to.permalink` is the address the engram answers to after the move, which is not always the one it went in with: a permalink in step with the path follows the file, and `new_permalink` can ask for another.\n\n`links_rewritten` counts the engrams whose references were rewritten, `references_rewritten` the references inside them, and `rewritten` names those engrams by domain and permalink. An entry with `landed: \"live\"` went into a page somebody has open in the editor, whose save writes it.\n\n`attachment_warnings` lists the attachments the move could not carry, one sentence each and empty when everything travelled; those files stay whole in the source domain.\n\n`links_failed`, `[{ domain, path, reason }]`, appears only when an engram that links the moved one could not be rewritten after the move; the move itself has landed.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4449,7 +4710,7 @@
             }
           },
           "409": {
-            "description": "The destination already exists in the target domain, another engram there already answers to the new permalink, or the engram is open in the editor and its address would change under it.",
+            "description": "The destination already exists in the target domain or is an engram only the previous host of a host move has, another engram there already answers to the new permalink, or the engram is open in the editor and its address would change under it.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4597,7 +4858,7 @@
         ],
         "responses": {
           "200": {
-            "description": "ReflectionStatus. `state` is `off`, `pending` (then `pending_engrams` lists the engrams still under `reflections/` for a caller with `engrams_visible`, and is empty for anyone else), `homeless`, `on` or `elsewhere` (then `home_url` is set). `member` is true when the caller holds a membership row it may leave.",
+            "description": "ReflectionStatus. `state` is `off`, `pending` (then `pending_engrams` lists the engrams still under `reflections/` for a caller with `engrams_visible`, and is empty for anyone else), `homeless`, `on`, `elsewhere` (then `home_url` is set) or `hosted_elsewhere` (another instance on this shared database holds the domain's host lock and serves it; then `host_label` names that instance, or is `null` while a rename pauses a domain whose lock nobody holds, and it is `null` in every other state). `member` is true when the caller holds a membership row it may leave.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4609,6 +4870,7 @@
                   "engrams_visible": true,
                   "home": "here",
                   "home_url": null,
+                  "host_label": null,
                   "member": false,
                   "pending_engrams": [],
                   "right": "curate",
@@ -4671,7 +4933,7 @@
             }
           },
           "409": {
-            "description": "The Reflection is not here (off, pending, homeless or elsewhere, then with `home_url`).",
+            "description": "The Reflection is not here (off, pending, homeless, elsewhere, then with `home_url`, or served by another instance on this shared database).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4795,7 +5057,7 @@
           "reflection"
         ],
         "summary": "Add a file to the Reflection, or replace one.",
-        "description": "Needs `edit` for a new path and `curate` to replace a file, since a replace removes the old bytes. The request body is the raw file, not multipart; the extension allowlist decides the mime. The path rules, the allowlist and the 10 MiB ceiling are the engram attachments' own.",
+        "description": "Needs `edit` for a new path and `curate` to replace a file, since a replace removes the old bytes. The request body is the raw file, not multipart; the extension allowlist decides the mime. The path rules, the allowlist and the 10 MiB ceiling are the engram attachments' own. With `If-None-Match: *` the upload only creates: a path that already holds a file is refused with 412, for a curator too, so two people cannot replace each other's upload by accident.",
         "operationId": "write_reflection_asset",
         "parameters": [
           {
@@ -4816,6 +5078,18 @@
               "type": "string"
             },
             "example": "diagrams/flow.png"
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "description": "`*` to only create: a path that already holds a file is refused with 412 and left as it is. Any other value is 422.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -4871,7 +5145,17 @@
             }
           },
           "409": {
-            "description": "The Reflection is not here (then possibly `home_url`).",
+            "description": "The path is a file only the previous host of a host move has, or the Reflection is not here (then possibly `home_url`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`If-None-Match: *` and the path already holds a file; nothing was stored. Pick another name.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4891,7 +5175,7 @@
             }
           },
           "422": {
-            "description": "A path rule or the extension allowlist refused it.",
+            "description": "A path rule or the extension allowlist refused it, or `If-None-Match` carried something other than `*`.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4964,7 +5248,7 @@
             }
           },
           "409": {
-            "description": "The Reflection is not here (then possibly `home_url`).",
+            "description": "The file is one only the previous host of a host move has, whose row a delete here would drop; or the Reflection is not here (then possibly `home_url`).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5016,7 +5300,7 @@
         },
         "responses": {
           "200": {
-            "description": "Moved with its threads and baseline; links to it rewritten: `{ from, to, links_rewritten, threads_moved }`. `links_failed`, `[{ path, reason }]`, appears only when a page that links it could not be rewritten after the move.",
+            "description": "Moved with its threads and baseline; links to it rewritten: `{ from, to, links_rewritten, threads_moved }`. `links_failed`, `[{ domain, path, reason }]`, appears only when a page that links it could not be rewritten after the move.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5062,7 +5346,7 @@
             }
           },
           "409": {
-            "description": "Somebody is editing it, or the Reflection is not here.",
+            "description": "Somebody is editing a page that links it (an editor open on the page itself does not refuse: it saves, closes and is told the new path), the new path is taken or is a page only the previous host of a host move has, or the Reflection is not here.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5115,7 +5399,7 @@
         },
         "responses": {
           "200": {
-            "description": "Moved: `{ domain, from, to, links_rewritten }`. Two keys appear only when needed: `links_failed`, `[{ path, reason }]` for each page whose link could not be rewritten after the file moved, and `note`, a sentence saying the file moved and its index row did not follow (the next sync brings it up to date).",
+            "description": "Moved: `{ domain, from, to, links_rewritten }`. Two keys appear only when needed: `links_failed`, `[{ domain, path, reason }]` for each page whose link could not be rewritten after the file moved, and `note`, a sentence saying the file moved and its index row did not follow (the next sync brings it up to date).",
             "content": {
               "application/json": {
                 "schema": {
@@ -5161,7 +5445,7 @@
             }
           },
           "409": {
-            "description": "The new path already holds a file, a page that links it is open in a co-editing room, or the Reflection is not here (then possibly `home_url`).",
+            "description": "The new path already holds a file or is a file only the previous host of a host move has, a page that links it is open in a co-editing room, or the Reflection is not here (then possibly `home_url`).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5224,7 +5508,7 @@
         ],
         "responses": {
           "200": {
-            "description": "ReflectQueue. `kind` is `feedback` (`what`: `new`, `changed`, `removed`), `update` (`source_changed`, `source_retired`, `source_missing`, `unreflected`, `off_structure`, `pact_changed`) or `review` (`thread`). `sources`, and an `unreflected` item's `folder` and `engrams`, are absent for a caller who cannot read engrams. The MCP `reflect` tool answers the same shape with `scope: { domains, kinds }` in place of `domain` and a `domain` member on each row; its `scope` may carry `unreadable`, the names of the domains whose queue could not be read, and `pending`, the names of the domains whose Reflection waits for engrams to leave `reflections/`. An update item's `what` may also be `asset_missing` (per section, with `assets`), `engram_attachment` (per section, with `targets`) or `asset_unreferenced` (`path` empty, with `asset`).",
+            "description": "ReflectQueue. `kind` is `feedback` (`what`: `new`, `changed`, `removed`), `update` (`source_changed`, `source_retired`, `source_missing`, `unreflected`, `off_structure`, `pact_changed`) or `review` (`thread`). `sources`, an `unreflected` item's `folder` and `engrams`, and an `engram_attachment` item's `targets` are absent for a caller who cannot read engrams. The MCP `reflect` tool answers the same shape with `scope: { domains, kinds }` in place of `domain` and a `domain` member on each row; its `scope` may carry `unreadable`, the names of the domains whose queue could not be read, and `pending`, the names of the domains whose Reflection waits for engrams to leave `reflections/`. An update item's `what` may also be `asset_missing` (per section, with `assets`), `engram_attachment` (per section, with `targets`), `asset_unreferenced` (`path` empty, with `asset`) or `host_moved` (`path` empty, one per domain, after the domain moved to this instance on a shared database and this disk lacks files the previous host wrote: `only_elsewhere` is `{ previous_host, engrams, attachments, pages, files }`, counts only, `previous_host` null when unknown).",
             "content": {
               "application/json": {
                 "schema": {
@@ -5476,6 +5760,86 @@
           },
           "422": {
             "description": "A missing or empty `q`, or a `search_type` other than hybrid, text or semantic.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/domains/{domain}/reflection/summary": {
+      "get": {
+        "tags": [
+          "reflection"
+        ],
+        "summary": "The Reflection home: what waits for review, in counts and by page.",
+        "description": "The cheap cut of the review the Reflection home draws: how many open threads wait for the agent and for people, `updates` (the review queue's `kinds.update`, counted without rendering a diff or looking up a source), `pages_to_update` (the distinct pages those updates are on; an update of no page, such as unreflected engrams or a loose file, is in `updates` only) and the open threads by page. A thread carries its id, its first quote (`null` for a whole section), who it waits on, when it was opened and the people who wrote in it, never its entries. Pages and threads come oldest first. The same rights as the review: a reader without engram rights is not counted any update about engrams that no page cites.",
+        "operationId": "get_reflection_summary",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ReflectionSummary.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "domain": "eng",
+                  "open_by_page": [
+                    {
+                      "path": "guides/deploying.md",
+                      "threads": [
+                        {
+                          "id": "t-0a1b2c3d",
+                          "opened_at": "2026-10-14T09:12:00Z",
+                          "people": [
+                            {
+                              "agent": false,
+                              "name": "ann"
+                            }
+                          ],
+                          "quote": "at night",
+                          "waiting_on": "agent"
+                        }
+                      ],
+                      "title": "Deploying"
+                    }
+                  ],
+                  "pages_to_update": 2,
+                  "updates": 3,
+                  "waiting_for_people": 0,
+                  "waiting_for_the_agent": 1
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain, or none this caller may see (the anonymous viewer included).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Reflection is not here (then possibly `home_url`).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5912,7 +6276,7 @@
             }
           },
           "409": {
-            "description": "The Reflection is off, pending, homeless or lives elsewhere (then the `home_url` member names where).",
+            "description": "The Reflection is off, pending, homeless, lives elsewhere (then the `home_url` member names where) or is served by another instance on this shared database (the text names it).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5962,6 +6326,11 @@
                 "example": {
                   "checksum": "9f2c...",
                   "domain": "eng",
+                  "live": {
+                    "present": [
+                      "jordi"
+                    ]
+                  },
                   "markdown": "# Deploying\n...",
                   "path": "guides/deploying.md",
                   "sections": [
@@ -5996,7 +6365,7 @@
             }
           },
           "409": {
-            "description": "The Reflection is not here (off, pending, homeless or elsewhere, then with `home_url`).",
+            "description": "The Reflection is not here (off, pending, homeless, elsewhere, then with `home_url`, or served by another instance on this shared database).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -6096,7 +6465,7 @@
             }
           },
           "409": {
-            "description": "A stale `expected_checksum` (detail starting \"stale edit\"), a create over an existing page, or the Reflection is not here (then possibly `home_url`).",
+            "description": "A stale `expected_checksum` (detail starting \"stale edit\"), a create over an existing page, a page only the previous host of a host move has (the detail names the remedy), or the Reflection is not here (then possibly `home_url`).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -7343,7 +7712,7 @@
           "domains"
         ],
         "summary": "One level of a domain's folders and engrams.",
-        "description": "The navigation a file tree is built from, one level at a time and bounded: a level holding more engrams than the tree shows is cut, `total` says how many it really holds and `truncated` says the rows were cut, so a client can send its reader to the paged listing instead.\n\n`total` counts this level, not the folder: it moves with `depth` and leaves out everything nested deeper, so a folder of ten engrams holding a subfolder of a thousand reports ten here. `GET /domains/{domain}/engrams?path=...` counts the same folder recursively and reports the larger number. Neither is the other's approximation - a level states a fact about the rows it drew, a folder listing promises the folder - so a client that means to say \"N engrams in this folder\" takes that number from the listing.\n\n`folders` is never cut, so a truncated level still names every folder a reader can descend into. A `glob` narrows the engrams this level returned, so on a truncated level it selects within the cut rather than across the whole folder, and it does not filter `folders` at all.",
+        "description": "The navigation a file tree is built from, one level at a time and bounded: a level holding more engrams than the tree shows is cut, `total` says how many it really holds and `truncated` says the rows were cut, so a client can send its reader to the paged listing instead.\n\n`total` counts this level, not the folder: it moves with `depth` and leaves out everything nested deeper, so a folder of ten engrams holding a subfolder of a thousand reports ten here. `GET /domains/{domain}/engrams?path=...` counts the same folder recursively and reports the larger number. Neither is the other's approximation - a level states a fact about the rows it drew, a folder listing promises the folder. `folder_counts` carries that recursive number for each of `folders`, the reader's drafts included, so a tree can say \"N engrams in this folder\" without one listing per folder.\n\n`folders` is never cut, so a truncated level still names every folder a reader can descend into. A `glob` narrows the engrams this level returned, so on a truncated level it selects within the cut rather than across the whole folder, and it does not filter `folders` at all.",
         "operationId": "get_domain_tree",
         "parameters": [
           {
@@ -7406,6 +7775,9 @@
                       "type": "engram"
                     }
                   ],
+                  "folder_counts": {
+                    "notes": 12
+                  },
                   "folders": [
                     "notes"
                   ],
@@ -7777,7 +8149,7 @@
           "events"
         ],
         "summary": "Live changes to the knowledge, as a server-sent event stream.",
-        "description": "A `text/event-stream` the web UI keeps open once per tab. Frames: `id: <epoch>:<seq>` + `event: engram` + `data: <EngramChanged>`; `id` + `event: domain` + `data: <DomainChanged>`; `event: reset` + `data: {}` with no id (invalidate everything and keep the connection); and a `: ping` comment every fifteen seconds. `Last-Event-ID` replays the ring after that id, or answers one `reset` when the epoch is not this process's or the id is older than the ring's oldest entry. Every frame is filtered by what the session may read; a `draft_of` frame reaches the draft's owner alone. Served read-only. OpenAPI cannot type a stream, so the body below is described as text and the schemas `EngramChanged`, `DomainChanged` and `ChangeKind` carry the shapes.",
+        "description": "A `text/event-stream` the web UI keeps open once per tab. Frames: `id: <epoch>:<seq>` + `event: engram` + `data: <EngramChanged>`; `id` + `event: domain` + `data: <DomainChanged>`; `id` + `event: reflection` + `data: <ReflectionChanged>`; `event: reset` + `data: {}` with no id (invalidate everything and keep the connection); and a `: ping` comment every fifteen seconds. `Last-Event-ID` replays the ring after that id, or answers one `reset` when the epoch is not this process's or the id is older than the ring's oldest entry. Every frame is filtered by what the session may read, `reflection` frames by the session's reflection right; a `draft_of` frame reaches the draft's owner alone. Served read-only. OpenAPI cannot type a stream, so the body below is described as text and the schemas `EngramChanged`, `DomainChanged`, `ChangeKind`, `ReflectionChanged` and `ReflectionChangeKind` carry the shapes.",
         "operationId": "stream_events",
         "parameters": [
           {
@@ -9559,7 +9931,7 @@
         "operationId": "list_reflection_domains",
         "responses": {
           "200": {
-            "description": "ReflectionDomains: `{ domains: [{ domain, state, right, engrams_visible, home, home_url, open_threads }] }`. `state` is `on`, `pending`, `homeless` or `elsewhere`; `home` is `here`, `local`, `elsewhere` (then `home_url` is set) or `null` (`pending`, `homeless`); `open_threads` is 0 unless `state` is `on`.",
+            "description": "ReflectionDomains: `{ domains: [{ domain, state, right, engrams_visible, home, home_url, host_label, open_threads }] }`. `state` is `on`, `pending`, `homeless`, `elsewhere` or `hosted_elsewhere` (another instance on this shared database holds the domain's host lock and serves it); `home` is `here`, `local`, `elsewhere` (then `home_url` is set) or `null` (`pending`, `homeless`, `hosted_elsewhere`); `host_label` names the serving instance for `hosted_elsewhere` (`null` while a rename pauses a domain nobody holds) and is `null` otherwise; `open_threads` is 0 unless `state` is `on`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9572,6 +9944,7 @@
                       "engrams_visible": false,
                       "home": "here",
                       "home_url": null,
+                      "host_label": null,
                       "open_threads": 3,
                       "right": "edit",
                       "state": "on"
@@ -11655,6 +12028,118 @@
           }
         }
       },
+      "KeptTextEntry": {
+        "type": "object",
+        "description": "One kept text, without its text.",
+        "required": [
+          "id",
+          "draft",
+          "kind",
+          "path",
+          "kept_at",
+          "bytes"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Its size in bytes.",
+            "example": 1204,
+            "minimum": 0
+          },
+          "draft": {
+            "type": "boolean",
+            "description": "Whether it was kept from the caller's own review draft rather than\nfrom the domain's own text. A draft's kept text is only ever listed\nfor its owner."
+          },
+          "id": {
+            "type": "string",
+            "description": "A short, stable id for the routes below.",
+            "example": "3f9a1c2b7d4e"
+          },
+          "kept_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was kept.",
+            "example": "2026-10-15T08:00:00Z"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`engram` or `reflection`: the kind of room (or page write) it was\nkept from; `comment` for a thread comment on the page at `path`.",
+            "example": "reflection"
+          },
+          "path": {
+            "type": "string",
+            "description": "The engram's file path in its domain, or the page's path inside\n`reflections/`.",
+            "example": "guides/deploying.md"
+          },
+          "sender": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who sent the text, by the name shown in threads (the login name for\na person), for a text kept from a write that was refused after its\ninstance lost the domain's host lock; `null` for a room's text.",
+            "example": "ada"
+          },
+          "sender_account": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The account that sent it, the login name the rights match a kept\ncomment's sender on; `null` when no sender is recorded. A client\ncompares it with the signed-in account to tell its own comments\napart: the shown name is not proof of who sent it, the account is.",
+            "example": "ada"
+          }
+        }
+      },
+      "KeptTextResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/KeptTextEntry",
+            "description": "The entry, as the listing shows it."
+          },
+          {
+            "type": "object",
+            "required": [
+              "domain",
+              "text"
+            ],
+            "properties": {
+              "domain": {
+                "type": "string",
+                "description": "The domain.",
+                "example": "eng"
+              },
+              "text": {
+                "type": "string",
+                "description": "The text the room held, as it was kept.",
+                "example": "# Deploying\n\nTyped while it was switched off.\n"
+              }
+            }
+          }
+        ],
+        "description": "What `GET /domains/{domain}/kept/{id}` answers."
+      },
+      "KeptTextsResponse": {
+        "type": "object",
+        "description": "What `GET /domains/{domain}/kept` answers.",
+        "required": [
+          "domain",
+          "kept"
+        ],
+        "properties": {
+          "domain": {
+            "type": "string",
+            "description": "The domain.",
+            "example": "eng"
+          },
+          "kept": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KeptTextEntry"
+            },
+            "description": "The kept texts this caller may handle, oldest first."
+          }
+        }
+      },
       "LeaveBody": {
         "type": "object",
         "description": "The key the join was opened under.",
@@ -12590,6 +13075,53 @@
               "$ref": "#/components/schemas/AttachmentView"
             },
             "description": "The rows, ordered by path; `path` is inside `reflections/`\n(`assets/...`)."
+          }
+        }
+      },
+      "ReflectionChangeKind": {
+        "type": "string",
+        "description": "What happened in a domain's Reflection, as the `reflection` event says it.",
+        "enum": [
+          "changed",
+          "moved",
+          "deleted",
+          "threads",
+          "files",
+          "switched"
+        ]
+      },
+      "ReflectionChanged": {
+        "type": "object",
+        "description": "One change in a domain's Reflection, as a session that may read it hears\nit. A path and a kind, never text and never an engram name, so a person\nwith knowledge `none` may hear it.",
+        "required": [
+          "domain",
+          "path",
+          "kind"
+        ],
+        "properties": {
+          "actor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who made the change, as a display label; null for a link that\nfollowed, a room save with no single typist, and the machine owner."
+          },
+          "domain": {
+            "type": "string"
+          },
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`moved`, and `files` on a move: the path before."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ReflectionChangeKind"
+          },
+          "path": {
+            "type": "string",
+            "description": "Inside `reflections/`, after the change; empty for `switched`."
           }
         }
       },

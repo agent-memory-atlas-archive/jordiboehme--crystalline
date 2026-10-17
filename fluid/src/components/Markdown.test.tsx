@@ -84,10 +84,175 @@ async function renderMarkdown(
     </MemoryRouter>,
   );
   await waitFor(() => {
-    expect(screen.queryByText("crystallizing")).toBeNull();
+    expect(
+      screen.queryByRole("status", { name: "Loading the text" }),
+    ).toBeNull();
   });
   return result;
 }
+
+/**
+ * Render with source spans, the way the reflection page does: the same router
+ * and theme as {@link renderMarkdown}, and the same wait for the chunk.
+ */
+async function renderSpans(source: string) {
+  const result = render(
+    <MemoryRouter>
+      <ThemeProvider>
+        <Markdown source={source} sourceSpans />
+      </ThemeProvider>
+    </MemoryRouter>,
+  );
+  await waitFor(() => {
+    expect(
+      screen.queryByRole("status", { name: "Loading the text" }),
+    ).toBeNull();
+  });
+  return result;
+}
+
+/** Every stamped span reads exactly what the source holds at its offset. */
+function expectSpansMatch(container: HTMLElement, source: string) {
+  const stamped = Array.from(container.querySelectorAll("[data-src]"));
+  for (const span of stamped) {
+    const offset = Number(span.getAttribute("data-src"));
+    expect(source.slice(offset, offset + (span.textContent ?? "").length)).toBe(
+      span.textContent,
+    );
+  }
+  return stamped;
+}
+
+describe("source spans", () => {
+  it("stamps positioned text with its source offset when asked, and only then", async () => {
+    const source = "## Night deploys\n\nDeploys run **at** night.";
+    const { container, unmount } = await renderSpans(source);
+    const at = await screen.findByText("at");
+    expect(at.getAttribute("data-src")).toBe("32");
+    expectSpansMatch(container, source);
+    const stampedHtml = container.innerHTML;
+    unmount();
+    const plain = await renderMarkdown(source);
+    await screen.findByText("at");
+    expect(plain.container.querySelector("[data-src]")).toBeNull();
+    // Nothing but the stamps differs.
+    expect(
+      stampedHtml.replace(/<span data-src="\d+">([^<]*)<\/span>/g, "$1"),
+    ).toBe(plain.container.innerHTML);
+  });
+
+  it("never renders a section id comment", async () => {
+    const { container } = await renderSpans(
+      "## A\n<!-- r:7f3a9c2e -->\n\nText.",
+    );
+    await screen.findByText("Text.");
+    expect(container.innerHTML).not.toContain("r:7f3a9c2e");
+  });
+
+  it("keeps every stamp true to the source across the whole syntax", async () => {
+    const source = [
+      "## Rich section",
+      "",
+      "Plain *em* and **strong** and _under_ and ~~gone~~ and `code` here.",
+      "A [link](https://example.com) and a ![picture](assets/x.png) too.",
+      "Line one",
+      "line two.",
+      "",
+      "> single quoted line",
+      "",
+      "> quoted line",
+      "> second quoted line",
+      "",
+      "- item one",
+      "- item **two**",
+      "  continued",
+      "",
+      "1. first",
+      "",
+      "| a | b |",
+      "| - | - |",
+      "| *c* | d |",
+      "",
+      "Inline <b>raw</b> html.",
+      "",
+      "Tom &amp; Jerry.",
+      "",
+      "Use \\*stars\\* here.",
+      "",
+      "```js",
+      "const x = 1;",
+      "```",
+      "",
+    ].join("\n");
+    const { container } = await renderSpans(source);
+    await screen.findByText("Rich section");
+    const stamped = expectSpansMatch(container, source);
+    const texts = stamped.map((span) => span.textContent);
+    expect(texts).toEqual(
+      expect.arrayContaining([
+        "em",
+        "strong",
+        "under",
+        "gone",
+        "code",
+        "link",
+        // A list item, an ordered one and a table cell.
+        "item one",
+        "first",
+        "d",
+        // A blockquote of one line, and each line of one of two.
+        "single quoted line",
+        "quoted line",
+        "second quoted line",
+        // The wrapped line of a list item, placed after its indent.
+        "continued",
+      ]),
+    );
+    // Unplaced on purpose: a run whose words differ from the source (an
+    // entity, an escape) is not one piece of it.
+    for (const words of ["Tom & Jerry.", "Use *stars* here."]) {
+      expect(screen.getByText(words).hasAttribute("data-src")).toBe(false);
+    }
+    expect(texts.some((t) => /Tom|stars/.test(t ?? ""))).toBe(false);
+    // A fence at the margin is stamped after the highlighter, token by
+    // token, and every token reads the source at its offset.
+    const fence = Array.from(container.querySelectorAll("pre [data-src]"));
+    expect(fence.length).toBeGreaterThan(1);
+    expect(fence.map((span) => span.textContent).join("")).toBe(
+      "const x = 1;\n",
+    );
+  });
+
+  it("stamps a fence only where its text is one piece of the source", async () => {
+    const source = [
+      "## Code",
+      "",
+      "```",
+      "plain fence",
+      "```",
+      "",
+      "- in a list:",
+      "",
+      "  ```sh",
+      "  indented one",
+      "  two",
+      "  ```",
+      "",
+      "~~~py",
+      "print('tilde')",
+      "~~~",
+      "",
+    ].join("\n");
+    const { container } = await renderSpans(source);
+    await screen.findByText("Code");
+    const stamped = expectSpansMatch(container, source);
+    const words = stamped.map((span) => span.textContent).join("");
+    expect(words).toContain("plain fence");
+    expect(words).toContain("tilde");
+    // Its lines carry the list's indent, which the block's text has not.
+    expect(words).not.toContain("indented one");
+  });
+});
 
 /** Where the router stands, for the tests that care what a click did to it. */
 function LocationProbe() {
@@ -351,10 +516,12 @@ describe("the markdown renderer", () => {
 
     const chip = screen.getByText("[gotcha]");
     expect(chip.className).toContain("font-mono");
-    // The line itself stays whole beside it, tag and all.
+    // The line itself stays beside it, and its tag is an accent chip.
     expect(
-      screen.getByText(/An unsigned handover is not a handover #protocol/),
+      screen.getByText(/An unsigned handover is not a handover/),
     ).toBeVisible();
+    const tag = screen.getByText("#protocol");
+    expect(tag.className).toContain("bg-accent-100");
   });
 
   it("draws a relation bullet's type as a chip", async () => {
@@ -706,7 +873,9 @@ describe("section anchors", () => {
       </MemoryRouter>,
     );
     await waitFor(() => {
-      expect(screen.queryByText("crystallizing")).toBeNull();
+      expect(
+        screen.queryByRole("status", { name: "Loading the text" }),
+      ).toBeNull();
     });
 
     await userEvent.click(

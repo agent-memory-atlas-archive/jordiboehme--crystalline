@@ -370,12 +370,12 @@ describe("the MANIFEST editor", () => {
     // The engram editor's row carries the app's own tooltip surface; this one
     // is the same editor with a different subject, and a native `title` here
     // would make the pair disagree about what a hint looks like.
-    const close = screen.getByRole("button", { name: "Close" });
+    const close = screen.getByRole("button", { name: "Done" });
     expect(close).not.toHaveAttribute("title");
     await userEvent.hover(close);
     expect(
       await screen.findByRole("tooltip", {}, { timeout: 2000 }),
-    ).toHaveTextContent("Close the editor");
+    ).toHaveTextContent("Leave the editor");
   });
 
   it("Close leaves a clean buffer at once, with nothing to ask about", async () => {
@@ -384,7 +384,7 @@ describe("the MANIFEST editor", () => {
     renderApp("/d/eng/manifest/edit");
     await screen.findByLabelText("MANIFEST source");
 
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
 
     // Nothing was typed, so there is nothing to keep and nothing to lose.
     // The way out is the domain page, where the MANIFEST is read.
@@ -392,10 +392,10 @@ describe("the MANIFEST editor", () => {
       await screen.findByRole("heading", { name: "eng", level: 1 }),
     ).toBeInTheDocument();
     expect(put).not.toHaveBeenCalled();
-    expect(screen.queryByText("Close the editor?")).not.toBeInTheDocument();
+    expect(screen.queryByText("Leave the editor?")).not.toBeInTheDocument();
   });
 
-  it("Close asks before leaving unsaved text, and Save and close keeps it", async () => {
+  it("Done asks before leaving unsaved text, and Save and leave keeps it", async () => {
     const put = vi.fn(() => manifestResponse({ checksum: "m2" }));
     serveEditor(savingManifest(put));
     renderApp("/d/eng/manifest/edit");
@@ -405,10 +405,10 @@ describe("the MANIFEST editor", () => {
     });
     await typeIntoBuffer(editor, "\nAnd a second line.\n");
 
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
-    expect(await screen.findByText("Close the editor?")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(await screen.findByText("Leave the editor?")).toBeVisible();
     await userEvent.click(
-      screen.getByRole("button", { name: "Save and close" }),
+      screen.getByRole("button", { name: "Save and leave" }),
     );
 
     // The write lands first and the leaving hangs off its receipt, exactly as
@@ -443,8 +443,8 @@ describe("the MANIFEST editor", () => {
       { timeout: 4000 },
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
-    await screen.findByText("Close the editor?");
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    await screen.findByText("Leave the editor?");
     await userEvent.click(
       screen.getByRole("button", { name: "Discard changes" }),
     );
@@ -481,8 +481,8 @@ describe("the MANIFEST editor", () => {
       { timeout: 4000 },
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
-    await screen.findByText("Close the editor?");
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    await screen.findByText("Leave the editor?");
     await userEvent.click(
       screen.getByRole("button", { name: "Discard changes" }),
     );
@@ -497,7 +497,7 @@ describe("the MANIFEST editor", () => {
     expect(localStorage.getItem("fluid.draft.ada.eng/MANIFEST")).toBeNull();
   });
 
-  it("Save and close never finishes on a save that no longer carries the buffer", async () => {
+  it("Save and leave never finishes on a save that no longer carries the buffer", async () => {
     const { put, land } = gatedPut();
     serveEditor(savingManifest(put));
     renderApp("/d/eng/manifest/edit");
@@ -517,9 +517,9 @@ describe("the MANIFEST editor", () => {
     // would take the newer lines off the screen under an answer that promised
     // to keep the work - the same rule the engram editor holds, pinned here
     // too because this screen has its own copy of the line that applies it.
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
     await userEvent.click(
-      screen.getByRole("button", { name: "Save and close" }),
+      screen.getByRole("button", { name: "Save and leave" }),
     );
     land();
 

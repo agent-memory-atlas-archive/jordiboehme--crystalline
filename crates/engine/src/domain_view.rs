@@ -462,6 +462,49 @@ impl<'a> DomainView<'a> {
         }
     }
 
+    /// [`DomainView::text_at`] for a write that starts this view's draft from
+    /// what it reads. A draft starts from the whole engram, and a file
+    /// domain's index row holds the body only, so with the file gone from
+    /// this disk there is nothing whole to start from: refused with the way
+    /// out (the host-move remedy during an open host move) rather than a
+    /// draft without its frontmatter. A draft already held, the base view
+    /// and a file on disk answer as `text_at` does. Reads use `text_at`,
+    /// which answers the body.
+    pub(crate) async fn text_for_draft(
+        &self,
+        base: &ContentSource,
+        desc: &EngramDescriptor,
+    ) -> Result<Option<String>> {
+        if let Some(actor) = self.actor.as_deref()
+            && let ContentSource::File { root } = base
+            && !join_rel(root, &desc.path).exists()
+        {
+            let held = {
+                let store = self.engine.store();
+                let store = store.lock().await;
+                store
+                    .overlay_entry(desc.domain_id, actor, &desc.path)
+                    .await?
+            };
+            if held.is_none() {
+                self.engine
+                    .refuse_only_elsewhere(
+                        &desc.domain,
+                        desc.domain_id,
+                        crate::engine::ElsewhereRow::Engram(&desc.path),
+                    )
+                    .await?;
+                return Err(EngineError::NotFound(format!(
+                    "the file of '{}' is not on this disk, so no draft can start from it \
+                     (the index holds its body only); sync domain '{}' or restore the file, \
+                     then try again",
+                    desc.permalink, desc.domain
+                )));
+            }
+        }
+        self.text_at(base, desc).await
+    }
+
     /// Write one actor's draft of a path: the row, its chunks and its mirror.
     ///
     /// The single place a draft is created, so every verb that routes lands the
@@ -1209,6 +1252,40 @@ impl<'a> DomainView<'a> {
             .map(|entry| entry.permalink))
     }
 
+    /// Refuse a draft move onto a path that is taken in THIS actor's view,
+    /// which is the only view the move happens in: a path another actor is
+    /// drafting at is not taken for this one, and a base row at the
+    /// destination is, since the moved engram would shadow it rather than
+    /// land beside it. Asked by [`DomainView::move_within`], and before it
+    /// by the move's screen, so a refused move leaves an open room alone.
+    pub(crate) async fn refuse_taken_draft_destination(
+        &self,
+        p: &MoveParams,
+        src: &EngramDescriptor,
+        dest_rel: &str,
+    ) -> Result<()> {
+        let actor = self.writing_actor()?;
+        let store = self.engine.store();
+        let store = store.lock().await;
+        let taken = store
+            .overlay_entry(src.domain_id, actor, dest_rel)
+            .await?
+            .map(|entry| !entry.tombstone)
+            .unwrap_or(false)
+            || store
+                .list_engrams(&p.domain, Some(dest_rel), None)
+                .await?
+                .iter()
+                .any(|found| found.path == dest_rel);
+        if taken {
+            return Err(EngineError::Conflict(format!(
+                "'{dest_rel}' already holds an engram in domain '{}'",
+                p.domain
+            )));
+        }
+        Ok(())
+    }
+
     /// A move inside one actor's draft overlay: a tombstone at the source and
     /// an entry at the destination.
     ///
@@ -1261,32 +1338,11 @@ impl<'a> DomainView<'a> {
                 "the destination is where the engram already is".into(),
             ));
         }
-        // Free in THIS actor's view, which is the only view the move happens
-        // in: a path another actor is drafting at is not taken for this one,
-        // and a base row at the destination is, since the moved engram would
-        // shadow it rather than land beside it. An in-place rename is its own
-        // destination.
         if !in_place {
-            let store = self.engine.store();
-            let store = store.lock().await;
-            let taken = store
-                .overlay_entry(src.domain_id, actor, dest_rel)
-                .await?
-                .map(|entry| !entry.tombstone)
-                .unwrap_or(false)
-                || store
-                    .list_engrams(&p.domain, Some(dest_rel), None)
-                    .await?
-                    .iter()
-                    .any(|found| found.path == dest_rel);
-            if taken {
-                return Err(EngineError::Conflict(format!(
-                    "'{dest_rel}' already holds an engram in domain '{}'",
-                    p.domain
-                )));
-            }
+            self.refuse_taken_draft_destination(p, src, dest_rel)
+                .await?;
         }
-        let text = self.text_at(src_source, src).await?.ok_or_else(|| {
+        let text = self.text_for_draft(src_source, src).await?.ok_or_else(|| {
             EngineError::NotFound(format!(
                 "no engram '{}' in domain '{}'",
                 p.identifier, p.domain
@@ -1555,6 +1611,11 @@ impl<'a> DomainView<'a> {
     /// the domain's files never held joins the level and contributes its folder
     /// if it is in one.
     ///
+    /// `folder_counts` follows the same three edits at any depth: a tombstone
+    /// over a base row takes one from its folder, a draft at a path no base
+    /// row holds adds one, so a folder's count is what this reader's listing
+    /// of it totals.
+    ///
     /// **The level's `total` is adjusted by what this pass can see, and on a
     /// level the cap already cut that is the base level's count plus this
     /// actor's drafts rather than an exact one.** `browse_level` pushes the
@@ -1594,6 +1655,48 @@ impl<'a> DomainView<'a> {
             }
         }
 
+        // The folder counts follow the overlay at any depth below this level,
+        // against what the base really holds at each path: a tombstone over a
+        // base row takes one away (a tombstone whose base row is gone, say a
+        // pull removed the file, takes nothing), a draft at a path no base row
+        // holds adds one, a draft of a base row is the same engram. One
+        // existence probe per path, no body read.
+        let mut in_folders: Vec<(&str, &crystalline_index::StoredEngram)> = Vec::new();
+        for entry in &entries {
+            let Some(rel) = entry
+                .path
+                .to_lowercase()
+                .strip_prefix(folder.as_str())
+                .map(str::len)
+            else {
+                continue;
+            };
+            let rel = &entry.path[entry.path.len() - rel..];
+            if let Some((head, _)) = rel.split_once('/') {
+                in_folders.push((head, entry));
+            }
+        }
+        if !in_folders.is_empty() {
+            let paths: Vec<String> = in_folders.iter().map(|(_, e)| e.path.clone()).collect();
+            let base = {
+                let store = self.engine.store();
+                let store = store.lock().await;
+                store.base_paths(domain_id, &paths).await?
+            };
+            for (head, entry) in in_folders {
+                match (entry.tombstone, base.contains(&entry.path)) {
+                    (true, true) => {
+                        if let Some(n) = level.folder_counts.get_mut(head) {
+                            *n = n.saturating_sub(1);
+                        }
+                    }
+                    (false, false) => {
+                        *level.folder_counts.entry(head.to_string()).or_default() += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
         let before = level.engrams.len();
         level.engrams.retain(|d| !tombstones.contains(&d.path));
         let removed = before - level.engrams.len();
@@ -1814,9 +1917,13 @@ impl<'a> DomainView<'a> {
     ///
     /// Deliberately thin - [`Engine::read_engram`] resolves references and
     /// builds hints this caller never reads. **Whose text** is the view's to
-    /// say, and every caller today builds a [`DomainView::base`], so a room in
-    /// a domain that reviews changes opens on the text the team reviewed,
-    /// whoever else is drafting.
+    /// say: a room over the folder's text loads through the base view, and a
+    /// room over somebody's review draft loads through that owner's actor
+    /// view. Both read with [`DomainView::text_at`], so a draft room whose
+    /// engram file is gone from this disk (and no draft held yet) opens on
+    /// the body the index row holds; its save goes through
+    /// [`DomainView::text_for_draft`], which refuses it, and the room's text
+    /// is kept in `kept/` when it closes.
     pub(crate) async fn engram_text(&self, identifier: &str) -> Result<EngramText> {
         let (desc, source) = self.resolve(identifier).await?;
         let content = self.text_at(&source, &desc).await?.ok_or_else(|| {
@@ -2114,13 +2221,71 @@ impl<'a> DomainView<'a> {
     /// describing the other writer's bytes - which is what the folder arm's
     /// per-file lock exists to prevent there.
     pub(crate) async fn put_file(&self, path: &str, bytes: &[u8]) -> Result<AttachmentRow> {
+        self.put_file_ruled(path, bytes, false).await
+    }
+
+    /// [`DomainView::put_file`], refused when this actor's view already shows
+    /// a file at `path` ([`DomainView::shows_file`]): a create-only upload.
+    /// The refusal is [`EngineError::Conflict`] ending in
+    /// [`crate::engine::ASSET_EXISTS`], the folder's own.
+    pub(crate) async fn put_file_if_absent(
+        &self,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<AttachmentRow> {
+        self.put_file_ruled(path, bytes, true).await
+    }
+
+    /// The two writes above, under the overlay file's per-file lock
+    /// (`Engine::write_lock`), held across the create-only check and the
+    /// write so two racing uploads of one path by one actor (two tabs, or a
+    /// joined owner) cannot both find it empty. The file lock is taken before
+    /// the check, which may take the store lock, so the order is the one
+    /// every other writer keeps.
+    async fn put_file_ruled(
+        &self,
+        path: &str,
+        bytes: &[u8],
+        create_only: bool,
+    ) -> Result<AttachmentRow> {
         let actor = self.files_writer()?;
         let state_dir = self.files_state_dir()?;
-        crate::overlay_files::put(&state_dir, &self.domain, actor, path, bytes)
-            .map_err(|e| self.files_io(path, e))?;
         let abs = crate::overlay_files::file(&state_dir, &self.domain, actor, path)
             .map_err(|e| self.files_io(path, e))?;
+        let lock = self.engine.write_lock(&abs);
+        let _guard = lock.lock().await;
+        if create_only && self.shows_file(path).await? {
+            return Err(EngineError::Conflict(format!(
+                "'{path}' {}",
+                crate::engine::ASSET_EXISTS
+            )));
+        }
+        crate::overlay_files::put(&state_dir, &self.domain, actor, path, bytes)
+            .map_err(|e| self.files_io(path, e))?;
         crate::engine::attachment_row(path, bytes, crate::engine::asset_modified(&abs))
+    }
+
+    /// Whether this actor's files overlay shows a file at `path`: its own
+    /// bytes, or a reviewed file it has not deleted. The question a
+    /// create-only upload asks in [`DomainView::put_file_if_absent`], read the
+    /// way [`DomainView::tombstone_file`] reads the folder (either half, the
+    /// file or the row).
+    async fn shows_file(&self, path: &str) -> Result<bool> {
+        let actor = self.files_writer()?;
+        let state_dir = self.files_state_dir()?;
+        let held = crate::overlay_files::held(&state_dir, &self.domain, actor, path)
+            .map_err(|e| self.files_io(path, e))?;
+        match held {
+            crate::overlay_files::Held::Bytes => Ok(true),
+            crate::overlay_files::Held::Tombstone => Ok(false),
+            crate::overlay_files::Held::Nothing => {
+                match self.engine.attachment_delete_size(&self.domain, path).await {
+                    Ok(_) => Ok(true),
+                    Err(EngineError::NotFound(_)) => Ok(false),
+                    Err(e) => Err(e),
+                }
+            }
+        }
     }
 
     /// Mark this actor's deletion of one non-engram path.

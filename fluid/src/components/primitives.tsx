@@ -17,9 +17,47 @@ import type {
 
 import { isRetired } from "../lifecycle";
 
+/**
+ * A link in chrome (breadcrumbs, sidebar, lists, rails): quiet ink, no
+ * underline until the pointer is on it. Links inside rendered Markdown keep
+ * the underlined prose style instead.
+ */
+export const CHROME_LINK =
+  "text-ink-3 hover:text-ink hover:underline underline-offset-[3px]";
+
 /** The one focus treatment, everywhere. */
 export const FOCUS_RING =
   "focus-visible:ring-2 focus-visible:ring-accent-600 focus-visible:outline-none dark:focus-visible:ring-accent-400";
+
+/**
+ * The sidebar's rows (spec 4.4): 14px UI body in quiet ink, a sunken wash
+ * under the pointer, and the current row in the accent tint. Shared by the
+ * engram tree and the Reflection tree, so both modes read the same.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export const SIDE = {
+  row: `flex min-h-8 min-w-0 items-center gap-2 rounded-[7px] px-2.5 text-sm text-ink-3 hover:bg-sunken ${FOCUS_RING}`,
+  current:
+    "bg-accent-tint font-medium text-accent-800 dark:text-accent-200 [&_svg]:text-accent-500 dark:[&_svg]:text-accent-300",
+  icon: "shrink-0 text-faint",
+  label:
+    "px-2.5 pt-[18px] pb-1.5 text-[11.5px] font-semibold tracking-[0.04em] text-muted uppercase",
+  // Slate-600 rather than muted in light: these sit on the sunken hover
+  // wash, where slate-500 is 4.34:1, under the 4.5:1 floor.
+  add: "text-slate-600 dark:text-muted",
+  count: "ml-auto pl-2 text-xs text-slate-600 tabular-nums dark:text-muted",
+  // A retired row: set apart by slant and a lighter ink rather than by
+  // opacity, which took ink-3 down to 3.31:1. Slate-600 keeps 6.92:1 even on
+  // the hover wash.
+  retired: "italic [&>span]:text-slate-600 dark:[&>span]:text-muted",
+};
+
+/**
+ * A block label in the engram details rail: the sidebar's small section
+ * label, without the sidebar's row padding.
+ */
+export const RAIL_LABEL =
+  "text-[11.5px] font-semibold tracking-[0.04em] text-muted uppercase";
 
 // eslint-disable-next-line react-refresh/only-export-components
 export const BUTTON = {

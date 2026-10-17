@@ -372,6 +372,54 @@ async fn moving_a_file_rewrites_every_reflection_that_references_it_and_owes_no_
     assert!(err.is_err());
 }
 
+/// The file verbs announce `files` events, and a move announces each page
+/// whose link followed the file.
+#[tokio::test]
+async fn the_file_verbs_announce_files_and_the_pages_a_move_relinked() {
+    use crystalline_service::changes::{Change, ReflectionChangeKind as K};
+    let fx = reflecting().await;
+    fx.engine
+        .reflection_asset_write("eng", "assets/flow.png", PNG.to_vec(), &person())
+        .await
+        .unwrap();
+    fx.engine
+        .write_reflection(
+            &write("guides/a.md", "# A\n\n![flow](../assets/flow.png)\n"),
+            &person(),
+        )
+        .await
+        .unwrap();
+    let mut rx = fx.engine.changes().subscribe();
+    fx.engine
+        .reflection_asset_write("eng", "assets/flow.png", b"other".to_vec(), &person())
+        .await
+        .unwrap();
+    fx.engine
+        .move_reflection_asset("eng", "assets/flow.png", "assets/x/flow.png", &person())
+        .await
+        .unwrap();
+    fx.engine
+        .reflection_asset_delete("eng", "assets/x/flow.png", &person())
+        .await
+        .unwrap();
+    let mut heard = Vec::new();
+    while let Ok(envelope) = rx.try_recv() {
+        if let Change::Reflection(change) = envelope.change {
+            heard.push((change.kind, change.path, change.from));
+        }
+    }
+    let s = |text: &str| text.to_string();
+    assert_eq!(
+        heard,
+        vec![
+            (K::Files, s("assets/flow.png"), None),
+            (K::Files, s("assets/x/flow.png"), Some(s("assets/flow.png"))),
+            (K::Changed, s("guides/a.md"), None),
+            (K::Files, s("assets/x/flow.png"), None),
+        ]
+    );
+}
+
 #[tokio::test]
 async fn a_curators_agent_moves_and_removes_files_through_write_reflection() {
     let (fx, _, nora, ed) = three_people().await;
@@ -464,6 +512,52 @@ async fn reflect_names_unreferenced_and_missing_files_and_engram_attachments() {
             .as_str()
             .unwrap()
             .contains("reflections/assets/")
+    );
+}
+
+/// A file row whose bytes are not on this disk (a row a new host kept from
+/// the previous host's disk, or a file deleted while nothing watched) is a
+/// broken image here: the queue asks for it as missing, because the disk
+/// is checked, not only the row (R26).
+#[tokio::test]
+async fn a_kept_asset_row_without_bytes_is_reported_missing() {
+    let fx = with_findings().await;
+    let used = fx.root.join("reflections/assets/used.png");
+    std::fs::remove_file(&used).unwrap();
+    let store = fx.engine.store();
+    {
+        let store = store.lock().await;
+        let did = store.domain_id("eng").await.unwrap().unwrap();
+        assert!(
+            store
+                .get_asset(
+                    crystalline_index::AssetTable::Reflection,
+                    did,
+                    "assets/used.png"
+                )
+                .await
+                .unwrap()
+                .is_some(),
+            "the row is still there"
+        );
+    }
+    let p = ReflectParams {
+        kinds: vec!["update".into()],
+        limit: Some(100),
+        ..Default::default()
+    };
+    let queue = fx.engine.reflect(&p, &agent()).await.unwrap();
+    let missing = queue["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["what"] == "asset_missing" && r["path"] == "guides/a.md")
+        .cloned()
+        .expect("the section's missing files");
+    assert_eq!(
+        missing["assets"],
+        serde_json::json!(["assets/used.png", "assets/missing.png"]),
+        "{missing}"
     );
 }
 
@@ -759,6 +853,85 @@ async fn a_move_onto_a_file_or_of_a_missing_file_changes_nothing() {
     );
 }
 
+/// A page renamed only by letter case keeps its text and ends up with the new
+/// spelling on a case-sensitive and a case-insensitive disk alike.
+#[tokio::test]
+async fn a_page_renamed_only_by_letter_case_keeps_its_text() {
+    let fx = reflecting().await;
+    fx.engine
+        .write_reflection(&curated("deploying.md", "# Deploying\n"), &agent())
+        .await
+        .unwrap();
+    let home = fx.root.join("reflections");
+    std::fs::create_dir_all(home.join(".reflected")).unwrap();
+    std::fs::write(home.join(".reflected/deploying.md"), "# Deploying\n").unwrap();
+    std::fs::write(home.join("deploying.threads.md"), "threads").unwrap();
+    fx.engine
+        .move_reflection("eng", "deploying.md", "Deploying.md", &agent())
+        .await
+        .unwrap();
+    let listed = |dir: &std::path::Path| -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.to_lowercase().starts_with("deploying"))
+            .collect()
+    };
+    let mut names = listed(&home);
+    names.sort();
+    assert_eq!(names, ["Deploying.md", "Deploying.threads.md"]);
+    assert_eq!(listed(&home.join(".reflected")), ["Deploying.md"]);
+    assert_eq!(
+        std::fs::read_to_string(home.join("Deploying.threads.md")).unwrap(),
+        "threads"
+    );
+    let text = std::fs::read_to_string(home.join("Deploying.md")).unwrap();
+    assert!(text.contains("# Deploying"), "{text}");
+    // The store row follows: the page reads under the new name.
+    fx.engine
+        .read_reflection("eng", "Deploying.md", &agent())
+        .await
+        .unwrap();
+}
+
+/// A move keeps the extension, in any letter case, and a refusal changes
+/// nothing: no page is rewritten and no file moves.
+#[tokio::test]
+async fn a_move_keeps_the_extension_and_a_refusal_changes_nothing() {
+    let fx = reflecting().await;
+    fx.engine
+        .reflection_asset_write("eng", "assets/a.png", PNG.to_vec(), &person())
+        .await
+        .unwrap();
+    let err = fx
+        .engine
+        .move_reflection_asset("eng", "assets/a.png", "assets/a.jpg", &agent())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("keeps the .png extension"), "{err}");
+    assert_eq!(
+        std::fs::read(fx.root.join("reflections/assets/a.png")).unwrap(),
+        PNG
+    );
+    assert!(!fx.root.join("reflections/assets/a.jpg").exists());
+    fx.engine
+        .move_reflection_asset("eng", "assets/a.png", "assets/a.PNG", &agent())
+        .await
+        .unwrap();
+    // The listing shows the new spelling on a case-sensitive and a
+    // case-insensitive disk alike.
+    let names: Vec<String> = std::fs::read_dir(fx.root.join("reflections/assets"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["a.PNG"]);
+    assert_eq!(
+        std::fs::read(fx.root.join("reflections/assets/a.PNG")).unwrap(),
+        PNG
+    );
+}
+
 /// A read-only domain freezes the files: no add, replace, move or remove.
 #[tokio::test]
 async fn a_read_only_domain_freezes_the_files() {
@@ -830,6 +1003,51 @@ async fn a_contributor_never_replaces_a_file_the_index_has_not_seen() {
         std::fs::read(fx.root.join("reflections/assets/late.png")).unwrap(),
         PNG
     );
+}
+
+/// A create-only write never replaces a file, whatever the right: not one an
+/// upload stored, not one only the disk holds (no sync has seen it), not even
+/// a curator's. The refusal is the create-only one for a contributor too, not
+/// the curate refusal of a plain replace.
+#[tokio::test]
+async fn a_create_only_write_never_replaces_a_file() {
+    use crystalline_service::EngineError;
+    use crystalline_service::engine::ASSET_EXISTS;
+    let (fx, vera, nora, ed) = three_people().await;
+    let err = fx
+        .engine
+        .reflection_asset_create("eng", "assets/flow.png", PNG.to_vec(), &vera)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, EngineError::Forbidden(_)),
+        "a reader adds nothing: {err}"
+    );
+    let created = fx
+        .engine
+        .reflection_asset_create("eng", "assets/flow.png", PNG.to_vec(), &nora)
+        .await
+        .unwrap();
+    assert!(created.created);
+    std::fs::write(fx.root.join("reflections/assets/late.png"), PNG).unwrap();
+    for path in ["assets/flow.png", "assets/late.png"] {
+        for who in [&nora, &ed] {
+            let err = fx
+                .engine
+                .reflection_asset_create("eng", path, b"other".to_vec(), who)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&err, EngineError::Conflict(text) if *text == format!("'{path}' {ASSET_EXISTS}")),
+                "{path}: {err}"
+            );
+        }
+        assert_eq!(
+            std::fs::read(fx.root.join("reflections").join(path)).unwrap(),
+            PNG,
+            "{path} keeps its bytes"
+        );
+    }
 }
 
 /// An engram embed a page already holds (written by hand) does not hold up a

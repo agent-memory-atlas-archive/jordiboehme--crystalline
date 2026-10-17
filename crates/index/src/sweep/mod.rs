@@ -3505,61 +3505,19 @@ fn join_semis(items: impl Iterator<Item = impl std::fmt::Display>) -> String {
     items.map(|i| i.to_string()).collect::<Vec<_>>().join("; ")
 }
 
-/// The `Q001` predicate: non-blank body lines outside fenced code. The core
-/// parser's line walker is crate-private, so the fence tracking is mirrored
-/// here, including its rule that a closing fence must match the opening
-/// character, be at least as long and carry nothing after it.
+/// The `Q001` predicate: non-blank body lines outside fenced code, with the
+/// core parser's fence rule ([`crystalline_core::FenceTracker`]).
 ///
 /// Public because `V106` is not its only reader: `split_engram` refuses a
 /// selection that would leave the source below [`MIN_CONTENT_LINES`], and that
 /// refusal has to count lines exactly the way the rule that would flag the
 /// result counts them.
 pub fn content_line_count(body: &str) -> usize {
-    let mut fence: Option<(char, usize)> = None;
-    let mut count = 0usize;
-    for raw in body.split('\n') {
-        let text = raw.trim_end_matches('\r');
-        match fence {
-            None => match fence_marker(text) {
-                Some((c, n)) => fence = Some((c, n)),
-                None => {
-                    if !text.trim().is_empty() {
-                        count += 1;
-                    }
-                }
-            },
-            Some((fc, fcount)) => {
-                if let Some((c, n)) = fence_marker(text)
-                    && c == fc
-                    && n >= fcount
-                    && text.trim_start()[n..].trim().is_empty()
-                {
-                    fence = None;
-                }
-            }
-        }
-    }
-    count
-}
-
-/// A fence opener or closer: the marker character and its run length, for a
-/// line indented no more than three spaces.
-fn fence_marker(line: &str) -> Option<(char, usize)> {
-    let indent = line.len() - line.trim_start_matches(' ').len();
-    if indent > 3 {
-        return None;
-    }
-    let rest = &line[indent..];
-    let first = rest.chars().next()?;
-    if first != '`' && first != '~' {
-        return None;
-    }
-    let count = rest.chars().take_while(|c| *c == first).count();
-    if count < 3 {
-        None
-    } else {
-        Some((first, count))
-    }
+    let mut fence = crystalline_core::FenceTracker::new();
+    body.split('\n')
+        .map(|raw| raw.trim_end_matches('\r'))
+        .filter(|text| !fence.in_fence(text) && !text.trim().is_empty())
+        .count()
 }
 
 #[cfg(test)]

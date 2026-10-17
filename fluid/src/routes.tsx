@@ -14,20 +14,48 @@
  */
 
 import { Suspense, lazy } from "react";
-import { Navigate, Route, Routes, useParams } from "react-router";
+import {
+  Navigate,
+  Route,
+  Routes,
+  useParams,
+  useSearchParams,
+} from "react-router";
 
 import LoginPage from "./auth/LoginPage";
 import { RequireAuth } from "./auth/RequireAuth";
 import { Layout } from "./components/Layout";
-import { Skeleton } from "./components/Skeleton";
+import { LazyBoundary } from "./components/LazyBoundary";
+import { Loading } from "./components/Loading";
+import { lazyChunk } from "./lazyChunk";
 import { domainRoute } from "./paths";
-import DomainHome from "./screens/DomainHome";
-import GraphView from "./screens/GraphView";
 import Home from "./screens/Home";
-import Maintenance from "./screens/Maintenance";
 import NotFound from "./screens/NotFound";
 import OauthConsent from "./screens/OauthConsent";
-import Search from "./screens/Search";
+
+/**
+ * Three screens a reader opens from the frame rather than lands on: the
+ * search results, the full-screen graph and the maintenance queue. They were
+ * eager once, and every visitor paid for them before the first screen ran,
+ * whether or not they ever opened one. Lazy for the reason the reading screen
+ * is: the daemon serves this bundle off localhost, so the chunk is a round
+ * trip of a few milliseconds. Maintenance waits behind the skeleton it
+ * draws itself while its sweep runs, so the chunk and the sweep read as one
+ * wait; search and the graph have no loading state of their own, so each
+ * waits behind a plain labelled skeleton.
+ */
+const Search = lazyChunk(() => import("./screens/Search"));
+
+/**
+ * A domain's front page and its folders, and the domain's settings. Lazy like
+ * the reading screen: the front page draws a MANIFEST through the markdown
+ * renderer, a rail and the engram list, and the settings carry every team
+ * card, none of which the app shell should pay for on every other screen.
+ */
+const DomainHome = lazyChunk(() => import("./screens/DomainHome"));
+const DomainSettings = lazyChunk(() => import("./screens/DomainSettings"));
+const GraphView = lazyChunk(() => import("./screens/GraphView"));
+const Maintenance = lazyChunk(() => import("./screens/Maintenance"));
 
 /**
  * The two editors: everything CodeMirror rides in these chunks, so the
@@ -39,16 +67,16 @@ import Search from "./screens/Search";
  * than a flash; the MANIFEST editor shares it rather than inventing a second
  * one.
  */
-const EngramEditor = lazy(() => import("./screens/EngramEditor"));
-const ManifestEditor = lazy(() => import("./screens/ManifestEditor"));
+const EngramEditor = lazyChunk(() => import("./screens/EngramEditor"));
+const ManifestEditor = lazyChunk(() => import("./screens/ManifestEditor"));
 
 /**
  * The reading screen, lazy for a third reason again.
  *
  * It is the screen this app exists to draw, so making it wait looks wrong
  * until the numbers are read: it pulls the markdown renderer's whole
- * neighborhood, the details and backlinks panels, the two dialogs and the
- * neighborhood section behind it, and every one of those bytes was being paid
+ * neighborhood, the details rail (Linked from and Explore), the two dialogs and the
+ * neighborhood panel behind it, and every one of those bytes was being paid
  * for by the home screen, the search screen and the login screen too. The
  * primary deployment is the daemon serving this bundle off localhost, where a
  * second request for an already-built chunk is a round trip measured in
@@ -56,7 +84,7 @@ const ManifestEditor = lazy(() => import("./screens/ManifestEditor"));
  * screen shows itself while its own two requests are in flight, so a reader
  * sees one loading shape rather than a chunk fetch followed by a screen.
  */
-const EngramPage = lazy(() => import("./screens/EngramPage"));
+const EngramPage = lazyChunk(() => import("./screens/EngramPage"));
 
 /**
  * And the two admin screens, which are lazy for a different reason: they weigh
@@ -64,14 +92,14 @@ const EngramPage = lazy(() => import("./screens/EngramPage"));
  * app shell is paid for by everybody who opens the app at all. The accounts
  * table is the larger of the two and takes the most off the eager path.
  */
-const GithubSettings = lazy(() => import("./screens/GithubSettings"));
-const UsersAdmin = lazy(() => import("./screens/UsersAdmin"));
+const GithubSettings = lazyChunk(() => import("./screens/GithubSettings"));
+const UsersAdmin = lazyChunk(() => import("./screens/UsersAdmin"));
 
 /**
  * And the profile, lazy for the third of those reasons: it is a screen a reader
  * opens once, to connect the identity they share as, and never again.
  */
-const Profile = lazy(() => import("./screens/Profile"));
+const Profile = lazyChunk(() => import("./screens/Profile"));
 
 /**
  * Where a draft share-link lands. Lazy for the reason the two admin screens
@@ -80,7 +108,17 @@ const Profile = lazy(() => import("./screens/Profile"));
  * draft is one page handed over by its author - so the chunk is small and the
  * wait is one request on a screen that is itself the arrival.
  */
-const GrantedDraft = lazy(() => import("./screens/GrantedDraft"));
+const GrantedDraft = lazyChunk(() => import("./screens/GrantedDraft"));
+
+/**
+ * The Reflection's screens, lazy for the reason the engram screens are: a
+ * domain's pages for people carry the markdown renderer, the co-editing
+ * client and the review lists, and the app shell is paid for by everybody.
+ */
+const ReflectionHome = lazyChunk(() => import("./screens/ReflectionHome"));
+const ReflectionPage = lazyChunk(() => import("./screens/ReflectionPage"));
+const ReflectionReview = lazyChunk(() => import("./screens/ReflectionReview"));
+const ReflectionEditor = lazyChunk(() => import("./screens/ReflectionEditor"));
 
 /**
  * The station itself, every place in it under one splat, `/π/*`, lazy like
@@ -141,37 +179,82 @@ function ManifestRedirect() {
   return <Navigate to={domainRoute(domain)} replace />;
 }
 
+/*
+ * Every Fluid route below that loads on demand waits behind `LazyBoundary`
+ * with one of these fallbacks: the loading shape while its chunk is on the
+ * way, and a reload prompt if the chunk never arrives (a tab left open across
+ * a deploy). The station's routes keep their plain `Suspense`.
+ */
 const EDITOR_FALLBACK = (
-  <p className="text-sm text-slate-500 dark:text-slate-400">
-    Loading the editor
-  </p>
+  <Loading label="Loading the editor" subject="the editor" />
 );
 
 const SETTINGS_FALLBACK = (
-  <p className="text-sm text-slate-500 dark:text-slate-400">Loading settings</p>
+  <Loading label="Loading settings" subject="the settings" />
 );
 
 const USERS_FALLBACK = (
-  <p className="text-sm text-slate-500 dark:text-slate-400">Loading accounts</p>
+  <Loading label="Loading accounts" subject="the accounts" />
 );
 
 const PROFILE_FALLBACK = (
-  <p className="text-sm text-slate-500 dark:text-slate-400">
-    Loading your profile
-  </p>
+  <Loading label="Loading your profile" subject="your profile" />
 );
 
 /**
- * The engram screen's own skeleton, spelled the same way it spells it: the
+ * The engram screen's own loader, spelled the same way it spells it: the
  * chunk arriving and the detail request landing are one wait to a reader, and
- * two different loading shapes in a row would say otherwise.
+ * two different loading shapes in a row would say otherwise. The first line
+ * names the address, which is all the route knows before the data lands.
  */
-const ENGRAM_FALLBACK = <Skeleton label="Loading the engram" rows={6} />;
+function EngramFallback() {
+  const { "*": permalink = "" } = useParams();
+  return <Loading label="Loading the engram" subject={permalink} />;
+}
+const ENGRAM_FALLBACK = <EngramFallback />;
+
+function ReflectionFallback() {
+  const { domain = "", "*": path = "" } = useParams();
+  return (
+    <Loading
+      label="Loading the Reflection"
+      subject={path === "" ? `${domain} reflection` : path}
+    />
+  );
+}
+const REFLECTION_FALLBACK = <ReflectionFallback />;
+
+function DomainFallback() {
+  const { domain = "" } = useParams();
+  return <Loading label="Loading the domain" subject={domain} />;
+}
+const DOMAIN_FALLBACK = <DomainFallback />;
+
+function SearchFallback() {
+  const [params] = useSearchParams();
+  return (
+    <Loading
+      label="Loading search"
+      subject={params.get("q") ?? "your search"}
+    />
+  );
+}
+const SEARCH_FALLBACK = <SearchFallback />;
+
+const GRAPH_FALLBACK = (
+  <Loading label="Loading the graph" subject="the graph" />
+);
+
+/**
+ * The loader the maintenance screen draws itself while its sweep is in
+ * flight, so the chunk and the sweep read as one wait.
+ */
+const MAINTENANCE_FALLBACK = (
+  <Loading label="Sweeping the domains" subject="the domains" />
+);
 
 const GRANTED_DRAFT_FALLBACK = (
-  <p className="text-sm text-slate-500 dark:text-slate-400">
-    Opening the shared draft
-  </p>
+  <Loading label="Opening the shared draft" subject="the shared draft" />
 );
 
 export function AppRoutes() {
@@ -234,7 +317,22 @@ export function AppRoutes() {
         />
         <Route element={<Layout />}>
           <Route index element={<Home />} />
-          <Route path="/d/:domain" element={<DomainHome />} />
+          <Route
+            path="/d/:domain"
+            element={
+              <LazyBoundary fallback={DOMAIN_FALLBACK}>
+                <DomainHome />
+              </LazyBoundary>
+            }
+          />
+          <Route
+            path="/d/:domain/settings"
+            element={
+              <LazyBoundary fallback={SETTINGS_FALLBACK}>
+                <DomainSettings />
+              </LazyBoundary>
+            }
+          />
           {/*
             The permalink is a path of its own, so it arrives through the
             splat rather than a named param: `/d/eng/e/notes/deep/gamma` is
@@ -248,9 +346,9 @@ export function AppRoutes() {
           <Route
             path="/d/:domain/edit/*"
             element={
-              <Suspense fallback={EDITOR_FALLBACK}>
+              <LazyBoundary fallback={EDITOR_FALLBACK}>
                 <EngramEditor />
-              </Suspense>
+              </LazyBoundary>
             }
           />
           {/*
@@ -266,17 +364,58 @@ export function AppRoutes() {
           <Route
             path="/d/:domain/manifest/edit"
             element={
-              <Suspense fallback={EDITOR_FALLBACK}>
+              <LazyBoundary fallback={EDITOR_FALLBACK}>
                 <ManifestEditor />
-              </Suspense>
+              </LazyBoundary>
+            }
+          />
+          <Route
+            path="/d/:domain/reflection"
+            element={
+              <LazyBoundary fallback={REFLECTION_FALLBACK}>
+                <ReflectionHome />
+              </LazyBoundary>
+            }
+          />
+          <Route
+            path="/d/:domain/reflection/review"
+            element={
+              <LazyBoundary fallback={REFLECTION_FALLBACK}>
+                <ReflectionReview />
+              </LazyBoundary>
+            }
+          />
+          {/*
+            One page of a domain's Reflection. The splat is the page's path
+            inside `reflections/`; it always ends in `.md`, so the static
+            `review` route (Task 10) can never be a page's address.
+          */}
+          <Route
+            path="/d/:domain/reflection/*"
+            element={
+              <LazyBoundary fallback={REFLECTION_FALLBACK}>
+                <ReflectionPage />
+              </LazyBoundary>
+            }
+          />
+          {/*
+            The live editor over one page: `reflection-edit` is its own
+            segment ahead of the splat, the way `edit` is for engrams.
+          */}
+          <Route
+            path="/d/:domain/reflection-edit/*"
+            element={
+              <LazyBoundary fallback={EDITOR_FALLBACK}>
+                <ReflectionEditor />
+              </LazyBoundary>
             }
           />
           <Route
             path="/d/:domain/e/*"
             element={
-              <Suspense fallback={ENGRAM_FALLBACK}>
+              <LazyBoundary fallback={ENGRAM_FALLBACK}>
                 <EngramPage />
-              </Suspense>
+              </LazyBoundary>
             }
           />
           {/*
@@ -290,13 +429,27 @@ export function AppRoutes() {
           <Route
             path="/draft/:token"
             element={
-              <Suspense fallback={GRANTED_DRAFT_FALLBACK}>
+              <LazyBoundary fallback={GRANTED_DRAFT_FALLBACK}>
                 <GrantedDraft />
-              </Suspense>
+              </LazyBoundary>
             }
           />
-          <Route path="/search" element={<Search />} />
-          <Route path="/graph" element={<GraphView />} />
+          <Route
+            path="/search"
+            element={
+              <LazyBoundary fallback={SEARCH_FALLBACK}>
+                <Search />
+              </LazyBoundary>
+            }
+          />
+          <Route
+            path="/graph"
+            element={
+              <LazyBoundary fallback={GRAPH_FALLBACK}>
+                <GraphView />
+              </LazyBoundary>
+            }
+          />
           {/*
             Where an OAuth client's `?request=<id>` redirect lands. Eager,
             unlike the two editors and the reading screen above: it carries
@@ -306,11 +459,18 @@ export function AppRoutes() {
           */}
           <Route path="/authorize" element={<OauthConsent />} />
           {/*
-            Eager, unlike the two admin screens below it: this one is offered
-            to every role from the frame, so nobody would be spared its weight
-            by making it wait, and it carries no editor and no graph engine.
+            Offered to every role from the frame, and lazy all the same: most
+            visits never open it, and the queue it draws is the largest screen
+            the app shell used to carry.
           */}
-          <Route path="/maintenance" element={<Maintenance />} />
+          <Route
+            path="/maintenance"
+            element={
+              <LazyBoundary fallback={MAINTENANCE_FALLBACK}>
+                <Maintenance />
+              </LazyBoundary>
+            }
+          />
           {/*
             Routed for everybody and rendered for admins only: the screen
             itself answers with the not-found screen for anyone else, so the
@@ -322,9 +482,9 @@ export function AppRoutes() {
           <Route
             path="/users"
             element={
-              <Suspense fallback={USERS_FALLBACK}>
+              <LazyBoundary fallback={USERS_FALLBACK}>
                 <UsersAdmin />
-              </Suspense>
+              </LazyBoundary>
             }
           />
           {/*
@@ -335,9 +495,9 @@ export function AppRoutes() {
           <Route
             path="/settings/github"
             element={
-              <Suspense fallback={SETTINGS_FALLBACK}>
+              <LazyBoundary fallback={SETTINGS_FALLBACK}>
                 <GithubSettings />
-              </Suspense>
+              </LazyBoundary>
             }
           />
           {/*
@@ -348,9 +508,9 @@ export function AppRoutes() {
           <Route
             path="/profile"
             element={
-              <Suspense fallback={PROFILE_FALLBACK}>
+              <LazyBoundary fallback={PROFILE_FALLBACK}>
                 <Profile />
-              </Suspense>
+              </LazyBoundary>
             }
           />
           <Route path="*" element={<NotFound />} />

@@ -38,6 +38,13 @@ use crate::support::ScratchStateDir;
 
 pub const PASSWORD: &str = "pw12345678";
 
+/// The bytes of `open`'s engram attachment `assets/shot.png`: not UTF-8, so
+/// they travel as base64.
+pub const SHOT: &[u8] = b"\x89PNG\r\n\x1a\n\x00shot\xff\xfe\x00";
+
+/// The bytes of `open`'s Reflection file `reflections/assets/pic.png`.
+pub const PIC: &[u8] = b"\x89PNG\r\n\x1a\n\x00pic\xff\xfe\x01";
+
 fn manifest(name: &str, scope: &str) -> String {
     format!(
         "---\ntype: manifest\ntitle: {name}\npermalink: manifest\ntags:\n  - manifest\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# {name}\n\n## Scope\n\n- {scope}\n\n## When to Use\n\n- Route here for {scope}\n"
@@ -157,10 +164,47 @@ impl tower_service::Service<axum::extract::Request> for StripsPrefix {
     }
 }
 
-/// Record the JSON body of every ctl request that carries a bearer, then pass the request on
-/// unchanged.
+/// How the front of the instance plays a server that is not this one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Play {
+    /// Pass everything through.
+    #[default]
+    Honest,
+    /// A 0.26 server: no `file` command, no `files` in a read answer.
+    As026,
+    /// A hostile server: every mime it names is `text/html`, and a read
+    /// answer lists files with paths no domain may hold.
+    BadFiles,
+    /// A hostile server: a read answer names the local domain `notes` as its
+    /// own.
+    ForeignDomain,
+    /// A server whose Reflection is served by another instance on its
+    /// shared database: `file` answers the hosted refusal ([`HOSTED`]).
+    HostedElsewhere,
+    /// A server that finds the argument of a `file` request invalid: it
+    /// answers [`INVALID_FILE`] with `kind: invalid`, as 0.27.0 does.
+    InvalidFile,
+}
+
+/// The argument error [`Play::InvalidFile`] answers.
+pub const INVALID_FILE: &str = "'assets/odd' is not a file of this domain";
+
+/// The refusal [`Play::HostedElsewhere`] answers, as the engine words it.
+pub const HOSTED: &str =
+    "this domain's Reflection is served by alpha; move it with crystalline serve --take-over";
+
+/// What the front of the instance records and how it plays: the JSON body
+/// of every ctl request that carries a bearer, and the [`Play`].
+#[derive(Default)]
+pub struct CtlTap {
+    log: std::sync::Mutex<Vec<Value>>,
+    play: std::sync::Mutex<Play>,
+}
+
+/// Record the JSON body of every ctl request that carries a bearer, then pass the request on,
+/// played as the tap says.
 async fn record_ctl(
-    axum::extract::State(log): axum::extract::State<Arc<std::sync::Mutex<Vec<Value>>>>,
+    axum::extract::State(tap): axum::extract::State<Arc<CtlTap>>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -177,14 +221,82 @@ async fn record_ctl(
     let bytes = axum::body::to_bytes(body, 1 << 20)
         .await
         .unwrap_or_default();
-    if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
-        log.lock().unwrap().push(value);
+    let parsed = serde_json::from_slice::<Value>(&bytes).ok();
+    if let Some(value) = &parsed {
+        tap.log.lock().unwrap().push(value.clone());
     }
-    next.run(axum::extract::Request::from_parts(
-        parts,
-        axum::body::Body::from(bytes),
-    ))
-    .await
+    let play = *tap.play.lock().unwrap();
+    let cmd = parsed
+        .as_ref()
+        .and_then(|v| v.get("cmd"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let refused =
+        |error: &str| axum::Json(json!({ "v": 1, "ok": false, "error": error })).into_response();
+    match (play, cmd.as_str()) {
+        (Play::As026, "file") => {
+            return refused("'file' is not available over a remote connection");
+        }
+        (Play::HostedElsewhere, "file") => return refused(HOSTED),
+        (Play::InvalidFile, "file") => {
+            return axum::Json(
+                json!({ "v": 1, "ok": false, "error": INVALID_FILE, "kind": "invalid" }),
+            )
+            .into_response();
+        }
+        _ => {}
+    }
+    let response = next
+        .run(axum::extract::Request::from_parts(
+            parts,
+            axum::body::Body::from(bytes),
+        ))
+        .await;
+    if matches!(
+        play,
+        Play::Honest | Play::HostedElsewhere | Play::InvalidFile
+    ) {
+        return response;
+    }
+    let (parts, body) = response.into_parts();
+    let bytes = axum::body::to_bytes(body, 64 << 20)
+        .await
+        .unwrap_or_default();
+    let mut answer: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    if let Some(data) = answer.get_mut("data").and_then(Value::as_object_mut) {
+        match (play, cmd.as_str()) {
+            // 0.26 knew no `files` in a read answer.
+            (Play::As026, _) => {
+                data.remove("files");
+            }
+            (Play::BadFiles, "file") => {
+                data.insert("mime".into(), json!("text/html"));
+            }
+            (Play::BadFiles, _) => {
+                if let Some(Value::Array(files)) = data.get_mut("files") {
+                    for file in files.iter_mut() {
+                        file["mime"] = json!("text/html");
+                    }
+                    for path in [
+                        "MANIFEST.md",
+                        "assets/../x.png",
+                        "assets/run.exe",
+                        "../notes/assets/x.png",
+                    ] {
+                        files.push(json!({ "path": path, "mime": "text/html", "size": 1 }));
+                    }
+                }
+            }
+            (Play::ForeignDomain, _) if data.contains_key("domain") => {
+                data.insert("domain".into(), json!("notes"));
+            }
+            _ => {}
+        }
+    }
+    let mut parts = parts;
+    parts.headers.remove(axum::http::header::CONTENT_LENGTH);
+    axum::response::Response::from_parts(parts, axum::body::Body::from(answer.to_string()))
 }
 
 /// The serving task and the switch that shuts it down gracefully.
@@ -221,8 +333,8 @@ pub struct RemoteServer {
     pub collab: Arc<CollabSessions>,
     pub http: reqwest::Client,
     serving: tokio::sync::Mutex<Option<Serving>>,
-    /// The JSON bodies of the ctl requests received, oldest first.
-    ctl_log: Arc<std::sync::Mutex<Vec<Value>>>,
+    /// The ctl requests received, oldest first, and the 0.26 switch.
+    ctl_tap: Arc<CtlTap>,
     /// The path the instance is served under, empty at the root.
     prefix: &'static str,
     _scratch: ScratchStateDir,
@@ -414,9 +526,9 @@ impl RemoteServer {
             None,
         )
         .unwrap();
-        let ctl_log: Arc<std::sync::Mutex<Vec<Value>>> = Arc::default();
+        let ctl_tap: Arc<CtlTap> = Arc::default();
         let router = router.layer(axum::middleware::from_fn_with_state(
-            ctl_log.clone(),
+            ctl_tap.clone(),
             record_ctl,
         ));
         let server = RemoteServer {
@@ -430,7 +542,7 @@ impl RemoteServer {
                 .build()
                 .unwrap(),
             serving: tokio::sync::Mutex::new(None),
-            ctl_log,
+            ctl_tap,
             prefix: options.prefix.unwrap_or(""),
             _scratch: scratch,
         };
@@ -440,12 +552,63 @@ impl RemoteServer {
     /// The JSON bodies of the ctl requests received since the last
     /// [`RemoteServer::clear_ctl_log`].
     pub fn ctl_requests(&self) -> Vec<Value> {
-        self.ctl_log.lock().unwrap().clone()
+        self.ctl_tap.log.lock().unwrap().clone()
     }
 
     /// Forget the ctl requests recorded so far.
     pub fn clear_ctl_log(&self) {
-        self.ctl_log.lock().unwrap().clear();
+        self.ctl_tap.log.lock().unwrap().clear();
+    }
+
+    /// Answer from now on as a 0.26 server does: no `file` command, no
+    /// `files` in a read answer.
+    pub fn answer_as_026(&self) {
+        self.play(Play::As026);
+    }
+
+    /// Play from now on as `play` says.
+    pub fn play(&self, play: Play) {
+        *self.ctl_tap.play.lock().unwrap() = play;
+    }
+
+    /// Give `open` files of both kinds: the Reflection on, an engram
+    /// `shot-note` that shows `assets/shot.png`, and a page `guides/a.md`
+    /// that shows the Reflection's own `assets/pic.png`.
+    pub async fn with_files_in_open(&self) {
+        let manifest = self.file("open", "MANIFEST.md");
+        let text = std::fs::read_to_string(&manifest).unwrap();
+        std::fs::write(
+            &manifest,
+            text.replace("status: stable\n", "status: stable\nreflection: on\n"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(self.file("open", "assets")).unwrap();
+        std::fs::write(self.file("open", "assets/shot.png"), SHOT).unwrap();
+        std::fs::write(
+            self.file("open", "shot-note.md"),
+            "---\ntype: engram\ntitle: Shot Note\npermalink: shot-note\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# Shot Note\n\n- [fact] the panel looks like this\n\n![shot](assets/shot.png)\n",
+        )
+        .unwrap();
+        self.engine.sync(None).await.unwrap();
+        let owner = crystalline_service::ReflectionCaller::owner();
+        self.engine
+            .reflection_asset_write("open", "assets/pic.png", PIC.to_vec(), &owner)
+            .await
+            .unwrap();
+        self.engine
+            .write_reflection(
+                &crystalline_service::params::WriteReflectionParams {
+                    domain: "open".into(),
+                    path: "guides/a.md".into(),
+                    markdown: Some(
+                        "# A\n\n## One\n\nText for people.\n\n![pic](../assets/pic.png)\n".into(),
+                    ),
+                    ..Default::default()
+                },
+                &owner,
+            )
+            .await
+            .unwrap();
     }
 
     /// The origin a client connects to.

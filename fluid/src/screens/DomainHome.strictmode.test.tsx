@@ -133,7 +133,8 @@ describe("the rename summary under StrictMode", () => {
     // Let this page's OTHER queries settle and force further re-renders -
     // exactly what exposed the bug, since none of them touch the rename
     // summary directly. The summary must still be there once they have.
-    await screen.findByRole("heading", { name: "Members" });
+    // The rail's Members row carries its value once the members read lands.
+    await screen.findByText("everyone");
     expect(screen.getByText("Renamed from eng.")).toBeVisible();
   });
 });

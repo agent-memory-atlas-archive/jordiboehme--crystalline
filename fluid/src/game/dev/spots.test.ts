@@ -1039,7 +1039,10 @@ describe("every catalogued under spot seen from a standing player", () => {
       }
     }
     expect([...checked.keys()].sort()).toEqual([...want].sort());
-  });
+    // 180 generated rooms and a sight search per curio: 1.5 to 3 s of CPU on
+    // a quiet machine, which is over Vitest's 5 s default once a full run has
+    // every core busy. The work is fixed, so the budget is what moves.
+  }, 60_000);
 });
 
 describe("spotView (decor:<kind>:<n>, 2.7 Task 1)", () => {

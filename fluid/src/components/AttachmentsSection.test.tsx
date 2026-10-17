@@ -20,6 +20,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api/client";
+import type { AssetHome } from "../api/files";
 import { AttachmentsSection } from "./AttachmentsSection";
 import { Tooltips } from "./primitives";
 
@@ -199,5 +200,261 @@ describe("the rail's attachments", () => {
     expect(
       screen.queryByRole("button", { name: "Remove shot.png" }),
     ).toBeNull();
+  });
+});
+
+/**
+ * A home that can replace and move: the Reflection's. The engram rail is the
+ * one above and gets none of these verbs (shared design D11).
+ */
+describe("a home that can replace and move", () => {
+  const PATH = "assets/flow.png";
+
+  function fakeHome() {
+    const upload = vi.fn<AssetHome["upload"]>();
+    const replace = vi
+      .fn<NonNullable<AssetHome["replace"]>>()
+      .mockResolvedValue({
+        path: PATH,
+        mime: "image/png",
+        size: 3,
+        sha256: "def",
+      });
+    const home: AssetHome = {
+      key: ["fake-home"],
+      list: () =>
+        Promise.resolve([
+          {
+            path: PATH,
+            mime: "image/png",
+            size: 2048,
+            modified: "2026-10-15T10:00:00Z",
+            sha256: "abc",
+          },
+        ]),
+      upload,
+      replace,
+      remove: vi.fn(),
+      url: (path: string) => `/files/${path}`,
+      resolve: (target: string) =>
+        target.startsWith("../assets/") ? target.slice(3) : null,
+      refused: () => null,
+      linkTo: (path: string) => `../${path}`,
+    };
+    return Object.assign(home, { upload, replace });
+  }
+
+  function drawHome(home: AssetHome) {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    return render(
+      <QueryClientProvider client={client}>
+        <AttachmentsSection
+          domain="eng"
+          body="![Flow](../assets/flow.png)"
+          home={home}
+          canDelete
+          canReplace
+          onMove={() => undefined}
+        />
+      </QueryClientProvider>,
+      { wrapper: Tooltips },
+    );
+  }
+
+  it("an engram rail offers no replace or move", async () => {
+    apiMock.mockResolvedValue(listing(["assets/2026/08/shot.png"]));
+    draw("![Shot](assets/2026/08/shot.png)");
+    expect(
+      await screen.findByRole("button", { name: "Remove shot.png" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Replace/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Move/ })).toBeNull();
+  });
+
+  it("a curator replaces a file under its own name", async () => {
+    const home = fakeHome();
+    drawHome(home);
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Replace flow.png" }),
+    );
+    const input = document.querySelector<HTMLInputElement>(
+      'input[type="file"]',
+    ) as HTMLInputElement;
+    expect(input).toHaveAttribute("accept", ".png");
+    await user.upload(
+      input,
+      new File(["new"], "other-name.PNG", { type: "image/png" }),
+    );
+    expect(
+      screen.getByText(
+        "Replace flow.png? Every page that shows it shows the new file.",
+      ),
+    ).toBeInTheDocument();
+    // Asking is not doing.
+    expect(home.replace).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Replace" }));
+    await waitFor(() => {
+      expect(home.replace).toHaveBeenCalledTimes(1);
+    });
+    expect(home.replace.mock.calls[0]?.[0]).toBe(PATH);
+    // Never the create-only upload: a replace overwrites on purpose.
+    expect(home.upload).not.toHaveBeenCalled();
+  });
+
+  it("a replace with another extension is refused before any request", async () => {
+    const home = fakeHome();
+    drawHome(home);
+    const user = userEvent.setup({ applyAccept: false });
+    await user.click(
+      await screen.findByRole("button", { name: "Replace flow.png" }),
+    );
+    const input = document.querySelector<HTMLInputElement>(
+      'input[type="file"]',
+    ) as HTMLInputElement;
+    await user.upload(
+      input,
+      new File(["x"], "flow.jpg", { type: "image/jpeg" }),
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Pick a .png file to replace flow.png.",
+    );
+    expect(screen.queryByRole("button", { name: "Replace" })).toBeNull();
+    expect(home.replace).not.toHaveBeenCalled();
+    expect(home.upload).not.toHaveBeenCalled();
+  });
+
+  it("offers move through the owner and says the file's name", async () => {
+    const onMove = vi.fn();
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <AttachmentsSection
+          domain="eng"
+          body="![Flow](../assets/flow.png)"
+          home={fakeHome()}
+          onMove={onMove}
+        />
+      </QueryClientProvider>,
+      { wrapper: Tooltips },
+    );
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Move flow.png" }),
+    );
+    expect(onMove).toHaveBeenCalledWith(PATH);
+    // No canReplace, no canDelete: only the verb the owner offered.
+    expect(
+      screen.queryByRole("button", { name: "Replace flow.png" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Remove flow.png" }),
+    ).toBeNull();
+  });
+});
+
+describe("focus in the section's questions", () => {
+  it("puts focus on the question's answer when it opens", async () => {
+    apiMock.mockResolvedValue(listing(["assets/2026/08/shot.png"]));
+    draw("![Shot](assets/2026/08/shot.png)");
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Remove shot.png" }),
+    );
+    expect(screen.getByRole("button", { name: "Remove" })).toHaveFocus();
+  });
+
+  it("hands focus back to the button that asked when the answer is no", async () => {
+    apiMock.mockResolvedValue(listing(["assets/2026/08/shot.png"]));
+    draw("![Shot](assets/2026/08/shot.png)");
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Remove shot.png" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(
+      screen.getByRole("button", { name: "Remove shot.png" }),
+    ).toHaveFocus();
+  });
+
+  it("lands on the section's heading when the removed file's link is gone", async () => {
+    let held = ["assets/2026/08/shot.png"];
+    apiMock.mockImplementation((_path: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        held = [];
+        return Promise.resolve(undefined as never);
+      }
+      return Promise.resolve(listing(held) as never);
+    });
+    draw("![Shot](assets/2026/08/shot.png)");
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Remove shot.png" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    await waitFor(() => {
+      expect(
+        screen.getByRole("heading", { name: "Attachments" }),
+      ).toHaveFocus();
+    });
+  });
+
+  it("opens a replace's question on its answer, and lands on the file after", async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const home: AssetHome = {
+      key: ["focus-home"],
+      list: () =>
+        Promise.resolve([
+          {
+            path: "assets/flow.png",
+            mime: "image/png",
+            size: 2048,
+            modified: "",
+            sha256: "abc",
+          },
+        ]),
+      upload: vi.fn(),
+      replace: vi.fn().mockResolvedValue({
+        path: "assets/flow.png",
+        mime: "image/png",
+        size: 3,
+        sha256: "def",
+      }),
+      remove: vi.fn(),
+      url: (path: string) => `/files/${path}`,
+      resolve: (target: string) =>
+        target.startsWith("../assets/") ? target.slice(3) : null,
+      refused: () => null,
+      linkTo: (path: string) => `../${path}`,
+    };
+    render(
+      <QueryClientProvider client={client}>
+        <AttachmentsSection
+          domain="eng"
+          body="![Flow](../assets/flow.png)"
+          home={home}
+          canReplace
+        />
+      </QueryClientProvider>,
+      { wrapper: Tooltips },
+    );
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Replace flow.png" }),
+    );
+    await user.upload(
+      screen.getByLabelText("Replace flow.png: pick a file"),
+      new File(["new"], "flow.png", { type: "image/png" }),
+    );
+    expect(screen.getByRole("button", { name: "Replace" })).toHaveFocus();
+    await user.click(screen.getByRole("button", { name: "Replace" }));
+    await waitFor(() => {
+      expect(screen.getByRole("link", { name: "flow.png" })).toHaveFocus();
+    });
   });
 });

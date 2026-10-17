@@ -337,38 +337,6 @@ async fn an_interrupted_virtual_reparse_repeats(store: Arc<Mutex<dyn Store>>) {
 
 // --- backend runner ------------------------------------------------------------
 
-#[cfg(feature = "postgres")]
-fn pg_url() -> Option<String> {
-    use std::sync::Once;
-    static NOTE: Once = Once::new();
-    match std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") {
-        Ok(u) if !u.is_empty() => Some(u),
-        _ => {
-            NOTE.call_once(|| {
-                eprintln!(
-                    "note: skipping the postgres parity leg (CRYSTALLINE_TEST_POSTGRES_URL is unset); turso only"
-                )
-            });
-            None
-        }
-    }
-}
-
-/// A recycled pid must never adopt a schema a panicking run left behind.
-#[cfg(feature = "postgres")]
-fn unique_schema() -> String {
-    use std::hash::{BuildHasher, RandomState};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "rp_{}_{}_{:x}",
-        std::process::id(),
-        n,
-        RandomState::new().hash_one(n)
-    )
-}
-
 macro_rules! parity {
     ($name:ident, $body:path) => {
         #[tokio::test]
@@ -380,17 +348,15 @@ macro_rules! parity {
             }
             #[cfg(feature = "postgres")]
             {
-                if let Some(url) = pg_url() {
-                    let schema = unique_schema();
-                    let pg = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                        .await
-                        .expect("open the postgres test schema");
+                if let Some(scratch) = crate::pg::scratch("rp") {
+                    let pg = crystalline_index::PostgresStore::open_in_schema(
+                        scratch.url(),
+                        scratch.name(),
+                    )
+                    .await
+                    .expect("open the postgres test schema");
                     let store: Arc<Mutex<dyn Store>> = Arc::new(Mutex::new(pg));
                     $body(store).await;
-                    let cleanup = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                        .await
-                        .unwrap();
-                    cleanup.drop_schema().await.unwrap();
                 }
             }
         }
@@ -623,17 +589,17 @@ async fn a_refused_stamp_rolls_the_reparse_back_and_it_repeats_on_turso() {
 #[tokio::test]
 async fn a_refused_stamp_rolls_the_reparse_back_and_it_repeats_on_postgres() {
     use sqlx::Connection;
-    let Some(url) = pg_url() else {
+    let Some(scratch) = crate::pg::scratch("rp") else {
         return;
     };
-    let schema = unique_schema();
-    let store = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+    let store = crystalline_index::PostgresStore::open_in_schema(scratch.url(), scratch.name())
         .await
         .unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("d");
     let domain = staged_file_domain(&store, &root).await;
-    let mut raw = sqlx::PgConnection::connect(&url).await.unwrap();
+    let schema = scratch.name();
+    let mut raw = sqlx::PgConnection::connect(scratch.url()).await.unwrap();
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "SET search_path TO {schema}, public; \
          CREATE FUNCTION refuse_stamp() RETURNS trigger AS $$ BEGIN \
@@ -656,7 +622,6 @@ async fn a_refused_stamp_rolls_the_reparse_back_and_it_repeats_on_postgres() {
         .await
         .unwrap();
     assert_repeats(&store, &root, domain).await;
-    store.drop_schema().await.unwrap();
 }
 
 /// Two instances on one Postgres schema: B holds an uncommitted write of a
@@ -668,16 +633,15 @@ async fn a_refused_stamp_rolls_the_reparse_back_and_it_repeats_on_postgres() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn a_concurrent_write_survives_the_reparse_on_postgres() {
-    let Some(url) = pg_url() else {
+    let Some(scratch) = crate::pg::scratch("rp") else {
         return;
     };
-    let schema = unique_schema();
     let a = Arc::new(
-        crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+        crystalline_index::PostgresStore::open_in_schema(scratch.url(), scratch.name())
             .await
             .unwrap(),
     );
-    let b = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+    let b = crystalline_index::PostgresStore::open_in_schema(scratch.url(), scratch.name())
         .await
         .unwrap();
     let domain = staged_virtual_domain(&*a).await;
@@ -744,7 +708,6 @@ async fn a_concurrent_write_survives_the_reparse_on_postgres() {
         Some(newer.as_str()),
         "B's write is what stays"
     );
-    a.drop_schema().await.unwrap();
 }
 
 // --- fix round 2 -------------------------------------------------------------------
@@ -847,33 +810,29 @@ async fn row_edited_between_the_reads_keeps_a_true_checksum_on_turso() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn row_deleted_during_the_reparse_stays_deleted_on_postgres() {
-    let Some(url) = pg_url() else {
+    let Some(scratch) = crate::pg::scratch("rp") else {
         return;
     };
-    let schema = unique_schema();
-    let a = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+    let a = crystalline_index::PostgresStore::open_in_schema(scratch.url(), scratch.name())
         .await
         .unwrap();
-    let b = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+    let b = crystalline_index::PostgresStore::open_in_schema(scratch.url(), scratch.name())
         .await
         .unwrap();
     a_row_deleted_during_the_reparse_stays_deleted(&a, &b).await;
-    a.drop_schema().await.unwrap();
 }
 
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn row_edited_between_the_reads_keeps_a_true_checksum_on_postgres() {
-    let Some(url) = pg_url() else {
+    let Some(scratch) = crate::pg::scratch("rp") else {
         return;
     };
-    let schema = unique_schema();
-    let a = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+    let a = crystalline_index::PostgresStore::open_in_schema(scratch.url(), scratch.name())
         .await
         .unwrap();
-    let b = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+    let b = crystalline_index::PostgresStore::open_in_schema(scratch.url(), scratch.name())
         .await
         .unwrap();
     a_row_edited_between_the_reads_keeps_a_true_checksum(&a, &b).await;
-    a.drop_schema().await.unwrap();
 }

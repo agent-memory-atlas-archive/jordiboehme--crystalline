@@ -108,12 +108,13 @@ export function ProposalsCard({
 
   return (
     <section
-      aria-labelledby="domain-proposals"
-      className="flex flex-col gap-3 rounded border border-slate-200 p-4 dark:border-slate-800"
+      aria-labelledby="page-domain-proposals"
+      // A compact banner above the MANIFEST's lead (spec 5.3).
+      className="flex flex-col gap-2 rounded-lg border border-hair bg-chrome px-4 py-3 text-sm"
     >
       <div className="flex flex-wrap items-baseline justify-between gap-3">
         <div className="flex flex-wrap items-baseline gap-2">
-          <h2 id="domain-proposals" className="text-section">
+          <h2 id="page-domain-proposals" className="text-sm font-semibold">
             Proposals
           </h2>
           {/* The chain named once, beside its own heading, rather than

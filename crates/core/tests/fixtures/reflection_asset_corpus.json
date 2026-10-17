@@ -1,0 +1,402 @@
+[
+  {
+    "name": "root page assets/ is the Reflection's own",
+    "page": "a.md",
+    "body": "![x](assets/a.png)",
+    "refs": [
+      "assets/a.png"
+    ],
+    "engram": []
+  },
+  {
+    "name": "root page ../assets/ climbs out to the engram attachments",
+    "page": "a.md",
+    "body": "![x](../assets/a.png)",
+    "refs": [],
+    "engram": [
+      "../assets/a.png"
+    ]
+  },
+  {
+    "name": "folder page ../assets/ is the Reflection's own",
+    "page": "guides/a.md",
+    "body": "![x](../assets/a.png)",
+    "refs": [
+      "assets/a.png"
+    ],
+    "engram": []
+  },
+  {
+    "name": "folder page assets/ lands in its own folder",
+    "page": "guides/a.md",
+    "body": "![x](assets/a.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "deep page ../../assets/ is the Reflection's own",
+    "page": "guides/deep/a.md",
+    "body": "![x](../../assets/a.png)",
+    "refs": [
+      "assets/a.png"
+    ],
+    "engram": []
+  },
+  {
+    "name": "deep page ../../../assets/ is an engram attachment",
+    "page": "guides/deep/a.md",
+    "body": "![x](../../../assets/a.png)",
+    "refs": [],
+    "engram": [
+      "../../../assets/a.png"
+    ]
+  },
+  {
+    "name": "above the domain root is nobody's",
+    "page": "guides/a.md",
+    "body": "![x](../../../assets/a.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "root page two levels up is nobody's",
+    "page": "a.md",
+    "body": "![x](../../assets/a.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "rooted assets path is an engram attachment",
+    "page": "a.md",
+    "body": "![x](/assets/a.png)",
+    "refs": [],
+    "engram": [
+      "/assets/a.png"
+    ]
+  },
+  {
+    "name": "rooted path folds case",
+    "page": "a.md",
+    "body": "![x](/Assets/a.png)",
+    "refs": [],
+    "engram": [
+      "/Assets/a.png"
+    ]
+  },
+  {
+    "name": "rooted path elsewhere is nothing",
+    "page": "a.md",
+    "body": "![x](/docs/assets/a.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "engram address is an engram attachment",
+    "page": "a.md",
+    "body": "![x](crystalline://eng/assets/a.png)",
+    "refs": [],
+    "engram": [
+      "crystalline://eng/assets/a.png"
+    ]
+  },
+  {
+    "name": "any domain's engram address counts",
+    "page": "a.md",
+    "body": "![x](crystalline://other/assets/a.png)",
+    "refs": [],
+    "engram": [
+      "crystalline://other/assets/a.png"
+    ]
+  },
+  {
+    "name": "a reflection address is neither",
+    "page": "a.md",
+    "body": "![x](crystalline://eng/reflections/assets/a.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "an engram permalink address is neither",
+    "page": "a.md",
+    "body": "[x](crystalline://eng/runbooks/deploy)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "fragment and ./ are cut",
+    "page": "a.md",
+    "body": "![x](./assets/a.png#right,w=50%)",
+    "refs": [
+      "assets/a.png"
+    ],
+    "engram": []
+  },
+  {
+    "name": "backslashes read as separators from a root page",
+    "page": "a.md",
+    "body": "![x](..\\assets\\a.png)",
+    "refs": [],
+    "engram": [
+      "..\\assets\\a.png"
+    ]
+  },
+  {
+    "name": "backslashes read as separators from a folder page",
+    "page": "guides/a.md",
+    "body": "![x](..\\assets\\a.png)",
+    "refs": [
+      "assets/a.png"
+    ],
+    "engram": []
+  },
+  {
+    "name": "percent-encoded name decodes",
+    "page": "a.md",
+    "body": "![x](assets/gr%C3%B6%C3%9Fe.png)",
+    "refs": [
+      "assets/gr\u00f6\u00dfe.png"
+    ],
+    "engram": []
+  },
+  {
+    "name": "fenced code counts for neither",
+    "page": "a.md",
+    "body": "```\n![x](assets/hidden.png) ![y](../assets/hidden.png)\n```\n![z](assets/seen.png)",
+    "refs": [
+      "assets/seen.png"
+    ],
+    "engram": []
+  },
+  {
+    "name": "a title clause is dropped",
+    "page": "a.md",
+    "body": "![x](assets/a.png \"Q3 flow\")",
+    "refs": [
+      "assets/a.png"
+    ],
+    "engram": []
+  },
+  {
+    "name": "the folder name folds case",
+    "page": "guides/a.md",
+    "body": "![x](../Assets/a.png)",
+    "refs": [
+      "assets/a.png"
+    ],
+    "engram": []
+  },
+  {
+    "name": "assets/ alone is nothing",
+    "page": "a.md",
+    "body": "[x](assets/) [y](assets) [z](assets/#left)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "a web link is other",
+    "page": "a.md",
+    "body": "![x](https://x.test/assets/a.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "mailto and fragments are other",
+    "page": "a.md",
+    "body": "[x](mailto:a@x.test) [y](#top) [z]()",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "another page is other",
+    "page": "a.md",
+    "body": "[x](peer.md) [y](../assets-notes/peer.md)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "dedup keeps first order",
+    "page": "a.md",
+    "body": "![a](assets/one.png) ![b](assets/two.png) ![c](./assets/one.png#left)",
+    "refs": [
+      "assets/one.png",
+      "assets/two.png"
+    ],
+    "engram": []
+  },
+  {
+    "name": "engram embeds dedup as written, fragment aside",
+    "page": "a.md",
+    "body": "![a](../assets/a.png) ![b](../assets/a.png#left) ![c](/assets/b.png)",
+    "refs": [],
+    "engram": [
+      "../assets/a.png",
+      "/assets/b.png"
+    ]
+  },
+  {
+    "name": "a root page can reach its own folder by name",
+    "page": "a.md",
+    "body": "![x](../reflections/assets/a.png)",
+    "refs": [
+      "assets/a.png"
+    ],
+    "engram": []
+  },
+  {
+    "name": "empty segments and dots are walked",
+    "page": "guides/a.md",
+    "body": "![x](assets//a.png) ![y](./../assets/./sub/../b.png)",
+    "refs": [
+      "assets/b.png"
+    ],
+    "engram": []
+  },
+  {
+    "name": "both kinds in one body keep their own lists",
+    "page": "guides/a.md",
+    "body": "![a](../assets/ours.png) ![b](../../assets/theirs.png)",
+    "refs": [
+      "assets/ours.png"
+    ],
+    "engram": [
+      "../../assets/theirs.png"
+    ]
+  },
+  {
+    "name": "a destination without an opening bracket still counts",
+    "page": "a.md",
+    "body": "text](assets/a.png) and ](../assets/b.png)",
+    "refs": [
+      "assets/a.png"
+    ],
+    "engram": [
+      "../assets/b.png"
+    ]
+  },
+  {
+    "name": "a link with parentheses in the name",
+    "page": "a.md",
+    "body": "![x](assets/a(1).png)",
+    "refs": [
+      "assets/a(1).png"
+    ],
+    "engram": []
+  },
+  {
+    "name": "an invalid escape stays raw",
+    "page": "a.md",
+    "body": "![x](assets/bad%zzname.png)",
+    "refs": [
+      "assets/bad%zzname.png"
+    ],
+    "engram": []
+  },
+  {
+    "name": "a query suffix stays part of the name",
+    "page": "a.md",
+    "body": "![x](assets/a.png?x=1)",
+    "refs": [
+      "assets/a.png?x=1"
+    ],
+    "engram": []
+  },
+  {
+    "name": "the reflections folder folds case from a root page",
+    "page": "a.md",
+    "body": "![x](../Reflections/assets/a.png)",
+    "refs": [
+      "assets/a.png"
+    ],
+    "engram": []
+  },
+  {
+    "name": "the reflections folder folds case from a folder page",
+    "page": "guides/a.md",
+    "body": "![x](../../REFLECTIONS/assets/b.png)",
+    "refs": [
+      "assets/b.png"
+    ],
+    "engram": []
+  },
+  {
+    "name": "a glob address is other",
+    "page": "a.md",
+    "body": "[x](crystalline://eng/assets/*)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "an address with an empty domain is other",
+    "page": "a.md",
+    "body": "![x](crystalline:///assets/a.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "a javascript scheme with ../ is other",
+    "page": "a.md",
+    "body": "![x](javascript:alert(1)//../../assets/x.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "a vbscript scheme with ../ is other",
+    "page": "a.md",
+    "body": "![x](vbscript:run//../../assets/x.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "a data scheme with ../ is other",
+    "page": "a.md",
+    "body": "![x](data:image/png;base64,AAAA//../../assets/x.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "a scheme folds case",
+    "page": "a.md",
+    "body": "![x](JavaScript:alert(1)//../../assets/x.png) ![y](HTTPS:../../assets/y.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "a scheme followed by // and ../ is other",
+    "page": "a.md",
+    "body": "![x](foo://../../assets/x.png) ![y](foo:///../assets/y.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "a Windows drive letter reads as a scheme and is other",
+    "page": "a.md",
+    "body": "![x](C:/assets/x.png) ![y](c:../assets/y.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "mailto with a path-like tail is other",
+    "page": "a.md",
+    "body": "[x](mailto:a@x.test?subject=../../assets/x.png)",
+    "refs": [],
+    "engram": []
+  },
+  {
+    "name": "a colon after the first slash is no scheme",
+    "page": "a.md",
+    "body": "![x](assets/a:b.png)",
+    "refs": [
+      "assets/a:b.png"
+    ],
+    "engram": []
+  },
+  {
+    "name": "a colon after a dot segment is no scheme",
+    "page": "a.md",
+    "body": "![x](../assets/a:b.png)",
+    "refs": [],
+    "engram": [
+      "../assets/a:b.png"
+    ]
+  }
+]

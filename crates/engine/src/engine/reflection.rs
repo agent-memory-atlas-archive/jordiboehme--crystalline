@@ -7,8 +7,10 @@ use crystalline_core::reflection as r;
 use crystalline_core::reflection::{ReflectionHome, ReflectionState};
 use crystalline_core::relink::BodyGate;
 
+use super::fence::{DiskUndo, KeepText, OnRefusal, RowOp};
 use super::*;
-use crate::collab::session::RoomDoc;
+use crate::changes::ReflectionChanged;
+use crate::collab::session::{MovedTo, RoomDoc};
 use crate::params::WriteReflectionParams;
 use crate::reflection_backup::BackupCause;
 use crate::scope::{ReflectionCaller, ReflectionRight, Scope, reflection_right_word};
@@ -45,15 +47,69 @@ pub const REFUSED_HOMELESS: &str = "this domain is connected to GitHub and its R
 /// The start of the refusal for a Reflection held by another instance; its
 /// address follows.
 pub const REFUSED_ELSEWHERE_START: &str = "this domain's Reflection lives at ";
+/// The start of the refusal for a Reflection another instance on this
+/// shared database serves, because it holds the domain's host lock; the
+/// host's label and the way to move it follow.
+pub const REFUSED_HOSTED_START: &str = "this domain's Reflection is served by ";
+
+/// The gate's refusal in a one-shot command on a shared
+/// database, when no instance of this machine holds the domain's lock: a
+/// command never claims a domain to serve its Reflection.
+pub const REFUSED_NOT_BY_A_COMMAND: &str =
+    "this domain's Reflection is not served by a command; start the daemon (crystalline serve)";
+
+/// The gate's refusal for a Reflection the instance labelled `label` serves.
+/// What a caller who is not signed in reads for the host's name.
+pub const ANOTHER_INSTANCE: &str = "another instance";
+
+pub(super) fn hosted_refusal(label: &str) -> EngineError {
+    EngineError::Refused(format!(
+        "{REFUSED_HOSTED_START}{label}; move it with crystalline serve --take-over"
+    ))
+}
+
 /// The refusal of a thread write by the anonymous visitor of a public domain.
 pub const ANONYMOUS_COMMENT: &str =
     "anonymous visitors read this Reflection and cannot comment; sign in to comment";
 
-/// A reflection write's receipt when the open room raised its edit conflict
-/// over it.
-pub const ROOM_CONFLICT_NOTE: &str = "your write is on disk, and it collides with text somebody in the open room has not saved yet: the people in the room are choosing between their text and yours";
-/// A reflection write's receipt when the open room could not take it in yet.
-pub const ROOM_WAITING_NOTE: &str = "your write is on disk; the open room has an unresolved change of its own, and the people in it meet yours when they resolve it";
+/// A write's receipt when the open room raised its edit conflict over it.
+/// "Saved" rather than "on disk": an engram edit that went past a room may
+/// have landed in a draft or a virtual domain's row.
+pub const ROOM_CONFLICT_NOTE: &str = "your write is saved, and it collides with text somebody in the open room has not saved yet: the people in the room are choosing between their text and yours";
+/// A read's receipt when somebody has the engram open in a room that cannot
+/// save right now: the read answered the saved version, which is where an
+/// edit goes too.
+pub const ROOM_READ_NOTE: &str = "a person has unsaved text in an editor that cannot save right now; you read the saved version, and your edits go to it";
+/// A write's receipt when the open room could not take it in yet.
+pub const ROOM_WAITING_NOTE: &str = "your write is saved; the open room has an unresolved change of its own, and the people in it meet yours when they resolve it";
+
+/// Say on a write's receipt what an open room did with the write behind it
+/// ([`crate::collab::session::CollabSessions::absorb_doc_change`]): `live`
+/// when it merged it in, `file` with `room` and `room_note` when it raised
+/// its edit conflict over it or waits behind one of its own. `present` is who
+/// is in the room. A reflection's write and an engram edit that went past a
+/// room share it, so both say it in the same words.
+pub(crate) fn note_room_outcome(
+    receipt: &mut Value,
+    absorbed: crate::collab::session::Absorbed,
+    present: Vec<String>,
+) {
+    use crate::collab::session::Absorbed;
+    receipt["present"] = json!(present);
+    match absorbed {
+        Absorbed::Merged => receipt["landed"] = json!("live"),
+        Absorbed::Conflict => {
+            receipt["landed"] = json!("file");
+            receipt["room"] = json!("conflict");
+            receipt["room_note"] = json!(ROOM_CONFLICT_NOTE);
+        }
+        Absorbed::Deferred => {
+            receipt["landed"] = json!("file");
+            receipt["room"] = json!("waiting");
+            receipt["room_note"] = json!(ROOM_WAITING_NOTE);
+        }
+    }
+}
 
 /// What the gate hands a reflection verb.
 #[derive(Debug, Clone)]
@@ -106,6 +162,10 @@ pub(crate) struct SwitchFacts {
     /// (fail closed, as the pending check fails).
     pub team_copy_unreadable: Option<String>,
 }
+
+/// How a page move onto a taken target ends its refusal, so a surface can
+/// answer it as the conflict it is (409).
+pub const TARGET_TAKEN: &str = "; remove it or pick another path";
 
 /// Whether a MANIFEST's text declares `reflection: on`.
 pub(crate) fn declares_on(source: &str) -> bool {
@@ -343,16 +403,6 @@ async fn sort_pending_off_runtime(root: PathBuf, names: Vec<String>) -> Result<P
         })
 }
 
-/// Whether the recorded engram paths leave room for a pending engram: one
-/// of them lies under `reflections/`, or none is recorded at all (the index
-/// holds no row of the domain, so the files on disk decide).
-fn may_be_pending(recorded: &[String]) -> bool {
-    recorded.is_empty()
-        || recorded
-            .iter()
-            .any(|p| crystalline_core::reflection::is_under_reflections(p))
-}
-
 impl Engine {
     /// This instance's `service.public_url` in its canonical spelling (the
     /// origin in ascii, default port dropped, the path with no trailing
@@ -372,16 +422,21 @@ impl Engine {
         let ContentSource::File { root } = self.read_source(domain) else {
             return Ok(Vec::new());
         };
-        let recorded = self.recorded_paths(domain).await?;
-        // Every gate asks this. With rows recorded and none under the folder
-        // (a Reflection in effect keeps its pages out of the engram rows),
-        // nothing can be pending and no file is read, unless the folder is
-        // spelled twice, which holds the switch whatever the files are.
-        if !may_be_pending(&recorded) && r::reflection_folders(&root).len() < 2 {
-            return Ok(Vec::new());
-        }
+        // Every gate asks this, so it asks the index two questions rather
+        // than loading every recorded path (R82). With rows recorded and none
+        // under the folder (a Reflection in effect keeps its pages out of the
+        // engram rows), nothing can be pending and no file is read, unless
+        // the folder is spelled twice, which holds the switch whatever the
+        // files are. The spelling check lists the root: blocking, like the
+        // predicate's file reads. The rows are remembered per domain until
+        // a change of them is announced (R83); the files are read fresh.
+        let recorded = self.recorded_paths(domain, &root).await?;
         tokio::task::spawn_blocking(move || {
-            crystalline_index::pending_engrams(&root, recorded.iter())
+            if recorded.nothing_pending(&root) {
+                Vec::new()
+            } else {
+                crystalline_index::pending_engrams(&root, recorded.under_reflections.iter())
+            }
         })
         .await
         .map_err(|e| {
@@ -492,8 +547,21 @@ impl Engine {
         )
     }
 
-    /// What this domain's Reflection is, seen from this instance.
+    /// What this domain's Reflection is, seen from this instance, for a
+    /// read: a host lock whose holder went stale is named, not taken over.
     pub async fn reflection_state(&self, domain: &str) -> Result<ReflectionState> {
+        self.reflection_state_as(domain, false).await
+    }
+
+    /// [`Engine::reflection_state`] for a write when `takes_over`: a host
+    /// lock whose holder sent no heartbeat for the stale threshold is taken
+    /// over here, as a sync takes it. Only a write by a caller who may make
+    /// it asks this; a status read, a listing and a sweep never do.
+    pub(crate) async fn reflection_state_as(
+        &self,
+        domain: &str,
+        takes_over: bool,
+    ) -> Result<ReflectionState> {
         if self.reflection_switch(domain) == crystalline_core::ReflectionSwitch::Off {
             return Ok(ReflectionState::Off);
         }
@@ -503,6 +571,14 @@ impl Engine {
         let ContentSource::File { root } = self.read_source(domain) else {
             return Ok(ReflectionState::Off);
         };
+        // The host lock first (R92): on a shared database only its holder
+        // serves the Reflection, whatever the rows say.
+        if let Some(label) = self
+            .reflection_host_elsewhere(domain, &root, takes_over)
+            .await?
+        {
+            return Ok(ReflectionState::HostedElsewhere { label });
+        }
         let engrams = self.pending_engrams(domain).await?;
         if !engrams.is_empty() {
             return Ok(ReflectionState::Pending { engrams });
@@ -522,16 +598,217 @@ impl Engine {
         }
     }
 
-    /// The one gate of every reflection verb: right, then state, then the
-    /// right this verb needs, in that order.
+    /// The label of the instance that serves `domain`'s Reflection, when
+    /// that is another instance on this shared database (R92): the one whose
+    /// id the domain's host lock records, or `Some(None)` while a rename
+    /// pauses a domain whose lock nobody holds. `None` when this instance
+    /// serves it.
+    ///
+    /// Read fresh on every call, never through the gate's remembered rows:
+    /// the instance's own hosts are asked first, in memory, so the host (and
+    /// every engine without an instance id) answers without the store lock;
+    /// only a non-host on a shared database locks the store, to learn who
+    /// holds the lock. A database that is not shared (Turso) is one
+    /// instance's own, so its Reflection is always served here, and saying
+    /// so takes no store lock ([`Engine::store_is_shared`]).
+    ///
+    /// Another instance's live holder keeps the lock, and the refusal names
+    /// it and the way out (`--take-over`). A lock nobody holds (none yet, or
+    /// the host released it on a graceful shutdown), one recorded under this
+    /// instance's own id (a restart before its first claim) and, for a write
+    /// (`takes_over`), one whose holder sent no heartbeat for the stale
+    /// threshold (a host that crashed, or slept) are claimed here and now,
+    /// under the store lock,
+    /// the way a plain sync claims them: two instances that ask at once
+    /// resolve to one holder, since the claim is one conditional upsert
+    /// whose condition the store checks again against the row the winner
+    /// wrote. A claim from another instance marks a host move as any
+    /// take-over does. An acquired domain is handed to the daemon's
+    /// watcher, which arms it and syncs it like any domain this instance
+    /// hosts. The claim touches the store, the hosts map and the event bus,
+    /// never a room or a file lock, so a room's save may ask it.
+    ///
+    /// A host that took the lock from this instance is seen here once the
+    /// gate ([`Engine::confirm_reflection_host`]) or the heartbeat
+    /// ([`Engine::renew_hosts`]) drops the domain from this instance's hosts.
+    async fn reflection_host_elsewhere(
+        &self,
+        domain: &str,
+        root: &std::path::Path,
+        takes_over: bool,
+    ) -> Result<Option<Option<String>>> {
+        if self.instance_id.is_empty() || self.hosted.read().unwrap().contains_key(domain) {
+            return Ok(None);
+        }
+        if !self.store_is_shared().await {
+            return Ok(None);
+        }
+        let store = self.store.lock().await;
+        let host = match store.domain_id(domain).await? {
+            Some(id) => store.domain_host(id).await?,
+            None => None,
+        };
+        // Another instance's live claim stands. One that sent no heartbeat
+        // for the stale threshold is taken over below by a write, with the
+        // claim a plain sync makes, which decides in the store whether it is
+        // stale; a read names it. A command never claims for a Reflection,
+        // and a rename claims when it ends, so both keep naming the old
+        // holder.
+        if let Some(host) = host.as_ref().filter(|host| self.foreign_holder(host))
+            && (!takes_over
+                || self.is_one_shot()
+                || self.is_renaming(domain)
+                || self.held_elsewhere(
+                    Some(&host.instance_id),
+                    Some(&host.heartbeat_at),
+                    chrono::Utc::now(),
+                ))
+        {
+            return Ok(Some(Some(host.label.clone())));
+        }
+        // A one-shot command never claims a domain to serve its Reflection:
+        // it holds no lock past a walk and sends no heartbeat, and a read
+        // must change no durable state (no lock row, no host-move mark). It
+        // serves the Reflection only while this machine holds the lock live:
+        // its daemon, an `mcp --embedded` session or another command's walk,
+        // all the same disk under the same id, and no other instance can
+        // claim the lock from a live holder without `--take-over`. Which of
+        // them holds it does not matter and the row cannot tell. Otherwise
+        // nobody here serves it, and the gate says to start the daemon.
+        if self.is_one_shot() {
+            let stale_before = (now_offset() - Duration::seconds(self.stale_secs)).to_rfc3339();
+            let daemon_holds = host.is_some_and(|host| {
+                host.instance_id == self.instance_id && host.heartbeat_at >= stale_before
+            });
+            return Ok(if daemon_holds { None } else { Some(None) });
+        }
+        // A domain a rename has paused is claimed by the sync that ends the
+        // rename, under the name it ends with (as `Engine::claim_host`). Until
+        // then nobody holds the lock, so nobody serves the Reflection.
+        if self.is_renaming(domain) {
+            return Ok(Some(None));
+        }
+        match self.claim_file_host(&*store, domain, root, false).await? {
+            HostClaim::Acquired { .. } => {
+                drop(store);
+                // The claim handed the domain to the watcher, whose
+                // catch-up sync walks this disk; a page only the previous
+                // host's disk has keeps its row and is reported, it is never
+                // written here (Task 50).
+                Ok(None)
+            }
+            HostClaim::HeldByOther(host) => Ok(Some(Some(host.label))),
+        }
+    }
+
+    /// The refusal naming the host to `caller`: a signed-in caller reads its
+    /// label, and how long ago it was last seen when its heartbeat is stale
+    /// (a read never takes such a lock over); anybody else reads "another
+    /// instance".
+    async fn hosted_refusal_to(
+        &self,
+        domain: &str,
+        label: &str,
+        caller: &ReflectionCaller,
+    ) -> EngineError {
+        if !caller.may_comment() {
+            return hosted_refusal(ANOTHER_INSTANCE);
+        }
+        match self.stale_minutes(domain).await {
+            Some(minutes) => hosted_refusal(&format!(
+                "{label} (last seen {minutes} minute{} ago)",
+                if minutes == 1 { "" } else { "s" }
+            )),
+            None => hosted_refusal(label),
+        }
+    }
+
+    /// How many minutes ago the holder of `domain`'s host lock sent its
+    /// last heartbeat, when that is past the stale threshold. One query,
+    /// asked only on a refusal.
+    async fn stale_minutes(&self, domain: &str) -> Option<i64> {
+        let store = self.store.lock().await;
+        let id = store.domain_id(domain).await.ok().flatten()?;
+        let host = store.domain_host(id).await.ok().flatten()?;
+        drop(store);
+        let beat = DateTime::parse_from_rfc3339(&host.heartbeat_at).ok()?;
+        let since = chrono::Utc::now().signed_duration_since(beat.with_timezone(&chrono::Utc));
+        (since > Duration::seconds(self.stale_secs)).then(|| since.num_minutes().max(1))
+    }
+
+    /// Whether `host` records another instance than this one as the holder.
+    fn foreign_holder(&self, host: &crystalline_index::DomainHost) -> bool {
+        !host.instance_id.is_empty() && host.instance_id != self.instance_id
+    }
+
+    /// The host check of a gated verb, a room's save and a backup pass on a
+    /// domain this instance remembers hosting: on a shared database the lock
+    /// is read again (one query, by the id the hosts map keeps), so a
+    /// takeover by another instance takes effect here at once rather than at
+    /// the next heartbeat. A lost lock drops the domain from this instance's
+    /// hosts, announces the move, and answers the new host's label. Turso
+    /// and an engine without an instance id never ask the store.
+    pub(crate) async fn confirm_reflection_host(&self, domain: &str) -> Result<Option<String>> {
+        if self.instance_id.is_empty() {
+            return Ok(None);
+        }
+        let Some(id) = self.hosted.read().unwrap().get(domain).copied() else {
+            return Ok(None);
+        };
+        // A database of this instance's own has no other host to lose the
+        // lock to, and saying so needs no store lock.
+        if !self.store_is_shared().await {
+            return Ok(None);
+        }
+        let store = self.store.lock().await;
+        let host = store.domain_host(id).await?;
+        drop(store);
+        let Some(host) = host.filter(|host| self.foreign_holder(host)) else {
+            return Ok(None);
+        };
+        tracing::warn!("lost the host lock for domain '{domain}'; another instance took over");
+        if self.hosted.write().unwrap().remove(domain).is_some() {
+            self.announce_host_moved(domain);
+        }
+        Ok(Some(host.label))
+    }
+
+    /// The one gate of every reflection verb that reads: right, then
+    /// state, then the right this verb needs, in that order. A host lock
+    /// whose holder went stale is named, never taken over, by a read.
     pub(crate) async fn require_reflection(
         &self,
         domain: &str,
         caller: &ReflectionCaller,
         need: ReflectionRight,
     ) -> Result<ReflectionAccess> {
+        self.require_reflection_as(domain, caller, need, false)
+            .await
+    }
+
+    /// [`Engine::require_reflection`] for a verb that writes (a page, a
+    /// thread, a file, a move, a delete, a settle): a host lock whose holder
+    /// went stale is taken over, but only for a caller who has the right
+    /// the verb needs and is signed in.
+    pub(crate) async fn require_reflection_to_write(
+        &self,
+        domain: &str,
+        caller: &ReflectionCaller,
+        need: ReflectionRight,
+    ) -> Result<ReflectionAccess> {
+        self.require_reflection_as(domain, caller, need, true).await
+    }
+
+    async fn require_reflection_as(
+        &self,
+        domain: &str,
+        caller: &ReflectionCaller,
+        need: ReflectionRight,
+        writes: bool,
+    ) -> Result<ReflectionAccess> {
         let (right, engrams_visible) = self.caller_reflection_right(domain, caller).await?;
-        match self.reflection_state(domain).await? {
+        let takes_over = writes && right >= need && caller.may_comment();
+        match self.reflection_state_as(domain, takes_over).await? {
             ReflectionState::On { .. } => {}
             ReflectionState::Off => {
                 return Err(EngineError::Refused(format!(
@@ -565,7 +842,23 @@ impl Engine {
                     "{REFUSED_ELSEWHERE_START}{url}"
                 )));
             }
+            ReflectionState::HostedElsewhere { label: Some(label) } => {
+                return Err(self.hosted_refusal_to(domain, &label, caller).await);
+            }
+            ReflectionState::HostedElsewhere { label: None }
+                if self.is_one_shot() && !self.is_renaming(domain) =>
+            {
+                return Err(EngineError::Refused(REFUSED_NOT_BY_A_COMMAND.to_string()));
+            }
+            ReflectionState::HostedElsewhere { label: None } => {
+                return Err(EngineError::Refused(format!(
+                    "{REFUSED_HOSTED_START}no instance while '{domain}' is being renamed; try again when the rename is done"
+                )));
+            }
         };
+        if let Some(label) = self.confirm_reflection_host(domain).await? {
+            return Err(self.hosted_refusal_to(domain, &label, caller).await);
+        }
         if right < need {
             // When the write list is why the right fell short, say so and
             // name the fix.
@@ -588,7 +881,13 @@ impl Engine {
                 "'{domain}' keeps no files for a Reflection"
             )));
         };
-        let (domain_id, _) = self.domain_source(domain).await?;
+        // The state above filled the gate's remembered entry, which holds
+        // the row id too: a poll of a domain nothing changed asks the store
+        // nothing here.
+        let domain_id = match self.remembered_domain_id(domain, &root) {
+            Some(id) => id,
+            None => self.domain_source(domain).await?.0,
+        };
         Ok(ReflectionAccess {
             folder: reflection_dir(&root),
             root,
@@ -608,14 +907,28 @@ impl Engine {
     ) -> Result<Value> {
         let (right, engrams_visible) = self.caller_reflection_right(domain, caller).await?;
         let state = self.reflection_state(domain).await?;
-        let (home, home_url) = match &state {
-            ReflectionState::On { home } => (Some(home.as_str()), None),
-            ReflectionState::Elsewhere { url } => (Some("elsewhere"), Some(url.clone())),
-            _ => (None, None),
+        // The host's name is a machine's hostname or address: only a
+        // signed-in caller reads it.
+        let shown = |label: &Option<String>| match label {
+            Some(_) if !caller.may_comment() => Some(ANOTHER_INSTANCE.to_string()),
+            other => other.clone(),
+        };
+        let (home, home_url, host_label) = match &state {
+            ReflectionState::On { home } => (Some(home.as_str()), None, None),
+            ReflectionState::Elsewhere { url } => (Some("elsewhere"), Some(url.clone()), None),
+            ReflectionState::HostedElsewhere { label } => (None, None, shown(label)),
+            ReflectionState::Off | ReflectionState::Pending { .. } | ReflectionState::Homeless => {
+                (None, None, None)
+            }
         };
         let pending: Vec<String> = match &state {
             ReflectionState::Pending { engrams } if engrams_visible => engrams.clone(),
-            _ => Vec::new(),
+            ReflectionState::Pending { .. }
+            | ReflectionState::Off
+            | ReflectionState::Homeless
+            | ReflectionState::Elsewhere { .. }
+            | ReflectionState::HostedElsewhere { .. }
+            | ReflectionState::On { .. } => Vec::new(),
         };
         Ok(json!({
             "domain": domain,
@@ -623,6 +936,7 @@ impl Engine {
             "state": state.word(),
             "home": home,
             "home_url": home_url,
+            "host_label": host_label,
             "right": reflection_right_word(right),
             "engrams_visible": engrams_visible,
             "pending_engrams": pending,
@@ -669,7 +983,17 @@ impl Engine {
 
     /// Whether `scope` may read engrams in `domain` (`DomainRight::Read` or
     /// more), without an error for a hidden domain.
+    ///
+    /// The same answer as asking [`Engine::hidden_for`] whether it holds
+    /// `domain`, without its store read when this engine knows the name: the
+    /// unregistered half only ever names domains the engine does not know,
+    /// so for a known one it cannot change the answer. Every Reflection
+    /// poll and gate asks this, so a known domain's never waits on the
+    /// store lock here.
     pub(crate) async fn engrams_visible(&self, scope: &Scope, domain: &str) -> Result<bool> {
+        if self.knows_domain(domain) {
+            return Ok(!self.hidden_screens(scope).await?.contains(domain));
+        }
         Ok(!self.hidden_for(scope).await?.contains(domain))
     }
 }
@@ -703,12 +1027,12 @@ pub(super) fn rooms_to_rewrite<'a>(
     access: &ReflectionAccess,
     pages: impl Iterator<Item = &'a str>,
     rewrite: &dyn Fn(&str, &str) -> usize,
-) -> Vec<RoomDoc> {
+) -> Vec<String> {
     pages
         .filter(|inner| {
             matches!(read_opt(&access.abs(inner)), Ok(Some(text)) if rewrite(&text, inner) > 0)
         })
-        .map(|inner| RoomDoc::Reflection(inner.to_string()))
+        .map(str::to_string)
         .collect()
 }
 
@@ -769,18 +1093,50 @@ pub(crate) fn source_view(src: &r::SourceRef, facts: &HashMap<String, EngramFact
     json!({ "permalink": src.engram, "title": title, "state": state })
 }
 
+/// Who a reflection write records as having changed a section.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SectionAuthors {
+    /// The names every changed section records.
+    pub changed: Vec<String>,
+    /// The names a room carries for a heading typed without an id yet,
+    /// recorded by the section that gets its id under that heading: the
+    /// room's typists have usually left by the close that mints it. Keyed by
+    /// the heading text and the section's place, from 0, among the sections
+    /// under that heading text that have no id yet, so two new sections
+    /// with one heading each name their own typist.
+    pub new_by_heading: BTreeMap<(String, usize), BTreeSet<String>>,
+    /// Record "someone" for a changed or newly id'd section whose list
+    /// comes out empty. A room sets it when nobody is connected.
+    pub someone_if_empty: bool,
+}
+
+/// The name a section records when it changed and nobody can be named.
+pub(crate) const SOMEONE: &str = "someone";
+
+impl SectionAuthors {
+    /// `names` for every changed section, nothing carried by heading, and
+    /// an empty list recording nobody.
+    pub fn plain(names: Vec<String>) -> SectionAuthors {
+        SectionAuthors {
+            changed: names,
+            ..SectionAuthors::default()
+        }
+    }
+}
+
 /// Rules 1 to 4 of a reflection write: the engine's bookkeeping block
 /// replaces the incoming one, a heading that lost its id line gets it back
 /// by heading, headings get new ids when `assign_ids`, changed sections
-/// record each of `authors` (one entry each, the on-disk list), records of
-/// vanished sections go. Answers the text to write (without
+/// record each of `authors.changed` (one entry each, the on-disk list) and a
+/// section that just got its id also the names carried for its heading,
+/// records of vanished sections go. Answers the text to write (without
 /// the bookkeeping block re-emitted yet), the minted ids and the new
 /// records. A live room composes through it too.
 pub(super) fn compose_reflection(
     current: Option<&str>,
     baseline: &str,
     incoming: &str,
-    authors: &[String],
+    authors: &SectionAuthors,
     assign_ids: bool,
     now: &str,
 ) -> Result<(String, Vec<String>, r::Provenance)> {
@@ -821,16 +1177,46 @@ pub(super) fn compose_reflection(
         })
         .unwrap_or_default();
     let mut prov = r::Provenance::new();
+    // How many sections under each heading text got their id in this
+    // compose so far, for the key into `new_by_heading`. Only the minted
+    // ones count, in page order: they are the sections the room saw without
+    // an id, which is what its keys count. A section that arrived with an id
+    // of its own (pasted from another page) takes no place.
+    let minted_ids: BTreeSet<&str> = minted.iter().map(String::as_str).collect();
+    let mut new_seen: HashMap<String, usize> = HashMap::new();
     for section in r::split_sections(&text) {
         let Some(id) = section.id.clone() else {
             continue;
         };
+        let place = minted_ids.contains(id.as_str()).then(|| {
+            let seen = new_seen.entry(section.heading.clone()).or_default();
+            *seen += 1;
+            *seen - 1
+        });
         let mut record = stored.get(&id).cloned().unwrap_or_default();
         if before.get(&id) != Some(&r::section_hash(&section.text)) {
             record.changed_at = Some(now.to_string());
-            for author in authors {
-                if !record.changed_by.contains(author) {
-                    record.changed_by.push(author.clone());
+            let carried = place
+                .and_then(|place| {
+                    authors
+                        .new_by_heading
+                        .get(&(section.heading.clone(), place))
+                })
+                .into_iter()
+                .flatten();
+            let mut names: Vec<&String> = Vec::new();
+            for name in authors.changed.iter().chain(carried) {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+            let someone = SOMEONE.to_string();
+            if names.is_empty() && authors.someone_if_empty {
+                names.push(&someone);
+            }
+            for name in names {
+                if !record.changed_by.contains(name) {
+                    record.changed_by.push(name.clone());
                 }
             }
         }
@@ -919,6 +1305,9 @@ impl Engine {
         domain: &str,
     ) -> Result<HashMap<String, EngramFact>> {
         let store = self.store.lock().await;
+        #[cfg(any(test, feature = "testing"))]
+        self.recorded_path_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let stamps = store.file_stamps(domain_id).await?;
         let engrams = store.list_engrams(domain, None, None).await?;
         Ok(engrams
@@ -939,6 +1328,46 @@ impl Engine {
             .collect())
     }
 
+    /// The facts of the engrams `wanted` names, by permalink: what a
+    /// page's own sources are held against. One index seek per distinct
+    /// permalink under the store lock ([`Store::cited_engrams`] asks a
+    /// repeated permalink once), so a page citing a few engrams never pays
+    /// for every engram of the domain the way [`Engine::engram_facts`]
+    /// does. A permalink no engram holds has no entry, which a source reads
+    /// as missing.
+    ///
+    /// [`Store::cited_engrams`]: crystalline_index::Store::cited_engrams
+    pub(crate) async fn cited_facts(
+        &self,
+        domain_id: DomainId,
+        wanted: Vec<String>,
+    ) -> Result<HashMap<String, EngramFact>> {
+        if wanted.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let cited = self
+            .store
+            .lock()
+            .await
+            .cited_engrams(domain_id, &wanted)
+            .await?;
+        Ok(cited
+            .into_iter()
+            .map(|c| {
+                (
+                    c.permalink.clone(),
+                    EngramFact {
+                        permalink: c.permalink,
+                        title: c.title,
+                        status: c.status,
+                        checksum: c.sha256,
+                        mtime: c.mtime,
+                    },
+                )
+            })
+            .collect())
+    }
+
     /// Put one reflection's row and its chunks in the index (R53), from the
     /// text just written to `abs`. The row carries the file's own
     /// modification instant, in the spelling the sync's prefilter compares
@@ -951,57 +1380,21 @@ impl Engine {
         inner: &str,
         text: &str,
         abs: &Path,
+        on_refusal: super::fence::OnRefusal<'_>,
     ) -> Result<()> {
-        let row = crystalline_index::ReflectionRow {
-            path: inner.to_string(),
-            title: r::title_of(text, inner),
-            content: text.to_string(),
-            sha256: sha256_hex(text.as_bytes()),
-            size: text.len() as u64,
-            modified: asset_modified(abs),
-        };
         // The row and its chunks commit together, as an engram row and its
-        // chunks do (`commit_overlay_row`): a row left stamped over missing
-        // chunks would be skipped by the sync's prefilter until a full
-        // reindex. The funnel opens no transaction of its own, because the
-        // sync calls it inside its apply's. No caller holds one here: it
-        // would hold the store lock this takes.
-        let store = self.store.lock().await;
-        store.begin().await?;
-        let written = async {
-            crystalline_index::reflection::index_reflection_row(
-                &*store,
-                domain_id,
-                &row,
-                &self.chunk_params,
-            )
-            .await?;
-            #[cfg(any(test, feature = "testing"))]
-            if self
-                .reflection_index_fault
-                .swap(false, std::sync::atomic::Ordering::SeqCst)
-            {
-                return Err(EngineError::Invalid(
-                    "injected failure after the reflection row and its chunks".into(),
-                ));
-            }
-            Ok::<(), EngineError>(())
-        }
-        .await;
-        let committed = match written {
-            Ok(()) => store.commit().await.map_err(EngineError::from),
-            Err(e) => {
-                let _ = store.rollback().await;
-                Err(e)
-            }
-        };
-        drop(store);
-        // R56: the new chunks are embedded soon after the write, as an
-        // engram's are, rather than at the next tick.
-        if committed.is_ok() {
-            self.nudge_embed();
-        }
-        committed
+        // chunks do (`commit_overlay_row`), behind the host-lock fence: a
+        // row left stamped over missing chunks would be skipped by the
+        // sync's prefilter until a full reindex, and a row this instance
+        // writes after losing the lock would land behind the new host's
+        // back. No caller holds a transaction here: it would hold the store
+        // lock this takes.
+        self.commit_reflection_rows(
+            domain_id,
+            &[super::fence::RowOp::Page { inner, text, abs }],
+            on_refusal,
+        )
+        .await
     }
 
     /// Arm a failure of the next reflection index write, after its row and
@@ -1074,7 +1467,9 @@ impl Engine {
         } else {
             ReflectionRight::Curate
         };
-        let access = self.require_reflection(&p.domain, caller, need).await?;
+        let access = self
+            .require_reflection_to_write(&p.domain, caller, need)
+            .await?;
         self.refuse_read_only_domain(&p.domain, &crate::scope::Scope::Unrestricted)
             .await?;
         r::validate_reflection_path(&p.path).map_err(EngineError::Invalid)?;
@@ -1091,11 +1486,12 @@ impl Engine {
                 EngineError::Invalid(format!("`{name}` is not a section operation; use replace_section, insert_before_section or insert_after_section"))
             })?),
         };
-        let facts = if p.sources.is_empty() {
-            HashMap::new()
-        } else {
-            self.engram_facts(access.domain_id, &p.domain).await?
-        };
+        let facts = self
+            .cited_facts(
+                access.domain_id,
+                p.sources.values().flatten().cloned().collect(),
+            )
+            .await?;
         let abs = access.abs(&p.path);
         let baseline_abs = access.abs(&r::baseline_path(&p.path));
         let _lock = self.lock_file(&abs).await;
@@ -1124,6 +1520,10 @@ impl Engine {
                     p.path
                 )));
             }
+        }
+        if current.is_none() {
+            self.refuse_only_elsewhere(&p.domain, access.domain_id, ElsewhereRow::Page(&p.path))
+                .await?;
         }
         let (incoming, heading_stripped) = match op {
             None => (p.markdown.clone().unwrap_or_default(), None),
@@ -1193,7 +1593,7 @@ impl Engine {
             stored.as_deref(),
             &baseline,
             &incoming,
-            std::slice::from_ref(&caller.author.name),
+            &SectionAuthors::plain(vec![caller.author.name.clone()]),
             true,
             &now(),
         )?;
@@ -1232,6 +1632,11 @@ impl Engine {
             advanced.push(id);
         }
         let final_text = stamp_reflected(&text, &mut prov, &advanced)?;
+        let threads_abs = access.abs(&r::threads_path(&p.path));
+        let mut undo = DiskUndo::default();
+        for file in [&abs, &baseline_abs, &threads_abs] {
+            undo.record(file)?;
+        }
         write_file(&abs, &final_text)?;
         if !advanced.is_empty() || baseline != stored_baseline {
             write_file(
@@ -1239,10 +1644,34 @@ impl Engine {
                 &r::advance_baseline(&baseline, &final_text, &advanced),
             )?;
         }
-        anchor_threads_on_ids(&access.abs(&r::threads_path(&p.path)), &final_text);
-        self.index_reflection(access.domain_id, &p.path, &final_text, &abs)
-            .await?;
+        anchor_threads_on_ids(&threads_abs, &final_text);
+        self.index_reflection(
+            access.domain_id,
+            &p.path,
+            &final_text,
+            &abs,
+            OnRefusal {
+                domain: &p.domain,
+                undo,
+                keep: Some(KeepText {
+                    kind: crystalline_core::kept::KeptKind::Reflection,
+                    path: &p.path,
+                    text: &final_text,
+                    caller,
+                    holds: &abs,
+                }),
+                read: false,
+            },
+        )
+        .await?;
         self.mark_reflection_dirty(&p.domain, BackupCause::Settled);
+        self.announce_reflection(
+            &p.domain,
+            &p.path,
+            ReflectionChangeKind::Changed,
+            None,
+            change_label(&caller.scope),
+        );
         // The page lock goes before the room is touched: a room's save holds
         // the room's state and then takes this lock, so the other order
         // here would deadlock against a person typing. A room save that slips
@@ -1272,21 +1701,7 @@ impl Engine {
             // either way: a room that closed meanwhile is no refusal.
             match rooms.absorb_doc_change(&p.domain, &doc, None).await {
                 Ok(outcome) => {
-                    use crate::collab::session::Absorbed;
-                    receipt["present"] = json!(outcome.participants);
-                    match outcome.absorbed {
-                        Absorbed::Merged => receipt["landed"] = json!("live"),
-                        Absorbed::Conflict => {
-                            receipt["landed"] = json!("file");
-                            receipt["room"] = json!("conflict");
-                            receipt["room_note"] = json!(ROOM_CONFLICT_NOTE);
-                        }
-                        Absorbed::Deferred => {
-                            receipt["landed"] = json!("file");
-                            receipt["room"] = json!("waiting");
-                            receipt["room_note"] = json!(ROOM_WAITING_NOTE);
-                        }
-                    }
+                    note_room_outcome(&mut receipt, outcome.absorbed, outcome.participants);
                 }
                 Err(e) => tracing::debug!(
                     domain = %p.domain,
@@ -1300,6 +1715,85 @@ impl Engine {
 }
 
 impl Engine {
+    /// Tell every tab that may read this domain's Reflection that something
+    /// in it changed. The event route delivers it by reflection right, not by
+    /// engram right.
+    pub(crate) fn announce_reflection(
+        &self,
+        domain: &str,
+        path: &str,
+        kind: ReflectionChangeKind,
+        from: Option<&str>,
+        actor: Option<String>,
+    ) {
+        self.announce(Change::Reflection(ReflectionChanged {
+            domain: domain.to_string(),
+            path: path.to_string(),
+            kind,
+            from: from.map(str::to_string),
+            actor,
+            audience: None,
+        }));
+    }
+
+    /// Announce `switched` when the domain's switch is no longer `before`.
+    /// Every Crystalline writer of a MANIFEST calls it after its write lands.
+    pub(crate) fn announce_switch_if_moved(
+        &self,
+        domain: &str,
+        before: crystalline_core::ReflectionSwitch,
+        actor: Option<String>,
+    ) {
+        if self.reflection_switch(domain) != before {
+            self.announce_reflection(domain, "", ReflectionChangeKind::Switched, None, actor);
+        }
+    }
+
+    /// Save and close the domain's reflection rooms, telling each socket
+    /// `switched_off`, when landing `after` as the domain's MANIFEST in its
+    /// folder switches the Reflection off (`None`: the MANIFEST goes away).
+    ///
+    /// Every Crystalline writer of a MANIFEST calls it after its last
+    /// refusal and before its write, for the folder only, never for a draft:
+    /// the state is still on, so each room's last save lands in its page.
+    /// It takes the co-editing registry, so a caller holds no room's guard
+    /// and no file's write lock (lock order: registry, then session).
+    pub(crate) async fn close_reflection_rooms_if_switching_off(
+        &self,
+        domain: &str,
+        after: Option<&str>,
+    ) {
+        if self.switches_reflection_off(domain, after) {
+            self.close_reflection_rooms(domain).await;
+        }
+    }
+
+    /// Whether landing `after` as `domain`'s MANIFEST in its folder switches
+    /// its Reflection off: it is on now, and `after` does not say on (`None`:
+    /// the MANIFEST goes away). Takes no lock.
+    pub(crate) fn switches_reflection_off(&self, domain: &str, after: Option<&str>) -> bool {
+        self.reflection_switch(domain) == crystalline_core::ReflectionSwitch::On
+            && !after.is_some_and(declares_on)
+    }
+
+    /// Save and close every reflection room of `domain` with `switched_off`:
+    /// the switch-off is about to land. See
+    /// [`Engine::close_reflection_rooms_if_switching_off`].
+    pub(crate) async fn close_reflection_rooms(&self, domain: &str) {
+        if let Some(rooms) = self.collab_rooms() {
+            // Boxed because the recursion is in the types only: `close_docs`
+            // runs room saves, and a MANIFEST room's save can reach this
+            // function. At run time it never recurses: `close_docs` closes
+            // reflection rooms, whose saves never write the MANIFEST.
+            Box::pin(rooms.close_docs(
+                domain,
+                crystalline_core::ContentKind::Reflection,
+                "switched_off",
+            ))
+            .await;
+        }
+    }
+
     /// A reflection as a room reads it: the page without the block that
     /// names its source engrams, for everyone in the room; the checksum is
     /// the file's, so every stale check compares file against file.
@@ -1321,11 +1815,12 @@ impl Engine {
 
     /// A room's save. `authors` are the names each changed section records,
     /// as the room decided them (the signed-in accounts that edited since
-    /// its last save); an empty list records nobody. The stored bookkeeping
-    /// wins over whatever the room text carries. Section ids are
-    /// assigned on the `final_save` only. Answers the receipt a room reads
-    /// (`checksum`, `permalink`, `path`); `permalink` is `inner`, so a
-    /// reflection room is never re-keyed.
+    /// its last save, and those that typed a heading still without an id);
+    /// an empty list records nobody, or "someone" when the room says so.
+    /// The stored bookkeeping wins over whatever the room text carries.
+    /// Section ids are assigned on the `final_save` only. Answers the
+    /// receipt a room reads (`checksum`, `permalink`, `path`); `permalink`
+    /// is `inner`, so a reflection room is never re-keyed.
     ///
     /// A page that is gone answers `NotFound` (the room's deletion conflict)
     /// unless `expected_checksum` is empty, which only the room's restore
@@ -1337,23 +1832,26 @@ impl Engine {
         inner: &str,
         text: &str,
         expected_checksum: &str,
-        authors: &[String],
+        authors: &SectionAuthors,
         final_save: bool,
     ) -> Result<Value> {
-        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
-            .await?;
         // A room can outlive the state it was opened in: switched off, a
-        // pending switch or a home elsewhere make the folder engram content
-        // again, or another instance's. The save waits (a refusal the room
+        // pending switch, a home elsewhere or a host lock another instance
+        // took make the folder engram content again, or another instance's. The save waits (a refusal the room
         // shows and retries) instead of writing ids and bookkeeping into it.
+        // Before the domain's own write check, whose host gate would answer
+        // a moved lock in the words of an engram write.
         if !matches!(
-            self.reflection_state(domain).await?,
+            self.reflection_state_as(domain, true).await?,
             ReflectionState::On { .. }
-        ) {
+        ) || self.confirm_reflection_host(domain).await?.is_some()
+        {
             return Err(EngineError::Refused(format!(
-                "the Reflection of '{domain}' is not on here any more, so this room's text is not saved; copy it before you leave the page"
+                "the Reflection of '{domain}' is not on here any more, so this room's text is not saved; this tab keeps a copy, and if the page closes the server keeps one too"
             )));
         }
+        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
         let not_found =
             || EngineError::NotFound(format!("no reflection '{inner}' in domain '{domain}'"));
         let ContentSource::File { root } = self.read_source(domain) else {
@@ -1413,6 +1911,14 @@ impl Engine {
             &r::write_provenance(&composed, &prov).map_err(EngineError::Invalid)?,
         )
         .into_owned();
+        // A refused save puts the files back and keeps nothing itself: the
+        // room holds the text, shows the refusal, and keeps the text when
+        // it closes unsaved.
+        let threads_abs = reflection_abs(&root, &r::threads_path(inner));
+        let mut undo = DiskUndo::default();
+        for file in [&baseline_abs, &abs, &threads_abs] {
+            undo.record(file)?;
+        }
         if baseline != stored_baseline {
             write_file(&baseline_abs, &baseline)?;
         }
@@ -1420,10 +1926,24 @@ impl Engine {
         let wrote = current.as_deref() != Some(final_text.as_str());
         if wrote {
             write_file(&abs, &final_text)?;
-            anchor_threads_on_ids(&reflection_abs(&root, &r::threads_path(inner)), &final_text);
+            anchor_threads_on_ids(&threads_abs, &final_text);
             let (domain_id, _) = self.domain_source(domain).await?;
-            self.index_reflection(domain_id, inner, &final_text, &abs)
-                .await?;
+            self.index_reflection(
+                domain_id,
+                inner,
+                &final_text,
+                &abs,
+                OnRefusal::put_back(domain, undo),
+            )
+            .await?;
+            // The typist when the save holds one person's words alone; a
+            // save of several, or of somebody the room cannot name, is by
+            // nobody in particular.
+            let actor = match authors.changed.as_slice() {
+                [one] => Some(one.clone()),
+                _ => None,
+            };
+            self.announce_reflection(domain, inner, ReflectionChangeKind::Changed, None, actor);
         }
         // A room's saves settle a minute after the typing stops; its close
         // settles them at once, whatever the close itself wrote.
@@ -1437,7 +1957,9 @@ impl Engine {
 
     /// The right to be in a reflection's room: edit, curate for `PACT.md`
     /// (as its `PUT` takes). Public because `require_reflection` is
-    /// engine-private.
+    /// engine-private. A room is opened to write, so this is the write gate:
+    /// a host lock whose holder went stale is taken over for a signed-in
+    /// caller with the right, as a page write takes it.
     pub async fn require_reflection_edit(
         &self,
         domain: &str,
@@ -1449,7 +1971,7 @@ impl Engine {
         } else {
             ReflectionRight::Edit
         };
-        self.require_reflection(domain, caller, need)
+        self.require_reflection_to_write(domain, caller, need)
             .await
             .map(|_| ())
     }
@@ -1559,8 +2081,16 @@ impl Engine {
             EngineError::NotFound(format!("no reflection '{inner}' in domain '{domain}'"))
         })?;
         let prov = r::read_provenance(&text);
+        // Only the engrams the page cites are read, one seek each: a page
+        // without sources asks the index nothing.
         let facts = if access.engrams_visible {
-            self.engram_facts(access.domain_id, domain).await?
+            self.cited_facts(
+                access.domain_id,
+                prov.values()
+                    .flat_map(|record| record.sources.iter().map(|src| src.engram.clone()))
+                    .collect(),
+            )
+            .await?
         } else {
             HashMap::new()
         };
@@ -1605,7 +2135,7 @@ impl Engine {
             .filter(|t| t.status == crystalline_core::threads::ThreadStatus::Open)
             .map(|t| thread_view(inner, t, &text))
             .collect();
-        Ok(json!({
+        let mut answer = json!({
             "domain": domain,
             "path": inner,
             "title": r::title_of(&text, inner),
@@ -1615,7 +2145,17 @@ impl Engine {
             "checksum": sha256_hex(text.as_bytes()),
             "sections": sections,
             "threads": open,
-        }))
+        });
+        // Who has the page open in a co-editing room (R77): nested, as the
+        // contract and Fluid read it; absent while no room is open.
+        if let Some(rooms) = self.collab_rooms() {
+            let doc = RoomDoc::Reflection(inner.to_string());
+            if rooms.has_live_doc(domain, &doc, None).await {
+                answer["live"] =
+                    json!({ "present": rooms.participants(domain, &doc, None, None).await });
+            }
+        }
+        Ok(answer)
     }
 }
 
@@ -1777,7 +2317,7 @@ impl Engine {
             return Err(EngineError::ReadOnly);
         }
         let access = self
-            .require_reflection(domain, caller, ReflectionRight::Edit)
+            .require_reflection_to_write(domain, caller, ReflectionRight::Edit)
             .await?;
         self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
             .await?;
@@ -1789,20 +2329,16 @@ impl Engine {
                 "PACT.md is the domain's agreement; edit it instead of moving it".into(),
             ));
         }
-        // After the gate and the path rules, so a caller without the right
-        // never learns that a page is open; before the page lock, which a
-        // room's save takes.
-        self.refuse_under_live_rooms(domain, &[RoomDoc::Reflection(from.to_string())])
-            .await?;
-        // Every other page whose links the move rewrites waits too: a
-        // rewrite under an open room would race its next save. Screened from
-        // the text on disk before anything moves, and relinked from this list
-        // below.
+        // Every other page whose links the move rewrites waits: a rewrite
+        // under an open room would race its next save. Screened from the
+        // text on disk before anything moves, and relinked from this list
+        // below. The moved page's own room is not a refusal: it is closed
+        // below, once every screen has passed.
         let rows = self
             .store
             .lock()
             .await
-            .list_reflections(access.domain_id)
+            .list_reflection_stamps(access.domain_id)
             .await?;
         let others = rows
             .iter()
@@ -1811,38 +2347,51 @@ impl Engine {
         let linking = rooms_to_rewrite(&access, others, &|text, inner| {
             r::rewrite_links_to(text, inner, from, to).1
         });
-        self.refuse_under_live_rooms(domain, &linking).await?;
+        self.refuse_under_live_pages(domain, &linking).await?;
         let src = access.abs(from);
         let dst = access.abs(to);
-        // Both pages' locks, in byte order, so two crossing moves cannot wait
-        // on each other. Held until the moved page is indexed.
-        let (first, second) = if src <= dst {
-            (&src, &dst)
-        } else {
-            (&dst, &src)
-        };
-        let _first = self.lock_file(first).await;
-        let _second = if first == second {
-            None
-        } else {
-            Some(self.lock_file(second).await)
-        };
+        // Every check that can refuse the move runs here first, as a screen,
+        // so a refused move leaves an open room over the page alone; they
+        // run again under the locks below, where they decide.
+        if !src.exists() {
+            return Err(EngineError::NotFound(format!(
+                "no reflection '{from}' in domain '{domain}'"
+            )));
+        }
+        self.refuse_taken_page_target(domain, &access, from, to)
+            .await?;
+        // The room over the page saves its text and ends; no room opens over
+        // the old path until the move is done (the fence). Its sockets are
+        // told where the page went once the move has committed, and
+        // `internal` if it fails from here. After the gate, the path rules
+        // and the screens, so a caller without the right never learns that a
+        // page is open and a refused move leaves the room open; before the
+        // page lock, which a room's save takes.
+        let closing = self
+            .close_room_for_move(
+                domain,
+                RoomDoc::Reflection(from.to_string()),
+                None,
+                MovedTo {
+                    domain: None,
+                    path: to.to_string(),
+                    permalink: None,
+                },
+            )
+            .await;
+        // The test seam sits between the close and the file lock because that
+        // window is the one R81 named: the fence keeps a room from opening in
+        // it.
+        self.take_room_screen_hold().await;
+        // Both pages' locks, in lock-key order, so two crossing moves cannot
+        // wait on each other; two spellings of one file take its lock once.
+        // Held until the moved page is indexed.
+        let _locks = self.lock_files(&[&src, &dst]).await;
         let text = read_opt(&src)?.ok_or_else(|| {
             EngineError::NotFound(format!("no reflection '{from}' in domain '{domain}'"))
         })?;
-        // A page, a threads file or a baseline left at the target would be
-        // adopted by the moved page: the move refuses.
-        for (leftover, what) in [
-            (to.to_string(), "a reflection"),
-            (r::threads_path(to), "a threads file"),
-            (r::baseline_path(to), "a baseline"),
-        ] {
-            if access.abs(&leftover).exists() {
-                return Err(EngineError::Conflict(format!(
-                    "'{leftover}' already holds {what}; remove it or pick another path"
-                )));
-            }
-        }
+        self.refuse_taken_page_target(domain, &access, from, to)
+            .await?;
         // The page's own relative links follow the move, and its
         // baseline gets the same rewrite with the `reflected` hashes carried,
         // so a move owes no feedback.
@@ -1853,26 +2402,65 @@ impl Engine {
         .map_err(EngineError::Invalid)?;
         // The row is built from the text as written, so it matches the file.
         let page = crystalline_core::to_lf(&moved.page).into_owned();
-        write_file(&dst, &page)?;
-        remove_if_there(&src)?;
+        let mut undo = DiskUndo::default();
+        for (old_rel, new_rel) in [
+            (from.to_string(), to.to_string()),
+            (r::baseline_path(from), r::baseline_path(to)),
+            (r::threads_path(from), r::threads_path(to)),
+        ] {
+            let (old, new) = (access.abs(&old_rel), access.abs(&new_rel));
+            if is_case_only_rename(&old, &new, &old_rel, &new_rel) {
+                undo.record_case_rename(&old, &new)?;
+            } else {
+                undo.record(&old)?;
+                undo.record(&new)?;
+            }
+        }
+        let replace = |old_rel: &str, new_rel: &str, text: &str| {
+            let (old, new) = (access.abs(old_rel), access.abs(new_rel));
+            let case_only = is_case_only_rename(&old, &new, old_rel, new_rel);
+            replace_file_with(&old, &new, case_only, |p| write_file(p, text))
+        };
+        replace(from, to, &page)?;
         if old_baseline.is_some() {
-            write_file(&access.abs(&r::baseline_path(to)), &moved.baseline)?;
-            remove_if_there(&access.abs(&r::baseline_path(from)))?;
+            replace(
+                &r::baseline_path(from),
+                &r::baseline_path(to),
+                &moved.baseline,
+            )?;
         }
         let mut threads_moved = false;
         if let Some(body) = read_opt(&access.abs(&r::threads_path(from)))? {
-            write_file(&access.abs(&r::threads_path(to)), &body)?;
-            remove_if_there(&access.abs(&r::threads_path(from)))?;
+            replace(&r::threads_path(from), &r::threads_path(to), &body)?;
             threads_moved = true;
         }
-        self.store
-            .lock()
-            .await
-            .delete_reflection(access.domain_id, from)
-            .await?;
-        self.index_reflection(access.domain_id, to, &page, &dst)
-            .await?;
-        drop((_first, _second));
+        // The old row goes and the new one comes in one fenced commit.
+        self.commit_reflection_rows(
+            access.domain_id,
+            &[
+                RowOp::DeletePage(from),
+                RowOp::Page {
+                    inner: to,
+                    text: &page,
+                    abs: &dst,
+                },
+            ],
+            OnRefusal::put_back(domain, undo),
+        )
+        .await?;
+        drop(_locks);
+        // The page has moved: the room's sockets learn its new path now, and
+        // the fence lifts.
+        if let Some(closing) = closing {
+            closing.moved().await;
+        }
+        self.announce_reflection(
+            domain,
+            to,
+            ReflectionChangeKind::Moved,
+            Some(from),
+            change_label(&caller.scope),
+        );
         // Every other page that links the moved one, PACT.md included: a link
         // that follows a move is no change of the agreement, and a move needs
         // only edit access. Each page under its own lock. The move has
@@ -1887,16 +2475,30 @@ impl Engine {
                 page = path,
                 "a link to the moved reflection could not be rewritten: {e}"
             );
-            failed.push(json!({ "path": path, "reason": e.to_string() }));
+            super::move_::note_link_failure(&mut failed, domain, path, &e);
         };
         let mut links = 0;
         for row in rows.iter().filter(|row| row.path != from && row.path != to) {
             let inner = row.path.as_str();
             match self
-                .relink_reflection(&access, inner, &|s| r::rewrite_links_to(s, inner, from, to))
+                .relink_reflection(domain, &access, inner, &|s| {
+                    r::rewrite_links_to(s, inner, from, to)
+                })
                 .await
             {
-                Ok(n) => links += n,
+                Ok(n) => {
+                    links += n;
+                    if n > 0 {
+                        // A link that followed the move: nobody's change.
+                        self.announce_reflection(
+                            domain,
+                            inner,
+                            ReflectionChangeKind::Changed,
+                            None,
+                            None,
+                        );
+                    }
+                }
                 Err(e) => note_failure(inner, e),
             }
         }
@@ -1909,6 +2511,39 @@ impl Engine {
         Ok(receipt)
     }
 
+    /// Refuse a page move whose target is taken (the error ends with
+    /// [`TARGET_TAKEN`]): a page, a threads file or a
+    /// baseline left at `to` would be adopted by the moved page, and a page
+    /// only the previous host of a host move has is the only shared copy.
+    /// Asked once as the move's screen and again under its page locks.
+    async fn refuse_taken_page_target(
+        &self,
+        domain: &str,
+        access: &ReflectionAccess,
+        from: &str,
+        to: &str,
+    ) -> Result<()> {
+        for (old, leftover, what) in [
+            (from.to_string(), to.to_string(), "a reflection"),
+            (r::threads_path(from), r::threads_path(to), "a threads file"),
+            (r::baseline_path(from), r::baseline_path(to), "a baseline"),
+        ] {
+            // The page itself under another letter case is the same file.
+            let itself =
+                is_case_only_rename(&access.abs(&old), &access.abs(&leftover), &old, &leftover);
+            if access.abs(&leftover).exists() && !itself {
+                return Err(EngineError::Conflict(format!(
+                    "'{leftover}' already holds {what}{TARGET_TAKEN}"
+                )));
+            }
+        }
+        if !access.abs(to).exists() {
+            self.refuse_only_elsewhere(domain, access.domain_id, ElsewhereRow::Page(to))
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Rewrite the links of one reflection and give its baseline the same
     /// rewrite (`crystalline_core::reflection::relink`): a link that
     /// follows a moved page (or a moved file) is not a person's
@@ -1917,11 +2552,12 @@ impl Engine {
     /// or holds no such link is left alone.
     pub(super) async fn relink_reflection(
         &self,
+        domain: &str,
         access: &ReflectionAccess,
         inner: &str,
         rewrite: &(dyn Fn(&str) -> (String, usize) + Sync),
     ) -> Result<usize> {
-        self.relink_page(access.domain_id, &access.folder, inner, rewrite)
+        self.relink_page(domain, access.domain_id, &access.folder, inner, rewrite)
             .await
     }
 
@@ -1930,6 +2566,7 @@ impl Engine {
     /// [`ReflectionAccess`] (the domain rename's respell).
     pub(super) async fn relink_page(
         &self,
+        domain: &str,
         domain_id: DomainId,
         folder: &Path,
         inner: &str,
@@ -1948,11 +2585,22 @@ impl Engine {
             return Ok(0);
         }
         let page = crystalline_core::to_lf(&out.page).into_owned();
+        let mut undo = DiskUndo::default();
+        undo.record(&abs)?;
+        undo.record(&baseline_abs)?;
         write_file(&abs, &page)?;
         if baseline.is_some() {
             write_file(&baseline_abs, &out.baseline)?;
         }
-        self.index_reflection(domain_id, inner, &page, &abs).await?;
+        // A rewrite of links is nobody's text, so a refusal keeps nothing.
+        self.index_reflection(
+            domain_id,
+            inner,
+            &page,
+            &abs,
+            OnRefusal::put_back(domain, undo),
+        )
+        .await?;
         Ok(out.links)
     }
 
@@ -1966,12 +2614,12 @@ impl Engine {
             return Err(EngineError::ReadOnly);
         }
         let access = self
-            .require_reflection(domain, caller, ReflectionRight::Edit)
+            .require_reflection_to_write(domain, caller, ReflectionRight::Edit)
             .await?;
         self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
             .await?;
         // After the gate, as in `move_reflection`.
-        self.refuse_under_live_rooms(domain, &[RoomDoc::Reflection(inner.to_string())])
+        self.refuse_under_live_pages(domain, &[inner.to_string()])
             .await?;
         r::validate_reflection_path(inner).map_err(EngineError::Invalid)?;
         if inner == r::PACT_FILE {
@@ -1980,20 +2628,37 @@ impl Engine {
             ));
         }
         let abs = access.abs(inner);
+        // The test seam sits between the screen and the file lock because that
+        // window is the one R81 pins: a room may open in it.
+        self.take_room_screen_hold().await;
         let _lock = self.lock_file(&abs).await;
+        let threads_abs = access.abs(&r::threads_path(inner));
+        let baseline_abs = access.abs(&r::baseline_path(inner));
+        let mut undo = DiskUndo::default();
+        for file in [&abs, &threads_abs, &baseline_abs] {
+            undo.record(file)?;
+        }
         if !remove_if_there(&abs)? {
             return Err(EngineError::NotFound(format!(
                 "no reflection '{inner}' in domain '{domain}'"
             )));
         }
-        remove_if_there(&access.abs(&r::threads_path(inner)))?;
-        remove_if_there(&access.abs(&r::baseline_path(inner)))?;
-        self.store
-            .lock()
-            .await
-            .delete_reflection(access.domain_id, inner)
-            .await?;
+        remove_if_there(&threads_abs)?;
+        remove_if_there(&baseline_abs)?;
+        self.commit_reflection_rows(
+            access.domain_id,
+            &[RowOp::DeletePage(inner)],
+            OnRefusal::put_back(domain, undo),
+        )
+        .await?;
         self.mark_reflection_dirty(domain, BackupCause::Settled);
+        self.announce_reflection(
+            domain,
+            inner,
+            ReflectionChangeKind::Deleted,
+            None,
+            change_label(&caller.scope),
+        );
         Ok(())
     }
 
@@ -2019,7 +2684,7 @@ impl Engine {
             ));
         }
         let access = self
-            .require_reflection(domain, caller, ReflectionRight::Curate)
+            .require_reflection_to_write(domain, caller, ReflectionRight::Curate)
             .await?;
         self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
             .await?;
@@ -2028,11 +2693,6 @@ impl Engine {
         r::validate_reflection_path(inner).map_err(EngineError::Invalid)?;
         let abs = access.abs(inner);
         let baseline_abs = access.abs(&r::baseline_path(inner));
-        let facts = if outcome == "taken_in" {
-            self.engram_facts(access.domain_id, domain).await?
-        } else {
-            HashMap::new()
-        };
         let _lock = self.lock_file(&abs).await;
         let text = read_opt(&abs)?.ok_or_else(|| {
             EngineError::NotFound(format!("no reflection '{inner}' in domain '{domain}'"))
@@ -2040,6 +2700,20 @@ impl Engine {
         let baseline = read_opt(&baseline_abs)?.unwrap_or_default();
         let sections = r::split_sections(&text);
         let mut prov = r::read_provenance(&text);
+        // A take-in reads the facts of the settled sections' sources only,
+        // from the page as it stands under the file lock. The store lock is
+        // taken inside the file lock, the order `index_reflection` below
+        // already uses.
+        let facts = if outcome == "taken_in" {
+            let cited = ids
+                .iter()
+                .filter_map(|id| prov.get(id))
+                .flat_map(|record| record.sources.iter().map(|src| src.engram.clone()))
+                .collect();
+            self.cited_facts(access.domain_id, cited).await?
+        } else {
+            HashMap::new()
+        };
         let known: BTreeSet<String> = sections
             .iter()
             .filter_map(|s| s.id.clone())
@@ -2070,21 +2744,79 @@ impl Engine {
             }
         }
         let final_text = stamp_reflected(&text, &mut prov, ids)?;
+        let mut undo = DiskUndo::default();
+        undo.record(&abs)?;
+        undo.record(&baseline_abs)?;
         write_file(&abs, &final_text)?;
         write_file(
             &baseline_abs,
             &r::advance_baseline(&baseline, &final_text, ids),
         )?;
-        self.index_reflection(access.domain_id, inner, &final_text, &abs)
-            .await?;
+        // A settle sends no text, so a refusal keeps nothing.
+        self.index_reflection(
+            access.domain_id,
+            inner,
+            &final_text,
+            &abs,
+            OnRefusal::put_back(domain, undo),
+        )
+        .await?;
         self.mark_reflection_dirty(domain, BackupCause::Settled);
+        self.announce_reflection(
+            domain,
+            inner,
+            ReflectionChangeKind::Changed,
+            None,
+            change_label(&caller.scope),
+        );
         Ok(json!({ "domain": domain, "path": inner, "settled": ids, "outcome": outcome }))
+    }
+}
+
+/// Write `text` at `new` and remove `old`. For a case-only rename (see
+/// `is_case_only_rename`) the file is renamed first, which changes its
+/// spelling atomically and keeps it on disk under one name or the other if the
+/// write then fails; `write` is the write, a seam for the failing-write test.
+fn replace_file_with(
+    old: &Path,
+    new: &Path,
+    case_only: bool,
+    write: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
+    if case_only {
+        std::fs::rename(old, new).map_err(|source| EngineError::Io {
+            path: new.display().to_string(),
+            source,
+        })?;
+        write(new)
+    } else {
+        write(new)?;
+        remove_if_there(old).map(|_| ())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A write that fails after a case-only rename leaves the file on disk,
+    /// under the new name, with its old text.
+    #[test]
+    fn a_failed_write_after_a_case_only_rename_loses_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (old, new) = (tmp.path().join("a.md"), tmp.path().join("A.md"));
+        std::fs::write(&old, "the only copy").unwrap();
+        let failed = replace_file_with(&old, &new, true, |_| {
+            Err(EngineError::Internal("disk full".into()))
+        });
+        assert!(failed.is_err());
+        let names: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["A.md"]);
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "the only copy");
+    }
 
     const OFF: &str = "---\ntype: manifest\ntitle: eng\nstatus: stable\n---\n\n# eng\n";
     const ON: &str =
@@ -2176,19 +2908,24 @@ mod tests {
         screen_switch(ON, OFF, &facts).unwrap();
     }
 
-    /// The gate's fast path: only rows under the folder, or no rows at all,
-    /// send the pending check to the disk.
+    /// The gate's fast path settles "nothing pending" only over rows that
+    /// lie outside the folder: no row at all is an empty index, and a row
+    /// under the folder is the predicate's to judge.
     #[test]
-    fn only_rows_under_the_folder_or_none_may_be_pending() {
-        assert!(may_be_pending(&[]));
-        assert!(!may_be_pending(&[
-            "MANIFEST.md".into(),
-            "notes/a.md".into()
-        ]));
-        assert!(may_be_pending(&[
-            "MANIFEST.md".into(),
-            "Reflections/a.md".into()
-        ]));
+    fn only_rows_outside_the_folder_settle_nothing_pending() {
+        let tmp = tempfile::tempdir().unwrap();
+        let empty = crate::engine::RecordedPaths::default();
+        assert!(!empty.nothing_pending(tmp.path()), "an empty index");
+        let outside = crate::engine::RecordedPaths {
+            any: true,
+            under_reflections: Vec::new(),
+        };
+        assert!(outside.nothing_pending(tmp.path()));
+        let under = crate::engine::RecordedPaths {
+            any: true,
+            under_reflections: vec!["Reflections/a.md".into()],
+        };
+        assert!(!under.nothing_pending(tmp.path()));
     }
 
     /// A write goes into the Reflection's folder as it is spelled on disk;
@@ -2199,6 +2936,76 @@ mod tests {
         assert!(reflection_abs(tmp.path(), "guides/a.md").ends_with("reflections/guides/a.md"));
         std::fs::create_dir_all(tmp.path().join("Reflections")).unwrap();
         assert!(reflection_abs(tmp.path(), "guides/a.md").ends_with("Reflections/guides/a.md"));
+    }
+
+    /// A section that gets its id in this compose records the names the room
+    /// carried for its heading, even when nobody is named as having changed
+    /// anything in this save; a section nobody touched names nobody.
+    #[test]
+    fn a_section_that_gets_its_id_records_the_names_carried_for_its_heading() {
+        let current = "# A\n\n## One\n<!-- r:aaaa1111 -->\n\nFirst.\n\n## Two\n<!-- r:bbbb2222 -->\n\nSecond.\n";
+        let incoming = format!("{current}\n## Three\n\nThird.\n");
+        let authors = SectionAuthors {
+            changed: vec![],
+            new_by_heading: BTreeMap::from([(
+                ("Three".to_string(), 0),
+                BTreeSet::from(["ada".to_string()]),
+            )]),
+            someone_if_empty: false,
+        };
+        let (text, minted, prov) = compose_reflection(
+            Some(current),
+            "",
+            &incoming,
+            &authors,
+            true,
+            "2026-10-15T00:00:00Z",
+        )
+        .unwrap();
+        assert_eq!(minted.len(), 1, "{text}");
+        let three = r::split_sections(&text)
+            .into_iter()
+            .find(|s| s.heading == "Three")
+            .and_then(|s| s.id)
+            .expect("Three got an id");
+        assert_eq!(prov[&three].changed_by, vec!["ada".to_string()], "{text}");
+        assert!(prov["aaaa1111"].changed_by.is_empty(), "{prov:?}");
+        assert!(prov["bbbb2222"].changed_by.is_empty(), "{prov:?}");
+    }
+
+    /// A section that arrives with an id of its own (pasted from another
+    /// page) is not one the room counted as id-less, so it takes no place
+    /// among the carried names: the new section after it under the same
+    /// heading still names its typist, and the pasted one names nobody.
+    #[test]
+    fn a_pasted_section_with_an_id_takes_no_place_among_the_carried_names() {
+        let current = "# A\n\n## One\n<!-- r:aaaa1111 -->\n\nFirst.\n";
+        let incoming =
+            format!("{current}\n## Three\n<!-- r:cccc3333 -->\n\nPasted.\n\n## Three\n\nThird.\n");
+        let authors = SectionAuthors {
+            changed: vec![],
+            new_by_heading: BTreeMap::from([(
+                ("Three".to_string(), 0),
+                BTreeSet::from(["ada".to_string()]),
+            )]),
+            someone_if_empty: false,
+        };
+        let (text, minted, prov) = compose_reflection(
+            Some(current),
+            "",
+            &incoming,
+            &authors,
+            true,
+            "2026-10-15T00:00:00Z",
+        )
+        .unwrap();
+        assert_eq!(minted.len(), 1, "{text}");
+        assert_eq!(
+            prov[&minted[0]].changed_by,
+            vec!["ada".to_string()],
+            "{text}"
+        );
+        assert!(prov["cccc3333"].changed_by.is_empty(), "{prov:?}");
     }
 
     /// The seeded pact carries a section id line under every heading, so an

@@ -29,7 +29,10 @@ export function EngramsOrderMenu() {
         className={`inline-flex items-center gap-1 ${BUTTON.secondary}`}
       >
         <span>{orderLabel(order)}</span>
-        <span aria-hidden="true" className="text-xs text-slate-500">
+        <span
+          aria-hidden="true"
+          className="text-xs text-slate-500 dark:text-slate-400"
+        >
           ▾
         </span>
       </DropdownMenu.Trigger>

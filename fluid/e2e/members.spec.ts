@@ -38,7 +38,11 @@ const OUTSIDER = process.env.FLUID_E2E_OUTSIDER ?? "outsider";
 const OUTSIDER_PASSWORD =
   process.env.FLUID_E2E_OUTSIDER_PASSWORD ?? "outsider-password";
 
-/** The domain the same script registers and closes to `USER`. */
+/**
+ * The domain the same script registers and closes to `USER`. reflection.spec.ts
+ * later turns its Reflection on, so a rerun of this file alone against the
+ * same daemon finds it on.
+ */
 const DOMAIN = process.env.FLUID_E2E_PRIVATE_DOMAIN ?? "smoke-vault";
 
 /** A private domain the peer owns, which the peer unregisters. */
@@ -169,8 +173,8 @@ test("an invitation is what makes a private domain visible", async ({
   ).toBeVisible();
 
   // The invitation, made in the browser on the card the owner administers it
-  // from.
-  await owner.goto(`d/${DOMAIN}`);
+  // from, on the domain's settings screen.
+  await owner.goto(`d/${DOMAIN}/settings`);
   await expect(
     owner.getByRole("heading", { name: DOMAIN, level: 1 }),
   ).toBeVisible();
@@ -237,6 +241,9 @@ test("the owner of a private domain unregisters it from the danger zone", async 
   await expect(
     peer.getByRole("heading", { name: OWNED_DOMAIN, level: 1 }),
   ).toBeVisible();
+  // The danger zone is on the domain's settings screen.
+  await peer.getByRole("button", { name: "More actions" }).click();
+  await peer.getByRole("menuitem", { name: "Domain settings" }).click();
 
   // An editor, so only ownership can put this control here.
   const dangerZone = peer.getByRole("region", { name: "Danger zone" });

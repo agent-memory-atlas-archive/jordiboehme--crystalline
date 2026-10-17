@@ -18,38 +18,6 @@ use crystalline_service::engine::{Engine, EngineError};
 use crystalline_service::params::*;
 use tokio::sync::Mutex;
 
-#[cfg(feature = "postgres")]
-fn pg_url() -> Option<String> {
-    use std::sync::Once;
-    static NOTE: Once = Once::new();
-    match std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") {
-        Ok(u) if !u.is_empty() => Some(u),
-        _ => {
-            NOTE.call_once(|| {
-                eprintln!(
-                    "note: skipping the postgres collaboration leg (CRYSTALLINE_TEST_POSTGRES_URL is unset); turso only"
-                )
-            });
-            None
-        }
-    }
-}
-
-/// A recycled pid must never adopt a schema a panicking run left behind.
-#[cfg(feature = "postgres")]
-fn unique_schema() -> String {
-    use std::hash::{BuildHasher, RandomState};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "ctc_{}_{}_{:x}",
-        std::process::id(),
-        n,
-        RandomState::new().hash_one(n)
-    )
-}
-
 /// Run a body against Turso (always) and Postgres (when configured). The body is
 /// handed one shared store; it clones the `Arc` for each of the two engines.
 macro_rules! both_backends {
@@ -63,17 +31,15 @@ macro_rules! both_backends {
             }
             #[cfg(feature = "postgres")]
             {
-                if let Some(url) = pg_url() {
-                    let schema = unique_schema();
-                    let pg = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                        .await
-                        .expect("open the postgres test schema");
+                if let Some(scratch) = crate::support::scratch_schema("ctc") {
+                    let pg = crystalline_index::PostgresStore::open_in_schema(
+                        scratch.url(),
+                        scratch.name(),
+                    )
+                    .await
+                    .expect("open the postgres test schema");
                     let store: Arc<Mutex<dyn Store>> = Arc::new(Mutex::new(pg));
                     $body(store).await;
-                    let cleanup = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                        .await
-                        .unwrap();
-                    cleanup.drop_schema().await.unwrap();
                 }
             }
         }
@@ -171,6 +137,10 @@ async fn collaboration_flow(store: Arc<Mutex<dyn Store>>) {
         .find(|d| d["name"] == "eng")
         .unwrap();
     assert_eq!(eng_entry["host"]["instance_id"], "inst-a");
+    assert_eq!(
+        eng_entry["host"]["label"], "inst-a",
+        "no name given: the id"
+    );
     assert_eq!(eng_entry["host"]["hosted_here"], true);
 
     // B is refused a named sync of the hosted file domain, error naming A.
@@ -278,7 +248,35 @@ async fn collaboration_flow(store: Arc<Mutex<dyn Store>>) {
     );
 
     // B migrates hosting with --take-over and acquires the file domain.
-    engine_b.sync_take_over(Some("eng"), true).await.unwrap();
+    let taken = engine_b.sync_take_over(Some("eng"), true).await.unwrap();
+    // alpha.md is gone from the disk B walks. On a shared database B's disk
+    // may simply lack what A wrote, so the row stays and is reported as only
+    // on A until a person copies the folder over or accepts the disk (Task
+    // 50); on Turso one instance owns the database and the walk deletes it.
+    let report = &taken["reports"][0];
+    let status = engine_b.status_report().await.unwrap();
+    let eng_stats = status["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["name"] == "eng")
+        .unwrap();
+    if engine_b.store().lock().await.shares_database() {
+        assert_eq!(report["deleted"], 0, "{report}");
+        let elsewhere = serde_json::json!({
+            "previous_host": "inst-a",
+            "engrams": 1,
+            "attachments": 0,
+            "pages": 0,
+            "files": 0,
+        });
+        assert_eq!(report["only_elsewhere"], elsewhere, "{report}");
+        assert_eq!(eng_stats["only_elsewhere"], elsewhere, "{status}");
+    } else {
+        assert_eq!(report["deleted"], 1, "{report}");
+        assert!(report["only_elsewhere"].is_null(), "{report}");
+        assert!(eng_stats["only_elsewhere"].is_null(), "{status}");
+    }
     let b_domains = engine_b
         .list_domains(&ListDomainsParams::default(), &Scope::Unrestricted)
         .await

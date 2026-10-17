@@ -23,10 +23,10 @@ import { Copy } from "lucide-react";
 import { Link } from "react-router";
 
 import type { EngramFrontmatter, VerifiedEntry } from "../api/engram";
-import { formatActor, formatDay } from "../format";
+import { formatActor, formatDay, formatDayLong } from "../format";
 import { tagRoute } from "../paths";
 import { AttachmentsSection } from "./AttachmentsSection";
-import { Chip, FOCUS_RING, IconButton, statusVariant } from "./primitives";
+import { Chip, FOCUS_RING, IconButton, RAIL_LABEL } from "./primitives";
 import { useSaid } from "./useSaid";
 
 export interface DetailsPanelProps {
@@ -53,35 +53,16 @@ export function DetailsPanel({
   body,
   canDelete = false,
 }: DetailsPanelProps) {
-  const {
-    type,
-    status,
-    tags,
-    salience,
-    verified,
-    generatedBy,
-    generatedModel,
-  } = frontmatter;
+  const { tags, recordedAt, salience, verified, generatedBy, generatedModel } =
+    frontmatter;
   const validity = validityOf(frontmatter);
   const stamp = latestVerification(verified);
 
   return (
     <>
       <section aria-label="Details" className="text-sm">
-        <h2 className="mb-3 text-caption font-semibold text-slate-500 dark:text-slate-400">
-          Details
-        </h2>
-        <dl className="flex flex-col divide-y divide-slate-100 dark:divide-slate-800">
-          {status !== null && (
-            <Row label="Status">
-              <Chip variant={statusVariant(status)}>{status}</Chip>
-            </Row>
-          )}
-          {type !== null && (
-            <Row label="Type">
-              <Chip>{type}</Chip>
-            </Row>
-          )}
+        <h2 className={`mb-2 ${RAIL_LABEL}`}>Details</h2>
+        <dl className="flex flex-col">
           {tags.length > 0 && (
             <Row label="Tags">
               <span className="flex flex-wrap gap-1">
@@ -94,6 +75,13 @@ export function DetailsPanel({
                     <Chip variant="accent">#{tag}</Chip>
                   </Link>
                 ))}
+              </span>
+            </Row>
+          )}
+          {recordedAt !== null && (
+            <Row label="Recorded">
+              <span className="tabular-nums" title={recordedAt}>
+                {formatDayLong(recordedAt)}
               </span>
             </Row>
           )}
@@ -148,10 +136,8 @@ function Row({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-1 py-2">
-      <dt className="text-caption text-slate-500 dark:text-slate-400">
-        {label}
-      </dt>
+    <div className="grid grid-cols-[5.5rem_minmax(0,1fr)] items-baseline gap-x-3 py-1.5">
+      <dt className="text-muted">{label}</dt>
       <dd className="min-w-0">{children}</dd>
     </div>
   );

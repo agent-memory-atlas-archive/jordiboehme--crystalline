@@ -1,18 +1,28 @@
 use super::evolve::FOLDER_PAIR_RULE;
 use super::*;
+use crate::collab::session::{Absorbed, ComposeRefused, RoomDoc};
 
 /// How many times an edit without an `expected_checksum` is applied to a
 /// virtual engram before a race with another writer is reported: the first
 /// try and two more, each against the text stored at that moment. Three
 /// writers landing on one row inside the same few milliseconds three times in
 /// a row is not a race an agent can win by retrying faster either, so the
-/// last refusal comes back as the `Conflict` a guarded edit would get.
-const UNGUARDED_EDIT_ATTEMPTS: usize = 3;
+/// last refusal comes back as the `Conflict` a guarded edit would get. A
+/// move's rewrite of a virtual linker takes the same budget
+/// ([`Engine::relink_engram`]).
+pub(super) const UNGUARDED_EDIT_ATTEMPTS: usize = 3;
+
+/// The first pause before a write tries again to compose into a room whose
+/// text moved under it; each further try waits twice as long. With
+/// [`UNGUARDED_EDIT_ATTEMPTS`] tries that is 120 ms of waiting at most before
+/// the write goes to the source instead. An edit's live arm and a move's
+/// rewrite of a linker share it.
+pub(super) const LIVE_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(40);
 
 /// Whether an error is the store's stale compare-and-swap rather than any
 /// other conflict (a permalink another engram owns, say), which applying the
 /// edit again could never resolve.
-fn is_stale_edit(e: &EngineError) -> bool {
+pub(super) fn is_stale_edit(e: &EngineError) -> bool {
     matches!(e, EngineError::Conflict(m) if m.starts_with("stale edit:"))
 }
 
@@ -224,9 +234,8 @@ impl Engine {
         // switch is off: an edit of a MANIFEST that says on cannot switch it
         // on, and gathering would read the pending check from disk for
         // nothing.
-        let switch_facts = if is_manifest
-            && self.reflection_switch(&desc.domain) == crystalline_core::ReflectionSwitch::Off
-        {
+        let switch_before = is_manifest.then(|| self.reflection_switch(&desc.domain));
+        let switch_facts = if switch_before == Some(crystalline_core::ReflectionSwitch::Off) {
             Some(self.switch_facts(&desc.domain).await?)
         } else {
             None
@@ -246,6 +255,12 @@ impl Engine {
                 // A set_frontmatter that leaves the engram saying what it
                 // said writes nothing; every other operation writes as sent.
                 p.operation == "set_frontmatter",
+                // An edit that switches the Reflection off closes its rooms
+                // first, while it is still on; the shared body does it just
+                // before it writes, so an edit that lands in an open room
+                // over the MANIFEST leaves it to that room's save. A draft
+                // moves no switch.
+                switch_before == Some(crystalline_core::ReflectionSwitch::On) && overlay.is_none(),
                 |current| {
                     // The REPORTED model here, not the one resolved against
                     // this actor: the block this call stamps is held against
@@ -276,6 +291,12 @@ impl Engine {
             )
             .await
             .map_err(|failure| failure.error)?;
+        // A draft moves no switch: the folder's MANIFEST decides.
+        if let Some(before) = switch_before
+            && overlay.is_none()
+        {
+            self.announce_switch_if_moved(&desc.domain, before, change_label(scope));
+        }
 
         let mut response = json!({
             "domain": desc.domain,
@@ -302,6 +323,14 @@ impl Engine {
             response["landed"] = json!("live");
             response["present"] = json!(live.participants);
         }
+        // A room was open and would not take the edit, so it went to the
+        // file, the row or the draft behind it. The room takes it in now by
+        // a three-way merge when it can, and the receipt says what the
+        // people in it meet, in the words a reflection's write uses.
+        if edited.room_passed {
+            self.note_passed_room(&mut response, &desc, overlay, peer)
+                .await;
+        }
         // An edit that changed nothing wrote nothing, and says so; the key is
         // absent on every edit that wrote.
         if edited.unchanged {
@@ -327,6 +356,58 @@ impl Engine {
             note_manifest_findings(&mut response, &text, domain_verify_config(&source).as_ref());
         }
         Ok(response)
+    }
+
+    /// Tell an open room an edit went past it to the source, and say on the
+    /// receipt what the people in it meet. It is always `landed: file`,
+    /// never `live`: the edit went to the source, not into the room. With
+    /// `room` and `room_note` when the change collides with their unsaved
+    /// text or waits behind a conflict or a failed save of the room's own;
+    /// a room that merged it in owes the person nothing to be told. A room
+    /// that has said goodbye, or closed meanwhile, gets nothing and the
+    /// receipt says nothing about it.
+    async fn note_passed_room(
+        &self,
+        receipt: &mut Value,
+        desc: &EngramDescriptor,
+        overlay: Option<&str>,
+        peer: Option<&AgentPeer>,
+    ) {
+        let Some(rooms) = self.collab_rooms() else {
+            return;
+        };
+        let doc = RoomDoc::Engram(desc.permalink.clone());
+        let absorbed = match rooms.absorb_doc_change(&desc.domain, &doc, overlay).await {
+            Ok(outcome) => outcome.absorbed,
+            Err(e) => {
+                tracing::debug!(
+                    domain = %desc.domain,
+                    permalink = %desc.permalink,
+                    "the open room did not take the edit in: {e}"
+                );
+                return;
+            }
+        };
+        // The agent stands in the strip as it does after a live landing, and
+        // `present` leaves it out the same way.
+        let mine = match peer {
+            Some(peer) => {
+                rooms
+                    .touch_agent_presence(&desc.domain, &desc.permalink, overlay, peer)
+                    .await
+            }
+            None => None,
+        };
+        let present = rooms.participants(&desc.domain, &doc, overlay, mine).await;
+        match absorbed {
+            Absorbed::Merged => {
+                receipt["landed"] = json!("file");
+                receipt["present"] = json!(present);
+            }
+            Absorbed::Conflict | Absorbed::Deferred => {
+                super::reflection::note_room_outcome(receipt, absorbed, present);
+            }
+        }
     }
 
     /// Read an engram's source, hand it to `apply`, and write the result back:
@@ -376,6 +457,7 @@ impl Engine {
             scope,
             None,
             false,
+            false,
             apply,
         )
         .await
@@ -404,6 +486,7 @@ impl Engine {
         scope: &crate::scope::Scope,
         peer: Option<&AgentPeer>,
         skip_unchanged: bool,
+        close_rooms_on_switch_off: bool,
         mut apply: F,
     ) -> std::result::Result<SourceEdited, SourceEditFailure>
     where
@@ -432,6 +515,7 @@ impl Engine {
             live: None,
             normalized: 0,
             unchanged: true,
+            room_passed: false,
         };
         // A MANIFEST edit may switch read_only on, which is the owner's
         // (decision D10, on every tier). The verdict is asked here, before any
@@ -463,9 +547,23 @@ impl Engine {
         // co-editing room is open over this document, the room's text IS the
         // engram: somebody has it on screen, the file and the row are both
         // behind it, and the room's own saver is what makes anything durable.
-        // So an edit composes into the document, the caller's
+        // So an edit composes into the document, and the caller's
         // `expected_checksum` is evaluated against the text the document
-        // holds, and the write below is not reached at all.
+        // holds.
+        //
+        // **Only into a room that will save it, and only onto the text it
+        // was computed from.** A room in conflict, with a failed save, or
+        // whose final save has run may never write what it is given, so an
+        // edit composed into it could be lost while its receipt said it
+        // landed. And a person typing between the look below and the compose
+        // would have their typing taken back by the diff to a target computed
+        // from the older text. `CollabSessions::compose_while_saving`
+        // decides both under the room's own lock. A compose refused because
+        // the text moved is tried again on the text the room holds then,
+        // which may now be unchanged or no longer match; a room that will not
+        // save sends the edit on to the arms below, and the room meets it as
+        // an external change on its next save. Nothing is composed on a
+        // refused try, so an append is never doubled.
         //
         // Ahead of the overlay arm as well as the file and virtual ones, which
         // is what the arm order has to be rather than what it was written as:
@@ -476,12 +574,28 @@ impl Engine {
         // through `Engine::save_engram_in_overlay` and `Engine::save_engram`,
         // neither of which is this function, so a live landing can never
         // recurse into the room that produced it.
+        //
+        // The checksums the live arm accepted, kept for the arms below, each
+        // beside the checksum of the stored bytes its room stood over: a
+        // caller who read the room's unsaved text holds a checksum the file
+        // or the row never had, and an edit that goes on to them is accepted
+        // with any checksum the live arm would have accepted - as long as the
+        // file or the row is still the one that room last saved. A file
+        // another writer changed since is news the caller has not seen.
+        let mut live_sums: Vec<(String, String)> = Vec::new();
+        // Whether a room was open over the document and did not take the
+        // edit, which the receipt reports.
+        let mut room_passed = false;
         if let Some(rooms) = self.collab_rooms() {
             let overlay = view.actor();
-            if let Some(live) = rooms
-                .live_text(&desc.domain, &desc.permalink, overlay)
-                .await
-            {
+            for attempt in 0..UNGUARDED_EDIT_ATTEMPTS {
+                let Some(live) = rooms
+                    .live_text(&desc.domain, &desc.permalink, overlay)
+                    .await
+                else {
+                    break;
+                };
+                room_passed = true;
                 // The document's text is what a caller guarding this edit read
                 // a moment ago, so it is what the guard compares against - the
                 // file's checksum would refuse every guarded edit made while
@@ -491,16 +605,24 @@ impl Engine {
                 // checksum, so a guard taken before it opened still holds;
                 // the checksum of its text is accepted too, since that is the
                 // same document.
-                if let Some(expected) = expected_checksum {
-                    let text_sum = sha256_hex(live.text.as_bytes());
-                    if expected != live.checksum && expected != text_sum {
-                        return Err(SourceEditFailure::before(EngineError::Conflict(
-                            stale_edit_message(expected, &live.checksum),
-                        )));
-                    }
+                let text_sum = sha256_hex(live.text.as_bytes());
+                let accepted = expected_checksum
+                    .is_none_or(|expected| expected == live.checksum || expected == text_sum);
+                live_sums.push((live.checksum.clone(), live.base_checksum.clone()));
+                live_sums.push((text_sum, live.base_checksum.clone()));
+                if !live.saving {
+                    break;
+                }
+                if let Some(expected) = expected_checksum
+                    && !accepted
+                {
+                    return Err(SourceEditFailure::before(EngineError::Conflict(
+                        stale_edit_message(expected, &live.checksum),
+                    )));
                 }
                 let edited = apply(&live.text).map_err(SourceEditFailure::before)?;
-                // Nothing to compose: the document already says it.
+                // Nothing to compose: the document already says it, and the
+                // room will save what it says.
                 if unchanged(&live.text, &edited) {
                     return Ok(nothing_written());
                 }
@@ -514,18 +636,75 @@ impl Engine {
                     .normalize_domain_spellings_for(&edited, scope)
                     .await
                     .map_err(SourceEditFailure::before)?;
-                let applied = rooms
-                    .apply_text(&desc.domain, &desc.permalink, overlay, edited, actor, peer)
+                self.take_live_compose_hold().await;
+                match rooms
+                    .compose_while_saving(
+                        &desc.domain,
+                        &desc.permalink,
+                        overlay,
+                        Some(&live.text),
+                        edited,
+                        actor,
+                        peer,
+                    )
                     .await
-                    .map_err(|detail| SourceEditFailure::before(EngineError::Conflict(detail)))?;
-                // No mirror warning: nothing was mirrored, because nothing was
-                // written. The room's saver owes that warning when it lands.
-                return Ok(SourceEdited {
-                    warning: None,
-                    live: Some(applied),
-                    normalized,
-                    unchanged: false,
-                });
+                {
+                    // No mirror warning: nothing was mirrored, because nothing
+                    // was written. The room's saver owes that warning when it
+                    // lands.
+                    Ok(applied) => {
+                        return Ok(SourceEdited {
+                            warning: None,
+                            live: Some(applied),
+                            normalized,
+                            unchanged: false,
+                            room_passed: false,
+                        });
+                    }
+                    // Somebody is typing. Wait a moment before the next try,
+                    // a little longer each time, so steady typing still leaves
+                    // a gap the edit can compose into. A guarded edit is
+                    // refused as stale by the next look instead: the text its
+                    // checksum named is gone.
+                    Err(ComposeRefused::Moved) => {
+                        if attempt + 1 < UNGUARDED_EDIT_ATTEMPTS {
+                            tokio::time::sleep(LIVE_RETRY_PAUSE * (1 << attempt)).await;
+                        }
+                    }
+                    Err(ComposeRefused::NotSaving) => break,
+                }
+            }
+        }
+        // Whether the arms below accept `expected` against the bytes they
+        // read, whose checksum is `found`.
+        let accepts = |expected: &str, found: &str| {
+            expected == found
+                || live_sums
+                    .iter()
+                    .any(|(sum, base)| sum == expected && base == found)
+        };
+
+        // A folder MANIFEST edit that switches the Reflection off closes the
+        // domain's reflection rooms before it writes, while the switch is
+        // still on, so each room's last save lands in its page. Here, past
+        // the live arm, so it runs exactly when the edit is about to be
+        // written: an edit that composed into a room over the MANIFEST
+        // returned above, and that room's own save closes them. The text is
+        // worked out unlocked, as the write below will work it out; a later
+        // refusal costs the rooms their sockets, never their text. `apply`
+        // works on the LF form of what it is handed (its first wrapper
+        // above), so a CRLF file is edited here exactly as the write edits it.
+        if close_rooms_on_switch_off {
+            let raw = view
+                .text_at(source, desc)
+                .await
+                .map_err(SourceEditFailure::before)?
+                .unwrap_or_default();
+            let fresh = expected_checksum
+                .is_none_or(|expected| accepts(expected, &sha256_hex(raw.as_bytes())));
+            if fresh && let Ok(after) = apply(&raw) {
+                self.close_reflection_rooms_if_switching_off(&desc.domain, Some(&after))
+                    .await;
             }
         }
 
@@ -548,7 +727,7 @@ impl Engine {
                 .map_err(SourceEditFailure::before)?;
             let _guard = lock.lock().await;
             let current = view
-                .text_at(source, desc)
+                .text_for_draft(source, desc)
                 .await
                 .map_err(SourceEditFailure::before)?
                 .ok_or_else(|| {
@@ -559,7 +738,7 @@ impl Engine {
                 })?;
             if let Some(expected) = expected_checksum {
                 let found = sha256_hex(current.as_bytes());
-                if found != expected {
+                if !accepts(expected, &found) {
                     return Err(SourceEditFailure::before(EngineError::Conflict(
                         stale_edit_message(expected, &found),
                     )));
@@ -598,6 +777,7 @@ impl Engine {
                 live: None,
                 normalized,
                 unchanged: false,
+                room_passed,
             });
         }
 
@@ -608,14 +788,26 @@ impl Engine {
                 let abs = join_rel(root, &desc.path);
                 let lock = self.write_lock(&abs);
                 let _guard = lock.lock().await;
+                // The row of an engram only the previous host of a host move
+                // has is the only shared copy of it: say so and name the
+                // remedy, rather than fail on the missing file.
+                if !abs.exists() {
+                    self.refuse_only_elsewhere(
+                        &desc.domain,
+                        desc.domain_id,
+                        ElsewhereRow::Engram(&desc.path),
+                    )
+                    .await
+                    .map_err(SourceEditFailure::before)?;
+                }
                 let current = std::fs::read_to_string(&abs)
                     .map_err(|source| SourceEditFailure::before(text_read_error(&abs, source)))?;
                 // The CAS token, when the caller presents one: compared inside
                 // the lock, against the bytes just read, exactly as save_engram
-                // compares.
+                // compares (and accepted as the live arm accepted it).
                 if let Some(expected) = expected_checksum {
                     let found = sha256_hex(current.as_bytes());
-                    if found != expected {
+                    if !accepts(expected, &found) {
                         return Err(SourceEditFailure::before(EngineError::Conflict(
                             stale_edit_message(expected, &found),
                         )));
@@ -643,10 +835,32 @@ impl Engine {
                         "reindex failed (test seam)".to_string(),
                     )));
                 }
-                let store = self.store.lock().await;
-                self.reindex_file(&*store, desc.domain_id, root, &desc.path)
-                    .await
-                    .map_err(SourceEditFailure::after)?;
+                let indexed = {
+                    let store = self.store.lock().await;
+                    self.reindex_file(&*store, desc.domain_id, root, &desc.path)
+                        .await
+                };
+                if let Err(e) = indexed {
+                    // The host lock moved while the file was written: the
+                    // edited text is kept and the file put back, so nothing
+                    // of this edit landed.
+                    if super::fence::is_file_host_refusal(&e) {
+                        return Err(SourceEditFailure::before(self.refuse_file_write(
+                            e,
+                            &desc.domain,
+                            &abs,
+                            Some(current.as_bytes()),
+                            crystalline_core::to_lf(&edited).as_bytes(),
+                            Some(super::fence::EngramKeep {
+                                rel: &desc.path,
+                                text: &edited,
+                                account: crate::scope::overlay_actor(scope),
+                                actor,
+                            }),
+                        )));
+                    }
+                    return Err(SourceEditFailure::after(e));
+                }
                 (
                     count,
                     sha256_hex(edited.as_bytes()),
@@ -679,22 +893,26 @@ impl Engine {
                                 )))
                             })?
                     };
-                    let expected = expected_checksum
-                        .map(str::to_string)
-                        .unwrap_or_else(|| sha256_hex(current.as_bytes()));
+                    // A token the live arm accepted, over the row as it stands,
+                    // is satisfied by that row: the edit then swaps against
+                    // the row it just read, as an unguarded one does. Any
+                    // other token stays the guard, and a stale one is refused.
+                    let found = sha256_hex(current.as_bytes());
+                    let guard = expected_checksum
+                        .filter(|expected| *expected == found || !accepts(expected, &found));
+                    let expected = guard.map(str::to_string).unwrap_or_else(|| found.clone());
                     let edited = apply(&current).map_err(SourceEditFailure::before)?;
                     if unchanged(&current, &edited) {
                         // The store's compare and swap is never reached on
                         // this return, so a checksum the caller presented is
                         // compared here, exactly as the other arms compare it:
                         // a stale one is refused even when nothing would change.
-                        if let Some(presented) = expected_checksum {
-                            let found = sha256_hex(current.as_bytes());
-                            if found != presented {
-                                return Err(SourceEditFailure::before(EngineError::Conflict(
-                                    stale_edit_message(presented, &found),
-                                )));
-                            }
+                        if let Some(presented) = guard
+                            && found != presented
+                        {
+                            return Err(SourceEditFailure::before(EngineError::Conflict(
+                                stale_edit_message(presented, &found),
+                            )));
                         }
                         return Ok(nothing_written());
                     }
@@ -743,7 +961,7 @@ impl Engine {
                             );
                         }
                         Err(e)
-                            if expected_checksum.is_none()
+                            if guard.is_none()
                                 && !armed
                                 && attempt < UNGUARDED_EDIT_ATTEMPTS
                                 && is_stale_edit(&e) =>
@@ -790,7 +1008,8 @@ impl Engine {
 
         // An edit may have rewritten this domain's MANIFEST, its routing and
         // its declared name. The store locks above are all released.
-        self.after_source_write(source, &desc.path).await;
+        self.after_source_write(&desc.domain, source, &desc.path)
+            .await;
         // An edit can change the title or the description the folder's
         // generated index lists this engram under.
         self.refresh_index_files(&desc.domain).await;
@@ -804,6 +1023,7 @@ impl Engine {
             live: None,
             normalized,
             unchanged: false,
+            room_passed,
         })
     }
 

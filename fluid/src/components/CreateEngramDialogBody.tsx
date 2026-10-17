@@ -14,7 +14,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Dialog } from "radix-ui";
 import type { ReactElement } from "react";
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 
 import { problemDetail } from "../api/client";
@@ -39,7 +39,11 @@ export default function CreateEngramDialogBody({
   domain,
   initialFolder,
   onClose,
+  returnFocusTo,
 }: CreateEngramDialogProps): ReactElement {
+  // A create moves on to the editor, which takes the keyboard itself; only a
+  // dismissal hands it back to the launcher.
+  const wasCreated = useRef(false);
   const navigate = useNavigate();
   const titleField = useId();
   const tagsField = useId();
@@ -100,6 +104,7 @@ export default function CreateEngramDialogBody({
       void queryClient.invalidateQueries({
         queryKey: domainTreeKey(created.domain),
       });
+      wasCreated.current = true;
       onClose();
       void navigate(editRoute(created.domain, created.permalink));
     },
@@ -121,6 +126,12 @@ export default function CreateEngramDialogBody({
         <Dialog.Overlay className="fixed inset-0 z-50 bg-slate-900/40" />
         <Dialog.Content
           className="fixed top-1/2 left-1/2 z-50 w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded border border-slate-200 bg-white p-4 shadow-xl dark:border-slate-700 dark:bg-slate-900"
+          onCloseAutoFocus={(event) => {
+            if (!wasCreated.current && returnFocusTo?.isConnected === true) {
+              event.preventDefault();
+              returnFocusTo.focus();
+            }
+          }}
           onEscapeKeyDown={(event) => {
             // Escape belongs to the innermost thing it can close. A suggestion
             // list is open inside this form often enough that closing the

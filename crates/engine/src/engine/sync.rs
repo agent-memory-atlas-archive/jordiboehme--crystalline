@@ -109,6 +109,39 @@ impl Engine {
     /// named one and `take_over` forces the claim. Outside collaboration mode
     /// (standalone, single-instance) nothing is claimed and every target syncs.
     pub async fn sync_take_over(&self, only: Option<&str>, take_over: bool) -> Result<Value> {
+        self.sync_with(only, take_over, false).await
+    }
+
+    /// [`Engine::sync_take_over`], and with `accept_disk` the walk of the
+    /// one named domain ends an unresolved host move (Task 50): it deletes
+    /// the rows of files this disk does not have, as an ordinary walk does,
+    /// instead of keeping and reporting them (`crystalline sync --domain
+    /// <name> --accept-disk`). Refused without a named domain, so dropping
+    /// rows is always asked of one domain at a time.
+    pub async fn sync_with(
+        &self,
+        only: Option<&str>,
+        take_over: bool,
+        accept_disk: bool,
+    ) -> Result<Value> {
+        if accept_disk && only.is_none() {
+            return Err(EngineError::Invalid(
+                crystalline_index::ACCEPT_DISK_NEEDS_DOMAIN.to_string(),
+            ));
+        }
+        let walked = self.sync_walk(only, take_over, accept_disk).await;
+        // A one-shot command gives back the locks it took, success or not.
+        self.release_taken_hosts().await;
+        walked
+    }
+
+    /// The body of [`Engine::sync_with`].
+    async fn sync_walk(
+        &self,
+        only: Option<&str>,
+        take_over: bool,
+        accept_disk: bool,
+    ) -> Result<Value> {
         let _activity = ActivityState::begin(&self.activity, "sync", only);
         let targets = self.sync_targets(only)?;
         // The virtual domains have no files to walk, but an older parser may
@@ -118,6 +151,7 @@ impl Engine {
         // never holds up the others or the file domains.
         let mut failed = self.reparse_virtual_domains(only).await?;
         let collab = !self.instance_id.is_empty();
+        let anonymous = self.walks_no_file_domain().await;
         // Each domain this run applied, paired with the report its apply
         // produced, for the final cross-domain resolution pass. A domain that
         // was skipped (hosted elsewhere) or failed to scan wrote nothing and is
@@ -144,24 +178,29 @@ impl Engine {
                 skipped.push(json!({ "domain": name, "renaming": true }));
                 continue;
             };
+            if let Some(reason) = &anonymous {
+                if only.is_some() {
+                    return Err(EngineError::Conflict(reason.clone()));
+                }
+                skipped.push(json!({ "domain": name, "reason": reason }));
+                continue;
+            }
             let (domain, snapshot, force) = {
                 let store = self.store.lock().await;
                 if collab {
                     match self.claim_file_host(&*store, name, root, take_over).await? {
-                        HostClaim::Acquired => {}
+                        HostClaim::Acquired { .. } => {}
                         HostClaim::HeldByOther(host) => {
+                            let reason = host_refusal(name, &host);
                             if only.is_some() {
-                                return Err(EngineError::Conflict(host_refusal(name, &host)));
+                                return Err(EngineError::Conflict(reason));
                             }
-                            tracing::info!(
-                                "domain '{name}' is hosted by instance {} (last heartbeat {}); serving it read-from-database only",
-                                host.instance_id,
-                                host.heartbeat_at
-                            );
+                            tracing::info!("sync skipped: {reason}");
                             skipped.push(json!({
                                 "domain": name,
                                 "hosted_by": host.instance_id,
                                 "heartbeat_at": host.heartbeat_at,
+                                "reason": reason,
                             }));
                             continue;
                         }
@@ -178,7 +217,15 @@ impl Engine {
                 (domain, snapshot, force)
             };
             let scan = match scan_domain(name, root, snapshot, &self.chunk_params, force).await {
-                Ok(scan) => scan,
+                Ok(mut scan) => {
+                    if accept_disk {
+                        scan.accept_disk();
+                    }
+                    if collab {
+                        scan.walked_by(&self.instance_id);
+                    }
+                    scan
+                }
                 Err(e) if only.is_none() => {
                     // One denied domain must not block the rest of the
                     // sweep; its error is carried in the result and the
@@ -189,12 +236,39 @@ impl Engine {
                 }
                 Err(e) => return Err(e.into()),
             };
-            let report = {
+            self.take_apply_hold().await;
+            let outcome = {
                 let store = self.store.lock().await;
-                apply_scan(&*store, domain, scan)
-                    .await
-                    .map_err(|e| EngineError::Internal(format!("sync of '{name}' failed: {e}")))?
+                apply_scan(&*store, domain, scan).await
             };
+            let report = match outcome {
+                Ok(report) => report,
+                // Another instance took the domain over while this walk ran:
+                // nothing was written. A full sweep reports it and goes on, a
+                // named sync is refused.
+                Err(e @ (IndexError::NotHost(_) | IndexError::HostMoveChanged(_))) => {
+                    // Only a lock another instance holds now ends hosting
+                    // here; a move another walk of this instance wrote first
+                    // leaves this instance the host.
+                    if matches!(e, IndexError::NotHost(_)) {
+                        self.lost_host(name);
+                    }
+                    let why = e.to_string();
+                    if only.is_some() {
+                        return Err(EngineError::Conflict(why));
+                    }
+                    tracing::warn!("{why}");
+                    failed.push(json!({ "domain": name, "error": why }));
+                    continue;
+                }
+                Err(e) => {
+                    return Err(EngineError::Internal(format!(
+                        "sync of '{name}' failed: {e}"
+                    )));
+                }
+            };
+            self.bump_after_apply(name, &report);
+            self.after_host_move_resolved(name, &report);
             // Files changed under us, so the generated index files follow.
             if changed_anything(&report) {
                 self.refresh_index_files(name).await;
@@ -276,35 +350,175 @@ impl Engine {
         paths: Vec<String>,
         actor: Option<&str>,
     ) -> Result<SyncReport> {
+        // Only the MANIFEST (the switch) and a file under `reflections/` (an
+        // engram there holds the switch pending) can move the Reflection's
+        // mode.
+        let may_move_mode = paths.iter().any(|p| may_move_reflection_mode(p));
+        let walked = self.sync_paths_walk(name, paths, actor).await;
+        // A pass that changed the Reflection's mode (a MANIFEST edited by
+        // hand, the last engram under `reflections/` given a page marker, a
+        // pull) reclassified only the paths it was handed: the domain is
+        // walked whole once, after the pass gave its sync slot back.
+        if may_move_mode && let Ok((_, true)) = &walked {
+            self.heal_reflection_rows(name).await;
+        }
+        // A one-shot command gives back the lock it took, success or not.
+        self.release_taken_hosts().await;
+        walked.map(|(report, _)| report)
+    }
+
+    /// Walk file domain `name` whole when its index rows disagree with the
+    /// Reflection mode in effect (see [`Engine::reflection_rows_out_of_step`]),
+    /// so the Reflection and the engram index are complete without anyone
+    /// touching a file. Runs once and never asks again: a walk that keeps
+    /// rows on purpose (an unreadable folder) must not turn every later call
+    /// into another walk. A failure is logged, never returned: the write or
+    /// the pass that called this has landed, and the next sync tries again.
+    ///
+    /// The caller holds no store lock and no sync slot of the domain.
+    pub(super) async fn heal_reflection_rows(&self, name: &str) {
+        match self.reflection_rows_out_of_step(name).await {
+            Ok(false) => {}
+            Ok(true) => {
+                tracing::info!(
+                    "the Reflection of '{name}' changed its mode; walking the domain whole"
+                );
+                match self.sync(Some(name)).await {
+                    Ok(_) => {}
+                    // Another instance hosts the domain (or this engine walks
+                    // none on a shared database): the host's own pass mends
+                    // its rows, so this is no fault here.
+                    Err(EngineError::Conflict(why)) => {
+                        tracing::info!("the walk of '{name}' is left to its host: {why}");
+                    }
+                    Err(e) => {
+                        tracing::warn!("walking '{name}' after its Reflection changed failed: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("could not check the Reflection rows of '{name}': {e}");
+            }
+        }
+    }
+
+    /// [`Engine::heal_reflection_rows`] after a write that reindexed only
+    /// `path` of `domain`, when that path can move the Reflection's mode:
+    /// the MANIFEST (the switch) or a file under `reflections/` (an engram
+    /// there holds a switch pending).
+    pub(super) async fn heal_reflection_rows_after(&self, domain: &str, path: &str) {
+        if may_move_reflection_mode(path) {
+            self.heal_reflection_rows(domain).await;
+        }
+    }
+
+    /// Whether the index of file domain `name` disagrees with the Reflection
+    /// mode in effect, which only a walk of the whole domain mends:
+    ///
+    /// - in effect, and an engram row sits under `reflections/` (a page
+    ///   indexed while the switch was off or pending, or by an older
+    ///   version), or no page and no file has a row while the folder holds
+    ///   one (a page that never was an engram);
+    /// - not in effect (off or pending), and a page or a Reflection file
+    ///   still has a row.
+    ///
+    /// A domain with an unresolved host move answers `false`: its walk keeps
+    /// the rows it does not see on purpose, and the walk that resolves the
+    /// move mends them.
+    async fn reflection_rows_out_of_step(&self, name: &str) -> Result<bool> {
+        let ContentSource::File { root } = self.read_source(name) else {
+            return Ok(false);
+        };
+        let mode = self.reflection_mode(name).await?;
+        {
+            let store = self.store.lock().await;
+            let Some(id) = store.domain_id(name).await? else {
+                return Ok(false);
+            };
+            if store.shares_database() && store.host_move_text(id).await?.is_some() {
+                return Ok(false);
+            }
+            if mode == crystalline_core::ReflectionMode::Effective
+                && !store.engram_rows_under_reflections(id, 1).await?.is_empty()
+            {
+                return Ok(true);
+            }
+            let rows = store.has_reflection_rows(id).await?;
+            match mode {
+                crystalline_core::ReflectionMode::Off => return Ok(rows),
+                crystalline_core::ReflectionMode::Effective if rows => return Ok(false),
+                crystalline_core::ReflectionMode::Effective => {}
+            }
+        }
+        tokio::task::spawn_blocking(move || crystalline_index::reflection_files_on_disk(&root))
+            .await
+            .map_err(|e| {
+                EngineError::Internal(format!(
+                    "the Reflection folder of '{name}' could not be read: {e}"
+                ))
+            })
+    }
+
+    /// The body of [`Engine::sync_paths_as`], with whether its scan was
+    /// applied (`false` for a pass that walked nothing: a virtual domain, a
+    /// rename in progress, a domain another instance hosts).
+    async fn sync_paths_walk(
+        &self,
+        name: &str,
+        paths: Vec<String>,
+        actor: Option<&str>,
+    ) -> Result<(SyncReport, bool)> {
         let ContentSource::File { root } = self.content_source(name)? else {
             // A virtual domain has no files on disk; there is nothing to scan.
-            return Ok(SyncReport {
-                domain: name.to_string(),
-                ..SyncReport::default()
-            });
+            return Ok((
+                SyncReport {
+                    domain: name.to_string(),
+                    ..SyncReport::default()
+                },
+                false,
+            ));
         };
+        // An engine with no instance id on a shared database walks no file
+        // domain, a targeted pass as little as a complete one.
+        if let Some(reason) = self.walks_no_file_domain().await {
+            return Err(EngineError::Conflict(reason));
+        }
         // Skipped while a rename has the domain paused; see `sync_take_over`.
         let Some(_pass) = self.try_enter_sync(name) else {
-            return Ok(SyncReport {
-                domain: name.to_string(),
-                ..SyncReport::default()
-            });
+            return Ok((
+                SyncReport {
+                    domain: name.to_string(),
+                    ..SyncReport::default()
+                },
+                false,
+            ));
         };
         let collab = !self.instance_id.is_empty();
         let (domain, snapshot) = {
             let store = self.store.lock().await;
             if collab {
                 match self.claim_file_host(&*store, name, &root, false).await? {
-                    HostClaim::Acquired => {}
+                    HostClaim::Acquired { .. } => {}
+                    // A one-shot command is refused with the reason, so
+                    // the verb that ran it (an import, a discard, a direct
+                    // commit) says why its files are not indexed. The
+                    // daemon's watcher passes over it quietly: the host
+                    // indexes the domain.
+                    HostClaim::HeldByOther(host) if self.is_one_shot() => {
+                        return Err(EngineError::Conflict(host_refusal(name, &host)));
+                    }
                     HostClaim::HeldByOther(host) => {
                         tracing::info!(
-                            "targeted sync skipped: domain '{name}' is hosted by instance {}",
-                            host.instance_id
+                            "targeted sync skipped: domain '{name}' is hosted by {}",
+                            host.label
                         );
-                        return Ok(SyncReport {
-                            domain: name.to_string(),
-                            ..SyncReport::default()
-                        });
+                        return Ok((
+                            SyncReport {
+                                domain: name.to_string(),
+                                ..SyncReport::default()
+                            },
+                            false,
+                        ));
                     }
                 }
             }
@@ -315,13 +529,28 @@ impl Engine {
             (domain, snapshot)
         };
         let manifest_touched = Self::touches_manifest(&paths);
-        let scan = scan_paths(name, &root, snapshot, paths, &self.chunk_params).await;
-        let report = {
+        let mut scan = scan_paths(name, &root, snapshot, paths, &self.chunk_params).await;
+        if collab {
+            scan.walked_by(&self.instance_id);
+        }
+        let applied = {
             let store = self.store.lock().await;
-            apply_scan(&*store, domain, scan).await.map_err(|e| {
-                EngineError::Internal(format!("targeted sync of '{name}' failed: {e}"))
-            })?
+            apply_scan(&*store, domain, scan).await
         };
+        let report = match applied {
+            Ok(report) => report,
+            Err(IndexError::NotHost(why)) => {
+                self.lost_host(name);
+                return Err(EngineError::Conflict(why));
+            }
+            Err(IndexError::HostMoveChanged(why)) => return Err(EngineError::Conflict(why)),
+            Err(e) => {
+                return Err(EngineError::Internal(format!(
+                    "targeted sync of '{name}' failed: {e}"
+                )));
+            }
+        };
+        self.bump_after_apply(name, &report);
         // An out-of-band edit the watcher caught changes what the folder's
         // generated index should say.
         if changed_anything(&report) {
@@ -338,7 +567,39 @@ impl Engine {
             self.mark_reflection_dirty(name, crate::reflection_backup::BackupCause::Edit);
         }
         self.announce_report(name, &report, actor);
-        Ok(report)
+        Ok((report, true))
+    }
+
+    /// Why this engine walks no file domain, or `None` when it may. The one
+    /// guard every walk of the engine asks (the sync, the targeted sync and
+    /// the reindex): on a shared database an engine with no instance id
+    /// cannot hold a domain's host lock, and its walk would delete the rows
+    /// of files only the host's disk has and end a host move that is not its
+    /// own. Every production opener on a shared database gives its engine
+    /// this machine's id (the daemon, the embedded MCP stack, the standalone
+    /// opener and the daemonless `crystalline sync` and `reindex`), so this
+    /// guards an engine built without one.
+    pub(super) async fn walks_no_file_domain(&self) -> Option<String> {
+        (self.instance_id.is_empty() && self.store.lock().await.shares_database())
+            .then(|| REFUSED_ANONYMOUS_WALK.to_string())
+    }
+
+    /// A walk of `name` found its host lock taken by another instance: this
+    /// instance stops hosting the domain at once, as the Reflection gate's
+    /// confirm does, rather than at its next heartbeat.
+    pub(super) fn lost_host(&self, name: &str) {
+        if self.hosted.write().unwrap().remove(name).is_some() {
+            self.announce_host_moved(name);
+        }
+    }
+
+    /// An apply ended a host move: the Reflection backup held back while it
+    /// was open is due now, so the edits made during the move reach the
+    /// backup branch without waiting for the next one.
+    pub(super) fn after_host_move_resolved(&self, name: &str, report: &SyncReport) {
+        if report.host_move_resolved {
+            self.mark_reflection_dirty(name, crate::reflection_backup::BackupCause::Edit);
+        }
     }
 
     /// Reindex all file domains. `full` re-reads, re-parses and re-upserts every
@@ -367,18 +628,28 @@ impl Engine {
         let hooks = DaemonReindexHooks {
             engine: self,
             collab: !self.instance_id.is_empty(),
+            anonymous: self.walks_no_file_domain().await,
+            lost: std::sync::Mutex::new(Vec::new()),
+            skipped: std::sync::Mutex::new(Vec::new()),
         };
-        let reports = reindex_domains(
+        let reindexed = reindex_domains(
             &*self.store,
             &targets,
             &self.chunk_params,
             full.then_some(RebuildKind::Full),
             &hooks,
         )
-        .await?;
+        .await;
+        // A one-shot command gives back the locks it took, success or not.
+        self.release_taken_hosts().await;
+        let reports = reindexed?;
+        let lost = std::mem::take(&mut *hooks.lost.lock().unwrap());
+        let skipped = std::mem::take(&mut *hooks.skipped.lock().unwrap());
         Ok(json!({
             "full": full,
             "reports": serde_json::to_value(&reports).unwrap_or(Value::Null),
+            "failed": lost,
+            "skipped": skipped,
         }))
     }
 
@@ -1204,6 +1475,13 @@ fn settle_action(choice: &SnapshotChoice, read_only: bool, user_dir: bool) -> Se
         } => SettleAction::FetchPinned,
         _ => SettleAction::Nothing,
     }
+}
+
+/// Whether a write to, or a change found at, the domain-relative `path` can
+/// move the domain's Reflection mode: the MANIFEST holds the switch, and an
+/// engram under `reflections/` (in any letter case) holds a switch pending.
+fn may_move_reflection_mode(path: &str) -> bool {
+    names_the_manifest(path) || crystalline_core::reflection::is_under_reflections(path)
 }
 
 #[cfg(test)]

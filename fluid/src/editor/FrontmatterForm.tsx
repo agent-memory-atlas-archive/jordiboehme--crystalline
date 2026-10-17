@@ -24,7 +24,7 @@
 import type { Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { X } from "lucide-react";
-import type { ReactElement, ReactNode } from "react";
+import type { KeyboardEvent, ReactElement, ReactNode } from "react";
 import { useEffect, useId, useRef, useState } from "react";
 
 import type { Vocabulary } from "../api/vocabulary";
@@ -41,8 +41,11 @@ import {
   hasFrontmatterBlock,
   readScalar,
   readTagList,
+  readMultiLine,
+  scalarIsOneLine,
   writeScalar,
   writeTagList,
+  writeText,
 } from "./frontmatterFields";
 import { docText } from "./setup";
 
@@ -108,6 +111,7 @@ export function FrontmatterForm({
   const typeField = useId();
   const statusField = useId();
   const guidance = useId();
+  const descriptionField = useId();
 
   const apply = (compute: (base: string) => FieldEdit | null) => {
     if (!view) {
@@ -151,6 +155,10 @@ export function FrontmatterForm({
   const type = readScalar(doc, "type") ?? "";
   const status = readScalar(doc, "status") ?? "";
   const salience = readScalar(doc, "salience") ?? "";
+  const description = readScalar(doc, "description") ?? "";
+  // A description written over several lines is shown, not edited: the form
+  // rewrites one line, and the rest of the old text would stay behind.
+  const descriptionEditable = scalarIsOneLine(doc, "description");
 
   if (!hasFrontmatterBlock(doc)) {
     return (
@@ -162,8 +170,9 @@ export function FrontmatterForm({
   }
 
   return (
-    <section aria-label="Frontmatter form" className="flex flex-col gap-3">
-      {/*
+    <section aria-label="Frontmatter form" className="flex flex-col gap-4">
+      <div className="grid grid-cols-2 gap-3">
+        {/*
         Not a `Row`: a `label` element wrapping the control would also wrap the
         list it opens, and a click on a suggestion would be a click on the
         label. The name is tied on with `htmlFor` instead, which is the same
@@ -173,39 +182,40 @@ export function FrontmatterForm({
         what the document currently says and reports back what settled, so a
         hand edit in the text arrives here a render later.
       */}
-      <div className="flex flex-col gap-1 text-sm">
-        <label htmlFor={typeField} className={LABEL_CLASSES}>
-          Type
-        </label>
-        <SuggestInput
-          id={typeField}
-          label="Type"
-          className={`w-full ${FIELD_CLASSES}`}
-          value={type}
-          suggestions={withHouseCounts(
-            TYPE_SUGGESTIONS,
-            vocabulary?.types ?? [],
-          )}
-          onCommit={scalar("type")}
-          describedBy={guidance}
-        />
-      </div>
-      <div className="flex flex-col gap-1 text-sm">
-        <label htmlFor={statusField} className={LABEL_CLASSES}>
-          Status
-        </label>
-        <SuggestInput
-          id={statusField}
-          label="Status"
-          className={`w-full ${FIELD_CLASSES}`}
-          value={status}
-          suggestions={withHouseCounts(
-            STATUS_SUGGESTIONS,
-            vocabulary?.statuses ?? [],
-          )}
-          onCommit={scalar("status")}
-          describedBy={guidance}
-        />
+        <div className="flex flex-col gap-1 text-sm">
+          <label htmlFor={typeField} className={LABEL_CLASSES}>
+            Type
+          </label>
+          <SuggestInput
+            id={typeField}
+            label="Type"
+            className={`w-full ${FIELD_CLASSES}`}
+            value={type}
+            suggestions={withHouseCounts(
+              TYPE_SUGGESTIONS,
+              vocabulary?.types ?? [],
+            )}
+            onCommit={scalar("type")}
+            describedBy={guidance}
+          />
+        </div>
+        <div className="flex flex-col gap-1 text-sm">
+          <label htmlFor={statusField} className={LABEL_CLASSES}>
+            Status
+          </label>
+          <SuggestInput
+            id={statusField}
+            label="Status"
+            className={`w-full ${FIELD_CLASSES}`}
+            value={status}
+            suggestions={withHouseCounts(
+              STATUS_SUGGESTIONS,
+              vocabulary?.statuses ?? [],
+            )}
+            onCommit={scalar("status")}
+            describedBy={guidance}
+          />
+        </div>
       </div>
       {/*
         Beside the two fields it is about, rather than at the foot of the rail
@@ -215,7 +225,7 @@ export function FrontmatterForm({
         say on its own is that anything else is allowed too. Both fields point
         at it, so it is read out with either name.
       */}
-      <p id={guidance} className={NOTE_CLASSES}>
+      <p id={guidance} className={`-mt-2 ${NOTE_CLASSES}`}>
         Recommended types and statuses are suggestions; any value is allowed.
       </p>
       {/*
@@ -225,85 +235,213 @@ export function FrontmatterForm({
       */}
       <div className="flex flex-col gap-1 text-sm">
         <span className={LABEL_CLASSES}>Tags</span>
-        {tags.length > 0 && (
-          <span className="flex flex-wrap gap-1">
-            {tags.map((tag) => (
-              <button
-                key={tag}
-                type="button"
-                aria-label={`Remove tag ${tag}`}
-                className={`rounded bg-slate-100 px-1.5 py-0.5 text-caption hover:line-through dark:bg-slate-800 ${FOCUS_RING}`}
-                onClick={() => {
-                  // The list is re-read from the base too, not closed over
-                  // from the render: the tag to drop is the fact this button
-                  // carries, and everything else about the block is whatever
-                  // the document says at the moment of the dispatch.
-                  apply((base) =>
-                    writeTagList(
-                      base,
-                      readTagList(base).filter((existing) => existing !== tag),
-                    ),
-                  );
-                }}
-              >
-                #{tag}
-              </button>
-            ))}
-          </span>
-        )}
-        <input
-          className={`w-full ${FIELD_CLASSES}`}
-          aria-label="Add tag"
-          list="fm-tags"
-          value={draftTag}
-          onChange={(event) => {
-            setDraftTag(event.target.value);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && draftTag.trim() !== "") {
-              event.preventDefault();
-              apply((base) =>
-                writeTagList(base, [...readTagList(base), draftTag.trim()]),
-              );
-              setDraftTag("");
-            }
-          }}
-          placeholder="add a tag, then Enter"
-        />
+        <div className="flex min-h-9 flex-wrap items-center gap-1 rounded-md border border-hair-strong bg-raised px-1.5 py-1 focus-within:border-accent-500">
+          {tags.length > 0 && (
+            <span className="contents">
+              {tags.map((tag) => (
+                <button
+                  key={tag}
+                  type="button"
+                  aria-label={`Remove tag ${tag}`}
+                  className={`rounded bg-accent-tint px-1.5 py-0.5 text-caption text-accent-800 hover:line-through dark:text-accent-200 ${FOCUS_RING}`}
+                  onClick={() => {
+                    // The list is re-read from the base too, not closed over
+                    // from the render: the tag to drop is the fact this button
+                    // carries, and everything else about the block is whatever
+                    // the document says at the moment of the dispatch.
+                    apply((base) =>
+                      writeTagList(
+                        base,
+                        readTagList(base).filter(
+                          (existing) => existing !== tag,
+                        ),
+                      ),
+                    );
+                  }}
+                >
+                  #{tag}
+                </button>
+              ))}
+            </span>
+          )}
+          <input
+            className="min-w-24 flex-1 bg-transparent px-1 py-0.5 text-sm outline-none placeholder:text-faint"
+            aria-label="Add tag"
+            list="fm-tags"
+            value={draftTag}
+            onChange={(event) => {
+              setDraftTag(event.target.value);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && draftTag.trim() !== "") {
+                event.preventDefault();
+                apply((base) =>
+                  writeTagList(base, [...readTagList(base), draftTag.trim()]),
+                );
+                setDraftTag("");
+              }
+            }}
+            placeholder="Add tag"
+          />
+        </div>
         <datalist id="fm-tags">
           {(vocabulary?.tags ?? []).map((tag) => (
             <option key={tag.name} value={tag.name} />
           ))}
         </datalist>
       </div>
+      <div className="flex flex-col gap-1 text-sm">
+        {descriptionEditable ? (
+          <>
+            <label htmlFor={descriptionField} className={LABEL_CLASSES}>
+              Description
+            </label>
+            <EditedField
+              value={description}
+              onCommit={(next) => {
+                if (next.replace(/\s+/g, " ").trim() !== description) {
+                  apply((base) => writeText(base, "description", next));
+                }
+              }}
+              render={(props) => (
+                <textarea
+                  {...props}
+                  id={descriptionField}
+                  rows={3}
+                  className="w-full resize-y rounded border border-slate-300 bg-white px-2 py-1.5 text-sm leading-snug text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                  placeholder="One or two sentences"
+                />
+              )}
+            />
+          </>
+        ) : (
+          <>
+            <span id={descriptionField} className={LABEL_CLASSES}>
+              Description
+            </span>
+            <div
+              role="group"
+              aria-labelledby={descriptionField}
+              className="rounded-md border border-dashed border-hair-strong px-2 py-1.5 text-ink-2"
+            >
+              <p>{readMultiLine(doc, "description")}</p>
+              <p className={`mt-1 ${NOTE_CLASSES}`}>
+                Written over several lines. Change it in Raw.
+              </p>
+            </div>
+          </>
+        )}
+      </div>
+      {/*
+        One under the other: a date picker and its clear control need the
+        rail's whole width to show a date without cutting it.
+      */}
+      <div className="flex flex-col gap-4">
+        <DateRow
+          label="Valid from"
+          keyName="valid_from"
+          unbounded="Always"
+          doc={doc}
+          onEdit={apply}
+        />
+        <DateRow
+          label="Valid to"
+          keyName="valid_to"
+          unbounded="Forever"
+          doc={doc}
+          onEdit={apply}
+        />
+      </div>
       <Row label="Salience">
-        <input
-          type="number"
-          step="0.1"
-          className={`w-full ${FIELD_CLASSES}`}
-          key={`salience:${salience}`}
-          defaultValue={salience}
-          onBlur={(event) => {
-            scalar("salience")(event.target.value);
+        <EditedField
+          value={salience}
+          onCommit={(next) => {
+            if (next.trim() !== salience) {
+              scalar("salience")(next);
+            }
           }}
+          render={(props) => (
+            <input
+              {...props}
+              type="number"
+              step="0.1"
+              className={`w-full ${FIELD_CLASSES}`}
+              placeholder="Not set"
+            />
+          )}
         />
       </Row>
-      <DateRow
-        label="Valid from"
-        keyName="valid_from"
-        unbounded="Always"
-        doc={doc}
-        onEdit={apply}
-      />
-      <DateRow
-        label="Valid to"
-        keyName="valid_to"
-        unbounded="Forever"
-        doc={doc}
-        onEdit={apply}
-      />
     </section>
   );
+}
+
+/** What `EditedField` hands the control it draws. */
+interface EditedProps {
+  value: string;
+  onFocus: () => void;
+  onChange: (event: { target: { value: string } }) => void;
+  onBlur: () => void;
+  onKeyDown: (event: KeyboardEvent<HTMLElement>) => void;
+}
+
+/**
+ * A free-text field over one frontmatter value. While it has focus it holds
+ * what the person is typing, so a change arriving from the room meanwhile
+ * does not wipe half-typed text; once focus leaves, it shows the document's
+ * value again. Blur and Enter commit; Enter keeps the focus in the field (the
+ * value is one line in the file, so Enter is never a line break).
+ */
+function EditedField({
+  value,
+  onCommit,
+  render,
+}: {
+  value: string;
+  onCommit: (next: string) => void;
+  render: (props: EditedProps) => ReactElement;
+}): ReactElement {
+  // What the field held when focus arrived, and what has been typed since
+  // (null while nothing has). Only typing commits: a person who merely
+  // tabbed through must not write the value they saw back over one that
+  // changed in the room meanwhile, and an untouched field keeps showing the
+  // document's current value.
+  const [seen, setSeen] = useState<string | null>(null);
+  const [typed, setTyped] = useState<string | null>(null);
+  const commit = () => {
+    if (typed !== null && typed !== seen) {
+      onCommit(typed);
+      setSeen(typed);
+    }
+  };
+  return render({
+    value: typed ?? value,
+    onFocus: () => {
+      setSeen(value);
+      setTyped(null);
+    },
+    onChange: (event) => {
+      setTyped(event.target.value);
+    },
+    onBlur: () => {
+      commit();
+      setSeen(null);
+      setTyped(null);
+    },
+    onKeyDown: (event) => {
+      // An IME composition owns Enter. Safari sends the composition's final
+      // Enter with `isComposing` false and keyCode 229.
+      if (event.nativeEvent.isComposing || event.keyCode === 229) {
+        return;
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        commit();
+        // Back to following the document: a change from the room after this
+        // shows here, and the next keystroke builds on it.
+        setTyped(null);
+      }
+    },
+  });
 }
 
 /**
@@ -402,21 +540,23 @@ function DateRow({
   }
 
   return (
-    <div className="flex items-end gap-2">
-      <Row label={label}>
-        <input
-          ref={field}
-          type="date"
-          className={`w-full ${FIELD_CLASSES}`}
-          value={value}
-          onChange={(event) => {
-            if (event.target.value !== "") {
-              const picked = event.target.value;
-              onEdit((base) => writeScalar(base, keyName, picked));
-            }
-          }}
-        />
-      </Row>
+    <div className="flex min-w-0 items-end gap-1">
+      <div className="min-w-0 flex-1">
+        <Row label={label}>
+          <input
+            ref={field}
+            type="date"
+            className={`w-full min-w-0 ${FIELD_CLASSES}`}
+            value={value}
+            onChange={(event) => {
+              if (event.target.value !== "") {
+                const picked = event.target.value;
+                onEdit((base) => writeScalar(base, keyName, picked));
+              }
+            }}
+          />
+        </Row>
+      </div>
       <IconButton
         label={`Clear to ${unbounded.toLowerCase()}`}
         icon={X}

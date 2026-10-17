@@ -16,13 +16,14 @@
  * make, and the reason `canWrite` is not consulted here (it folds `readOnly`
  * in, which would take the shut door away instead of showing it).
  *
- * Two values ask before they change: `sharing: direct` removes the review step
- * for everybody, and `read_only: on` refuses every change for everybody.
- * Either arms the two-step confirmation, and the select goes back to the held
- * value on Keep. While `read_only` is on, its row is the one row that can
- * change: every other select is disabled with the read-only sentence as its
- * description. Either press ends the question, so either press hands the
- * focus back to the select it came from. Every other change posts at once.
+ * Three values ask before they change: `sharing: direct` removes the review
+ * step for everybody, `read_only: on` refuses every change for everybody, and
+ * `reflection: on` changes what `reflections/` is. Each arms the two-step
+ * confirmation, and the select goes back to the held value on Keep. While
+ * `read_only` is on, its row is the one row that can change: every other
+ * select is disabled with the read-only sentence as its description. Either
+ * press ends the question, so either press hands the focus back to the
+ * select it came from. Every other change posts at once.
  * After a write the answer's `policies` go straight into the manifest
  * query, so the card holds the new values without a second read.
  *
@@ -53,6 +54,10 @@ import type { ManifestView, PolicyView } from "../api/domain";
 import { DOMAINS_QUERY_KEY } from "../api/domains";
 import { domainEngramsRoot } from "../api/engrams";
 import { fetchMembers, membersKey, sameAccount } from "../api/members";
+import {
+  REFLECTION_DOMAINS_KEY,
+  reflectionStatusKey,
+} from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
 import { policiesLocked } from "../domainWritable";
 import {
@@ -89,6 +94,12 @@ const ASKS: Record<
     label: "Turn on read-only",
     say: () =>
       "Read-only refuses every change to this domain through Crystalline, for everybody, until its owner switches it off. Updates from the team still arrive. Turn it on?",
+  },
+  reflection: {
+    value: "on",
+    label: "Turn on the Reflection",
+    say: () =>
+      "The Reflection keeps pages for people under reflections/ in this domain. Crystalline stops reading that folder as engrams, agents get the Reflection tools for it, and members get a Reflection mode. It waits while engrams still live in reflections/. Turn it on?",
   },
 };
 
@@ -135,8 +146,8 @@ export function DomainPoliciesCard({
   const locked = policiesLocked(policies);
   const [problem, setProblem] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<Record<string, string>>({});
-  // The pending switch that needs a confirmation (direct sharing or
-  // read_only): the row whose select shows the asked value while the
+  // The pending switch that needs a confirmation (direct sharing, read_only
+  // or the Reflection): the row whose select shows the asked value while the
   // confirmation is up, or null.
   const [arming, setArming] = useState<string | null>(null);
   const selects = useRef<Record<string, HTMLSelectElement | null>>({});
@@ -146,7 +157,10 @@ export function DomainPoliciesCard({
       setDomainPolicies(domain, { [change[0]]: change[1] }),
     onSuccess: (written, [key]) => {
       setProblem((p) => ({ ...p, [key]: "" }));
-      setNotice((n) => ({ ...n, [key]: written.draft ? DRAFT_LINE : "" }));
+      setNotice((n) => ({
+        ...n,
+        [key]: written.draft ? DRAFT_LINE : (written.note ?? ""),
+      }));
       // The answer is the manifest as it now reads, so it goes into the query
       // this card's rows come from rather than being read back.
       queryClient.setQueryData<ManifestView>(manifestKey(domain), {
@@ -161,6 +175,16 @@ export function DomainPoliciesCard({
         queryKey: manifestDetailKey(domain),
       });
       void queryClient.invalidateQueries({ queryKey: syncStatusKey(domain) });
+      if (key === "reflection") {
+        // Switching the Reflection on or off moves the mode switch on the
+        // page above and the Reflection listing every screen reads.
+        void queryClient.invalidateQueries({
+          queryKey: reflectionStatusKey(domain),
+        });
+        void queryClient.invalidateQueries({
+          queryKey: REFLECTION_DOMAINS_KEY,
+        });
+      }
       if (key === "read_only") {
         // Every row's `read_only` and every write gate move with the chip,
         // which the manifest write above already moved.
@@ -195,79 +219,70 @@ export function DomainPoliciesCard({
   }
 
   return (
-    <section
-      aria-labelledby={HEADING_ID}
-      className="flex flex-col gap-3 rounded border border-slate-200 p-4 dark:border-slate-800"
-    >
+    <section aria-labelledby={HEADING_ID} className="flex flex-col gap-4">
       <h2 id={HEADING_ID} className="text-section">
         Domain policies
       </h2>
-      <table className="w-full text-sm">
-        <caption className="text-caption mb-2 text-left text-slate-500 dark:text-slate-400">
-          Every switch this MANIFEST can set
-        </caption>
-        <thead className="sr-only sm:not-sr-only">
-          <tr>
-            <th scope="col">Key</th>
-            <th scope="col">Declared</th>
-            <th scope="col">Effective</th>
-            <th scope="col">Meaning</th>
-          </tr>
-        </thead>
-        <tbody>
-          {policies.map((row) => {
-            const rowId = `${HEADING_ID}-${row.key}`;
-            // A value the frontmatter carries that the registry does not
-            // know: the server reads it as the default and says both words,
-            // so the row can say what the domain is actually doing. The
-            // registry's own values are what decides that, never "declared
-            // differs from effective" - a known word the server reads
-            // differently is the server's business, not a typo to report.
-            const unrecognized =
-              row.kind !== "text" &&
-              row.declared !== null &&
-              !row.values.includes(row.declared);
-            const shown =
-              arming === row.key
-                ? (ASKS[row.key]?.value ?? row.effective)
-                : row.effective;
-            const lockedOut = locked && row.key !== "read_only";
-            // The exact reason "Rename domain" is disabled for on the page
-            // itself: read-only first, since that holds whatever a rename
-            // is doing, then a rename already in flight. The read-only span
-            // below is rendered for every row already, so this reuses its id
-            // rather than adding a second span with the same words; a rename
-            // in flight has no such span yet, so one is added only when this
-            // row draws the button that needs it.
-            const changeNameDisabledReason = capabilities.readOnly
-              ? READ_ONLY_REASON
-              : renaming
-                ? RENAMING_REASON
-                : undefined;
-            const changeNameReasonId = capabilities.readOnly
-              ? `${rowId}-readonly`
-              : `${rowId}-renaming`;
-            return (
-              // The roles are spelled out because the row stacks below `sm`:
-              // a `tr` laid out as a flex column is no longer a row to a
-              // screen reader, and its cells are no longer cells.
-              <tr
-                key={row.key}
-                role="row"
-                className="flex flex-col gap-1 border-t border-slate-200 py-2 sm:table-row dark:border-slate-800"
+      <p className="text-sm text-ink-3">
+        Every switch this MANIFEST can set. Each one is a line in its
+        frontmatter, and the value shown is the one that holds now.
+      </p>
+      <ul className="flex flex-col text-sm">
+        {policies.map((row) => {
+          const rowId = `${HEADING_ID}-${row.key}`;
+          // A value the frontmatter carries that the registry does not
+          // know: the server reads it as the default and says both words,
+          // so the row can say what the domain is actually doing. The
+          // registry's own values are what decides that, never "declared
+          // differs from effective" - a known word the server reads
+          // differently is the server's business, not a typo to report.
+          const unrecognized =
+            row.kind !== "text" &&
+            row.declared !== null &&
+            !row.values.includes(row.declared);
+          const shown =
+            arming === row.key
+              ? (ASKS[row.key]?.value ?? row.effective)
+              : row.effective;
+          const lockedOut = locked && row.key !== "read_only";
+          // The exact reason "Rename domain" is disabled for on the page
+          // itself: read-only first, since that holds whatever a rename
+          // is doing, then a rename already in flight. The read-only span
+          // below is rendered for every row already, so this reuses its id
+          // rather than adding a second span with the same words; a rename
+          // in flight has no such span yet, so one is added only when this
+          // row draws the button that needs it.
+          const changeNameDisabledReason = capabilities.readOnly
+            ? READ_ONLY_REASON
+            : renaming
+              ? RENAMING_REASON
+              : undefined;
+          const changeNameReasonId = capabilities.readOnly
+            ? `${rowId}-readonly`
+            : `${rowId}-renaming`;
+          return (
+            // A group named by the key: the name the selects, the output and
+            // the specs address a switch by.
+            <li
+              key={row.key}
+              className="border-t border-hair py-4 first:border-t-0 first:pt-0"
+            >
+              <div
+                role="group"
+                aria-labelledby={rowId}
+                className="grid gap-x-8 gap-y-2 sm:grid-cols-[minmax(0,1fr)_15rem]"
               >
-                <th
-                  id={rowId}
-                  role="rowheader"
-                  scope="row"
-                  className="pr-3 text-left font-mono font-normal"
-                >
-                  {row.key}
-                </th>
-                <td role="cell" className="pr-3">
-                  {row.declared ?? "not declared"}
-                </td>
-                <td role="cell" className="pr-3">
+                <div className="min-w-0">
+                  <p className="text-ink">{row.meaning}</p>
+                  <p className="text-caption mt-1 text-muted">
+                    <span id={rowId} className="font-mono">
+                      {row.key}
+                    </span>
+                    {" \u00b7 In the MANIFEST: "}
+                    <span>{row.declared ?? "not declared"}</span>
+                  </p>
+                </div>
+                <div className="min-w-0">
                   {row.kind === "text" ? (
                     // A free-text key never changes through this card's own
                     // select, so the value is read-only here whatever
@@ -316,7 +331,7 @@ export function DomainPoliciesCard({
                         selects.current[row.key] = el;
                       }}
                       aria-labelledby={rowId}
-                      className={FIELD}
+                      className={`w-full ${FIELD}`}
                       value={shown}
                       disabled={
                         capabilities.readOnly || write.isPending || lockedOut
@@ -397,15 +412,12 @@ export function DomainPoliciesCard({
                       {problem[row.key]}
                     </p>
                   )}
-                </td>
-                <td role="cell" className="text-slate-500 dark:text-slate-400">
-                  {row.meaning}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+                </div>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
     </section>
   );
 }

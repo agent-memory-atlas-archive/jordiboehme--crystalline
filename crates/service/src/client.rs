@@ -764,6 +764,18 @@ async fn build_embedded(
     if let Ok(state) = crystalline_core::config::state_dir() {
         engine = engine.with_state_dir(state);
     }
+    // On a database other instances share, this stack is this machine's
+    // instance, as the daemon it stands in for would be: it claims the file
+    // domains it walks and serves, heartbeats those claims and releases them
+    // when the session ends. It holds the state directory a daemon holds, so
+    // this machine's daemon is not running beside it.
+    let shared_database = engine.store().lock().await.shares_database();
+    if shared_database {
+        let name = engine.config().instance_name();
+        engine = engine
+            .with_instance_id(crystalline_core::config::read_or_create_instance_id()?)
+            .with_instance_label(name);
+    }
     let engine = Arc::new(engine);
     tokio::spawn(crate::engine::run_embed_worker(engine.clone(), embed_rx));
     // A rename a stopped daemon left half done is finished before the first
@@ -779,6 +791,14 @@ async fn build_embedded(
     // look, and the routing caches refresh on the poll as they do in a
     // daemon. Its own task, so the start never waits on a server.
     let (stop_sources, stopped) = tokio::sync::watch::channel(false);
+    if shared_database {
+        let (e, rx, secs) = (
+            engine.clone(),
+            stop_sources.subscribe(),
+            engine.heartbeat_secs(),
+        );
+        tokio::spawn(async move { crate::daemon::run_heartbeat(e, secs, rx).await });
+    }
     if use_daemon(db, config_path) {
         crate::route::install_sources(&engine);
         let e = engine.clone();
@@ -843,13 +863,20 @@ where
     R: AsyncRead + Unpin + Send + 'static,
 {
     let stdout = tokio::io::stdout();
-    let running = rmcp::serve_server(stack.server, (reader, stdout)).await?;
-    let _ = running.waiting().await;
+    let server = stack.server;
+    let session = async move {
+        let running = rmcp::serve_server(server, (reader, stdout)).await?;
+        let _ = running.waiting().await;
+        anyhow::Ok(())
+    };
+    // The host locks this stack claimed go back when the session ends, as a
+    // daemon's do at its shutdown, so another instance can take the domains
+    // at once; a session that failed to start gives them back too.
+    serve_then_release(&stack.engine, &stack.stop_sources, session).await?;
     tracing::info!(
         "stopping (the client closed the session); exiting within {}s",
         SHUTDOWN_DEADLINE.as_secs()
     );
-    let _ = stack.stop_sources.send(true);
     let departure = Departure::begin(stack.ownership, SHUTDOWN_DEADLINE);
     // Held to the exit, as in the daemon: an operation already inside the
     // store finishes and no new one starts.
@@ -861,6 +888,21 @@ where
     // pair the server rotated is saved.
     departure.settle_sign_ins().await;
     departure.finish(None)
+}
+
+/// Run the embedded stack's session, then stop its background tasks and
+/// give back every host lock it claimed, whether the session ended or
+/// failed: a lock left behind would make every other instance wait out the
+/// stale threshold. The session's own outcome is the answer.
+async fn serve_then_release(
+    engine: &Engine,
+    stop_sources: &tokio::sync::watch::Sender<bool>,
+    session: impl std::future::Future<Output = anyhow::Result<()>>,
+) -> anyhow::Result<()> {
+    let served = session.await;
+    let _ = stop_sources.send(true);
+    engine.release_hosts().await;
+    served
 }
 
 /// Serve the degraded status server over stdio: a stand-in that answers
@@ -1079,6 +1121,9 @@ pub async fn run_tool(
         None,
     )
     .await;
+    // A write into a file domain of a shared database claimed its host lock
+    // as this machine; a command sends no heartbeat, so it gives it back.
+    engine.release_command_locks().await;
     // A refresh a source call started runs as a task of its own: this
     // process waits for it before it leaves, so a token pair the server
     // rotated is saved.
@@ -2545,6 +2590,48 @@ fn init_tracing() {
 mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
+
+    /// The embedded stack gives back the host locks it claimed whether its
+    /// session ended or failed to start: a lock left behind would make every
+    /// other instance wait out the stale threshold.
+    #[tokio::test]
+    async fn the_embedded_stack_releases_its_locks_when_the_session_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("MANIFEST.md"), "# eng\n").unwrap();
+        let mut cfg = crystalline_core::config::GlobalConfig::default();
+        cfg.domains.insert(
+            "eng".to_string(),
+            crystalline_core::config::DomainEntry::file(root),
+        );
+        let store = crystalline_index::TursoStore::open_in_memory()
+            .await
+            .unwrap();
+        let engine = Engine::new(
+            Arc::new(tokio::sync::Mutex::new(store)),
+            cfg,
+            None,
+            Some(tmp.path().join("config.yaml")),
+        )
+        .with_instance_id("this-machine".to_string());
+        assert!(engine.claim_host("eng", false).await.unwrap().is_acquired());
+        let holder = || async {
+            let store = engine.store();
+            let store = store.lock().await;
+            let id = store.domain_id("eng").await.unwrap().unwrap();
+            store.domain_host(id).await.unwrap()
+        };
+        assert!(holder().await.is_some(), "the stack holds the lock");
+        let (stop, stopped) = tokio::sync::watch::channel(false);
+        let served = serve_then_release(&engine, &stop, async {
+            Err(anyhow::anyhow!("the session could not start"))
+        })
+        .await;
+        assert!(served.is_err(), "the session's failure is the answer");
+        assert!(*stopped.borrow(), "the background tasks are told to stop");
+        assert!(holder().await.is_none(), "the lock is given back");
+    }
 
     /// An answer from a daemon before 0.25.1 has no `$read_only` key: every
     /// bullet is kept and nothing is marked.

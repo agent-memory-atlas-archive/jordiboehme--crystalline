@@ -55,6 +55,14 @@ export const MESSAGE_CONTROL = 4;
 export const CONNECT_TIMEOUT_MS = 8000;
 export const BACKOFF_BASE_MS = 500;
 export const BACKOFF_CAP_MS = 10_000;
+/**
+ * How long after a missed join deadline the provider asks once more, when no
+ * upgrade was ever accepted. A move answers every join with 409 while it
+ * runs and with the `moved` close once it is done; a move that outlasts the
+ * deadline would otherwise leave the person on the fallback without the
+ * notice. The ask listens for that close and nothing else.
+ */
+export const PROBE_AFTER_DEADLINE_MS = 4000;
 
 export interface CollabHello {
   kind: "hello";
@@ -80,7 +88,17 @@ export type CollabControl =
       theirs: string | null;
       detail: string;
     }
-  | { kind: "closed"; reason: string };
+  | {
+      kind: "closed";
+      /** `deleted`, `moved`, `switched_off`, `left` or `internal`. */
+      reason: string;
+      /** For `moved`: the new domain, sent only when it changed. */
+      domain?: string;
+      /** For `moved`: the new path (inside `reflections/` for a page). */
+      path?: string;
+      /** For `moved` of an engram: the permalink it answers to now. */
+      permalink?: string;
+    };
 
 export type CollabStatus =
   "connecting" | "connected" | "reconnecting" | "failed";
@@ -92,6 +110,10 @@ export interface ProviderHandlers {
   /** A reconnect landed on a DIFFERENT server session; this provider is
    *  already permanently silent. Snapshot and rebuild - see the class doc. */
   onEpochGap: () => void;
+  /** This connection is live: its hello was accepted and the room's sync
+   *  step answered, so everything typed before is on its way ahead of any
+   *  control sent from here on. Called once per connection. */
+  onLive?: () => void;
 }
 
 export type SocketFactory = (url: string) => WebSocket;
@@ -114,6 +136,13 @@ export function collabUrl(
   return overlay ? `${path}?overlay=${encodeURIComponent(overlay)}` : path;
 }
 
+export { reflectionOfferKey, reflectionRoomKey } from "./reflectionDraftKeys";
+
+/** The socket path of one reflection's room. */
+export function reflectionCollabUrl(domain: string, path: string): string {
+  return `${API_BASE}/collab-reflection/${encodeSegment(domain)}/${encodePermalink(path)}`;
+}
+
 /**
  * The absolute socket URL for a same-origin path: the page's own host with
  * its scheme swapped for the WebSocket one, so a page served over TLS keeps
@@ -128,6 +157,24 @@ export function collabSocketUrl(
   }
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   return `${scheme}//${location.host}${path}`;
+}
+
+/** The first control a frame carries, or null. */
+function firstControl(frame: Uint8Array): CollabControl | null {
+  const decoder = decoding.createDecoder(frame);
+  if (
+    !decoding.hasContent(decoder) ||
+    decoding.readVarUint(decoder) !== MESSAGE_CONTROL
+  ) {
+    return null;
+  }
+  try {
+    return JSON.parse(
+      new TextDecoder().decode(decoding.readVarUint8Array(decoder)),
+    ) as CollabControl;
+  } catch {
+    return null;
+  }
 }
 
 export class CollabProvider {
@@ -147,6 +194,9 @@ export class CollabProvider {
    *  down too - a browser closes a connecting socket asynchronously, so the
    *  close event cannot be relied on to clear it in time. */
   private deadline: ReturnType<typeof setTimeout> | null = null;
+  /** The one ask after a missed deadline (see PROBE_AFTER_DEADLINE_MS). */
+  private probeTimer: ReturnType<typeof setTimeout> | null = null;
+  private probeSocket: WebSocket | null = null;
   /** Whether ANY connection of this provider ever had a hello accepted. */
   private everAccepted = false;
   private statusValue: CollabStatus = "connecting";
@@ -156,6 +206,12 @@ export class CollabProvider {
    *  awareness traffic leaves or is answered before that, so a reconnect
    *  can never pour this doc's history into a different server session. */
   private accepted = false;
+  /**
+   * Whether THIS connection is live: hello accepted AND the room's SyncStep1
+   * answered, so whatever this doc holds is already on the socket. Controls
+   * go out only then, never ahead of the text.
+   */
+  private live = false;
 
   constructor(
     url: string,
@@ -179,8 +235,12 @@ export class CollabProvider {
       if (this.closed || this.everAccepted) {
         return;
       }
+      const neverUpgraded = !this.everConnected;
       this.stop();
       this.setStatus("failed");
+      if (neverUpgraded) {
+        this.probeOnce();
+      }
     }, CONNECT_TIMEOUT_MS);
     this.connect();
   }
@@ -189,12 +249,21 @@ export class CollabProvider {
     return this.statusValue;
   }
 
-  flush(): void {
-    this.sendControl({ kind: "flush" });
+  /** Whether this connection is live (see `live`). */
+  get isLive(): boolean {
+    return this.live;
   }
 
-  resolve(choice: "mine" | "theirs"): void {
-    this.sendControl({ kind: "resolve", choice });
+  /** Ask for a save now. Only on a live connection: false, and nothing
+   *  sent, otherwise. */
+  flush(): boolean {
+    return this.sendControl({ kind: "flush" });
+  }
+
+  /** Resolve a conflict. Only on a live connection: false, and nothing
+   *  sent, otherwise, so a choice never meets a room it was not made for. */
+  resolve(choice: "mine" | "theirs"): boolean {
+    return this.sendControl({ kind: "resolve", choice });
   }
 
   /**
@@ -205,6 +274,7 @@ export class CollabProvider {
    */
   private stop(): void {
     this.closed = true;
+    this.live = false;
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;
@@ -217,6 +287,32 @@ export class CollabProvider {
     this.socket = null;
   }
 
+  /**
+   * Ask the room once more after a missed deadline, for the `moved` close
+   * only: no hello is answered and nothing is sent, so the fallback the
+   * owner already shows stays as it is unless the document has moved.
+   */
+  private probeOnce(): void {
+    this.probeTimer = setTimeout(() => {
+      this.probeTimer = null;
+      const socket = this.socketFactory(this.url);
+      this.probeSocket = socket;
+      socket.binaryType = "arraybuffer";
+      socket.onmessage = (event) => {
+        const control = firstControl(new Uint8Array(event.data as ArrayBuffer));
+        if (control?.kind === "closed" && control.reason === "moved") {
+          this.handlers.onControl(control);
+        }
+        socket.close();
+      };
+      socket.onclose = () => {
+        if (this.probeSocket === socket) {
+          this.probeSocket = null;
+        }
+      };
+    }, PROBE_AFTER_DEADLINE_MS);
+  }
+
   destroy(): void {
     // The goodbye FIRST, while the awareness listener is still attached to
     // relay it and the socket `stop` is about to close is still open; the
@@ -226,6 +322,12 @@ export class CollabProvider {
     this.doc.off("update", this.onDocUpdate);
     this.awareness.off("update", this.onAwarenessUpdate);
     this.stop();
+    if (this.probeTimer !== null) {
+      clearTimeout(this.probeTimer);
+      this.probeTimer = null;
+    }
+    this.probeSocket?.close();
+    this.probeSocket = null;
   }
 
   private setStatus(status: CollabStatus): void {
@@ -243,6 +345,7 @@ export class CollabProvider {
     this.socket = socket;
     this.synced = false;
     this.accepted = false; // every connection re-earns it from a hello
+    this.live = false;
     socket.binaryType = "arraybuffer";
     socket.onopen = () => {
       this.everConnected = true;
@@ -265,6 +368,7 @@ export class CollabProvider {
     };
     socket.onclose = (event) => {
       this.socket = null;
+      this.live = false;
       if (this.closed) {
         return;
       }
@@ -372,6 +476,12 @@ export class CollabProvider {
           if (encoding.length(reply) > 1) {
             this.send(encoding.toUint8Array(reply));
           }
+          if (syncType === syncProtocol.messageYjsSyncStep1 && !this.live) {
+            // Our answer to the room's SyncStep1 carries everything typed
+            // while away; from here a control is ordered after the text.
+            this.live = true;
+            this.handlers.onLive?.();
+          }
           if (syncType === syncProtocol.messageYjsSyncStep2 && !this.synced) {
             this.synced = true;
             this.handlers.onSynced();
@@ -447,7 +557,10 @@ export class CollabProvider {
     }
   }
 
-  private sendControl(control: { kind: string; choice?: string }): void {
+  private sendControl(control: { kind: string; choice?: string }): boolean {
+    if (!this.live) {
+      return false;
+    }
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, MESSAGE_CONTROL);
     encoding.writeVarUint8Array(
@@ -455,5 +568,6 @@ export class CollabProvider {
       new TextEncoder().encode(JSON.stringify(control)),
     );
     this.send(encoding.toUint8Array(encoder));
+    return true;
   }
 }

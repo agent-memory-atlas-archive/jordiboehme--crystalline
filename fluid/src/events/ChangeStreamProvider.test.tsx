@@ -242,6 +242,27 @@ describe("the change stream in one tab", () => {
     expect(keys).toContain(JSON.stringify(["domain-tree", "eng"]));
   });
 
+  it("a reflection frame invalidates the Reflection of its domain", async () => {
+    await mount(client);
+    act(() => {
+      theSource().emit(
+        "reflection",
+        {
+          domain: "eng",
+          path: "guides/a.md",
+          kind: "changed",
+          from: null,
+          actor: null,
+        },
+        "1:1",
+      );
+    });
+    act(() => {
+      vi.advanceTimersByTime(250);
+    });
+    expect(invalidatedKeys()).toContain(JSON.stringify(["reflection", "eng"]));
+  });
+
   it("a reset flushes the pending set and invalidates everything at once", async () => {
     await mount(client);
     const source = theSource();

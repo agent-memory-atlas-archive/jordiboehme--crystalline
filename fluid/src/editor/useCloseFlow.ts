@@ -2,7 +2,7 @@
  * Closing an editor: the one question this app asks before an in-app
  * navigation, and the flag that rides the save an answer to it starts.
  *
- * Close leaves. It does not save first - a button that wrote the file as a side
+ * Done leaves. It does not save first - a button that wrote the file as a side
  * effect of the way out gave one press two meanings, and the one it did not
  * announce was the one that could fail. What it does instead is refuse to lose
  * anything silently: a clean buffer goes straight out, because there is nothing
@@ -37,7 +37,7 @@
  *     the same way, in `saveAndClose`.
  *
  * One thing this deliberately does NOT do is say anything when the save it
- * rides turns out to be stale. Answering Save and close while a round trip is
+ * rides turns out to be stale. Answering Save and leave while a round trip is
  * already out consumes that trip, and if the buffer has moved on since, the
  * exit is refused: the author is left on their newer text with the "Saved"
  * receipt the session raises, and one more Close finishes the job. A second

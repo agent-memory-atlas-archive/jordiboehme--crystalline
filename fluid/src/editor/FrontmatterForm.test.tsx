@@ -12,7 +12,13 @@
 
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, describe, expect, it } from "vitest";
@@ -411,5 +417,181 @@ describe("the frontmatter form", () => {
     render(<FrontmatterForm doc={"# Alpha\n"} view={null} vocabulary={null} />);
     expect(screen.getByText(/no frontmatter block/i)).toBeInTheDocument();
     expect(screen.queryByLabelText("Status")).not.toBeInTheDocument();
+  });
+
+  it("lists the Details fields in the rail's order", () => {
+    mounted();
+    const names = Array.from(
+      document.querySelectorAll(
+        "section[aria-label='Frontmatter form'] label, section[aria-label='Frontmatter form'] span",
+      ),
+    )
+      .map((node) => node.textContent?.trim() ?? "")
+      .filter((text) =>
+        [
+          "Type",
+          "Status",
+          "Tags",
+          "Description",
+          "Valid from",
+          "Valid to",
+          "Salience",
+        ].includes(text),
+      );
+    expect([...new Set(names)]).toEqual([
+      "Type",
+      "Status",
+      "Tags",
+      "Description",
+      "Valid from",
+      "Valid to",
+      "Salience",
+    ]);
+  });
+
+  it("writes a description as one quoted line, line breaks and all", async () => {
+    render(<Live content={DOC} />, { wrapper: Tooltips });
+    const field = await screen.findByLabelText("Description");
+    expect(field).toHaveValue("");
+    fireEvent.change(field, {
+      target: { value: 'Why we deploy: at night\nafter the "batch"' },
+    });
+    fireEvent.blur(field);
+    await waitFor(() => {
+      expect(liveView().state.sliceDoc()).toContain(
+        'description: "Why we deploy: at night after the \\"batch\\""\n---',
+      );
+    });
+  });
+
+  it("writes a plain description plainly, and an empty one removes the key", async () => {
+    render(<Live content={DOC} />, { wrapper: Tooltips });
+    const field = await screen.findByLabelText("Description");
+    fireEvent.change(field, { target: { value: "Runs after the batch" } });
+    fireEvent.blur(field);
+    await waitFor(() => {
+      expect(liveView().state.sliceDoc()).toContain(
+        "description: Runs after the batch\n",
+      );
+    });
+    const again = await screen.findByLabelText("Description");
+    fireEvent.change(again, { target: { value: "" } });
+    fireEvent.blur(again);
+    await waitFor(() => {
+      expect(liveView().state.sliceDoc()).not.toContain("description:");
+    });
+  });
+
+  it("shows a description written over several lines without editing it", () => {
+    const doc =
+      "---\ntitle: Alpha\ndescription: >-\n  First half,\n  second half.\nstatus: stable\n---\n\nBody.\n";
+    render(<FrontmatterForm doc={doc} view={null} vocabulary={null} />);
+    // A field would rewrite the key line alone and strand the rest.
+    expect(screen.queryByRole("textbox", { name: "Description" })).toBeNull();
+    expect(screen.getByText(/First half, second half\./)).toBeInTheDocument();
+    expect(screen.getByText(/Change it in Raw/)).toBeInTheDocument();
+  });
+
+  it("keeps half-typed text when the document changes underneath, and Enter commits in place", async () => {
+    render(<Live content={DOC} />, { wrapper: Tooltips });
+    const field = await screen.findByLabelText("Description");
+    field.focus();
+    await userEvent.type(field, "Half typed");
+    // A change from the room lands in the same block meanwhile.
+    const view = liveView();
+    const at = view.state.sliceDoc().indexOf("stable");
+    act(() => {
+      view.dispatch({
+        changes: { from: at, to: at + "stable".length, insert: "draft" },
+      });
+    });
+    expect(screen.getByLabelText("Status")).toHaveValue("draft");
+    expect(screen.getByLabelText("Description")).toHaveValue("Half typed");
+    expect(screen.getByLabelText("Description")).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(liveView().state.sliceDoc()).toContain(
+        "description: Half typed\n",
+      );
+    });
+    expect(screen.getByLabelText("Description")).toHaveFocus();
+    expect(screen.getByLabelText("Description")).toHaveValue("Half typed");
+  });
+
+  it("names the read-only description and strips its quotes", () => {
+    const doc =
+      '---\ntitle: Alpha\ndescription: "First half,\nsecond half."\nstatus: stable\n---\n\nBody.\n';
+    render(<FrontmatterForm doc={doc} view={null} vocabulary={null} />);
+    // A double-quoted value continued on an unindented line is several lines.
+    const group = screen.getByRole("group", { name: "Description" });
+    expect(group).toHaveTextContent("First half, second half.");
+    expect(group).not.toHaveTextContent('"');
+  });
+
+  it.each([
+    ["Description", "description: Old one", "description: Agent text"],
+    ["Salience", "salience: 0.4", "salience: 0.9"],
+  ])(
+    "%s: focusing alone never writes back over a change from the room",
+    async (label, before, after) => {
+      const content = DOC.replace(
+        "status: stable",
+        `status: stable\n${before}`,
+      );
+      render(<Live content={content} />, { wrapper: Tooltips });
+      const field = await screen.findByLabelText(label);
+      field.focus();
+      // The room rewrites the line while the field only has focus.
+      const view = liveView();
+      const at = view.state.sliceDoc().indexOf(before);
+      act(() => {
+        view.dispatch({
+          changes: { from: at, to: at + before.length, insert: after },
+        });
+      });
+      await userEvent.tab();
+      expect(liveView().state.sliceDoc()).toContain(after);
+      expect(liveView().state.sliceDoc()).not.toContain(before);
+    },
+  );
+
+  it("leaves Enter to an IME composition in the description", async () => {
+    render(<Live content={DOC} />, { wrapper: Tooltips });
+    const field = await screen.findByLabelText("Description");
+    field.focus();
+    fireEvent.change(field, { target: { value: "かな" } });
+    fireEvent.keyDown(field, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(field, { key: "Enter", keyCode: 229 });
+    expect(liveView().state.sliceDoc()).not.toContain("description:");
+    fireEvent.keyDown(field, { key: "Enter" });
+    await waitFor(() => {
+      expect(liveView().state.sliceDoc()).toContain('description: "かな"');
+    });
+  });
+
+  it("after Enter the field follows the room again, and the next keystroke builds on it", async () => {
+    render(<Live content={DOC} />, { wrapper: Tooltips });
+    const field = await screen.findByLabelText("Description");
+    field.focus();
+    await userEvent.type(field, "Mine");
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(liveView().state.sliceDoc()).toContain("description: Mine\n");
+    });
+    const view = liveView();
+    const at = view.state.sliceDoc().indexOf("description: Mine");
+    act(() => {
+      view.dispatch({
+        changes: {
+          from: at,
+          to: at + "description: Mine".length,
+          insert: "description: Agent",
+        },
+      });
+    });
+    expect(screen.getByLabelText("Description")).toHaveValue("Agent");
+    await userEvent.type(screen.getByLabelText("Description"), "s");
+    await userEvent.tab();
+    expect(liveView().state.sliceDoc()).toContain("description: Agents\n");
   });
 });

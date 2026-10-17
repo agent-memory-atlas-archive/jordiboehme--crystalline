@@ -182,10 +182,16 @@ function serve(routes: Record<string, Answer> = {}) {
 
 /** Open the dialog from the domain screen, with the archive already picked. */
 async function openWithFile(): Promise<HTMLElement> {
+  // From the domain's front page, where the list the import refreshes is
+  // paging behind the dialog: "Import archive" is a row of its More actions
+  // menu there (the settings screen's Backup card has the same button).
   renderApp("/d/eng");
   const body = await screen.findByRole("main");
   await userEvent.click(
-    await within(body).findByRole("button", { name: "Import archive" }),
+    await within(body).findByRole("button", { name: "More actions" }),
+  );
+  await userEvent.click(
+    await screen.findByRole("menuitem", { name: "Import archive" }),
   );
   const dialog = await screen.findByRole("dialog", { name: /import archive/i });
   await userEvent.upload(

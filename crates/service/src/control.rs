@@ -267,7 +267,15 @@ async fn handle(req: &Value, shared: &Arc<Shared>) -> (Value, bool) {
                 .get("take_over")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            match shared.engine.sync_take_over(domain, take_over).await {
+            let accept_disk = req
+                .get("accept_disk")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            match shared
+                .engine
+                .sync_with(domain, take_over, accept_disk)
+                .await
+            {
                 Ok(mut data) => {
                     // After the sync has returned: a synced MANIFEST may
                     // declare a new name, and a pre-0.20.0 entry is caught up.
@@ -1039,6 +1047,15 @@ pub(crate) fn envelope_ok(data: Value) -> Value {
 
 pub(crate) fn envelope_err(message: impl Into<String>) -> Value {
     json!({ "v": CTL_VERSION, "ok": false, "error": message.into() })
+}
+
+/// [`envelope_err`] with the `kind` of the error, which a connected machine
+/// reads to tell an argument error from a refusal. A server older than
+/// 0.27.0 sends none.
+pub(crate) fn envelope_err_kind(message: impl Into<String>, kind: &str) -> Value {
+    let mut envelope = envelope_err(message);
+    envelope["kind"] = Value::String(kind.to_string());
+    envelope
 }
 
 /// Refresh every source's routing within `refresh_deadline` in the

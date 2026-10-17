@@ -4144,38 +4144,6 @@ async fn a_deleted_engram_written_back_is_read_again() {
 
 // --- two instances on one shared database ------------------------------------
 
-#[cfg(feature = "postgres")]
-fn pg_url() -> Option<String> {
-    use std::sync::Once;
-    static NOTE: Once = Once::new();
-    match std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") {
-        Ok(u) if !u.is_empty() => Some(u),
-        _ => {
-            NOTE.call_once(|| {
-                eprintln!(
-                    "note: skipping the postgres contradiction leg (CRYSTALLINE_TEST_POSTGRES_URL is unset); turso only"
-                )
-            });
-            None
-        }
-    }
-}
-
-/// A recycled pid must never adopt a schema a panicking run left behind.
-#[cfg(feature = "postgres")]
-fn unique_schema() -> String {
-    use std::hash::{BuildHasher, RandomState};
-    use std::sync::atomic::AtomicU64;
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "ctx_{}_{}_{:x}",
-        std::process::id(),
-        n,
-        RandomState::new().hash_one(n)
-    )
-}
-
 /// The stub, slowed down: each batch takes long enough that two walks which
 /// start together both find their pairs pending before either one stores.
 #[cfg(feature = "postgres")]
@@ -4253,14 +4221,13 @@ async fn instance_with(
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_instances_score_a_virtual_domain_once() {
-    let Some(url) = pg_url() else {
+    let Some(scratch) = crate::support::scratch_schema("ctx") else {
         return;
     };
-    let schema = unique_schema();
     let s = stub();
     let slow: Arc<dyn ContradictionScorer> = Arc::new(Slow(s.clone()));
-    let (_ta, a) = instance_on(&url, &schema, "a", slow.clone()).await;
-    let (_tb, b) = instance_on(&url, &schema, "b", slow).await;
+    let (_ta, a) = instance_on(scratch.url(), scratch.name(), "a", slow.clone()).await;
+    let (_tb, b) = instance_on(scratch.url(), scratch.name(), "b", slow).await;
     three(&a).await;
     b.embed_pending().await.unwrap();
 
@@ -4278,10 +4245,6 @@ async fn two_instances_score_a_virtual_domain_once() {
     assert_eq!(s.forwards(), 2, "nothing is left to read");
 
     drop((a, b));
-    let cleanup = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-        .await
-        .unwrap();
-    cleanup.drop_schema().await.unwrap();
 }
 
 /// A walk that went stale while it waited: `b` walks while the pair is still
@@ -4293,10 +4256,9 @@ async fn two_instances_score_a_virtual_domain_once() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_walk_that_went_stale_leaves_a_pair_another_instance_stored() {
-    let Some(url) = pg_url() else {
+    let Some(scratch) = crate::support::scratch_schema("ctx") else {
         return;
     };
-    let schema = unique_schema();
     let s = stub();
     let scorer: Arc<dyn ContradictionScorer> = s.clone();
     let (loading, go) = (
@@ -4314,8 +4276,8 @@ async fn a_walk_that_went_stale_leaves_a_pair_another_instance_stored() {
             })
         })
     };
-    let (_ta, a) = instance_on(&url, &schema, "a", scorer).await;
-    let (_tb, b) = instance_with(&url, &schema, "b", late).await;
+    let (_ta, a) = instance_on(scratch.url(), scratch.name(), "a", scorer).await;
+    let (_tb, b) = instance_with(scratch.url(), scratch.name(), "b", late).await;
     three(&a).await;
     b.embed_pending().await.unwrap();
 
@@ -4335,10 +4297,6 @@ async fn a_walk_that_went_stale_leaves_a_pair_another_instance_stored() {
     assert!(!b.contradictions_wanted(), "nothing left to ask for");
 
     drop((a, b));
-    let cleanup = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-        .await
-        .unwrap();
-    cleanup.drop_schema().await.unwrap();
 }
 
 /// Review I1 of Task 11: an instance that finds a shared virtual domain's
@@ -4349,19 +4307,24 @@ async fn a_walk_that_went_stale_leaves_a_pair_another_instance_stored() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_domain_another_instance_scores_loads_no_model_and_waits_for_its_claim() {
     use crystalline_index::Store;
-    let Some(url) = pg_url() else {
+    let Some(scratch) = crate::support::scratch_schema("ctx") else {
         return;
     };
-    let schema = unique_schema();
     let s = stub();
     let loads = Arc::new(AtomicUsize::new(0));
-    let (_ta, a) = instance_on(&url, &schema, "a", s.clone()).await;
-    let (_tb, b) = instance_with(&url, &schema, "b", loader_of(s.clone(), loads.clone())).await;
+    let (_ta, a) = instance_on(scratch.url(), scratch.name(), "a", s.clone()).await;
+    let (_tb, b) = instance_with(
+        scratch.url(),
+        scratch.name(),
+        "b",
+        loader_of(s.clone(), loads.clone()),
+    )
+    .await;
     three(&a).await;
     b.embed_pending().await.unwrap();
 
     // Another instance scoring `notes`, as a claim held on its own session.
-    let holder = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+    let holder = crystalline_index::PostgresStore::open_in_schema(scratch.url(), scratch.name())
         .await
         .unwrap();
     let id = holder.domain_id("notes").await.unwrap().expect("notes");
@@ -4397,10 +4360,6 @@ async fn a_domain_another_instance_scores_loads_no_model_and_waits_for_its_claim
     assert_eq!(loads.load(Ordering::SeqCst), 1);
 
     drop((a, b, holder));
-    let cleanup = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-        .await
-        .unwrap();
-    cleanup.drop_schema().await.unwrap();
 }
 
 /// Decision D2: the off switch on a shared database clears only the file
@@ -4410,14 +4369,13 @@ async fn a_domain_another_instance_scores_loads_no_model_and_waits_for_its_claim
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_instance_with_the_check_off_leaves_shared_virtual_rows_alone() {
-    let Some(url) = pg_url() else {
+    let Some(scratch) = crate::support::scratch_schema("ctx") else {
         return;
     };
-    let schema = unique_schema();
     let s = stub();
     let scorer: Arc<dyn ContradictionScorer> = s.clone();
-    let (_ta, a) = instance_on(&url, &schema, "a", scorer.clone()).await;
-    let (_tb, b) = instance_on(&url, &schema, "b", scorer).await;
+    let (_ta, a) = instance_on(scratch.url(), scratch.name(), "a", scorer.clone()).await;
+    let (_tb, b) = instance_on(scratch.url(), scratch.name(), "b", scorer).await;
     three(&b).await;
     assert_eq!(b.score_contradictions().await.unwrap(), scored(1, 1, 0));
     assert_eq!(rows(&b, full().repo).await.len(), 1);
@@ -4438,10 +4396,6 @@ async fn an_instance_with_the_check_off_leaves_shared_virtual_rows_alone() {
     assert_eq!(status["pending_pairs"], 0, "{status}");
 
     drop((a, b));
-    let cleanup = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-        .await
-        .unwrap();
-    cleanup.drop_schema().await.unwrap();
 }
 
 /// A folder `files` under `root` with the 18/20 pair, for a file domain on
@@ -4561,13 +4515,12 @@ async fn scored_hosting_instance(
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_off_switch_on_postgres_clears_the_hosted_file_domain_only() {
-    let Some(url) = pg_url() else {
+    let Some(scratch) = crate::support::scratch_schema("ctx") else {
         return;
     };
-    let schema = unique_schema();
     let folder = tempfile::tempdir().unwrap();
     let dir = files_folder(folder.path());
-    let (_ta, a) = scored_hosting_instance(&url, &schema, &dir).await;
+    let (_ta, a) = scored_hosting_instance(scratch.url(), scratch.name(), &dir).await;
     let vectors = line_hashes(&a).await.len();
     assert!(vectors > 0);
 
@@ -4593,10 +4546,6 @@ async fn the_off_switch_on_postgres_clears_the_hosted_file_domain_only() {
     );
 
     drop(a);
-    let cleanup = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-        .await
-        .unwrap();
-    cleanup.drop_schema().await.unwrap();
 }
 
 /// Review I1 of Task 12: a daemon on a shared database that starts with the
@@ -4606,17 +4555,16 @@ async fn the_off_switch_on_postgres_clears_the_hosted_file_domain_only() {
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_off_restart_on_postgres_clears_the_hosted_file_domain_after_the_sync() {
-    let Some(url) = pg_url() else {
+    let Some(scratch) = crate::support::scratch_schema("ctx") else {
         return;
     };
-    let schema = unique_schema();
     let folder = tempfile::tempdir().unwrap();
     let dir = files_folder(folder.path());
-    let (_ta, a) = scored_hosting_instance(&url, &schema, &dir).await;
+    let (_ta, a) = scored_hosting_instance(scratch.url(), scratch.name(), &dir).await;
     let vectors = line_hashes(&a).await.len();
     drop(a);
 
-    let (_tr, restarted) = hosting_instance(&url, &schema, "a", &dir, "off").await;
+    let (_tr, restarted) = hosting_instance(scratch.url(), scratch.name(), "a", &dir, "off").await;
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let restarted = Arc::new(restarted.with_contradiction_channel(tx));
     assert_eq!(
@@ -4652,10 +4600,6 @@ async fn an_off_restart_on_postgres_clears_the_hosted_file_domain_after_the_sync
     );
 
     drop(restarted);
-    let cleanup = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-        .await
-        .unwrap();
-    cleanup.drop_schema().await.unwrap();
 }
 
 /// The fact cache on a shared database: each instance keeps its own, keyed by
@@ -4664,13 +4608,12 @@ async fn an_off_restart_on_postgres_clears_the_hosted_file_domain_after_the_sync
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn another_instances_write_is_the_one_engram_read_again() {
-    let Some(url) = pg_url() else {
+    let Some(scratch) = crate::support::scratch_schema("ctx") else {
         return;
     };
-    let schema = unique_schema();
     let s = stub();
-    let (_ta, a) = instance_on(&url, &schema, "a", s.clone()).await;
-    let (_tb, b) = instance_on(&url, &schema, "b", s.clone()).await;
+    let (_ta, a) = instance_on(scratch.url(), scratch.name(), "a", s.clone()).await;
+    let (_tb, b) = instance_on(scratch.url(), scratch.name(), "b", s.clone()).await;
     three(&a).await;
     b.embed_pending().await.unwrap();
     assert_eq!(a.score_contradictions().await.unwrap(), scored(1, 1, 0));
@@ -4693,8 +4636,4 @@ async fn another_instances_write_is_the_one_engram_read_again() {
     );
 
     drop((a, b));
-    let cleanup = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-        .await
-        .unwrap();
-    cleanup.drop_schema().await.unwrap();
 }

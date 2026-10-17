@@ -8,11 +8,11 @@
  */
 
 import type { ReactElement } from "react";
-import { Suspense, lazy } from "react";
 
 import type { EngramDetail } from "../api/engram";
+import { lazyPart } from "./lazyPart";
 
-const MoveDialogBody = lazy(() => import("./MoveDialogBody"));
+const MoveDialogBody = lazyPart(() => import("./MoveDialogBody"));
 
 /**
  * What a move hands the page it lands on, in the navigation state: how many
@@ -40,7 +40,8 @@ export interface MoveDialogProps {
 
 export function MoveDialog(props: MoveDialogProps): ReactElement {
   return (
-    <Suspense
+    <MoveDialogBody
+      overlay
       fallback={
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40">
           <p className="rounded border border-slate-200 bg-white px-4 py-2 text-sm text-slate-600 shadow-xl dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
@@ -48,8 +49,7 @@ export function MoveDialog(props: MoveDialogProps): ReactElement {
           </p>
         </div>
       }
-    >
-      <MoveDialogBody {...props} />
-    </Suspense>
+      {...props}
+    />
   );
 }

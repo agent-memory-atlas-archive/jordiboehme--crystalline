@@ -1737,36 +1737,13 @@ fn a_standalone_command_on_another_index_leaves_the_rename_alone() {
 /// of the state directory the journal lives in is what serializes them. A
 /// standalone command while another process holds it leaves the journal
 /// alone; once that process is gone, the same command finishes it. Skipped
-/// with a note unless `CRYSTALLINE_TEST_POSTGRES_URL` is set and `psql` runs.
+/// with a note unless `CRYSTALLINE_TEST_POSTGRES_URL` is set.
 #[test]
 fn two_openers_of_one_postgres_index_never_both_run_a_rename() {
-    let Ok(url) = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") else {
-        eprintln!("note: skipping the postgres leg (CRYSTALLINE_TEST_POSTGRES_URL is unset)");
+    let Some(pg) = PgScratch::new("renpg") else {
         return;
     };
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let schema = format!("renpg_{nanos}");
-    let psql = |sql: &str| {
-        Command::new("psql")
-            .args(["-v", "ON_ERROR_STOP=1", "-q", "-d", &url, "-c", sql])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    };
-    if !psql(&format!("CREATE SCHEMA {schema}")) {
-        eprintln!("note: skipping the postgres leg (psql could not create a schema)");
-        return;
-    }
-    struct DropSchema<'a>(&'a dyn Fn(&str) -> bool, String);
-    impl Drop for DropSchema<'_> {
-        fn drop(&mut self) {
-            (self.0)(&format!("DROP SCHEMA IF EXISTS {} CASCADE", self.1));
-        }
-    }
-    let _cleanup = DropSchema(&psql, schema.clone());
+    let (url, schema) = (pg.url.clone(), pg.schema.clone());
 
     let env = Env::new("renpg");
     let sep = if url.contains('?') { '&' } else { '?' };
@@ -1809,6 +1786,268 @@ fn two_openers_of_one_postgres_index_never_both_run_a_rename() {
     );
     let cfg: GlobalConfig = config::load_yaml(&env.config_path()).unwrap();
     assert!(cfg.domains.contains_key("platform") && !cfg.domains.contains_key("eng"));
+}
+
+/// A sync without a daemon on a shared Postgres database follows the host
+/// lock as the daemon does: it refuses a domain another live instance hosts
+/// and names that instance, a full sync leaves that domain out, and once
+/// the other instance's lock is stale the sync takes it over, keeps the
+/// rows this disk does not have and reports them, until `--accept-disk`
+/// drops them. Skipped with a note unless `CRYSTALLINE_TEST_POSTGRES_URL`
+/// is set.
+#[test]
+fn a_daemonless_sync_refuses_a_domain_another_instance_hosts_on_postgres() {
+    let Some(pg) = PgScratch::new("hostpg") else {
+        return;
+    };
+    let (url, schema) = (pg.url.clone(), pg.schema.clone());
+    let run_sql = |sql: &str| pg.sql(sql);
+
+    let env = Env::new("hostpg");
+    let sep = if url.contains('?') { '&' } else { '?' };
+    let db_url = format!("{url}{sep}options=-c%20search_path%3D{schema},public");
+    std::fs::create_dir_all(env.config_path().parent().unwrap()).unwrap();
+    std::fs::write(
+        env.config_path(),
+        format!(
+            "database:\n  backend: postgres\n  url: \"{db_url}\"\nservice:\n  response_format: json\n"
+        ),
+    )
+    .unwrap();
+    env.setup_domain("eng");
+    let config_path = env.config_path();
+    let config_arg = config_path.to_str().unwrap();
+    // A wipe would delete every instance's rows on a shared database, so a
+    // daemonless reindex refuses it there.
+    let (ok, out, err) = env.run_full(&["reindex", "--wipe", "--config", config_arg]);
+    assert!(!ok, "{out}{err}");
+    assert!(err.contains("a wipe would delete their rows"), "{err}");
+    // Another instance's lock on `eng`, heartbeating at `at`.
+    let lock_by_other = |at: &str| {
+        assert!(run_sql(&format!(
+            "INSERT INTO {schema}.domain_lock(domain_id, holder_instance_id, holder_label, acquired_at, heartbeat_at) \
+             SELECT id, 'other-instance', 'other-instance', '{at}', '{at}' FROM {schema}.domain WHERE name='eng' \
+             ON CONFLICT(domain_id) DO UPDATE SET holder_instance_id=EXCLUDED.holder_instance_id, \
+             holder_label=EXCLUDED.holder_label, heartbeat_at=EXCLUDED.heartbeat_at"
+        )));
+    };
+
+    // This machine's own daemon holding the lock live (a sync with --config
+    // runs beside it): the sync walks and leaves the daemon's lock held.
+    let me = std::fs::read_to_string(env.state_dir().join("instance-id"))
+        .expect("domain add claimed as this machine's instance");
+    let me = me.trim();
+    assert!(run_sql(&format!(
+        "UPDATE {schema}.domain_lock SET holder_instance_id='{me}', heartbeat_at='2999-01-01T00:00:00+00:00' \
+         WHERE domain_id=(SELECT id FROM {schema}.domain WHERE name='eng'); \
+         INSERT INTO {schema}.domain_lock(domain_id, holder_instance_id, holder_label, acquired_at, heartbeat_at) \
+         SELECT id, '{me}', '{me}', '2999-01-01T00:00:00+00:00', '2999-01-01T00:00:00+00:00' FROM {schema}.domain \
+         WHERE name='eng' ON CONFLICT(domain_id) DO NOTHING"
+    )));
+    let (ok, out, err) = env.run_full(&["sync", "--domain", "eng", "--config", config_arg]);
+    assert!(ok, "{out}{err}");
+    assert!(
+        run_sql(&format!(
+            "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM {schema}.domain_lock WHERE holder_instance_id='{me}') \
+             THEN RAISE EXCEPTION 'the daemon''s lock was released'; END IF; END $$"
+        )),
+        "the running daemon keeps its lock"
+    );
+
+    // A live holder: a named sync is refused with its name, a full one
+    // leaves the domain out.
+    lock_by_other("2999-01-01T00:00:00+00:00");
+    let (ok, out, err) = env.run_full(&["sync", "--domain", "eng", "--config", config_arg]);
+    assert!(!ok, "{out}{err}");
+    assert!(err.contains("other-instance"), "{err}");
+    let (ok, out, err) = env.run_full(&["sync", "--config", config_arg]);
+    assert!(ok, "{out}{err}");
+    assert!(err.contains("other-instance"), "the skip is named: {err}");
+    let (ok, out, err) = env.run_full(&["reindex", "--config", config_arg]);
+    assert!(ok, "{out}{err}");
+    assert!(
+        err.contains("other-instance"),
+        "the reindex skips it too: {err}"
+    );
+
+    // A stale holder is taken over, by a reindex as by a sync; the engram
+    // this disk lost stays, and the sync after it reports it.
+    lock_by_other("2000-01-01T00:00:00+00:00");
+    std::fs::remove_file(env.dir.join("kb-eng/seed.md")).unwrap();
+    let (ok, out, err) = env.run_full(&["reindex", "--config", config_arg]);
+    assert!(ok, "{out}{err}");
+    let (ok, out, err) =
+        env.run_full(&["--json", "sync", "--domain", "eng", "--config", config_arg]);
+    assert!(ok, "{out}{err}");
+    let reports: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(
+        reports[0]["only_elsewhere"],
+        serde_json::json!({
+            "previous_host": "other-instance",
+            "engrams": 1,
+            "attachments": 0,
+            "pages": 0,
+            "files": 0,
+        }),
+        "{out}"
+    );
+    let (ok, out, err) = env.run_full(&["sync", "--domain", "eng", "--config", config_arg]);
+    assert!(ok, "{out}{err}");
+    assert!(
+        out.contains("1 engram and 0 Reflection files exist only on other-instance")
+            && out.contains("crystalline sync --domain eng --accept-disk"),
+        "{out}"
+    );
+    let (ok, out, err) = env.run_full(&["status", "--config", config_arg]);
+    assert!(ok, "{out}{err}");
+    assert!(
+        out.contains(
+            "'eng': 1 engram and 0 Reflection files exist only on other-instance; copy the domain folder over or restore it, then sync, or drop them with: crystalline sync --domain eng --accept-disk"
+        ),
+        "{out}"
+    );
+    // Where another instance hosts the domain, the line names that host
+    // instead of a remedy that would be refused here.
+    lock_by_other("2999-01-01T00:00:00+00:00");
+    let (ok, out, err) = env.run_full(&["status", "--config", config_arg]);
+    assert!(ok, "{out}{err}");
+    assert!(
+        out.contains(
+            "'eng': 1 engram and 0 Reflection files exist only on other-instance; other-instance hosts this domain, so resolve it there"
+        ),
+        "{out}"
+    );
+    // A host with no heartbeat for longer than the stale threshold: the
+    // line says how to take the domain over.
+    lock_by_other("2000-01-01T00:00:00+00:00");
+    let (ok, out, err) = env.run_full(&["status", "--config", config_arg]);
+    assert!(ok, "{out}{err}");
+    assert!(
+        out.contains(
+            "other-instance hosts this domain but sends no heartbeat, so take it over with: crystalline sync --domain eng --take-over"
+        ),
+        "{out}"
+    );
+    assert!(run_sql(&format!("DELETE FROM {schema}.domain_lock")));
+
+    // --accept-disk needs one domain, then drops what this disk lacks.
+    let (ok, out, err) = env.run_full(&["sync", "--accept-disk", "--config", config_arg]);
+    assert!(!ok, "{out}{err}");
+    let (ok, out, err) = env.run_full(&[
+        "--json",
+        "sync",
+        "--domain",
+        "eng",
+        "--accept-disk",
+        "--config",
+        config_arg,
+    ]);
+    assert!(ok, "{out}{err}");
+    let reports: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(reports[0]["deleted"], 1, "{out}");
+    assert!(reports[0]["only_elsewhere"].is_null(), "{out}");
+}
+
+/// `crystalline mcp --embedded` on a shared Postgres database is this
+/// machine's instance for its whole session: it claims the domains it
+/// serves under this machine's id, heartbeats the claims as a daemon does,
+/// and gives them back when the client closes the session. Skipped with a
+/// note unless `CRYSTALLINE_TEST_POSTGRES_URL` is set.
+#[test]
+fn the_embedded_stack_hosts_as_this_machine_and_releases_on_postgres() {
+    let Some(pg) = PgScratch::new("embedpg") else {
+        return;
+    };
+    let (url, schema) = (pg.url.clone(), pg.schema.clone());
+    // `eng`'s lock row as `holder|heartbeat`, or empty when there is none.
+    let lock_row = || {
+        pg.text(&format!(
+            "SELECT l.holder_instance_id || '|' || l.heartbeat_at FROM {schema}.domain_lock l \
+             JOIN {schema}.domain d ON d.id = l.domain_id WHERE d.name = 'eng'"
+        ))
+    };
+    let wait_for = |what: &str, done: &dyn Fn(&str) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let row = lock_row();
+            if done(&row) {
+                return row;
+            }
+            assert!(Instant::now() < deadline, "{what}: the lock row is '{row}'");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    };
+
+    let env = Env::new("embedpg");
+    let sep = if url.contains('?') { '&' } else { '?' };
+    let db_url = format!("{url}{sep}options=-c%20search_path%3D{schema},public");
+    std::fs::create_dir_all(env.config_path().parent().unwrap()).unwrap();
+    std::fs::write(
+        env.config_path(),
+        format!(
+            "database:\n  backend: postgres\n  url: \"{db_url}\"\nservice:\n  response_format: json\n"
+        ),
+    )
+    .unwrap();
+    env.setup_domain("eng");
+    let me = std::fs::read_to_string(env.state_dir().join("instance-id"))
+        .expect("domain add claimed as this machine's instance");
+    let me = me.trim().to_string();
+    assert_eq!(lock_row(), "", "domain add gave its lock back");
+
+    let mut cmd = Command::new(bin());
+    env.apply(&mut cmd);
+    let mut child = cmd
+        .env("CRYSTALLINE_HEARTBEAT_SECS", "1")
+        .args(["mcp", "--embedded"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    writeln!(
+        stdin,
+        "{}",
+        json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "it", "version": "0" }
+            }
+        })
+    )
+    .unwrap();
+    let mut line = String::new();
+    out.read_line(&mut line).unwrap();
+    assert!(line.contains("\"result\""), "initialize: {line}");
+    writeln!(
+        stdin,
+        "{}",
+        json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })
+    )
+    .unwrap();
+
+    // Its startup sync claims `eng` under this machine's id.
+    let held = wait_for("the stack claims eng", &|row: &str| {
+        row.starts_with(&format!("{me}|"))
+    });
+    // The heartbeat renews the claim while the session runs.
+    let renewed = wait_for("the heartbeat renews it", &|row: &str| {
+        row.starts_with(&format!("{me}|")) && row != held
+    });
+    assert!(renewed > held, "{held} then {renewed}");
+
+    // Closing the session gives the lock back.
+    drop(stdin);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "the stack ends with the session");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(lock_row(), "", "the session's end released the lock");
 }
 
 /// A sync that names its index with `--config` does not line a domain's
@@ -6105,4 +6344,139 @@ fn serve_refuses_a_half_done_admin_configuration_on_a_fresh_instance() {
         "{text}"
     );
     assert!(!text.contains("never-printed-value"), "{text}");
+}
+
+/// A command without a daemon gives back every host lock its writes claimed
+/// on a shared database, also outside the tool path: a tag rename named to
+/// one domain and one across every domain leave no lock row of this
+/// machine behind. Skipped with a note unless
+/// `CRYSTALLINE_TEST_POSTGRES_URL` is set.
+#[test]
+fn a_daemonless_command_leaves_no_host_lock_behind_on_postgres() {
+    let Some(pg) = PgScratch::new("cmdlock") else {
+        return;
+    };
+    let (url, schema) = (pg.url.clone(), pg.schema.clone());
+    let run_sql = |sql: &str| pg.sql(sql);
+
+    let env = Env::new("cmdlock");
+    let sep = if url.contains('?') { '&' } else { '?' };
+    let db_url = format!("{url}{sep}options=-c%20search_path%3D{schema},public");
+    std::fs::create_dir_all(env.config_path().parent().unwrap()).unwrap();
+    std::fs::write(
+        env.config_path(),
+        format!(
+            "database:\n  backend: postgres\n  url: \"{db_url}\"\nservice:\n  response_format: json\n"
+        ),
+    )
+    .unwrap();
+    env.setup_domain("eng");
+    let config_path = env.config_path();
+    let config_arg = config_path.to_str().unwrap();
+    let no_lock_left = |what: &str| {
+        assert!(
+            run_sql(&format!(
+                "DO $$ BEGIN IF EXISTS (SELECT 1 FROM {schema}.domain_lock) \
+                 THEN RAISE EXCEPTION 'a lock row stayed'; END IF; END $$"
+            )),
+            "{what} left a host lock behind"
+        );
+    };
+    no_lock_left("domain add");
+    let (ok, out, err) = env.run_full(&[
+        "tags", "rename", "t", "t-two", "--domain", "eng", "--yes", "--config", config_arg,
+    ]);
+    assert!(ok, "{out}{err}");
+    no_lock_left("a tag rename in one domain");
+    let (ok, out, err) = env.run_full(&[
+        "tags", "rename", "t-two", "t-three", "--yes", "--config", config_arg,
+    ]);
+    assert!(ok, "{out}{err}");
+    no_lock_left("a tag rename across every domain");
+    let (ok, out, err) = env.run_full(&[
+        "write",
+        "eng",
+        "Later",
+        "--content",
+        "x",
+        "--config",
+        config_arg,
+    ]);
+    assert!(ok, "{out}{err}");
+    no_lock_left("a write");
+}
+
+/// A Postgres schema of its own for a test against the database at
+/// `CRYSTALLINE_TEST_POSTGRES_URL`, made and dropped through the test's own
+/// connection (no `psql` needed). `None`, with a note, when the variable is
+/// unset; a set variable whose database cannot be reached fails the test
+/// and names the fix, never skips it.
+struct PgScratch {
+    url: String,
+    schema: String,
+    runtime: tokio::runtime::Runtime,
+}
+
+impl PgScratch {
+    fn new(prefix: &str) -> Option<PgScratch> {
+        let Ok(url) = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") else {
+            eprintln!("note: skipping the postgres leg (CRYSTALLINE_TEST_POSTGRES_URL is unset)");
+            return None;
+        };
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let pg = PgScratch {
+            url,
+            schema: format!("{prefix}_{nanos}"),
+            runtime: tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        };
+        if let Err(e) = pg.run(&format!("CREATE SCHEMA {}", pg.schema)) {
+            panic!(
+                "CRYSTALLINE_TEST_POSTGRES_URL is set, but its database could not take a test schema ({e}); start the test database or unset the variable"
+            );
+        }
+        Some(pg)
+    }
+
+    /// Run `sql` (one or more statements) on a fresh connection.
+    fn run(&self, sql: &str) -> Result<(), sqlx::Error> {
+        use sqlx::Connection;
+        self.runtime.block_on(async {
+            let mut conn = sqlx::PgConnection::connect(&self.url).await?;
+            sqlx::raw_sql(sqlx::AssertSqlSafe(sql.to_string()))
+                .execute(&mut conn)
+                .await?;
+            Ok(())
+        })
+    }
+
+    /// Whether `sql` ran without an error.
+    fn sql(&self, sql: &str) -> bool {
+        self.run(sql).is_ok()
+    }
+
+    /// The first column of the first row `sql` answers, as text, or empty.
+    fn text(&self, sql: &str) -> String {
+        use sqlx::{Connection, Row};
+        self.runtime.block_on(async {
+            let mut conn = sqlx::PgConnection::connect(&self.url).await.unwrap();
+            sqlx::raw_sql(sqlx::AssertSqlSafe(sql.to_string()))
+                .fetch_optional(&mut conn)
+                .await
+                .unwrap()
+                .and_then(|row| row.try_get::<String, _>(0).ok())
+                .unwrap_or_default()
+        })
+    }
+}
+
+impl Drop for PgScratch {
+    fn drop(&mut self) {
+        let _ = self.run(&format!("DROP SCHEMA IF EXISTS {} CASCADE", self.schema));
+    }
 }

@@ -37,17 +37,13 @@ export function BackupCard({
   const reasonId = useId();
   const disabledReason = renaming ? RENAMING_REASON : undefined;
   return (
-    <section
-      aria-labelledby={headingId}
-      className="flex flex-col gap-3 rounded border border-slate-200 p-4 dark:border-slate-800"
-    >
+    <section aria-labelledby={headingId} className="flex flex-col gap-4">
       <h2 id={headingId} className="text-section">
         Backup
       </h2>
       <p className="text-sm text-slate-600 dark:text-slate-400">
-        A zip of every engram in this domain, exactly as they are on disk. The
-        same zip is what an import reads, so a domain can be carried to another
-        instance or restored into this one.
+        A zip of every engram in this domain, as they are on disk. An import
+        reads the same zip.
       </p>
       <div className="flex flex-wrap items-center gap-2">
         {/*

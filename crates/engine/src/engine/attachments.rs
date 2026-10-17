@@ -108,8 +108,21 @@ impl Engine {
         path: &str,
         bytes: Vec<u8>,
     ) -> Result<AttachmentRow> {
+        self.attachment_write_ruled(domain, path, bytes, ReplaceRule::Allow)
+            .await
+    }
+
+    /// [`Engine::attachment_write`] under `replace`, which decides whether a
+    /// file already at the path may be replaced.
+    async fn attachment_write_ruled(
+        &self,
+        domain: &str,
+        path: &str,
+        bytes: Vec<u8>,
+        replace: ReplaceRule,
+    ) -> Result<AttachmentRow> {
         Ok(self
-            .asset_write_in(AssetHome::Engram, domain, path, bytes, ReplaceRule::Allow)
+            .asset_write_in(AssetHome::Engram, domain, path, bytes, replace)
             .await?
             .row)
     }
@@ -144,11 +157,19 @@ impl Engine {
     /// is the same question: there is no identity for a draft to belong to.
     /// The surface gate in front of it (REST `require_domain_write`) still
     /// stands where it always did.
+    ///
+    /// `create_only` refuses a path that already holds a file with
+    /// [`EngineError::Conflict`] ending in [`crate::engine::ASSET_EXISTS`].
+    /// The check runs under the file's per-file lock either way: in the folder
+    /// the folder file's, in an overlay the overlay file's, where it asks what
+    /// this actor's view shows (its own bytes, or a reviewed file it has not
+    /// deleted).
     pub(crate) async fn attachment_write_in(
         &self,
         view: &DomainView<'_>,
         path: &str,
         bytes: Vec<u8>,
+        create_only: bool,
     ) -> Result<WrittenAttachment> {
         if self.read_only {
             return Err(EngineError::ReadOnly);
@@ -163,7 +184,11 @@ impl Engine {
             )));
         }
         if let Some(actor) = view.actor() {
-            let row = view.put_file(path, &bytes).await?;
+            let row = if create_only {
+                view.put_file_if_absent(path, &bytes).await?
+            } else {
+                view.put_file(path, &bytes).await?
+            };
             // The write IS the resolution, for a file. A conflict resolution
             // settles an engram's markdown and `origin_resolve` says so to
             // anybody who names an attachment path; what settles a file is
@@ -175,7 +200,14 @@ impl Engine {
             crate::maintenance::record_pending(view.domain());
             return Ok(WrittenAttachment { row, draft: true });
         }
-        let row = self.attachment_write(view.domain(), path, bytes).await?;
+        let replace = if create_only {
+            ReplaceRule::CreateOnly
+        } else {
+            ReplaceRule::Allow
+        };
+        let row = self
+            .attachment_write_ruled(view.domain(), path, bytes, replace)
+            .await?;
         Ok(WrittenAttachment { row, draft: false })
     }
 
@@ -192,7 +224,7 @@ impl Engine {
             return Err(EngineError::ReadOnly);
         }
         self.refuse_read_only_domain(domain, scope).await?;
-        self.attachment_write_joined(domain, path, bytes, scope, None)
+        self.attachment_write_joined(domain, path, bytes, scope, None, false)
             .await
     }
 
@@ -210,6 +242,11 @@ impl Engine {
     /// The path screen is the save's, for the same reason and in the same
     /// words: a caller who can see a draft but has not joined it is told what
     /// their two ways forward are rather than having one chosen for them.
+    ///
+    /// `create_only` refuses a path that already holds a file with
+    /// [`EngineError::Conflict`] ending in [`crate::engine::ASSET_EXISTS`]
+    /// rather than replacing it: in the folder under the file's lock, in an
+    /// overlay against what this actor's view shows.
     pub async fn attachment_write_joined(
         &self,
         domain: &str,
@@ -217,6 +254,7 @@ impl Engine {
         bytes: Vec<u8>,
         scope: &crate::scope::Scope,
         join: Option<&crate::join::Join>,
+        create_only: bool,
     ) -> Result<WrittenAttachment> {
         if self.read_only {
             return Err(EngineError::ReadOnly);
@@ -237,7 +275,8 @@ impl Engine {
             }
             _ => self.screen_granted_path(domain, path, scope, None).await?,
         }
-        self.attachment_write_in(&view, path, bytes).await
+        self.attachment_write_in(&view, path, bytes, create_only)
+            .await
     }
 
     /// Remove one attachment as this caller sees the domain, answering whether
@@ -835,37 +874,35 @@ impl Engine {
             // The successor's side of the pair goes through the same one arm,
             // for the same reasons: in review mode nothing this verb writes
             // belongs in the folder the team reviewed, and a successor
-            // somebody has open is a document rather than a file. The text the
-            // "already said this" test reads is that same text, so a
-            // re-retirement appends nothing twice whichever of the three the
-            // successor is living in at that moment.
-            let current = match self.live_text_at(succ_desc, &view).await {
-                Some(live) => live.text,
-                None => match overlay {
-                    Some(_) => view.text_at(succ_source, succ_desc).await?.ok_or_else(|| {
-                        EngineError::NotFound(format!(
-                            "no engram '{}' in domain '{}'",
-                            succ_desc.permalink, succ_desc.domain
-                        ))
-                    })?,
-                    None => self.load_content(succ_source, succ_desc).await?,
-                },
-            };
-            if !already(&current) {
-                let succ_warning = self
-                    .apply_source_edit(
-                        succ_desc,
-                        succ_source,
-                        &view,
-                        None,
-                        &actor,
-                        None,
-                        scope,
-                        |c| Ok(append_body(c, &line)),
-                    )
-                    .await?;
-                warning = warning.or(succ_warning);
-            }
+            // somebody has open is a document rather than a file. The
+            // "already said this" test reads the very text the edit is applied
+            // to, whichever of the three the successor is living in at that
+            // moment, and an edit that then changes nothing writes nothing, so
+            // a re-retirement appends nothing twice and stamps nothing.
+            let succ_warning = self
+                .apply_source_edit_staged(
+                    succ_desc,
+                    succ_source,
+                    &view,
+                    None,
+                    &actor,
+                    None,
+                    scope,
+                    None,
+                    true,
+                    false,
+                    |c| {
+                        Ok(if already(c) {
+                            c.to_string()
+                        } else {
+                            append_body(c, &line)
+                        })
+                    },
+                )
+                .await
+                .map(|edited| edited.warning)
+                .map_err(|failure| failure.error)?;
+            warning = warning.or(succ_warning);
         }
         self.nudge_embed();
 
@@ -1143,6 +1180,7 @@ impl Engine {
                 None,
                 scope,
                 None,
+                false,
                 false,
                 |current| {
                     Self::replanned_split_source(&plan, current, p, &desc.permalink, &back_link)

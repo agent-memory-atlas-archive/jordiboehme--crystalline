@@ -433,7 +433,7 @@ impl Engine {
             Some(crystalline_core::config::ReviewMode::Overlay) => {
                 self.enable_review_mode(domain, &entry, previewing).await
             }
-            None => self.leave_review_mode(domain, &entry, confirm).await,
+            None => self.leave_review_mode(domain, &entry, confirm, scope).await,
         }
     }
 
@@ -515,6 +515,7 @@ impl Engine {
         domain: &str,
         entry: &DomainEntry,
         confirm: ReviewModeConfirm,
+        scope: &crate::scope::Scope,
     ) -> Result<Value> {
         let root = entry.file_path();
         let domain_id = {
@@ -590,6 +591,16 @@ impl Engine {
             )));
         }
 
+        // A folded MANIFEST draft can switch the Reflection off. Its rooms
+        // are saved and closed first, while the folder still says on, the
+        // way the policy edit closes them: the sweep below would save them
+        // too, but it tells their sockets `internal`, not why they closed.
+        if let Some(root) = &root
+            && folds_switch_off(root, &folding)
+        {
+            self.close_reflection_rooms(domain).await;
+        }
+
         // The key comes off first, and then the rooms go, and that pair is the
         // whole of step 2: see the ordering on [`Engine::set_review_mode`].
         //
@@ -639,6 +650,10 @@ impl Engine {
             store.list_engrams(domain, None, None).await?
         };
         if let Some(refusal) = review::collision(domain, &folding, &base) {
+            // A fold that would switch the Reflection off has closed its rooms
+            // with `switched_off` already, and nothing was folded. That is
+            // harmless: each of those rooms saved its text first, and its
+            // editors can open the page again.
             self.write_review_key(domain, Some(crystalline_core::config::ReviewMode::Overlay))?;
             return Err(EngineError::Conflict(format!(
                 "{refusal}. The folder changed while this domain's co-editing rooms were being \
@@ -647,6 +662,8 @@ impl Engine {
             )));
         }
 
+        // A folded MANIFEST draft may move the switch.
+        let switch_before = self.reflection_switch(domain);
         let mut folded = Vec::new();
         let mut discarded = Vec::new();
         for held in &drafts {
@@ -746,6 +763,7 @@ impl Engine {
         // daemon restarted.
         let synced = self.sync(Some(domain)).await;
         self.refresh_routing_cache().await;
+        self.announce_switch_if_moved(domain, switch_before, change_label(scope));
         self.nudge_embed();
         synced?;
 
@@ -780,6 +798,7 @@ impl Engine {
             if file.tombstone {
                 let lock = self.write_lock(&abs);
                 let guard = lock.lock().await;
+                let before = std::fs::read(&abs).ok();
                 match std::fs::remove_file(&abs) {
                     Ok(()) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -790,9 +809,16 @@ impl Engine {
                         });
                     }
                 }
-                let store = self.store.lock().await;
-                store.delete_attachment(domain_id, &file.path).await?;
-                drop(store);
+                let fenced = self
+                    .fenced_attachment_row(
+                        domain_id,
+                        root,
+                        super::fence::AttachmentRowOp::Delete(&file.path),
+                    )
+                    .await;
+                if let Err(e) = fenced {
+                    return Err(self.refuse_file_change(e, domain, vec![(abs, before, None)]));
+                }
                 drop(guard);
                 deleted += 1;
                 continue;
@@ -813,10 +839,15 @@ impl Engine {
             // here. See `Engine::write_lock`.
             let lock = self.write_lock(&abs);
             let _guard = lock.lock().await;
+            let before = std::fs::read(&abs).ok();
             write_bytes(&abs, &bytes)?;
             let row = attachment_row(&file.path, &bytes, asset_modified(&abs))?;
-            let store = self.store.lock().await;
-            store.upsert_attachment(domain_id, &row).await?;
+            let fenced = self
+                .fenced_attachment_row(domain_id, root, super::fence::AttachmentRowOp::Upsert(&row))
+                .await;
+            if let Err(e) = fenced {
+                return Err(self.refuse_file_change(e, domain, vec![(abs, before, Some(bytes))]));
+            }
             written += 1;
         }
         Ok((written, deleted))
@@ -1049,6 +1080,8 @@ impl Engine {
         let store = self.store.lock().await;
         let domain_id = store.upsert_domain(name, path_str.as_deref(), kind).await?;
         store.clear_domain(domain_id).await?;
+        // Its rows are gone: what the Reflection gate remembered of them too.
+        self.bump_reflection_generation(name);
         // Then the row itself, so the name is free for a rename or an
         // adoption onto it - unless another live instance on a shared index
         // still hosts the domain, whose registration is a registration. The
@@ -1386,6 +1419,9 @@ impl Engine {
                     let id = store.upsert_domain(&row.name, path, row.kind).await?;
                     store.clear_domain(id).await?;
                     drop(store);
+                    // No announce follows a collection, so the rows the
+                    // Reflection gate may remember of the name go here.
+                    self.bump_reflection_generation(&row.name);
                     // Its contradiction rows went with the clear, so the
                     // pass must not remember the domain as settled.
                     self.forget_contradiction_domain(&row.name);
@@ -1448,6 +1484,11 @@ impl Engine {
                     let store = self.store.lock().await;
                     let dropped = store.drop_empty_domain_row(&row.name).await?;
                     drop(store);
+                    if dropped {
+                        // The row id the Reflection gate may remember
+                        // went with the row.
+                        self.bump_reflection_generation(&row.name);
+                    }
                     entry["row_dropped"] = json!(dropped);
                 } else {
                     entry["row_droppable"] = json!(true);
@@ -1493,6 +1534,23 @@ impl Engine {
         }
         Ok(report)
     }
+}
+
+/// Whether folding `folding` (in fold order, the last MANIFEST draft wins)
+/// switches the Reflection of the domain at `root` off: the MANIFEST in the
+/// folder says `reflection: on` and the one the fold leaves does not (a
+/// deleted MANIFEST says nothing, so it is off too).
+fn folds_switch_off(root: &Path, folding: &[&ActorDrafts]) -> bool {
+    let landing = folding
+        .iter()
+        .flat_map(|held| held.entries.iter())
+        .rfind(|draft| draft.path == "MANIFEST.md");
+    let Some(draft) = landing else {
+        return false;
+    };
+    let before = std::fs::read_to_string(root.join("MANIFEST.md")).unwrap_or_default();
+    (draft.tombstone || !super::reflection::declares_on(&draft.content))
+        && super::reflection::declares_on(&before)
 }
 
 /// Whether folding `folding` (in fold order, the last MANIFEST draft wins)

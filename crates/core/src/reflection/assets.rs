@@ -43,7 +43,10 @@ pub fn classify_target(target: &str, reflection_path: &str) -> AssetTarget {
             _ => AssetTarget::Other,
         };
     }
-    if target.is_empty() || target.contains("://") || target.starts_with("mailto:") {
+    // Any other URL scheme (RFC 3986, case-insensitive) is a URL, never a
+    // file: `javascript:x//../assets/a.png` and a drive letter `C:/a.png`
+    // included.
+    if target.is_empty() || has_url_scheme(target) {
         return AssetTarget::Other;
     }
     // A browser resolving a relative link reads `\` as `/`, so a backslash
@@ -75,6 +78,23 @@ pub fn classify_target(target: &str, reflection_path: &str) -> AssetTarget {
     } else {
         AssetTarget::Other
     }
+}
+
+/// Whether `target` starts with an RFC 3986 scheme: a letter, then letters,
+/// digits, `+`, `-` or `.`, then `:`, before any `/`, `?` or `#`.
+fn has_url_scheme(target: &str) -> bool {
+    let mut chars = target.chars();
+    if !chars.next().is_some_and(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    for c in chars {
+        match c {
+            ':' => return true,
+            c if c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.') => {}
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// The distinct files under `reflections/assets/` a reflection (or any part

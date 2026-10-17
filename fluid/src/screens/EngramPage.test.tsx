@@ -6,8 +6,8 @@
  * one the index looked for and did not find is marked and left unlinked; the
  * details panel shows the fields the engram carries and invents nothing for
  * the ones it does not, which for the temporal fields is the difference between
- * "valid forever" and a date nobody wrote. Backlinks are counted by relation
- * across the whole index rather than drawn from the capped neighborhood, they
+ * "valid forever" and a date nobody wrote. Inbound links are read from the inbound
+ * endpoint rather than drawn from the capped neighborhood, they
  * cost no request at all when the detail payload already counted none, and the
  * empty case says so plainly instead of pretending the panel is still loading.
  */
@@ -175,27 +175,23 @@ function graphResponse(overrides: Record<string, unknown> = {}) {
  * because the endpoint answers both, differing only in whether a relation was
  * named.
  */
-function inboundResponse(path: string) {
-  const rel = new URLSearchParams(path.split("?")[1] ?? "").get("rel");
+function inboundResponse(_path: string) {
   return {
     total: 1,
     page: 1,
-    limit: rel === null ? 1 : 20,
-    count: rel === null ? 0 : 1,
+    limit: 20,
+    count: 1,
     types: [{ rel: "links_to", count: 1 }],
-    hits:
-      rel === null
-        ? []
-        : [
-            {
-              domain: "eng",
-              permalink: "notes/beta",
-              title: "Beta",
-              path: "notes/beta.md",
-              rel: "links_to",
-              status: "stable",
-            },
-          ],
+    hits: [
+      {
+        domain: "eng",
+        permalink: "notes/beta",
+        title: "Beta",
+        path: "notes/beta.md",
+        rel: "links_to",
+        status: "stable",
+      },
+    ],
   };
 }
 
@@ -271,9 +267,14 @@ describe("the engram page", () => {
     expect(
       screen.queryByRole("link", { name: "Edit" }),
     ).not.toBeInTheDocument();
+    // The menu stays for the utilities; the write rows are not in it.
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "More actions" }));
     expect(
-      screen.queryByRole("button", { name: "More actions" }),
-    ).not.toBeInTheDocument();
+      await screen.findByRole("menuitem", { name: "Share link" }),
+    ).toBeVisible();
+    expect(screen.queryByRole("menuitem", { name: "Move" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Retire" })).toBeNull();
   });
 
   it("a domain off this caller's write list offers no Edit and wears no lock", async () => {
@@ -405,7 +406,13 @@ describe("the engram page", () => {
 
     renderApp("/d/eng/e/alpha");
 
-    expect(await screen.findByText("decision")).toBeVisible();
+    // Status and type are on the meta line under the title, once (and in
+    // the printed title block, which the screen never shows).
+    const shown = (await screen.findAllByText("decision")).filter(
+      (element) => element.closest("[data-print]") === null,
+    );
+    expect(shown).toHaveLength(1);
+    expect(shown[0]).toBeVisible();
     expect(screen.getByRole("link", { name: "#one" })).toHaveAttribute(
       "href",
       "/search?tags=one",
@@ -561,38 +568,24 @@ describe("the engram page", () => {
     renderApp("/d/eng/e/alpha");
 
     const trail = await screen.findByRole("navigation", { name: "Breadcrumb" });
-    // The domain is the one crumb that leads somewhere: there is no route for
-    // a folder to point at, and the leaf is the page the reader is on.
-    expect(within(trail).getByRole("link", { name: "eng" })).toHaveAttribute(
-      "href",
-      "/d/eng",
-    );
+    // The domain is in the top bar: on screen the trail is folders and the
+    // title. The leaf is the page the reader is on.
+    expect(within(trail).queryByRole("link", { name: "eng" })).toBeNull();
     expect(within(trail).getByText("Alpha")).toHaveAttribute(
       "aria-current",
       "page",
     );
   });
 
-  it("counts what points here by relation, and opens onto them on request", async () => {
+  it("names what links here in the rail, each with its relation", async () => {
     serve();
 
     renderApp("/d/eng/e/alpha");
 
-    const panel = await screen.findByRole("region", { name: "Backlinks" });
-    // The counts are of the whole index rather than of the capped
-    // neighborhood, so the panel is a chip per relation and no rows at all
-    // until one is opened.
-    const chip = await within(panel).findByRole("button", {
-      name: /links_to/,
-    });
-    expect(chip).toHaveTextContent("1");
-    expect(within(panel).queryByRole("link")).toBeNull();
-
-    await userEvent.click(chip);
-
-    expect(
-      await screen.findByRole("link", { name: "Beta, eng / notes/beta.md" }),
-    ).toHaveAttribute("href", "/d/eng/e/notes/beta");
+    const block = await screen.findByRole("region", { name: "Linked from" });
+    const link = await within(block).findByRole("link", { name: "Beta" });
+    expect(link).toHaveAttribute("href", "/d/eng/e/notes/beta");
+    expect(block).toHaveTextContent("links_to");
   });
 
   it("says what the server said when what points here could not be read", async () => {
@@ -607,7 +600,7 @@ describe("the engram page", () => {
 
     renderApp("/d/eng/e/alpha");
 
-    const panel = await screen.findByRole("region", { name: "Backlinks" });
+    const panel = await screen.findByRole("region", { name: "Linked from" });
     const alert = await within(panel).findByRole("alert");
     // The server's own words, the way every other error surface in this app
     // shows them: a house sentence would hide the one thing worth reading.
@@ -627,7 +620,7 @@ describe("the engram page", () => {
 
     expect(await screen.findByText(/nothing links here yet/i)).toBeVisible();
     expect(apiMock.mock.calls.map((call) => String(call[0]))).not.toContain(
-      "/domains/eng/inbound/alpha?page=1&limit=1",
+      "/domains/eng/inbound/alpha?page=1&limit=20",
     );
   });
 
@@ -726,45 +719,158 @@ describe("the engram page", () => {
     });
   });
 
-  it("puts the utilities on the row as icons and the writes behind one menu", async () => {
+  it("puts Edit as a secondary button and everything else behind More actions", async () => {
     serve();
 
     renderApp("/d/eng/e/alpha");
 
-    // A quiet strip of icons, then the one labelled thing somebody came to
-    // this header for. Each icon carries EXACTLY the name its menu row carried,
-    // because the name is the whole contract a keyboard or a screen reader
-    // holds over a control with no text in it.
-    for (const name of ["Share link", "Download as Markdown", "Print view"]) {
-      expect(await screen.findByRole("button", { name })).toBeVisible();
+    const edit = await screen.findByRole("link", { name: "Edit" });
+    expect(edit).toHaveAttribute("href", "/d/eng/edit/alpha");
+    // Secondary, not the filled primary (spec 3.1).
+    expect(edit.className).not.toContain("bg-accent-700");
+    expect(edit.className).toContain("border");
+    // None of the rows is a button on the row any more.
+    for (const name of [
+      "Share link",
+      "Download as Markdown",
+      "Print view",
+      "Move",
+      "Retire",
+    ]) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
     }
-    expect(screen.getByRole("link", { name: "Edit" })).toHaveAttribute(
-      "href",
-      "/d/eng/edit/alpha",
-    );
-    expect(screen.queryByRole("button", { name: "Retire" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Move" })).toBeNull();
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "More actions" }));
 
-    // What is left behind the fold is what belongs there: the move, and the
-    // destructive one alone under a rule.
-    for (const name of ["Move", "Retire"]) {
-      expect(await screen.findByRole("menuitem", { name })).toBeVisible();
-    }
-    // And nothing is offered twice.
-    for (const name of ["Share link", "Download as Markdown", "Print view"]) {
-      expect(screen.queryByRole("menuitem", { name })).toBeNull();
+    // The utilities lead, then a rule, then Move and Retire.
+    const rows = (await screen.findAllByRole("menuitem")).map(
+      (row) => row.textContent,
+    );
+    expect(rows).toEqual([
+      "Share link",
+      "Download as Markdown",
+      "Print view",
+      "Move",
+      "Retire",
+    ]);
+    expect(screen.getAllByRole("separator")).toHaveLength(1);
+  });
+
+  it("draws Retire in red and no other row", async () => {
+    serve();
+    renderApp("/d/eng/e/alpha");
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "More actions" }),
+    );
+    expect(
+      (await screen.findByRole("menuitem", { name: "Retire" })).className,
+    ).toContain("text-red-700");
+    for (const name of [
+      "Share link",
+      "Download as Markdown",
+      "Print view",
+      "Move",
+    ]) {
+      expect(screen.getByRole("menuitem", { name }).className).not.toContain(
+        "text-red",
+      );
     }
   });
 
-  it("names each icon on hover without renaming it", async () => {
+  it("opens with Enter, walks with the arrows and gives focus back on Escape", async () => {
+    serve();
+    renderApp("/d/eng/e/alpha");
+    const user = userEvent.setup();
+    const more = await screen.findByRole("button", { name: "More actions" });
+    more.focus();
+    await user.keyboard("{Enter}");
+    const share = await screen.findByRole("menuitem", { name: "Share link" });
+    await waitFor(() => {
+      expect(share).toHaveFocus();
+    });
+    await user.keyboard("{ArrowDown}");
+    expect(
+      screen.getByRole("menuitem", { name: "Download as Markdown" }),
+    ).toHaveFocus();
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+    expect(more).toHaveFocus();
+  });
+
+  it("offers an editor who may write the write rows and a read-only reader only the utilities", async () => {
+    serve({ "/auth/me": () => meResponse({ anonymous: true }) });
+    renderApp("/d/eng/e/alpha");
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "More actions" }),
+    );
+    const rows = (await screen.findAllByRole("menuitem")).map(
+      (row) => row.textContent,
+    );
+    expect(rows).toEqual(["Share link", "Download as Markdown", "Print view"]);
+    expect(screen.queryByRole("separator")).toBeNull();
+  });
+
+  it("names the trail by folder and title, folders linking to their page", async () => {
+    serve({
+      "/domains/eng/engrams/deploy/night": () =>
+        detailResponse({
+          permalink: "deploy/night",
+          title: "Night Deploys",
+          path: "deploy/night.md",
+          url: "crystalline://eng/deploy/night",
+        }),
+    });
+    renderApp("/d/eng/e/deploy/night");
+    const trail = await screen.findByRole("navigation", { name: "Breadcrumb" });
+    expect(within(trail).getByRole("link", { name: "deploy" })).toHaveAttribute(
+      "href",
+      "/d/eng?path=deploy",
+    );
+    expect(within(trail).getByText("Night Deploys")).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    // The domain is in the bar; the trail holds it for print only.
+    expect(within(trail).queryByRole("link", { name: "eng" })).toBeNull();
+  });
+
+  it("puts status, type and the parsed description on one line under the title", async () => {
+    // The file writes it as a folded block scalar; the page shows the engine's
+    // parsed text and never the source's `>-`.
+    serve({
+      "/domains/eng/engrams/alpha": () => {
+        const base = detailResponse();
+        return detailResponse({
+          content:
+            "---\ndescription: >-\n  Why we deploy\n  at night\n---\n# Alpha\n\nBody.\n",
+          frontmatter: {
+            ...(base.frontmatter as Record<string, unknown>),
+            description: "Why we deploy at night",
+          },
+        });
+      },
+    });
+    renderApp("/d/eng/e/alpha");
+    const meta = await screen.findByLabelText("About this engram");
+    expect(meta).toHaveTextContent("superseded");
+    expect(meta).toHaveTextContent("decision");
+    const text = within(meta).getByText("Why we deploy at night");
+    expect(text).toHaveAttribute("title", "Why we deploy at night");
+    expect(text.className).toContain("line-clamp-2");
+    expect(meta.textContent).not.toContain(">-");
+  });
+
+  it("names the ellipsis on hover without renaming it", async () => {
     serve();
 
     renderApp("/d/eng/e/alpha");
 
-    const share = await screen.findByRole("button", { name: "Share link" });
+    const share = await screen.findByRole("button", { name: "More actions" });
     // Nothing hangs over the row until it is asked for, and when it is, the
     // words are the ones the control is already called. The browser's own
     // tooltip is gone: two labels for one button, drawn a beat apart, is
@@ -776,9 +882,9 @@ describe("the engram page", () => {
     await user.hover(share);
     expect(
       await screen.findByRole("tooltip", {}, { timeout: 2000 }),
-    ).toHaveTextContent("Share link");
+    ).toHaveTextContent("More actions");
     // The accessible name is still the label alone: a tooltip describes.
-    expect(screen.getByRole("button", { name: "Share link" })).toBe(share);
+    expect(screen.getByRole("button", { name: "More actions" })).toBe(share);
   });
 
   it("carries the actions in the trail's own row, leaving the title alone", async () => {
@@ -820,7 +926,12 @@ describe("the engram page", () => {
     renderApp("/d/eng/e/alpha");
 
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Print view" }));
+    await user.click(
+      await screen.findByRole("button", { name: "More actions" }),
+    );
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Print view" }),
+    );
 
     expect(print).toHaveBeenCalled();
     print.mockRestore();
@@ -842,23 +953,6 @@ describe("the engram page", () => {
     ).toBeVisible();
   });
 
-  it("offers a reader who may not write the utilities and nothing else", async () => {
-    serve({ "/auth/me": () => meResponse({ anonymous: true }) });
-
-    renderApp("/d/eng/e/alpha");
-
-    await screen.findByRole("heading", { name: "Alpha" });
-    expect(screen.queryByRole("link", { name: "Edit" })).toBeNull();
-
-    // The three utilities are everybody's, and they are the whole row now.
-    for (const name of ["Share link", "Download as Markdown", "Print view"]) {
-      expect(screen.getByRole("button", { name })).toBeVisible();
-    }
-    // The writes are absent, which leaves the menu with nothing to hold: an
-    // ellipsis that opens onto an empty panel is worse than no ellipsis.
-    expect(screen.queryByRole("button", { name: "More actions" })).toBeNull();
-  });
-
   it("keeps the graph folded away until somebody asks for it", async () => {
     serve();
 
@@ -869,6 +963,45 @@ describe("the engram page", () => {
     const toggle = await screen.findByRole("button", { name: /neighborhood/i });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByTestId("canvas")).toBeNull();
+  });
+
+  it("puts the two Explore rows in the rail, with the old names", async () => {
+    serve();
+
+    renderApp("/d/eng/e/alpha");
+
+    const explore = await screen.findByRole("region", { name: "Explore" });
+    // The rail holds the switches and the panels stay under the prose.
+    expect(
+      within(explore).getByRole("button", { name: "Show the neighborhood" }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      within(explore).getByRole("button", {
+        name: "Show what an agent is taught",
+      }),
+    ).toHaveAttribute("aria-controls", "engram-agents-eye-panel");
+    expect(screen.queryByRole("region", { name: /agent/i })).toBeNull();
+  });
+
+  it("opens the Explore rows from the keyboard and hides them again", async () => {
+    serve();
+
+    renderApp("/d/eng/e/alpha");
+    const row = await screen.findByRole("button", {
+      name: "Show what an agent is taught",
+    });
+
+    row.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(
+      await screen.findByRole("region", { name: /agent/i }),
+    ).toHaveTextContent("Route here for eng questions.");
+    expect(
+      screen.getByRole("button", { name: "Hide what an agent is taught" }),
+    ).toHaveAttribute("aria-expanded", "true");
+
+    await userEvent.keyboard(" ");
+    expect(screen.queryByRole("region", { name: /agent/i })).toBeNull();
   });
 
   it("draws the neighborhood the page already read, on request", async () => {
@@ -910,6 +1043,24 @@ describe("the engram page", () => {
     expect(
       screen.getByRole("button", { name: /what an agent is taught/i }),
     ).toHaveAttribute("aria-expanded", "true");
+    // And the panels themselves are drawn on that first paint.
+    expect(await screen.findByRole("region", { name: /agent/i })).toBeVisible();
+    expect(await screen.findByTestId("canvas")).toBeVisible();
+  });
+
+  it("keeps each Explore row's target in the page while its panel is closed", async () => {
+    serve();
+
+    renderApp("/d/eng/e/alpha");
+    const row = await screen.findByRole("button", {
+      name: "Show the neighborhood",
+    });
+
+    const target = document.getElementById(
+      row.getAttribute("aria-controls") ?? "",
+    );
+    expect(target).not.toBeNull();
+    expect(target).toBeEmptyDOMElement();
   });
 
   it("keeps the agent's-eye view folded away until somebody asks for it", async () => {
@@ -1038,7 +1189,7 @@ describe("the engram page at full width", () => {
     await screen.findByRole("heading", { name: "Alpha" });
 
     expect(screen.queryByRole("region", { name: "Details" })).toBeNull();
-    expect(screen.queryByRole("region", { name: "Backlinks" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Linked from" })).toBeNull();
     // One column at every width, so the body has the whole of it.
     expect(main.querySelector('[class*="lg:grid-cols-"]')).toBeNull();
 
@@ -1053,6 +1204,12 @@ describe("the engram page at full width", () => {
     // and the agent's eye already stand.
     expect(
       await screen.findByRole("region", { name: "Attachments" }),
+    ).toBeVisible();
+    // The Explore rows have no rail to stand in, so they stand in the column.
+    const explore = screen.getByRole("region", { name: "Explore" });
+    expect(explore.closest("aside")).toBeNull();
+    expect(
+      within(explore).getByRole("button", { name: "Show the neighborhood" }),
     ).toBeVisible();
   });
 
@@ -1100,7 +1257,7 @@ describe("the engram page at full width", () => {
     const main = await screen.findByRole("main");
 
     expect(
-      await screen.findByRole("region", { name: "Backlinks" }),
+      await screen.findByRole("region", { name: "Linked from" }),
     ).toBeVisible();
     expect(main.querySelector('[class*="lg:grid-cols-"]')).not.toBeNull();
     // Exactly one of it either way: the panel's copy is the only copy here.
@@ -1207,7 +1364,10 @@ describe("the engram page at full width", () => {
       renderApp("/d/eng/e/alpha");
 
       await userEvent.click(
-        await screen.findByRole("button", { name: "Share link" }),
+        await screen.findByRole("button", { name: "More actions" }),
+      );
+      await userEvent.click(
+        await screen.findByRole("menuitem", { name: "Share link" }),
       );
 
       expect(writeText).toHaveBeenCalledWith(PAGE);
@@ -1681,6 +1841,77 @@ describe("what changed on this page", () => {
     // where it cannot be typed into by accident.
     expect(await screen.findByText("What changed on this page")).toBeVisible();
     expect(screen.queryByText("Discard this change")).toBeNull();
+  });
+});
+
+describe("a domain's MANIFEST on the engram page", () => {
+  /** The same engram, at `path`, on a domain of the given kind. */
+  function serveAt(path: string, kind: "file" | "virtual") {
+    serve({
+      "/domains": () => ({
+        ...domainsResponse(),
+        domains: [{ ...domainsResponse().domains[0], kind }],
+      }),
+      "/domains/eng/engrams/alpha": () => detailResponse({ path }),
+    });
+  }
+
+  it("the MANIFEST page offers no move, no permanent delete and no retire", async () => {
+    serveAt("MANIFEST.md", "file");
+    renderApp("/d/eng/e/alpha");
+    await screen.findByRole("link", { name: "Edit" });
+    // The menu holds the utilities only: no Move, no Retire.
+    await userEvent.click(screen.getByRole("button", { name: "More actions" }));
+    expect(
+      await screen.findByRole("menuitem", { name: "Share link" }),
+    ).toBeVisible();
+    expect(screen.queryByRole("menuitem", { name: "Move" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Retire" })).toBeNull();
+    await userEvent.keyboard("{Escape}");
+    await userEvent.keyboard("{Meta>}k{/Meta}");
+    expect(await screen.findByText("Edit engram")).toBeVisible();
+    expect(screen.queryByText("Move engram")).toBeNull();
+    expect(screen.queryByText("Retire engram")).toBeNull();
+  });
+
+  it("a virtual domain's MANIFEST keeps move and delete", async () => {
+    serveAt("MANIFEST.md", "virtual");
+    renderApp("/d/eng/e/alpha");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "More actions" }),
+    );
+    expect(await screen.findByRole("menuitem", { name: "Move" })).toBeVisible();
+    await userEvent.click(screen.getByRole("menuitem", { name: "Retire" }));
+    const dialog = await screen.findByRole("dialog", { name: /retire/i });
+    expect(
+      within(dialog).getByRole("button", {
+        name: "Delete permanently instead",
+      }),
+    ).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await userEvent.keyboard("{Meta>}k{/Meta}");
+    expect(await screen.findByText("Move engram")).toBeVisible();
+    expect(screen.getByText("Retire engram")).toBeVisible();
+  });
+
+  it("an engram called manifest in a folder keeps move and delete", async () => {
+    serveAt("notes/manifest.md", "file");
+    renderApp("/d/eng/e/alpha");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "More actions" }),
+    );
+    expect(await screen.findByRole("menuitem", { name: "Move" })).toBeVisible();
+    await userEvent.click(screen.getByRole("menuitem", { name: "Retire" }));
+    const dialog = await screen.findByRole("dialog", { name: /retire/i });
+    expect(
+      within(dialog).getByRole("button", {
+        name: "Delete permanently instead",
+      }),
+    ).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await userEvent.keyboard("{Meta>}k{/Meta}");
+    expect(await screen.findByText("Move engram")).toBeVisible();
+    expect(screen.getByText("Retire engram")).toBeVisible();
   });
 });
 
@@ -2177,5 +2408,110 @@ describe("the reading page follows the stream", () => {
     observer.disconnect();
     expect(said).toEqual([]);
     expect(line().textContent).toBe("");
+  });
+});
+
+describe("the printed engram", () => {
+  it("prints a title block with the facts the rail holds on screen", async () => {
+    serve();
+    renderApp("/d/eng/e/alpha");
+    await screen.findByRole("heading", { name: "Alpha", level: 1 });
+    const block = document.querySelector<HTMLElement>("header.print-title");
+    expect(block).not.toBeNull();
+    // On paper only: hidden on screen and from assistive technology there.
+    expect(block).toHaveAttribute("hidden");
+    expect(block).toHaveAttribute("data-print");
+    expect(block).toHaveTextContent("eng");
+    expect(block).toHaveTextContent("Alpha");
+    expect(block).toHaveTextContent("Statussuperseded");
+    expect(block).toHaveTextContent("Typedecision");
+    expect(block).toHaveTextContent("Tagsone, two");
+    expect(block).toHaveTextContent("crystalline://eng/alpha");
+    expect(block).toHaveTextContent(/Printed \w/);
+    // The stamp in the corner opens the engram's page, not its name.
+    await waitFor(() => {
+      expect(
+        block?.querySelector("svg[data-qr-text]")?.getAttribute("data-qr-text"),
+      ).toBe(`${window.location.origin}/d/eng/e/alpha`);
+    });
+    // The page margins carry the domain, the title and the address.
+    const margins = document.querySelector("style[data-print-page]");
+    expect(margins?.textContent).toContain('@top-left { content: "eng"; }');
+    expect(margins?.textContent).toContain('@top-right { content: "Alpha"; }');
+    expect(margins?.textContent).toContain(
+      '@bottom-left { content: "crystalline://eng/alpha"; }',
+    );
+    expect(margins?.textContent).toMatch(
+      /@bottom-right \{ content: "Printed [^"]+ \u00b7 " counter\(page\) " of " counter\(pages\); \}/,
+    );
+    // The first page keeps its page number alone: the title block says the rest.
+    expect(margins?.textContent).toContain(
+      '@page :first {\n  @top-left { content: ""; }',
+    );
+  });
+
+  it("ends with a Related section: what links here and the files, by name and size", async () => {
+    serve({
+      "/domains/eng/engrams/alpha": () =>
+        detailResponse({
+          content: `${BODY}\nSee [the deck](assets/deck.pdf) and ![chart](assets/chart.png).\n`,
+        }),
+      "/domains/eng/attachments": () => ({
+        attachments: [
+          {
+            path: "assets/deck.pdf",
+            mime: "application/pdf",
+            size: 2048,
+            modified: "2026-01-01T00:00:00Z",
+          },
+        ],
+      }),
+    });
+    renderApp("/d/eng/e/alpha");
+    await screen.findByRole("heading", { name: "Alpha", level: 1 });
+    const related = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>(
+        'section[aria-label="Related"]',
+      );
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
+    });
+    expect(related).toHaveAttribute("hidden");
+    expect(related).toHaveAttribute("data-print");
+    const lists = () => [...related.querySelectorAll("h3")];
+    await waitFor(() => {
+      expect(lists().map((h) => h.textContent)).toEqual([
+        "Linked from",
+        "Attachments",
+      ]);
+    });
+    const [linked, files] = lists().map(
+      (h) => h.parentElement as HTMLElement,
+    ) as [HTMLElement, HTMLElement];
+    await waitFor(() => {
+      expect(linked).toHaveTextContent("Betalinks_to");
+    });
+    // A plain line, not a link: links are text on paper.
+    expect(linked.querySelector("a")).toBeNull();
+    await waitFor(() => {
+      expect(files).toHaveTextContent("deck.pdf2.0 KiB");
+    });
+    expect(files).toHaveTextContent("chart.pngmissing");
+  });
+
+  it("keeps the chrome, the header and the rail off the paper", async () => {
+    serve();
+    renderApp("/d/eng/e/alpha");
+    await screen.findByRole("heading", { name: "Alpha", level: 1 });
+    for (const bar of screen.getAllByRole("banner")) {
+      expect(bar.className).toContain("print:hidden");
+    }
+    expect(
+      screen.getByRole("link", { name: "Edit" }).closest("header")?.className,
+    ).toContain("print:hidden");
+    expect(
+      screen.getByRole("heading", { name: "Linked from" }).closest("aside")
+        ?.className,
+    ).toContain("print:hidden");
   });
 });

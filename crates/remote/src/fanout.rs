@@ -73,7 +73,9 @@ pub fn missing_from(source: &str, failure: &RemoteFailure) -> Missing {
         RemoteFailure::Credential(_) => {
             "could not use its saved sign-in on this machine".to_string()
         }
-        RemoteFailure::Refused(_) => "answered with an error".to_string(),
+        RemoteFailure::Refused(_) | RemoteFailure::Invalid(_) => {
+            "answered with an error".to_string()
+        }
         RemoteFailure::Starting { .. } => "was not asked yet (this process was still setting up its network connection; the next call asks it)".to_string(),
         RemoteFailure::Status { status, .. } => {
             format!("answered with an error (HTTP status {status})")

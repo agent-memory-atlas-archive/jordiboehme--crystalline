@@ -80,10 +80,14 @@ export interface EngramFrontmatter {
   type: string | null;
   /** The `status`, free form. */
   status: string | null;
+  /** The `description`, as the engine parsed it (block scalars included). */
+  description: string | null;
   /** Its tags, in the order the source gave them. */
   tags: string[];
   /** Its `salience`, when it carries one. */
   salience: number | null;
+  /** `recorded_at`, the day the engram was first written down, as written. */
+  recordedAt: string | null;
   /** `valid_from`. Absent means it has always been valid. */
   validFrom: string | null;
   /** `valid_to`. Absent means it is valid forever. */
@@ -304,10 +308,12 @@ function readFrontmatter(
     // the payload spells it `type`, and either one is the engram's own type.
     type: asString(record?.engram_type) ?? asString(payload?.type),
     status: asString(record?.status) ?? asString(payload?.status),
+    description: asString(record?.description)?.trim() || null,
     tags: asStrings(record?.tags),
     // An unmodelled key, so it arrives under `extra`. Read from the top level
     // too, in case a later engine promotes it to a field of its own.
     salience: asNumber(extra?.salience) ?? asNumber(record?.salience),
+    recordedAt: asString(record?.recorded_at),
     validFrom: asString(record?.valid_from),
     validTo: asString(record?.valid_to),
     staleAfter: asString(record?.stale_after) ?? asString(record?.review_after),

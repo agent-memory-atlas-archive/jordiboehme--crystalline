@@ -12,39 +12,6 @@ use crystalline_index::{
 
 // --- harness, copied from `lead_vectors` -------------------------------------
 
-#[cfg(feature = "postgres")]
-fn pg_url() -> Option<String> {
-    use std::sync::Once;
-    static NOTE: Once = Once::new();
-    match std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") {
-        Ok(u) if !u.is_empty() => Some(u),
-        _ => {
-            NOTE.call_once(|| {
-                eprintln!(
-                    "note: skipping the postgres parity leg (CRYSTALLINE_TEST_POSTGRES_URL is unset); turso only"
-                )
-            });
-            None
-        }
-    }
-}
-
-/// A distinct schema name per test invocation, salted so a recycled pid never
-/// adopts a schema a panicking run left behind.
-#[cfg(feature = "postgres")]
-fn unique_schema() -> String {
-    use std::hash::{BuildHasher, RandomState};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "rs_{}_{}_{:x}",
-        std::process::id(),
-        n,
-        RandomState::new().hash_one(n)
-    )
-}
-
 /// Run a parity body against Turso (always) and Postgres (when configured),
 /// giving each backend a fresh, isolated store.
 macro_rules! parity {
@@ -57,16 +24,14 @@ macro_rules! parity {
             }
             #[cfg(feature = "postgres")]
             {
-                if let Some(url) = pg_url() {
-                    let schema = unique_schema();
-                    let store = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                        .await
-                        .expect("open the postgres test schema");
+                if let Some(scratch) = crate::pg::scratch("rs") {
+                    let store = crystalline_index::PostgresStore::open_in_schema(
+                        scratch.url(),
+                        scratch.name(),
+                    )
+                    .await
+                    .expect("open the postgres test schema");
                     $body(&store).await;
-                    store
-                        .drop_schema()
-                        .await
-                        .expect("drop the postgres test schema");
                 }
             }
         }
@@ -545,6 +510,10 @@ async fn reflection_coverage_is_counted_per_domain(store: &dyn Store) {
             && waiting.embedded_chunks == 0
             && !waiting.has_active_embeddings("fake"),
         "the ops pages wait, whatever eng holds: {waiting:?}"
+    );
+    assert!(
+        waiting.models.is_empty(),
+        "chunks without a vector are no model entry: {waiting:?}"
     );
 
     for query in [embed_one("pager rings loudly"), vec![0.5; 4]] {

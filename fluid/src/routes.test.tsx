@@ -12,9 +12,13 @@
  * The round trip ends at the request the engram screen makes, because that is
  * the last place the permalink can be mangled: the API path has to carry the
  * same slashes the link did, encoded a segment at a time.
+ *
+ * The last block is about the screens that load on demand: a deep link to one
+ * still draws it, and a route change into one still leaves the focus on the
+ * main region, where the frame put it.
  */
 
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -117,6 +121,9 @@ async function followRowIn(domain: string, permalink: string) {
   return row;
 }
 
+/** How long a cold lazy import may take under a full run, in milliseconds. */
+const SLOW = 8000;
+
 beforeEach(() => {
   apiMock.mockReset();
 });
@@ -153,4 +160,153 @@ describe("the engram route", () => {
     expect(await screen.findByRole("heading", { name: "Gamma" })).toBeVisible();
     expect(requested()).toContain("/domains/team%20eng/engrams/notes/alpha");
   });
+});
+
+describe("the screens behind a lazy boundary", () => {
+  /** Signed in, with the reads the frame makes on every screen. */
+  function serveFrame(routes: Record<string, () => unknown> = {}) {
+    apiMock.mockImplementation(
+      answersFor({
+        "/auth/me": () => meResponse({ user: userFixture() }),
+        "/domains": domainsResponse,
+        "/vocabulary": () => ({
+          tags: [],
+          categories: [],
+          relation_types: [],
+        }),
+        "/search": () => ({
+          mode: "text",
+          total: 0,
+          page: 1,
+          limit: 50,
+          count: 0,
+          hits: [],
+        }),
+        ...routes,
+      }),
+    );
+  }
+
+  it("a deep link to search draws the search screen", async () => {
+    serveFrame();
+    renderApp("/search?q=gamma");
+
+    expect(
+      await screen.findByRole("heading", { name: "Search", level: 1 }),
+    ).toBeVisible();
+  });
+
+  it("a deep link to the graph draws the graph screen", async () => {
+    serveFrame();
+    renderApp("/graph");
+
+    expect(
+      await screen.findByRole("heading", { name: "Graph", level: 1 }),
+    ).toBeVisible();
+  });
+
+  it("a route change to a lazy screen still moves focus to the main region", async () => {
+    serveFrame();
+    renderApp("/graph");
+    // Three cold lazy imports (the graph screen, the menu body, Maintenance)
+    // are waited on below. In a full run they compete with every other test
+    // file for the CPU, and the default one second is not enough then.
+    await screen.findByRole(
+      "heading",
+      { name: "Graph", level: 1 },
+      { timeout: SLOW },
+    );
+
+    const avatar = await screen.findByRole(
+      "button",
+      { name: "Ada Lovelace" },
+      { timeout: SLOW },
+    );
+    await userEvent.click(avatar);
+    const item = await screen.findByRole(
+      "menuitem",
+      { name: "Maintenance" },
+      { timeout: SLOW },
+    );
+    // Radix hands the focus back to the avatar a tick after the menu closes.
+    // Record every time it gets the focus from the navigation on.
+    let avatarFocused = 0;
+    avatar.addEventListener("focusin", () => {
+      avatarFocused += 1;
+    });
+    await userEvent.click(item);
+
+    // The screen arrives after its chunk, inside the same main region, and
+    // nothing it draws takes the focus the route change put there.
+    expect(
+      await screen.findByRole(
+        "heading",
+        { name: "Maintenance - what the knowledge needs next" },
+        { timeout: SLOW },
+      ),
+    ).toBeVisible();
+    await waitFor(() => {
+      expect(screen.getByRole("main")).toHaveFocus();
+    });
+    // The avatar may have the focus for a moment before the screen takes it;
+    // what must not happen is the avatar taking it back afterwards. Let the
+    // menu's own timers run, counting from the moment main has the focus.
+    avatarFocused = 0;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByRole("main")).toHaveFocus();
+    expect(avatarFocused).toBe(0);
+  }, 30_000);
+
+  it("clicking away from the avatar menu closes it without sending the focus to the avatar", async () => {
+    serveFrame();
+    renderApp("/graph");
+    const heading = await screen.findByRole(
+      "heading",
+      { name: "Graph", level: 1 },
+      { timeout: SLOW },
+    );
+    const avatar = await screen.findByRole(
+      "button",
+      { name: "Ada Lovelace" },
+      { timeout: SLOW },
+    );
+    await userEvent.click(avatar);
+    await screen.findByRole("menuitem", { name: "Maintenance" });
+
+    // Radix switches pointer events off outside an open menu, so the click
+    // is sent without the check, as a pointer outside the menu would be.
+    await userEvent.setup({ pointerEventsCheck: 0 }).click(heading);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("menuitem", { name: "Maintenance" }),
+      ).toBeNull();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(avatar).not.toHaveFocus();
+  }, 30_000);
+
+  it("closing the avatar menu with Escape still returns the focus to the avatar", async () => {
+    serveFrame();
+    renderApp("/graph");
+    await screen.findByRole(
+      "heading",
+      { name: "Graph", level: 1 },
+      { timeout: SLOW },
+    );
+    const avatar = await screen.findByRole(
+      "button",
+      { name: "Ada Lovelace" },
+      { timeout: SLOW },
+    );
+    await userEvent.click(avatar);
+    await screen.findByRole("menuitem", { name: "Maintenance" });
+
+    await userEvent.keyboard("{Escape}");
+
+    await waitFor(() => {
+      expect(avatar).toHaveFocus();
+    });
+  }, 30_000);
 });

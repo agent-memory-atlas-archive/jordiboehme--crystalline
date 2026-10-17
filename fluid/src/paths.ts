@@ -11,6 +11,17 @@ import { encodePermalink, encodeSegment } from "./api/client";
 import { crystallineAddress } from "./api/engram";
 import { NEIGHBORHOOD_DEPTH } from "./api/graph";
 
+/**
+ * Whether `path` is a domain's MANIFEST: the root file, in any letter case,
+ * the way the engine's `names_the_manifest` reads it. A file domain refuses
+ * to move or delete it (422 since 0.27.0).
+ */
+export function isDomainManifestPath(path: string): boolean {
+  // ASCII-only, like the engine's `eq_ignore_ascii_case`: `toUpperCase` is
+  // Unicode-aware and would turn a dotless "ı" into an "I".
+  return path.replace(/[A-Z]/g, (c) => c.toLowerCase()) === "manifest.md";
+}
+
 /** The address of one domain. */
 export function domainRoute(domain: string): string {
   return `/d/${encodeSegment(domain)}`;
@@ -55,6 +66,78 @@ export function editRoute(domain: string, permalink: string): string {
 }
 
 /**
+ * A domain's Reflection: its home, where the tree, the pact and search are.
+ * A segment of its own after the domain rather than a query parameter,
+ * because it is a mode of the whole domain and every screen under it keeps
+ * it.
+ */
+export function reflectionRoute(domain: string): string {
+  return `${domainRoute(domain)}/reflection`;
+}
+
+/**
+ * One reflection, by its path inside `reflections/` (`guides/deploying.md`,
+ * `PACT.md`). The path is encoded segment by segment like a permalink, so
+ * its slashes stay slashes and the splat matches it.
+ */
+export function reflectionPageRoute(domain: string, path: string): string {
+  return `${reflectionRoute(domain)}/${encodePermalink(path)}`;
+}
+
+/** The live editor over one reflection; `reflection-edit` ahead of the splat, as `edit` is. */
+export function reflectionEditRoute(domain: string, path: string): string {
+  return `${domainRoute(domain)}/reflection-edit/${encodePermalink(path)}`;
+}
+
+/**
+ * The review screen: open threads and the reflect queue. Static, so it
+ * outranks the page splat; a page path always ends in `.md`, so no page can
+ * be called this.
+ */
+export function reflectionReviewRoute(domain: string): string {
+  return `${reflectionRoute(domain)}/review`;
+}
+
+/**
+ * Reflection-mode search, on the Reflection home. The mode (`search_type`)
+ * and the page ride in the address only when they are not the defaults, so a
+ * result page is a link somebody can send.
+ */
+export function reflectionSearchRoute(
+  domain: string,
+  query: string,
+  mode = "hybrid",
+  page = 1,
+): string {
+  const q = new URLSearchParams({ q: query });
+  if (mode !== "hybrid") {
+    q.set("search_type", mode);
+  }
+  if (page > 1) {
+    q.set("page", String(page));
+  }
+  return `${reflectionRoute(domain)}?${q.toString()}`;
+}
+
+/**
+ * The reflection path from the `/d/:domain/*` splat: `""` on the Reflection
+ * home and review screen, null outside the Reflection. Here rather than in
+ * the sidebar tree so the frame can ask without loading the tree.
+ */
+export function reflectionPathOf(rest: string): string | null {
+  if (rest === "reflection" || rest === "reflection/review") {
+    return "";
+  }
+  if (rest.startsWith("reflection/")) {
+    return decodeURIComponent(rest.slice("reflection/".length));
+  }
+  if (rest.startsWith("reflection-edit/")) {
+    return decodeURIComponent(rest.slice("reflection-edit/".length));
+  }
+  return null;
+}
+
+/**
  * The route is kept as the base of the editor's address and redirects to
  * the domain page, where the MANIFEST is now read.
  */
@@ -65,6 +148,16 @@ export function manifestRoute(domain: string): string {
 /** The editor over one domain's MANIFEST. */
 export function manifestEditRoute(domain: string): string {
   return `${manifestRoute(domain)}/edit`;
+}
+
+/**
+ * A domain's settings: members, review mode, policies, backup and the danger
+ * zone, off the front page so the MANIFEST reads as the page. `part` is the
+ * block a link opens at (`members`, `policies`, ...), as a fragment.
+ */
+export function domainSettingsRoute(domain: string, part?: string): string {
+  const base = `${domainRoute(domain)}/settings`;
+  return part === undefined ? base : `${base}#${part}`;
 }
 
 /**

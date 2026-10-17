@@ -3,7 +3,7 @@
 //! sections of a reflection both read headings through it, so the two agree
 //! about a `#` inside a fence and about where a section ends.
 
-use crate::parse::{fence_marker, locate, parse_heading};
+use crate::parse::{FenceTracker, locate, parse_heading};
 
 /// One ATX heading of a body, outside fenced code.
 pub(crate) struct HeadingSpan {
@@ -19,12 +19,12 @@ pub(crate) struct HeadingSpan {
 
 /// Every heading of `source`'s body in file order, skipping the frontmatter
 /// and every line inside fenced code. A fence opens and closes by the one
-/// fence rule the body walker uses (`crate::parse::fence_marker`), so a
+/// fence rule the body walker uses (`crate::parse::FenceTracker`), so a
 /// fence means the same thing to every reader of a body.
 pub(crate) fn heading_spans(source: &str) -> Vec<HeadingSpan> {
     let (_, _, body_start) = locate(source);
     let mut spans = Vec::new();
-    let mut fence: Option<(char, usize)> = None;
+    let mut fence = FenceTracker::new();
     let mut offset = body_start;
     for raw in source[body_start..].split_inclusive('\n') {
         let line = raw.strip_suffix('\n').unwrap_or(raw).trim_end_matches('\r');
@@ -32,32 +32,16 @@ pub(crate) fn heading_spans(source: &str) -> Vec<HeadingSpan> {
         let line_end = offset + raw.len();
         offset = line_end;
 
-        match fence {
-            None => {
-                if let Some((c, n, _)) = fence_marker(line) {
-                    fence = Some((c, n));
-                    continue;
-                }
-                if let Some((level, text)) = parse_heading(line) {
-                    spans.push(HeadingSpan {
-                        level,
-                        text,
-                        line_start,
-                        line_end,
-                    });
-                }
-            }
-            Some((fc, fcount)) => {
-                if let Some((c, n, _)) = fence_marker(line)
-                    && c == fc
-                    && n >= fcount
-                {
-                    let after = &line.trim_start()[n..];
-                    if after.trim().is_empty() {
-                        fence = None;
-                    }
-                }
-            }
+        if fence.in_fence(line) {
+            continue;
+        }
+        if let Some((level, text)) = parse_heading(line) {
+            spans.push(HeadingSpan {
+                level,
+                text,
+                line_start,
+                line_end,
+            });
         }
     }
     spans

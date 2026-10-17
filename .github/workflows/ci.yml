@@ -322,6 +322,18 @@ jobs:
         if: ${{ needs.changes.outputs.tested != 'true' }}
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      # The feature-gated code paths: without the default features candle,
+      # sqlx and the embedded Fluid bundle are gone, and a test or helper that
+      # only the gated legs use must carry its own cfg. One Linux leg is
+      # enough, the cfg does not depend on the OS. Only the four workspace
+      # crates that have features of their own are checked.
+      - name: cargo clippy (no default features)
+        if: ${{ matrix.os == 'ubuntu-latest' && needs.changes.outputs.tested != 'true' }}
+        run: |
+          for crate in crystalline-index crystalline-engine crystalline-service crystalline; do
+            cargo clippy -p "$crate" --no-default-features --all-targets --locked -- -D warnings
+          done
+
       # The postgres backend's tests, on the x86_64 ubuntu leg only (not the
       # arm one): every test of the workspace run below that reads
       # CRYSTALLINE_TEST_POSTGRES_URL runs its postgres leg against this
@@ -332,8 +344,10 @@ jobs:
       # the container: the image's init phase runs a socket-only server, so
       # a socket probe could answer before the real server is up. The
       # extension is pre-created in public so the migration's defensive
-      # CREATE EXTENSION is always a no-op and the parallel per-test schema
-      # creation is race free.
+      # CREATE EXTENSION is always a no-op. The migration's advisory lock
+      # already makes parallel first opens race free; the
+      # concurrent_first_opens tests in postgres/migrations.rs reach the
+      # extension leg through a database of their own.
       - name: Start postgres with pgvector
         if: ${{ matrix.os == 'ubuntu-latest' && needs.changes.outputs.tested != 'true' }}
         run: |
@@ -514,7 +528,8 @@ jobs:
         run: pnpm test
 
       # The /π route's lazy chunks must fit on one 1.44 MB floppy, gzipped;
-      # the main chunk has a guideline (a warning, never a failure). Vite
+      # the eager JS (entry plus modulepreloads, raw) must stay under its
+      # cap; the main chunk has a guideline (a warning, never a failure). Vite
       # writes its manifest only for this build, and the script removes it
       # again: the service crate embeds dist/ and must not serve it.
       - name: Build
@@ -633,8 +648,8 @@ jobs:
         working-directory: fluid
 
       # Stands up the daemon on a scratch state directory with the fixture
-      # domains and three accounts (one of those domains private to the first
-      # of them), checks the UI the daemon serves out of the binary, rebuilds
+      # domains and four accounts (three of those domains private), checks
+      # the UI the daemon serves out of the binary, rebuilds
       # the bundle and runs Playwright against `vite preview`.
       # The script is the whole sequence, so a local run is the same run.
       - name: Run the browser smoke

@@ -35,7 +35,7 @@ import {
 import { useAuth } from "../auth/AuthContext";
 import { Breadcrumbs, crumbsOf } from "../components/Breadcrumbs";
 import { BUTTON, Tooltip } from "../components/primitives";
-import { Skeleton } from "../components/Skeleton";
+import { Loading } from "../components/Loading";
 import CmEditor from "../editor/CmEditor";
 import { ConfirmLeaveDialog } from "../editor/ConfirmLeaveDialog";
 import { ConflictDialog } from "../editor/ConflictDialog";
@@ -179,7 +179,9 @@ export default function ManifestEditor() {
     );
   }
   if (!detail.data) {
-    return <Skeleton label="Loading the editor" rows={4} />;
+    return (
+      <Loading label="Loading the editor" subject={`${domain} manifest`} />
+    );
   }
   // Keyed by domain: a different domain's MANIFEST is a different session.
   return <EditorSurface key={domain} domain={domain} manifest={detail.data} />;
@@ -284,7 +286,7 @@ function EditorSurface({
       void queryClient.invalidateQueries({
         queryKey: manifestDetailKey(domain),
       });
-      // Whether this is the save Save and close asked for, and whether it still
+      // Whether this is the save Save and leave asked for, and whether it still
       // carries what is on screen - the same rule the engram editor applies,
       // spelled once in `useCloseFlow`.
       if (exit.consume(view === null || docText(view.state) === content)) {
@@ -366,7 +368,7 @@ function EditorSurface({
           {/*
             The same two tiers the engram editor's header wears, drawn from
             the shared primitives rather than hand-rolled here: Save keeps the
-            work, Close is the way out. The classes were a copy of
+            work, Done is the way out. The classes were a copy of
             `BUTTON.secondary` for both, which made the two editors' headers
             drift apart.
 
@@ -391,13 +393,13 @@ function EditorSurface({
             subjects, and a browser-drawn title here would make them disagree
             about what a hint looks like.
           */}
-          <Tooltip label="Close the editor">
+          <Tooltip label="Leave the editor">
             <button
               type="button"
               onClick={closing.close}
               className={BUTTON.primary}
             >
-              Close
+              Done
             </button>
           </Tooltip>
         </div>

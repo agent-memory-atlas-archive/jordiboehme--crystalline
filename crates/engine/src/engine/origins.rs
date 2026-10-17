@@ -167,7 +167,9 @@ impl Engine {
                     declared.as_deref(),
                     || origin::default_domain_name(repo),
                     |candidate| {
-                        entries.contains_key(candidate) || table.resolve(candidate).is_some()
+                        entries.contains_key(candidate)
+                            || table.resolve(candidate).is_some()
+                            || case_twin(candidate, None, entries.iter()).is_some()
                     },
                 );
                 let declared_by_manifest = declared
@@ -190,6 +192,7 @@ impl Engine {
         // or not, that validates); an explicit one may not.
         if self.domain_entry(&domain_name).is_err() {
             validate_domain_name(&domain_name).map_err(EngineError::Invalid)?;
+            self.refuse_case_twin(&domain_name, None, scope).await?;
         }
         // An explicit name and the repository default
         // keep adopting an origin-less domain that holds them in place, as
@@ -244,6 +247,9 @@ impl Engine {
         }
 
         let adopts_registered = existing.is_some();
+        if !adopts_registered {
+            self.set_aside_orphan_kept(&domain_name);
+        }
         let (root, adopted_entry) = match existing {
             Some((r, entry)) => (r, Some(entry)),
             None => (
@@ -691,6 +697,11 @@ impl Engine {
     pub(super) async fn origin_update_one(&self, name: &str, entry: &DomainEntry) -> Result<Value> {
         let lock = self.origin_lock(name);
         let _guard = lock.lock().await;
+        // A pull writes the domain's files: only its host pulls, before any
+        // file lands. A lock nobody holds, or whose holder went silent, is
+        // claimed as a sync claims it.
+        self.require_file_host(name, &crate::scope::Scope::Unrestricted)
+            .await?;
 
         let (spec, root, state_dir) = self.origin_spec_for(name, entry)?;
 
@@ -864,6 +875,12 @@ impl Engine {
                 .flatten()
                 .is_some();
             if has_state {
+                continue;
+            }
+            if !self.writes_domain_here(&name, false).await {
+                tracing::debug!(
+                    "env-defined team domain '{name}' is hosted by another instance; it bootstraps there"
+                );
                 continue;
             }
             match self.origin_update_one(&name, &entry).await {
@@ -1276,6 +1293,12 @@ impl Engine {
             self.origin_poller
                 .schedule(&name, now + jitter, wall_now + jitter_chrono);
 
+            // A domain another live instance hosts is that instance's to
+            // pull: skipped quietly, never claimed from a live host.
+            if !self.writes_domain_here(&name, false).await {
+                tracing::debug!("origin poll: '{name}' is hosted by another instance; skipped");
+                continue;
+            }
             match self.origin_update_one(&name, &entry).await {
                 Ok(v) => {
                     let up_to_date = v["up_to_date"].as_bool().unwrap_or(false);
@@ -1718,6 +1741,10 @@ impl Engine {
                     }
                     if let Err(e) = self.sync_paths(domain, paths.clone()).await {
                         tracing::warn!("indexing the direct commit's files in '{domain}': {e}");
+                        // The commit stands; the answer says why its files
+                        // are not indexed here (another instance hosts the
+                        // domain, for a command on a shared database).
+                        receipt["index_error"] = json!(e.to_string());
                     }
                     match self.converge_pulled_overlays(domain, &paths).await {
                         Ok(folded) => receipt["drafts_folded"] = json!(folded.cleared),
@@ -1919,7 +1946,9 @@ impl Engine {
         if self.read_only {
             return Err(EngineError::ReadOnly);
         }
-        self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
+        // A preview only reads: it meets the read-only check, never the host
+        // gate, which may claim a lock.
+        self.refuse_read_only_flag(domain, &crate::scope::Scope::Unrestricted)
             .await?;
         let lock = self.origin_lock_registered(domain)?;
         let _guard = lock.lock().await;
@@ -2488,6 +2517,10 @@ impl Engine {
         self.local_changes_need_an_origin(domain)?;
         let lock = self.origin_lock_registered(domain)?;
         let _guard = lock.lock().await;
+        // A discard puts the domain's files back: only its host does that,
+        // refused before any file is touched.
+        self.require_file_host(domain, &crate::scope::Scope::Unrestricted)
+            .await?;
         let drafting = self.overlay_share_identity(domain, actor)?;
         if let Some(who) = drafting {
             return self.discard_into_overlay(domain, &who, targets).await;
@@ -3117,7 +3150,7 @@ impl Engine {
     ///
     /// **In-process only.** Two Crystalline processes over one domain root are
     /// not held apart by this; the host-lock machinery governs that.
-    pub(super) fn write_lock(&self, abs: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    pub(crate) fn write_lock(&self, abs: &Path) -> Arc<tokio::sync::Mutex<()>> {
         // Computed before the map-wide guard is taken: `canonicalize` is a
         // blocking stat, and every other file's lookup would otherwise queue
         // behind it while it resolves this one's path.

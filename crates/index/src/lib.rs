@@ -20,6 +20,7 @@ pub mod device;
 pub mod embed;
 mod error;
 mod factory;
+mod hosting;
 #[cfg(feature = "local-embeddings")]
 mod hub;
 pub mod nli;
@@ -46,18 +47,23 @@ pub use embed::{
 };
 pub use error::{IndexError, Result, SCHEMA_TOO_NEW_OPENING, is_schema_too_new_text};
 pub use factory::{open_store, store_location};
+pub use hosting::{
+    ACCEPT_DISK_NEEDS_DOMAIN, Claimed, HostLease, claim_host_marking_moves, claim_window,
+    give_back, instance_label, stale_secs,
+};
 pub use store::{
-    AssetTable, AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ChunkTable, ContentMention,
-    ContradictionRow, DEFAULT_RETIRED_WEIGHT, DEFAULT_SALIENCE_WEIGHT, DomainHost, DomainId,
-    DomainKind, DomainLookup, DomainStats, EdgeKind, EmbeddingCoverage, EmbeddingRow,
-    EngramDescriptor, EngramId, EngramRecord, EngramSummary, FileStamp, FilterOp, FtsMode,
-    GraphEdge, GraphNode, GraphSlice, HitKind, HostClaim, InboundHit, InboundPage, InboundQuery,
-    InboundRef, LEXICAL_CANDIDATE_CAP, LINKS_TO, LeadVector, MetadataFilter, NamedCount, NewChunk,
-    NewReflectionChunk, OBSERVATION_VECTOR_CHUNK, ObservationVector, OutboundRef, Page,
-    RETIRED_STATUSES, RebuildKind, RecentFilter, ReflectionRow, ScoredPair, SearchHit, SearchMode,
-    SearchOrder, SearchQuery, SectionVector, Store, StoreInfo, StoredEngram, TagAlias, TagCount,
-    Vocabulary, WorkClaim, is_current_status, is_retired_status, lookup_in_domain,
-    merge_vocabularies, parse_metadata_filters, retired_factor, salience_prior,
+    AssetTable, AttachmentRow, BrowseLevel, ChunkJob, ChunkModelCount, ChunkTable, CitedEngram,
+    ContentMention, ContradictionRow, CoverageGroup, DEFAULT_RETIRED_WEIGHT,
+    DEFAULT_SALIENCE_WEIGHT, DomainHost, DomainId, DomainKind, DomainLookup, DomainStats, EdgeKind,
+    EmbeddingCoverage, EmbeddingRow, EngramDescriptor, EngramId, EngramRecord, EngramSummary,
+    FileStamp, FilterOp, FtsMode, GraphEdge, GraphNode, GraphSlice, HitKind, HostClaim, HostMove,
+    InboundHit, InboundPage, InboundQuery, InboundRef, LEXICAL_CANDIDATE_CAP, LINKS_TO, LeadVector,
+    MetadataFilter, NamedCount, NewChunk, NewReflectionChunk, OBSERVATION_VECTOR_CHUNK,
+    ObservationVector, OnlyElsewhere, OutboundRef, Page, RETIRED_STATUSES, RebuildKind,
+    RecentFilter, ReflectionRow, ReflectionStamp, ScoredPair, SearchHit, SearchMode, SearchOrder,
+    SearchQuery, SectionVector, Store, StoreInfo, StoredEngram, TagAlias, TagCount, Vocabulary,
+    WorkClaim, is_current_status, is_retired_status, lookup_in_domain, merge_vocabularies,
+    parse_metadata_filters, retired_factor, salience_prior,
 };
 /// The shared statement builders, reachable from `tests/it/plans.rs` and from
 /// nothing else.
@@ -88,15 +94,15 @@ pub use sweep::{
 pub use sync::{
     DomainScan, NoReindexHooks, PathChange, PathChangeKind, ReindexHooks, ReparseSeam, ReparseStep,
     SyncReport, apply_scan, apply_scan_with_slab, pending_engrams, reflection_effective,
-    reflection_mode, refresh_tag_aliases, reindex_domains, reparse_due, reparse_stored_domain,
-    reparse_stored_domain_with, resolve_forward_refs, scan_domain, scan_paths, sync_domain,
-    sync_domain_with,
+    reflection_files_on_disk, reflection_mode, refresh_tag_aliases, reindex_domains, reparse_due,
+    reparse_stored_domain, reparse_stored_domain_with, resolve_forward_refs, scan_domain,
+    scan_paths, sync_domain, sync_domain_with,
 };
 pub use turso::TursoStore;
 pub use vocab::{TagCluster, tag_clusters, tag_clusters_with_aliases};
 
 #[cfg(feature = "postgres")]
-pub use postgres::PostgresStore;
+pub use postgres::{PostgresStore, ScratchSchema};
 
 /// Encode bytes as lowercase hexadecimal into a pre-sized string. The shared
 /// SHA-256 formatter for the whole crate: chunk fingerprints, file checksums and

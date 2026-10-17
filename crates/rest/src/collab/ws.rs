@@ -16,7 +16,9 @@ use futures::{SinkExt, StreamExt};
 use tokio::sync::broadcast;
 
 use super::control::{self, Control};
-use super::session::{CollabSession, CollabSessions, ConnId, Frame, JoinError, Joined};
+use super::session::{
+    BEING_MOVED, CollabSession, CollabSessions, ConnId, Frame, JoinError, Joined, MovedTo, RoomDoc,
+};
 use crate::{ApiError, ApiPath, ApiQuery, Identity, ProblemDetail, RestState};
 
 /// One session frame can legitimately carry a whole document (SyncStep2), so
@@ -58,7 +60,18 @@ pub struct JoinQuery {
                    share-link of theirs and a live join this session opened \
                    on it, because seeing a draft and editing it are two \
                    steps. What is typed in such a room lands in that person's \
-                   draft, to be folded or discarded with it.",
+                   draft, to be folded or discarded with it.\n\nBeside the \
+                   y-sync messages the server sends JSON controls as y-protocols \
+                   custom message 4. A room ends with `{\"kind\": \"closed\", \
+                   \"reason\": ...}` followed by close code 4404; do not \
+                   reconnect. The reasons are `deleted`, `moved`, \
+                   `switched_off`, `left` and `internal`. `moved` means the \
+                   engram got a new address (a move with a new permalink or \
+                   domain, or a rename of its domain): the room saved its text \
+                   first (or the server kept it), and the control carries the \
+                   new `path` and `permalink`, plus `domain` when the domain \
+                   changed. While a move runs, a join over the old address is \
+                   refused with 409.",
     params(
         ("domain" = String, Path, description = "The domain."),
         ("permalink" = String, Path, description = "The engram's permalink; may contain slashes."),
@@ -69,6 +82,7 @@ pub struct JoinQuery {
         (status = 401, description = "No identity.", body = ProblemDetail, content_type = "application/problem+json"),
         (status = 403, description = "Viewer role, read-only instance, or a missing/foreign Origin.", body = ProblemDetail, content_type = "application/problem+json"),
         (status = 404, description = "No such engram.", body = ProblemDetail, content_type = "application/problem+json"),
+        (status = 409, description = "On a shared database, another instance hosts this file domain and writes it; the detail names it. Or a move of this engram is running.", body = ProblemDetail, content_type = "application/problem+json"),
         (status = 422, description = "`overlay` names somebody whose draft a live share-link shows this caller, and this session has not joined it: seeing a draft and editing it are two steps. The detail is the sentence that says how to take the second.", body = ProblemDetail, content_type = "application/problem+json"),
         (status = 503, description = "Session or participant capacity reached.", body = ProblemDetail, content_type = "application/problem+json"),
     ),
@@ -90,28 +104,42 @@ pub async fn join(
             "this instance is read-only, so collaborative editing is disabled",
         ));
     }
-    // A read-only domain takes no save, so no room opens on it. Asked after
+    // A read-only domain takes no save, so no room opens on it, and on a
+    // shared database neither does a file domain another instance hosts: a
+    // room is opened to write, so this is the write check, which claims a
+    // lock nobody holds or whose holder went silent. Asked after
     // `require_domain_write`, which already answered a hidden domain as
     // unregistered.
-    if state.engine.domain_is_read_only(&domain).await {
-        return Err(
-            crate::engine::EngineError::DomainReadOnly(crate::engine::read_only_sentence(&domain))
-                .into(),
-        );
-    }
+    state
+        .engine
+        .refuse_read_only_domain(&domain, &identity.scope())
+        .await?;
     require_same_host_origin(&headers)?;
     // Whose document this room is a room over, decided before the upgrade for
     // the reason every other refusal here is decided there: a socket that
     // opened and then told its holder they may not be in it would be a refusal
     // nobody can read.
-    let room = whose_document(
+    let room = match whose_document(
         &state,
         &identity,
         &domain,
         &permalink,
         query.overlay.as_deref(),
     )
-    .await?;
+    .await
+    {
+        Ok(room) => room,
+        // Nothing at this address: when a move took the engram away a short
+        // while ago, the editor is told where it went, as an open room was.
+        Err(err) if err.status == axum::http::StatusCode::NOT_FOUND => {
+            let key = (domain.clone(), RoomDoc::Engram(permalink.clone()), None);
+            return match state.collab.moved_from(&key) {
+                Some(to) => moved_answer(&state, &identity, ws, to, err).await,
+                None => Err(err),
+            };
+        }
+        Err(err) => return Err(err),
+    };
     // The join runs under the state's join pass, and the pass is what makes a
     // domain unregistration's room sweep final: an unregister holds the same
     // fence for write across its sweep and the engine's `domain_remove`, so a
@@ -124,10 +152,22 @@ pub async fn join(
         let _pass = state.join_pass().await;
         state
             .collab
-            .join(&domain, &permalink, room.overlay.as_deref())
+            .join_as(
+                &domain,
+                &permalink,
+                room.overlay.as_deref(),
+                identity.scope(),
+            )
             .await
-    }
-    .map_err(join_error)?;
+    };
+    let joined = match joined {
+        Ok(joined) => joined,
+        Err(JoinError::Moved(to)) => {
+            let miss = ApiError::not_found(format!("no engram '{permalink}' in domain '{domain}'"));
+            return moved_answer(&state, &identity, ws, to, miss).await;
+        }
+        Err(err) => return Err(join_error(err)),
+    };
     // **The address the room opened is the path the link was for.** The two
     // are resolved by different ladders - a grant matches only the drafts the
     // link was for, by permalink or title, while a room resolves its address
@@ -212,7 +252,13 @@ pub async fn join(
                    records as the author of a changed section the signed-in \
                    account of each connection that sent an edit since the \
                    save before; the names in awareness are for display \
-                   only. Refusals are problem+json.",
+                   only. Refusals are problem+json.\n\nThe room ends with \
+                   the same `closed` control the engram room sends. A move of \
+                   the page, or a rename of its domain, ends it with reason \
+                   `moved` after the room saved its text (or the server kept \
+                   it), and the control carries the new `path`, plus `domain` \
+                   when the domain changed. While a move runs, a join over the \
+                   old path is refused with 409.",
     params(
         ("domain" = String, Path, description = "The domain."),
         ("path" = String, Path, description = "The reflection's path inside reflections/; may contain slashes."),
@@ -222,7 +268,7 @@ pub async fn join(
         (status = 401, description = "The anonymous viewer of a domain it reads: it reads the Reflection and never changes it.", body = ProblemDetail, content_type = "application/problem+json"),
         (status = 403, description = "Below edit access (curate for PACT.md), a read-only instance or domain, or a missing/foreign Origin.", body = ProblemDetail, content_type = "application/problem+json"),
         (status = 404, description = "No such reflection, or no such domain this caller may see.", body = ProblemDetail, content_type = "application/problem+json"),
-        (status = 409, description = "The Reflection is not here.", body = ProblemDetail, content_type = "application/problem+json"),
+        (status = 409, description = "The Reflection is not here, or a move of this page is running.", body = ProblemDetail, content_type = "application/problem+json"),
         (status = 422, description = "Not a reflection path.", body = ProblemDetail, content_type = "application/problem+json"),
         (status = 503, description = "Session or participant capacity reached.", body = ProblemDetail, content_type = "application/problem+json"),
     ),
@@ -271,10 +317,17 @@ pub async fn join_reflection(
         // the client put into awareness.
         state
             .collab
-            .join_reflection(&domain, &path, &caller.author.name)
+            .join_reflection_as(&domain, &path, &caller.author.name, identity.scope())
             .await
-    }
-    .map_err(join_error)?;
+    };
+    let joined = match joined {
+        Ok(joined) => joined,
+        Err(JoinError::Moved(to)) => {
+            let miss = ApiError::not_found(format!("no reflection '{path}' in domain '{domain}'"));
+            return moved_answer(&state, &identity, ws, to, miss).await;
+        }
+        Err(err) => return Err(join_error(err)),
+    };
     let sessions = state.collab.clone();
     // The failure twin of on_upgrade, as in `join`.
     let failed = {
@@ -432,9 +485,54 @@ fn require_same_host_origin(headers: &HeaderMap) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// [`moved_upgrade`] for a caller who may see where the document went; a
+/// move into a domain this caller may not see answers `miss`, the plain 404,
+/// so the domain's name never reaches them.
+async fn moved_answer(
+    state: &RestState,
+    identity: &Identity,
+    ws: WebSocketUpgrade,
+    to: MovedTo,
+    miss: ApiError,
+) -> Result<Response, ApiError> {
+    if !state.collab.may_see_move(&to, &identity.scope()).await {
+        return Err(miss);
+    }
+    Ok(moved_upgrade(ws, to))
+}
+
+/// The answer to a join over an address a move took the document away from:
+/// the upgrade goes through, the socket is sent the same `moved` close a room
+/// open at the time of the move got, and it closes for good. An editor that
+/// was still joining then shows where the document went, as an open one does.
+fn moved_upgrade(ws: WebSocketUpgrade, to: MovedTo) -> Response {
+    ws.on_upgrade(move |mut socket| async move {
+        let closed = Bytes::from(control::encode(&to.control()));
+        if socket.send(WsMessage::Binary(closed)).await.is_ok() {
+            let _ = socket
+                .send(WsMessage::Close(Some(CloseFrame {
+                    code: CLOSE_DELETED,
+                    reason: "closed".into(),
+                })))
+                .await;
+        }
+    })
+}
+
 fn join_error(err: JoinError) -> ApiError {
     match err {
+        // A move holds the document: the request is fine, the document is
+        // busy for a moment, and the editor's next try finds it moved.
+        JoinError::Engine(crate::engine::EngineError::Conflict(text))
+            if text.ends_with(BEING_MOVED) =>
+        {
+            ApiError::conflict(text)
+        }
         JoinError::Engine(engine) => engine.into(),
+        // Answered with an upgrade by both routes before they get here.
+        JoinError::Moved(to) => {
+            ApiError::not_found(format!("this document was moved to '{}'", to.path))
+        }
         JoinError::ServerFull => busy("this server is at its concurrent session limit"),
         JoinError::SessionFull => busy("this document's session is at its participant limit"),
     }
@@ -639,6 +737,24 @@ mod tests {
         assert!(!ok(&[("origin", "http://notes.example")]));
     }
 
+    /// A join refused because a move holds the document is a 409, the busy
+    /// answer; any other conflict keeps the shared mapping.
+    #[test]
+    fn a_join_during_a_move_is_a_409() {
+        use axum::http::StatusCode;
+        let moving = join_error(JoinError::Engine(crate::engine::EngineError::Conflict(
+            format!("'guides/a.md' {BEING_MOVED}"),
+        )));
+        assert_eq!(moving.status, StatusCode::CONFLICT);
+        assert_eq!(
+            join_error(JoinError::Engine(crate::engine::EngineError::Conflict(
+                "something else".into()
+            )))
+            .status,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+
     /// Capacity is a 503 and an engram that cannot be read keeps its own
     /// status, so a client can tell "try again later" from "this file cannot".
     #[test]
@@ -665,12 +781,12 @@ mod tests {
     /// ordinary control or update must not tear a socket down.
     #[test]
     fn only_the_closed_control_ends_every_connection() {
-        assert!(is_session_closed(&control::encode(&Control::Closed {
-            reason: "deleted".to_string(),
-        })));
-        assert!(is_session_closed(&control::encode(&Control::Closed {
-            reason: "internal".to_string(),
-        })));
+        assert!(is_session_closed(&control::encode(&Control::closed(
+            "deleted"
+        ))));
+        assert!(is_session_closed(&control::encode(&Control::closed(
+            "internal"
+        ))));
         assert!(!is_session_closed(&control::encode(&Control::Merged)));
         assert!(!is_session_closed(&control::encode(&Control::Saved {
             checksum: "abc".to_string(),

@@ -130,14 +130,22 @@ export function DangerZoneCard({
   // (set during commit) loses the race and the palette's restore wins. This
   // effect is itself a passive mount effect, so it runs after that cleanup
   // and lands last.
-  const wasConfirming = useRef(confirming);
+  // False at first, so a card that mounts already armed - the front page's
+  // palette row lands on the settings screen that way - scrolls to and
+  // focuses its question too.
+  const wasConfirming = useRef(false);
+  // Every commit, and only once the card is drawn: a card that draws
+  // nothing yet (its members read still out) has nothing to focus.
   useEffect(() => {
+    if (card.current === null) {
+      return;
+    }
     if (confirming && !wasConfirming.current) {
-      card.current?.scrollIntoView({ block: "nearest" });
-      card.current?.querySelector<HTMLInputElement>("input")?.focus();
+      card.current.scrollIntoView?.({ block: "nearest" });
+      card.current.querySelector<HTMLInputElement>("input")?.focus();
     }
     wasConfirming.current = confirming;
-  }, [confirming]);
+  });
 
   const owner = members.data?.owner ?? null;
   // `Own`, exactly as the members card derives it and as `set_visibility`
@@ -169,11 +177,17 @@ export function DangerZoneCard({
     <section
       ref={card}
       aria-labelledby={headingId}
-      className="flex flex-col gap-4 rounded border border-red-300 p-4 dark:border-red-800"
+      className="flex flex-col gap-4"
     >
-      <h2 id={headingId} className="text-section">
+      <h2
+        id={headingId}
+        className="text-section text-red-700 dark:text-red-300"
+      >
         Danger zone
       </h2>
+      <p className="text-sm text-ink-3">
+        These change the domain for everybody. Each one asks you to confirm.
+      </p>
 
       {problem !== null && (
         <p

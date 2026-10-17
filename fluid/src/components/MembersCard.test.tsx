@@ -37,6 +37,7 @@ function memberFixture(overrides: Record<string, unknown> = {}) {
   return {
     principal: "mem",
     level: "editor",
+    reflection: "default",
     added_by: "ada",
     added_at: "2026-09-01T00:00:00Z",
     ...overrides,
@@ -114,6 +115,179 @@ beforeEach(() => {
 });
 
 describe("the members card", () => {
+  it("sets both levels side by side, with curator implied for editors", async () => {
+    serve(
+      {
+        "/domains/eng/members": () =>
+          membersResponse({
+            owner: "ada",
+            visibility: "private",
+            members: [
+              memberFixture({
+                principal: "mem",
+                level: "none",
+                reflection: "contributor",
+              }),
+              memberFixture({ principal: "ed", level: "editor" }),
+            ],
+          }),
+      },
+      "ada",
+      "editor",
+    );
+
+    renderApp("/d/eng/settings");
+    const card = await membersCard();
+
+    const options = (name: string) =>
+      within(within(card).getByRole("combobox", { name }))
+        .getAllByRole("option")
+        .map((option) => option.textContent);
+    expect(options("Level")).toEqual(["none", "viewer", "editor", "manager"]);
+    expect(
+      within(card).getByRole("combobox", { name: "Level for mem" }),
+    ).toHaveValue("none");
+    expect(
+      within(card).getByRole("combobox", { name: "Reflection for mem" }),
+    ).toHaveValue("contributor");
+    expect(options("Reflection for mem")).toEqual(["reader", "contributor"]);
+    const edRow = within(card)
+      .getByRole("rowheader", { name: "ed" })
+      .closest("tr") as HTMLElement;
+    expect(within(edRow).getByText("curator")).toBeVisible();
+    expect(
+      within(card).queryByRole("combobox", { name: "Reflection for ed" }),
+    ).toBeNull();
+  });
+
+  it("sends a row's Reflection change with its knowledge level", async () => {
+    serve(
+      {
+        "/domains/eng/members": () =>
+          membersResponse({
+            owner: "ada",
+            visibility: "private",
+            members: [memberFixture({ principal: "mem", level: "viewer" })],
+          }),
+        "/domains/eng/members/mem": () => undefined,
+      },
+      "ada",
+      "editor",
+    );
+
+    renderApp("/d/eng/settings");
+    const card = await membersCard();
+    await userEvent.selectOptions(
+      within(card).getByRole("combobox", { name: "Reflection for mem" }),
+      "contributor",
+    );
+    await waitFor(() => {
+      expect(sentBody("/domains/eng/members/mem", "PUT")).toEqual({
+        level: "viewer",
+        reflection: "contributor",
+      });
+    });
+  });
+
+  it("moves a row to none with a Reflection level, never with nothing", async () => {
+    serve(
+      {
+        "/domains/eng/members": () =>
+          membersResponse({
+            owner: "ada",
+            visibility: "private",
+            members: [memberFixture({ principal: "mem", level: "viewer" })],
+          }),
+        "/domains/eng/members/mem": () => undefined,
+      },
+      "ada",
+      "editor",
+    );
+
+    renderApp("/d/eng/settings");
+    const card = await membersCard();
+    await userEvent.selectOptions(
+      within(card).getByRole("combobox", { name: "Level for mem" }),
+      "none",
+    );
+    await waitFor(() => {
+      expect(sentBody("/domains/eng/members/mem", "PUT")).toEqual({
+        level: "none",
+        reflection: "reader",
+      });
+    });
+  });
+
+  it("resets a chosen Reflection level when the invite level curates", async () => {
+    serve(
+      {
+        "/domains/eng/members": () =>
+          membersResponse({ owner: "ada", visibility: "private", members: [] }),
+        "/domains/eng/members/ann": () => undefined,
+      },
+      "ada",
+      "editor",
+    );
+
+    renderApp("/d/eng/settings");
+    const card = await membersCard();
+    await userEvent.type(
+      within(card).getByRole("textbox", { name: "Account" }),
+      "ann",
+    );
+    await userEvent.selectOptions(
+      within(card).getByRole("combobox", { name: "Reflection" }),
+      "contributor",
+    );
+    await userEvent.selectOptions(
+      within(card).getByRole("combobox", { name: "Level" }),
+      "editor",
+    );
+    expect(within(card).getByLabelText("Reflection")).toHaveTextContent(
+      "curator",
+    );
+    await userEvent.click(within(card).getByRole("button", { name: "Invite" }));
+    await waitFor(() => {
+      expect(sentBody("/domains/eng/members/ann", "PUT")).toEqual({
+        level: "editor",
+        reflection: "default",
+      });
+    });
+  });
+
+  it("invites at knowledge none with a Reflection level, never with nothing", async () => {
+    serve(
+      {
+        "/domains/eng/members": () =>
+          membersResponse({ owner: "ada", visibility: "private", members: [] }),
+        "/domains/eng/members/ann": () => undefined,
+      },
+      "ada",
+      "editor",
+    );
+
+    renderApp("/d/eng/settings");
+    const card = await membersCard();
+    await userEvent.type(
+      within(card).getByRole("textbox", { name: "Account" }),
+      "ann",
+    );
+    await userEvent.selectOptions(
+      within(card).getByRole("combobox", { name: "Level" }),
+      "none",
+    );
+    expect(
+      within(card).getByRole("combobox", { name: "Reflection" }),
+    ).toHaveValue("reader");
+    await userEvent.click(within(card).getByRole("button", { name: "Invite" }));
+    await waitFor(() => {
+      expect(sentBody("/domains/eng/members/ann", "PUT")).toEqual({
+        level: "none",
+        reflection: "reader",
+      });
+    });
+  });
+
   it("gives the owner the owner row, the member table and the invite form", async () => {
     serve(
       {
@@ -128,7 +302,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     expect(within(card).getByText("Private")).toBeVisible();
@@ -168,7 +342,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     // Neither direction, here or anywhere else on the page: a manager invites
@@ -218,7 +392,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     expect(within(card).queryByRole("combobox")).toBeNull();
@@ -246,7 +420,7 @@ describe("the members card", () => {
       "admin",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     expect(
@@ -281,7 +455,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     expect(
@@ -297,7 +471,7 @@ describe("the members card", () => {
   it("offers a non-admin nothing but the plain shared state", async () => {
     serve({}, "mem", "editor");
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     expect(
@@ -326,7 +500,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     await userEvent.type(within(card).getByLabelText("Account"), "newmem");
@@ -339,6 +513,7 @@ describe("the members card", () => {
     await waitFor(() => {
       expect(sentBody("/domains/eng/members/newmem", "PUT")).toEqual({
         level: "editor",
+        reflection: "default",
       });
     });
     // The form clears on the invite's own success, not on submit - so this
@@ -361,7 +536,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     await userEvent.type(within(card).getByLabelText("Account"), "nobody");
@@ -393,7 +568,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     await userEvent.selectOptions(
@@ -404,6 +579,7 @@ describe("the members card", () => {
     await waitFor(() => {
       expect(sentBody("/domains/eng/members/mem", "PUT")).toEqual({
         level: "manager",
+        reflection: "default",
       });
     });
   });
@@ -429,7 +605,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     await userEvent.click(
@@ -460,7 +636,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     const trigger = within(card).getByRole("button", { name: "Remove mem" });
@@ -499,7 +675,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     await userEvent.click(
@@ -535,7 +711,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     await userEvent.click(
@@ -570,7 +746,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     await userEvent.click(
@@ -610,7 +786,7 @@ describe("the members card", () => {
       "admin",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     await userEvent.click(
@@ -644,7 +820,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     expect(
@@ -681,7 +857,7 @@ describe("the members card", () => {
       "admin",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     const reason =
@@ -708,8 +884,9 @@ describe("the members card", () => {
       expect(control).toHaveFocus();
     }
     // And reached by the keyboard for real, on the one that ends the form: a
-    // Tab from the level picker lands on Invite rather than skipping past it.
-    within(card).getByRole("combobox", { name: "Level" }).focus();
+    // Tab from the Reflection picker (the level picker's neighbour) lands on
+    // Invite rather than skipping past it.
+    within(card).getByRole("combobox", { name: "Reflection" }).focus();
     await userEvent.tab();
     expect(invite).toHaveFocus();
 
@@ -757,13 +934,16 @@ describe("the members card", () => {
       "admin",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     const reason =
       "This instance is read only, so nothing here can be changed.";
     const account = within(card).getByLabelText("Account");
     const level = within(card).getByRole("combobox", { name: "Level" });
+    const reflection = within(card).getByRole("combobox", {
+      name: "Reflection",
+    });
 
     // Read-only, not disabled: a plain text field needs no guarded press, so
     // the native `readonly` attribute already refuses edits on its own while
@@ -772,14 +952,17 @@ describe("the members card", () => {
     expect(account).toHaveAccessibleDescription(reason);
     expect(level).toHaveAttribute("aria-disabled", "true");
     expect(level).toHaveAccessibleDescription(reason);
+    expect(reflection).toHaveAttribute("aria-disabled", "true");
+    expect(reflection).toHaveAccessibleDescription(reason);
 
     // In the tab order rather than merely focusable, for the reason the
     // five-control test above spells out.
-    for (const control of [account, level]) {
+    for (const control of [account, level, reflection]) {
       expect(control).not.toHaveAttribute("tabindex", "-1");
       control.focus();
       expect(control).toHaveFocus();
     }
+    expect(reflection).toHaveFocus();
     await userEvent.tab();
     expect(within(card).getByRole("button", { name: "Invite" })).toHaveFocus();
 
@@ -787,6 +970,8 @@ describe("the members card", () => {
     expect(account).toHaveValue("");
     await userEvent.selectOptions(level, "manager");
     expect(level).toHaveValue("viewer");
+    await userEvent.selectOptions(reflection, "contributor");
+    expect(reflection).toHaveValue("default");
   });
 
   it("clears the typed owner and returns focus to Transfer ownership after Escape", async () => {
@@ -799,7 +984,7 @@ describe("the members card", () => {
       "editor",
     );
 
-    renderApp("/d/eng");
+    renderApp("/d/eng/settings");
     const card = await membersCard();
 
     const trigger = within(card).getByRole("button", {

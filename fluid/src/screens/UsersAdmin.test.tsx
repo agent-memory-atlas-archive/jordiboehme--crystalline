@@ -40,6 +40,7 @@ function usersListing() {
         display: "Root",
         email: null,
         role: "admin",
+        reflection: "default",
         disabled: false,
         last_seen: "2026-08-08T09:00:00Z",
       },
@@ -48,7 +49,17 @@ function usersListing() {
         display: "Eddy",
         email: null,
         role: "editor",
+        reflection: "default",
         disabled: true,
+        last_seen: null,
+      },
+      {
+        name: "nora",
+        display: "Nora",
+        email: null,
+        role: "none",
+        reflection: "contributor",
+        disabled: false,
         last_seen: null,
       },
     ],
@@ -101,6 +112,123 @@ beforeEach(() => {
 });
 
 describe("the user admin screen", () => {
+  it("sets the Reflection level beside the role, and shows curator for editors", async () => {
+    serveAs("admin");
+    renderApp("/users");
+
+    const nora = await rowFor("nora");
+    expect(
+      within(nora).getByRole("combobox", { name: "Role for nora" }),
+    ).toHaveValue("none");
+    expect(
+      within(nora).getByRole("combobox", { name: "Reflection for nora" }),
+    ).toHaveValue("contributor");
+    const eddy = await rowFor("eddy");
+    expect(within(eddy).getByText("curator")).toBeVisible();
+    expect(
+      within(eddy).queryByRole("combobox", { name: "Reflection for eddy" }),
+    ).toBeNull();
+    const roles = within(
+      within(nora).getByRole("combobox", { name: "Role for nora" }),
+    )
+      .getAllByRole("option")
+      .map((option) => option.textContent);
+    expect(roles).toEqual(["none", "viewer", "editor", "admin"]);
+  });
+
+  it("sends a Reflection change as a patch of its own", async () => {
+    serveAs("admin", {
+      "/users/nora": (_path, init) =>
+        init?.method === "PATCH"
+          ? { user: { ...usersListing().users[2], reflection: "reader" } }
+          : usersListing(),
+    });
+    renderApp("/users");
+
+    const nora = await rowFor("nora");
+    await userEvent.selectOptions(
+      within(nora).getByRole("combobox", { name: "Reflection for nora" }),
+      "reader",
+    );
+    await waitFor(() => {
+      expect(sentBody("/users/nora", "PATCH")).toEqual({
+        reflection: "reader",
+      });
+    });
+  });
+
+  it("moves an account to none with a Reflection level in the same patch", async () => {
+    serveAs("admin", {
+      "/users/eddy": () => ({ user: usersListing().users[1] }),
+    });
+    renderApp("/users");
+
+    const eddy = await rowFor("eddy");
+    await userEvent.selectOptions(
+      within(eddy).getByRole("combobox", { name: "Role for eddy" }),
+      "none",
+    );
+    await waitFor(() => {
+      expect(sentBody("/users/eddy", "PATCH")).toEqual({
+        role: "none",
+        reflection: "reader",
+      });
+    });
+  });
+
+  it("resets a chosen Reflection level when the new account's role curates", async () => {
+    serveAs("admin", {
+      "/users": (_path, init) =>
+        init?.method === "POST"
+          ? { user: usersListing().users[1] }
+          : usersListing(),
+    });
+    renderApp("/users");
+
+    await rowFor("nora");
+    await userEvent.type(screen.getByLabelText("Login name"), "kim");
+    await userEvent.type(screen.getByLabelText("Password"), "pw");
+    await userEvent.selectOptions(
+      screen.getByLabelText("Reflection"),
+      "contributor",
+    );
+    await userEvent.selectOptions(screen.getByLabelText("Role"), "editor");
+    expect(screen.getByLabelText("Reflection")).toHaveTextContent("curator");
+    await userEvent.click(screen.getByRole("button", { name: "Add user" }));
+    await waitFor(() => {
+      expect(sentBody("/users", "POST")).toEqual({
+        name: "kim",
+        password: "pw",
+        role: "editor",
+      });
+    });
+  });
+
+  it("adds an account at none with a Reflection level, never with nothing", async () => {
+    serveAs("admin", {
+      "/users": (_path, init) =>
+        init?.method === "POST"
+          ? { user: usersListing().users[2] }
+          : usersListing(),
+    });
+    renderApp("/users");
+
+    await rowFor("nora");
+    await userEvent.type(screen.getByLabelText("Login name"), "kim");
+    await userEvent.type(screen.getByLabelText("Password"), "pw");
+    await userEvent.selectOptions(screen.getByLabelText("Role"), "none");
+    expect(screen.getByLabelText("Reflection")).toHaveValue("reader");
+    await userEvent.click(screen.getByRole("button", { name: "Add user" }));
+    await waitFor(() => {
+      expect(sentBody("/users", "POST")).toEqual({
+        name: "kim",
+        password: "pw",
+        role: "none",
+        reflection: "reader",
+      });
+    });
+  });
+
   it("lists accounts with role, state and last seen", async () => {
     serveAs("admin");
     renderApp("/users");
@@ -110,7 +238,7 @@ describe("the user admin screen", () => {
     ).toBeInTheDocument();
     expect(await screen.findByText("eddy")).toBeInTheDocument();
     expect(screen.getByText(/disabled/i)).toBeInTheDocument();
-    expect(screen.getByText(/never/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/never/i)).toHaveLength(2);
     expect(screen.getByText("2026-08-08")).toBeInTheDocument();
   });
 

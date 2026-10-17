@@ -17,38 +17,6 @@ use crystalline_service::engine::{Engine, EngineError};
 use crystalline_service::params::*;
 use tokio::sync::Mutex;
 
-#[cfg(feature = "postgres")]
-fn pg_url() -> Option<String> {
-    use std::sync::Once;
-    static NOTE: Once = Once::new();
-    match std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") {
-        Ok(u) if !u.is_empty() => Some(u),
-        _ => {
-            NOTE.call_once(|| {
-                eprintln!(
-                    "note: skipping the postgres virtual-domain leg (CRYSTALLINE_TEST_POSTGRES_URL is unset); turso only"
-                )
-            });
-            None
-        }
-    }
-}
-
-/// A recycled pid must never adopt a schema a panicking run left behind.
-#[cfg(feature = "postgres")]
-fn unique_schema() -> String {
-    use std::hash::{BuildHasher, RandomState};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "ctv_{}_{}_{:x}",
-        std::process::id(),
-        n,
-        RandomState::new().hash_one(n)
-    )
-}
-
 /// Run a body against Turso (always) and Postgres (when configured), each with a
 /// fresh, isolated store handed to the engine as a trait object.
 macro_rules! both_backends {
@@ -62,19 +30,15 @@ macro_rules! both_backends {
             }
             #[cfg(feature = "postgres")]
             {
-                if let Some(url) = pg_url() {
-                    let schema = unique_schema();
-                    let pg = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                        .await
-                        .expect("open the postgres test schema");
+                if let Some(scratch) = crate::support::scratch_schema("ctv") {
+                    let pg = crystalline_index::PostgresStore::open_in_schema(
+                        scratch.url(),
+                        scratch.name(),
+                    )
+                    .await
+                    .expect("open the postgres test schema");
                     let store: Arc<Mutex<dyn Store>> = Arc::new(Mutex::new(pg));
                     $body(store).await;
-                    // Drop the schema through a fresh connection (the boxed store
-                    // no longer exposes the inherent drop_schema).
-                    let cleanup = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                        .await
-                        .unwrap();
-                    cleanup.drop_schema().await.unwrap();
                 }
             }
         }
@@ -666,7 +630,8 @@ async fn full_reindex_preserves_virtual(store: Arc<Mutex<dyn Store>>) {
         .insert("docs".to_string(), DomainEntry::file(docs.clone()));
     cfg.domains
         .insert("notes".to_string(), DomainEntry::virtual_domain());
-    let engine = Engine::new(store, cfg, None, None);
+    let engine =
+        crate::support::as_this_machine(Engine::new(store.clone(), cfg, None, None), &store).await;
 
     // Index the file domain and capture a virtual engram.
     engine.sync(None).await.unwrap();
@@ -1549,14 +1514,13 @@ fn rewritten(path: &str, text: &str) -> crystalline_index::EngramRecord {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn an_unguarded_virtual_edit_lands_on_a_concurrent_write_on_postgres() {
-    let Some(url) = pg_url() else {
+    let Some(scratch) = crate::support::scratch_schema("ctv") else {
         return;
     };
-    let schema = unique_schema();
-    let a = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+    let a = crystalline_index::PostgresStore::open_in_schema(scratch.url(), scratch.name())
         .await
         .unwrap();
-    let b = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+    let b = crystalline_index::PostgresStore::open_in_schema(scratch.url(), scratch.name())
         .await
         .unwrap();
     let engine = Arc::new(virtual_engine(Arc::new(Mutex::new(a))));
@@ -1616,8 +1580,6 @@ async fn an_unguarded_virtual_edit_lands_on_a_concurrent_write_on_postgres() {
     let stored = b.engram_content(domain, &row.path).await.unwrap().unwrap();
     assert!(stored.contains("- [fact] from b again"), "{stored}");
     assert!(!stored.contains("guarded a"), "{stored}");
-
-    b.drop_schema().await.unwrap();
 }
 
 /// The source the split race tests move two bullets out of, with enough left
@@ -1682,11 +1644,10 @@ async fn split_race_setup(
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn an_unguarded_split_lands_on_a_concurrent_write_on_postgres() {
-    let Some(url) = pg_url() else {
+    let Some(scratch) = crate::support::scratch_schema("ctv") else {
         return;
     };
-    let schema = unique_schema();
-    let (engine, b, domain, row) = split_race_setup(&url, &schema).await;
+    let (engine, b, domain, row) = split_race_setup(scratch.url(), scratch.name()).await;
 
     let from_b = format!("{}- [fact] from b\n", row.content);
     b.begin().await.unwrap();
@@ -1720,8 +1681,6 @@ async fn an_unguarded_split_lands_on_a_concurrent_write_on_postgres() {
         new.contains("- [fact] move one") && new.contains("- [fact] move two"),
         "{new}"
     );
-
-    b.drop_schema().await.unwrap();
 }
 
 /// B edits one of the bullets A's unguarded split moves: the split's re-plan
@@ -1729,11 +1688,10 @@ async fn an_unguarded_split_lands_on_a_concurrent_write_on_postgres() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn an_unguarded_split_whose_moved_lines_changed_is_refused_and_takes_its_engram_back() {
-    let Some(url) = pg_url() else {
+    let Some(scratch) = crate::support::scratch_schema("ctv") else {
         return;
     };
-    let schema = unique_schema();
-    let (engine, b, domain, row) = split_race_setup(&url, &schema).await;
+    let (engine, b, domain, row) = split_race_setup(scratch.url(), scratch.name()).await;
 
     let from_b = row
         .content
@@ -1763,8 +1721,6 @@ async fn an_unguarded_split_whose_moved_lines_changed_is_refused_and_takes_its_e
     assert_eq!(rows.len(), 1, "the new engram is taken back out");
     let stored = b.engram_content(domain, &row.path).await.unwrap().unwrap();
     assert_eq!(stored, from_b);
-
-    b.drop_schema().await.unwrap();
 }
 
 /// With the checksum of the text A read, B's unrelated append refuses A's
@@ -1772,11 +1728,10 @@ async fn an_unguarded_split_whose_moved_lines_changed_is_refused_and_takes_its_e
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn a_guarded_split_is_still_refused_on_any_change() {
-    let Some(url) = pg_url() else {
+    let Some(scratch) = crate::support::scratch_schema("ctv") else {
         return;
     };
-    let schema = unique_schema();
-    let (engine, b, domain, row) = split_race_setup(&url, &schema).await;
+    let (engine, b, domain, row) = split_race_setup(scratch.url(), scratch.name()).await;
 
     let from_b = format!("{}- [fact] from b\n", row.content);
     b.begin().await.unwrap();
@@ -1801,8 +1756,6 @@ async fn a_guarded_split_is_still_refused_on_any_change() {
     assert_eq!(rows.len(), 1, "the new engram is taken back out");
     let stored = b.engram_content(domain, &row.path).await.unwrap().unwrap();
     assert_eq!(stored, from_b);
-
-    b.drop_schema().await.unwrap();
 }
 
 /// A CRLF source whose split moves a section followed by a blank line, the
@@ -2007,11 +1960,10 @@ async fn read_only_sync_over_old_parse(store: Arc<Mutex<dyn Store>>) -> (u32, i6
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_read_only_instance_on_a_shared_database_does_not_reparse_virtual_domains() {
-    let Some(url) = pg_url() else {
+    let Some(scratch) = crate::support::scratch_schema("ctv") else {
         return;
     };
-    let schema = unique_schema();
-    let pg = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+    let pg = crystalline_index::PostgresStore::open_in_schema(scratch.url(), scratch.name())
         .await
         .unwrap();
     let store: Arc<Mutex<dyn Store>> = Arc::new(Mutex::new(pg));
@@ -2024,10 +1976,6 @@ async fn a_read_only_instance_on_a_shared_database_does_not_reparse_virtual_doma
     assert_eq!(purge_count(&store).await, 1);
 
     drop(store);
-    let cleanup = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-        .await
-        .unwrap();
-    cleanup.drop_schema().await.unwrap();
 }
 
 /// The twin: a read-only instance on its own index reparses as before.

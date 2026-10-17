@@ -166,7 +166,9 @@ pub struct ListQuery {
             status = 200,
             description = "The engine's page envelope, unchanged. Under \
                            `path`, its `total` is the folder's recursive \
-                           count, not the tree's per-level one.",
+                           count, not the tree's per-level one. A hit \
+                           carries its engram's `recorded_at` as written, \
+                           and none when the engram has no date.",
             body = Object,
             example = json!({
                 "mode": "text",
@@ -183,6 +185,7 @@ pub struct ListQuery {
                     "engram_type": "engram",
                     "status": "stable",
                     "tags": ["eng"],
+                    "recorded_at": "2026-01-31",
                     "kind": "engram"
                 }]
             }),
@@ -821,7 +824,10 @@ pub struct MoveBody {
         ),
         (
             status = 409,
-            description = "That permalink is already taken in this domain.",
+            description = "That permalink is already taken in this domain, or \
+                           an overwrite lands on an engram only the previous \
+                           host of a host move has (the detail names the \
+                           remedy).",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -1458,11 +1464,17 @@ pub async fn retire(
                            references were rewritten, \
                            `references_rewritten` the references inside \
                            them, and `rewritten` names those engrams by \
-                           domain and permalink.\n\n\
+                           domain and permalink. An entry with `landed: \
+                           \"live\"` went into a page somebody has open in \
+                           the editor, whose save writes it.\n\n\
                            `attachment_warnings` lists the attachments the \
                            move could not carry, one sentence each and empty \
                            when everything travelled; those files stay whole \
-                           in the source domain.",
+                           in the source domain.\n\n\
+                           `links_failed`, `[{ domain, path, reason }]`, \
+                           appears only when an engram that links the moved \
+                           one could not be rewritten after the move; the \
+                           move itself has landed.",
             body = Object,
             example = json!({
                 "from": { "domain": "eng", "permalink": "beta", "path": "beta.md" },
@@ -1498,9 +1510,11 @@ pub async fn retire(
         (
             status = 409,
             description = "The destination already exists in the target \
-                           domain, another engram there already answers to \
-                           the new permalink, or the engram is open in the \
-                           editor and its address would change under it.",
+                           domain or is an engram only the previous host of a \
+                           host move has, another engram there already \
+                           answers to the new permalink, or the engram is open \
+                           in the editor and its address would change under \
+                           it.",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -1847,6 +1861,14 @@ impl ValidateFinding {
         (
             status = 404,
             description = "No such domain or engram.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 409,
+            description = "The engram is one only the previous host of a host \
+                           move has, whose row a delete here would drop; the \
+                           detail names the remedy.",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),

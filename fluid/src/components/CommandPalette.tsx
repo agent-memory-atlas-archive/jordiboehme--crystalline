@@ -27,114 +27,37 @@
  *
  * Typing is debounced at the same pause the search screen uses, so a query is
  * one request rather than one per keystroke.
+ *
+ * This file is the shell and stays in the entry bundle: the shortcut, the text
+ * typed so far and the way back to the focus. The palette itself, with cmdk
+ * behind it, is `CommandPaletteBody.tsx` and is fetched the first time the
+ * palette opens. Until it arrives a plain box takes the keys, so the first
+ * press of the shortcut followed by typing loses nothing.
  */
 
-import { useQuery } from "@tanstack/react-query";
-import { Command } from "cmdk";
-import {
-  Compass,
-  FileText,
-  Library,
-  Search,
-  Command as Shortcut,
-} from "lucide-react";
-import type { LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router";
+import type { ReactElement } from "react";
 
-import { DOMAINS_QUERY_KEY, fetchDomains } from "../api/domains";
-import type { EngramRow } from "../api/engrams";
-import type { SearchRequest } from "../api/search";
-import {
-  NO_SEARCH,
-  SEARCH_DEBOUNCE_MS,
-  fetchSearch,
-  titleMatchesKey,
-} from "../api/search";
-import { usePaletteCommands } from "../commands";
-import { RETIRED_CLASS, isRetired } from "../lifecycle";
-import { domainRoute, engramRoute, searchRoute } from "../paths";
+import { Loading } from "./Loading";
+import { lazyPart } from "./lazyPart";
+
+const PaletteBody = lazyPart(() => import("./CommandPaletteBody"));
+
+/** The event the palette opens on besides its shortcut. */
+const OPEN_EVENT = "fluid:palette";
 
 /**
- * How many title matches the palette shows.
- *
- * A palette is a list somebody reads without scrolling: past a screenful the
- * search screen is the better tool, and the last row leads there.
+ * Open the palette from a control rather than the keyboard (the phone's
+ * search icon), with the element focus goes back to when it closes.
  */
-const PALETTE_HITS = 7;
-
-/** The classes one row shares, highlighted or not. */
-const ROW_CLASSES =
-  "flex cursor-pointer items-baseline gap-2 rounded px-2 py-1.5 text-sm outline-none select-none data-[selected=true]:bg-slate-100 dark:data-[selected=true]:bg-slate-800";
-
-/**
- * The classes one group heading shares.
- *
- * On a span inside the heading rather than on the group, because a group wraps
- * its rows: heading type set on the group would inherit straight into them.
- */
-const HEADING_CLASSES =
-  "block px-2 pt-2 pb-1 text-xs font-semibold tracking-wide text-slate-500 uppercase dark:text-slate-400";
-
-/** One group heading, drawn the same way wherever it appears. */
-function Heading({ children }: { children: string }) {
-  return <span className={HEADING_CLASSES}>{children}</span>;
+// eslint-disable-next-line react-refresh/only-export-components
+export function openPalette(invoker: HTMLElement): void {
+  window.dispatchEvent(new CustomEvent(OPEN_EVENT, { detail: invoker }));
 }
 
-/**
- * The glyph on a row, which says what kind of thing the row is.
- *
- * Decorative, and deliberately so: the group heading above already names the
- * kind in words, so this is the same fact for the eye scanning a mixed list
- * rather than a fact only the eye gets. The row's accessible name is its text,
- * unchanged. `self-center` opts the icon out of the row's baseline, which is
- * set for text of two sizes and would hang a square glyph off the bottom of
- * it.
- */
-function Glyph({ icon: Icon }: { icon: LucideIcon }) {
-  return (
-    <Icon
-      aria-hidden="true"
-      size={16}
-      strokeWidth={1.75}
-      className="shrink-0 self-center text-slate-500 dark:text-slate-400"
-    />
-  );
-}
-
-/** What one row is called, which is how the highlight keeps track of it. */
-function domainValue(name: string): string {
-  return `domain:${name}`;
-}
-
-function engramValue(hit: EngramRow): string {
-  return `engram:${hit.domain}/${hit.permalink}`;
-}
-
-function searchValue(term: string): string {
-  return `search:${term}`;
-}
-
-function actionValue(id: string): string {
-  return `action:${id}`;
-}
-
-export function CommandPalette() {
-  const navigate = useNavigate();
-  // What the screen behind the palette can do, which is why the palette is
-  // more than a way around: a write is reachable from the keyboard without
-  // ever finding the button that also runs it.
-  const actions = usePaletteCommands();
+export function CommandPalette(): ReactElement | null {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  // What the last pause settled on, which is what the server was asked for.
-  const [term, setTerm] = useState("");
-  // The row somebody moved the highlight onto, remembered together with the
-  // top row it was chosen against. Both halves matter: rows arrive after the
-  // typing that asked for them, so a highlight left where it was would still
-  // be sitting on the one row there was while the answer landed above it, and
-  // a highlight snapped to the top on every render would undo the arrow keys.
-  const [choice, setChoice] = useState({ top: "", value: "" });
   // Whatever had the focus when the shortcut fired, so closing can hand it
   // back. A dialog opened by a key has no trigger to return to on its own.
   const invoker = useRef<HTMLElement | null>(null);
@@ -145,16 +68,13 @@ export function CommandPalette() {
    * Every way out goes through here, which is the point: a jump closes the
    * palette from the inside and never reaches the dialog's own `onOpenChange`,
    * so a reset hanging off that callback would fire on every exit except the
-   * common one and the next Cmd+K would open onto the last question. The
-   * highlight is dropped with the query, because a choice made against rows
-   * that are gone must not win over the new top row when the two happen to
-   * line up.
+   * common one and the next Cmd+K would open onto the last question. The body
+   * is unmounted while the palette is shut, which drops its own highlight and
+   * pending lookup with it.
    */
   const close = useCallback(() => {
     setOpen(false);
     setQuery("");
-    setTerm("");
-    setChoice({ top: "", value: "" });
   }, []);
 
   useEffect(() => {
@@ -178,9 +98,15 @@ export function CommandPalette() {
           : null;
       setOpen(true);
     }
+    function onOpen(event: Event) {
+      invoker.current = (event as CustomEvent<HTMLElement>).detail;
+      setOpen(true);
+    }
     window.addEventListener("keydown", onKeyDown);
+    window.addEventListener(OPEN_EVENT, onOpen);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener(OPEN_EVENT, onOpen);
     };
   }, [open, close]);
 
@@ -200,261 +126,61 @@ export function CommandPalette() {
     }
   }, [open]);
 
-  useEffect(() => {
-    const pending = query.trim();
-    if (pending === term) {
-      return;
-    }
-    const timer = setTimeout(() => {
-      setTerm(pending);
-    }, SEARCH_DEBOUNCE_MS);
-    return () => {
-      clearTimeout(timer);
-    };
-  }, [query, term]);
-
-  // The listing the sidebar already read, under the same key: opening the
-  // palette costs nothing on the wire.
-  const listing = useQuery({
-    queryKey: DOMAINS_QUERY_KEY,
-    queryFn: fetchDomains,
-  });
-
-  const request: SearchRequest = { ...NO_SEARCH, q: term, mode: "title" };
-  const titles = useQuery({
-    queryKey: titleMatchesKey(term),
-    queryFn: () => fetchSearch(request, 1),
-    // Nothing typed is nothing to look up, and a shut palette looks nothing up
-    // at all.
-    enabled: open && term !== "",
-  });
-
-  // What is in the box, and the same thing folded for the one match this app
-  // makes itself. The server is what matches titles, and it decides how; the
-  // domain names are matched here, where a reader holding shift is asking the
-  // same question as one who is not.
-  const typed = query.trim();
-  const domains = (listing.data?.domains ?? []).filter((domain) =>
-    domain.name.toLowerCase().includes(typed.toLowerCase()),
-  );
-  // Only the matches for the query on screen: the request behind them is a
-  // pause old, and rows from the query before it would point at answers to a
-  // question nobody is asking any more.
-  const hits =
-    term === typed ? (titles.data?.hits ?? []).slice(0, PALETTE_HITS) : [];
-  // The actions, matched here for the same reason the domain names are: they
-  // are already in hand, and a reader holding shift is asking the same
-  // question. Nothing typed matches everything, so an empty palette opens on
-  // what this screen can do.
-  const matching = actions.filter((command) =>
-    command.title.toLowerCase().includes(typed.toLowerCase()),
-  );
-  // Split by who offered them: the screen's own lead the list, the frame's
-  // trail it. Only the first group can take the highlight below.
-  const matchingActions = matching.filter(
-    (command) => command.scope === "screen",
-  );
-  const frameActions = matching.filter((command) => command.scope === "frame");
-
-  // The top row, in the order they are drawn in. Enter follows the highlight,
-  // and the highlight is the top row until somebody moves it off: an answer
-  // landing above a highlighted row takes the highlight with it.
-  const firstAction = matchingActions[0];
-  const firstDomain = domains[0];
-  const firstHit = hits[0];
-  const top =
-    firstAction !== undefined
-      ? actionValue(firstAction.id)
-      : firstDomain !== undefined
-        ? domainValue(firstDomain.name)
-        : firstHit !== undefined
-          ? engramValue(firstHit)
-          : typed === ""
-            ? ""
-            : searchValue(typed);
-  const highlighted = choice.top === top ? choice.value : top;
-
-  /** Go, and get out of the way. */
-  function go(to: string): void {
-    close();
-    void navigate(to);
+  if (!open) {
+    return null;
   }
-
   return (
-    <Command.Dialog
-      open={open}
-      onOpenChange={(next) => {
-        // Escape, or a click on the overlay. The palette itself only ever
-        // opens from the shortcut, which captures the invoker as it goes.
-        if (next) {
-          setOpen(true);
-        } else {
-          close();
-        }
-      }}
-      label="Command palette"
-      // The rows are what the server found, so cmdk's own scoring is off: a
-      // second filter over an answer would hide rows the index chose to send.
-      shouldFilter={false}
-      value={highlighted}
-      onValueChange={(value) => {
-        setChoice({ top, value });
-      }}
-      // Behind the panel rather than level with it, and darker in dark: a
-      // palette that floats over the screen has to look like it does.
-      overlayClassName="fixed inset-0 z-40 bg-slate-950/25 dark:bg-slate-950/50"
-      contentClassName="fixed top-24 left-1/2 z-50 w-[min(36rem,calc(100vw-2rem))] -translate-x-1/2 overflow-hidden rounded border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900"
-    >
-      <Command.Input
-        value={query}
-        onValueChange={setQuery}
-        placeholder="Jump to a domain, or find an engram by title"
-        className="w-full border-b border-slate-200 bg-transparent px-3 py-3 text-sm outline-none dark:border-slate-800"
-      />
-      <Command.List
-        label="Jump to"
-        className="max-h-80 overflow-y-auto p-1.5 text-slate-900 dark:text-slate-100"
-      >
-        {/*
-          First, above the jumps: what the reader is already looking at is
-          what they most likely opened the palette to act on, and everything
-          below this leaves the screen the actions belong to.
-        */}
-        {matchingActions.length > 0 && (
-          <Command.Group heading={<Heading>Actions</Heading>}>
-            {matchingActions.map((command) => (
-              <Command.Item
-                key={command.id}
-                value={actionValue(command.id)}
-                onSelect={() => {
-                  // Shut first, then act: an action that opens a dialog of its
-                  // own would otherwise open it behind this one.
-                  close();
-                  command.run();
-                }}
-                className={ROW_CLASSES}
-              >
-                <Glyph icon={Shortcut} />
-                <span className="truncate">{command.title}</span>
-              </Command.Item>
-            ))}
-          </Command.Group>
-        )}
+    <PaletteBody
+      overlay
+      fallback={
+        <PaletteLoading
+          query={query}
+          onQueryChange={setQuery}
+          onClose={close}
+        />
+      }
+      query={query}
+      onQueryChange={setQuery}
+      onClose={close}
+    />
+  );
+}
 
-        {domains.length > 0 && (
-          <Command.Group heading={<Heading>Domains</Heading>}>
-            {domains.map((domain) => (
-              <Command.Item
-                key={domain.name}
-                value={domainValue(domain.name)}
-                onSelect={() => {
-                  go(domainRoute(domain.name));
-                }}
-                className={ROW_CLASSES}
-              >
-                <Glyph icon={Library} />
-                <span className="truncate">{domain.name}</span>
-                {domain.engrams !== null && (
-                  <span className="text-xs text-slate-500 tabular-nums dark:text-slate-400">
-                    {domain.engrams}
-                  </span>
-                )}
-              </Command.Item>
-            ))}
-          </Command.Group>
-        )}
-
-        {hits.length > 0 && (
-          <Command.Group heading={<Heading>Engrams</Heading>}>
-            {hits.map((hit) => (
-              <Command.Item
-                key={`${hit.domain}/${hit.permalink}`}
-                value={engramValue(hit)}
-                onSelect={() => {
-                  go(engramRoute(hit.domain, hit.permalink));
-                }}
-                // Faded when it is retired, the same way every list in this
-                // app fades one: a row that jumps somewhere is exactly where
-                // the fade has to hold, or a reader is sent off on a
-                // deprecated engram without a word.
-                className={`${ROW_CLASSES} ${
-                  isRetired(hit.status) ? RETIRED_CLASS : ""
-                }`}
-              >
-                <Glyph icon={FileText} />
-                <span className="truncate">{hit.title}</span>
-                {/*
-                  And the word itself, only where it changes what the row
-                  means. A status on every row would be noise in a list read
-                  at a glance; the fade alone says something is off without
-                  saying what.
-                */}
-                {isRetired(hit.status) && (
-                  <span className="truncate text-xs text-slate-500 dark:text-slate-400">
-                    {hit.status}
-                  </span>
-                )}
-                <span className="truncate text-xs text-slate-500 dark:text-slate-400">
-                  {hit.domain}
-                </span>
-              </Command.Item>
-            ))}
-          </Command.Group>
-        )}
-
-        {typed !== "" && (
-          <Command.Group heading={<Heading>Everywhere else</Heading>}>
-            <Command.Item
-              value={searchValue(typed)}
-              onSelect={() => {
-                go(searchRoute(typed));
-              }}
-              className={ROW_CLASSES}
-            >
-              <Glyph icon={Search} />
-              <span className="truncate">Search for {`"${typed}"`}</span>
-              <span className="text-xs text-slate-500 dark:text-slate-400">
-                titles and text
-              </span>
-            </Command.Item>
-          </Command.Group>
-        )}
-
-        {/*
-          Last, and never the highlight on an opening palette: these rows are
-          the same wherever a reader is, so they are the app rather than the
-          place, and the row Enter lands on should be about the place.
-        */}
-        {frameActions.length > 0 && (
-          <Command.Group heading={<Heading>App</Heading>}>
-            {frameActions.map((command) => (
-              <Command.Item
-                key={command.id}
-                value={actionValue(command.id)}
-                onSelect={() => {
-                  close();
-                  command.run();
-                }}
-                className={ROW_CLASSES}
-              >
-                <Glyph icon={Compass} />
-                <span className="truncate">{command.title}</span>
-              </Command.Item>
-            ))}
-          </Command.Group>
-        )}
-
-        {typed !== "" && hits.length === 0 && titles.isFetching && (
-          <p className="px-2 py-1.5 text-sm text-slate-500 dark:text-slate-400">
-            Looking for titles
-          </p>
-        )}
-        {typed === "" && domains.length === 0 && !listing.isPending && (
-          <p className="px-2 py-1.5 text-sm text-slate-500 dark:text-slate-400">
-            No domains are registered on this instance yet.
-          </p>
-        )}
-      </Command.List>
-    </Command.Dialog>
+/**
+ * What stands in for the palette while its chunk is on the way: the same box
+ * in the same place, holding the keys already pressed, with the shared
+ * loader beneath it. It is not a dialog, so the real one is the first
+ * `dialog` anything finds.
+ */
+function PaletteLoading({
+  query,
+  onQueryChange,
+  onClose,
+}: {
+  query: string;
+  onQueryChange: (query: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-40 bg-slate-950/25 dark:bg-slate-950/50">
+      <div className="fixed top-24 left-1/2 z-50 w-[min(36rem,calc(100vw-2rem))] -translate-x-1/2 overflow-hidden rounded border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900">
+        <input
+          autoFocus
+          aria-label="Command palette"
+          value={query}
+          onChange={(event) => {
+            onQueryChange(event.target.value);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              onClose();
+            }
+          }}
+          placeholder="Jump to a domain, or find an engram by title"
+          className="w-full border-b border-slate-200 bg-transparent px-3 py-3 text-sm outline-none dark:border-slate-800"
+        />
+        <Loading compact label="Loading the command palette" className="p-3" />
+      </div>
+    </div>
   );
 }

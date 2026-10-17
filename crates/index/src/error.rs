@@ -66,6 +66,18 @@ pub enum IndexError {
     /// An input was malformed.
     #[error("invalid input: {0}")]
     Invalid(String),
+    /// A walk tried to apply to a file domain whose host lock no longer names
+    /// the instance that walked it: another instance took the domain over
+    /// while the walk ran, so its rows are no longer this instance's to
+    /// write. The message names the holder.
+    #[error("{0}")]
+    NotHost(String),
+    /// A walk was not applied because the domain's host move changed while
+    /// it ran (another walk of the same instance, for example a `crystalline
+    /// sync` beside the daemon, wrote it first). The walker still holds the
+    /// lock; the next walk applies.
+    #[error("{0}")]
+    HostMoveChanged(String),
     /// A multi-domain run failed while working on one named domain.
     ///
     /// The name is otherwise lost: a driver rebuilding five domains that

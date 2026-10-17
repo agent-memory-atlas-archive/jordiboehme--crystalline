@@ -11,7 +11,7 @@ use indexmap::IndexMap;
 
 use crate::config::registration::validate_domain_name;
 use crate::engram::Engram;
-use crate::parse::{body_lines, fence_marker, locate, parse_engram, parse_heading};
+use crate::parse::{FenceTracker, body_lines, locate, parse_engram, parse_heading};
 use crate::tags::is_lower_hyphen;
 use crate::yaml::YamlValue;
 
@@ -1480,7 +1480,7 @@ fn tag_aliases_insert_offset(source: &str) -> Option<usize> {
     let (_has_fm, _fm_span, body_start) = locate(source);
     let body = &source[body_start..];
 
-    let mut fence: Option<(char, usize)> = None;
+    let mut fence = FenceTracker::new();
     let mut state: Option<InSection> = None;
     let mut abs = body_start;
 
@@ -1490,25 +1490,9 @@ fn tag_aliases_insert_offset(source: &str) -> Option<usize> {
         let content = line.strip_suffix('\n').unwrap_or(line);
         let text = content.trim_end_matches('\r');
 
-        match fence {
-            None => {
-                if let Some((c, n, _)) = fence_marker(text) {
-                    // Opening fence line: never a heading or bullet.
-                    fence = Some((c, n));
-                    continue;
-                }
-            }
-            Some((fc, fcount)) => {
-                // Inside a fence: skip, testing the parser's close rule.
-                if let Some((c, n, _)) = fence_marker(text)
-                    && c == fc
-                    && n >= fcount
-                    && text.trim_start()[n..].trim().is_empty()
-                {
-                    fence = None;
-                }
-                continue;
-            }
+        // A fence line, opening or closing, is never a heading or bullet.
+        if fence.in_fence(text) {
+            continue;
         }
 
         match &mut state {

@@ -10,11 +10,11 @@
  */
 
 import type { ReactElement } from "react";
-import { Suspense, lazy } from "react";
 
 import type { SyncProposal } from "../api/admin";
+import { lazyPart } from "./lazyPart";
 
-const WithdrawProposalDialogBody = lazy(
+const WithdrawProposalDialogBody = lazyPart(
   () => import("./WithdrawProposalDialogBody"),
 );
 
@@ -52,7 +52,8 @@ export function WithdrawProposalDialog(
   props: WithdrawProposalDialogProps,
 ): ReactElement {
   return (
-    <Suspense
+    <WithdrawProposalDialogBody
+      overlay
       fallback={
         // Plain markup rather than another Radix dialog: reaching for the
         // primitive here would defeat the point of keeping it out of this
@@ -63,8 +64,7 @@ export function WithdrawProposalDialog(
           </p>
         </div>
       }
-    >
-      <WithdrawProposalDialogBody {...props} />
-    </Suspense>
+      {...props}
+    />
   );
 }

@@ -53,7 +53,81 @@ describe("the change frames", () => {
     warn.mockRestore();
   });
 
-  it("reads the three event names", () => {
+  it("reads a reflection frame and reads an unknown kind as changed", () => {
+    expect(
+      parseFrame(
+        "reflection",
+        JSON.stringify({
+          domain: "eng",
+          path: "b.md",
+          kind: "moved",
+          from: "a.md",
+          actor: "jordi",
+        }),
+      ),
+    ).toEqual({
+      event: "reflection",
+      change: {
+        domain: "eng",
+        path: "b.md",
+        kind: "moved",
+        from: "a.md",
+        actor: "jordi",
+      },
+    });
+    // `toMatchObject`, not `?.change?.kind`: the `reset` arm of `ChangeEvent` has no `change`, and the tests are typechecked.
+    expect(
+      parseFrame(
+        "reflection",
+        JSON.stringify({ domain: "eng", path: "assets/x.png", kind: "files" }),
+      ),
+    ).toMatchObject({
+      event: "reflection",
+      change: { kind: "files", path: "assets/x.png" },
+    });
+    expect(
+      parseFrame(
+        "reflection",
+        JSON.stringify({ domain: "eng", path: "b.md", kind: "renamed" }),
+      ),
+    ).toEqual({
+      event: "reflection",
+      change: {
+        domain: "eng",
+        path: "b.md",
+        kind: "changed",
+        from: null,
+        actor: null,
+      },
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(
+      parseFrame(
+        "reflection",
+        JSON.stringify({ path: "b.md", kind: "changed" }),
+      ),
+    ).toBeNull();
+    warn.mockRestore();
+    // The switch event (`switched`, also sent when the host lock moves) has an empty path and is kept;
+    // a missing `from` or `actor` reads as null.
+    expect(
+      parseFrame(
+        "reflection",
+        JSON.stringify({ domain: "eng", path: "", kind: "switched" }),
+      ),
+    ).toEqual({
+      event: "reflection",
+      change: {
+        domain: "eng",
+        path: "",
+        kind: "switched",
+        from: null,
+        actor: null,
+      },
+    });
+  });
+
+  it("reads the four event names", () => {
     expect(parseFrame("reset", "{}")).toEqual({ event: "reset" });
     expect(
       parseFrame("domain", JSON.stringify({ domain: "eng", actor: null })),

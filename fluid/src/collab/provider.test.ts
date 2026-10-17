@@ -10,8 +10,11 @@ import {
   CollabProvider,
   MESSAGE_CONTROL,
   MESSAGE_SYNC,
+  PROBE_AFTER_DEADLINE_MS,
   collabSocketUrl,
   collabUrl,
+  reflectionOfferKey,
+  reflectionRoomKey,
 } from "./provider";
 import {
   FakeSocket,
@@ -33,6 +36,7 @@ function makeProvider(
     onStatus: handlers.onStatus ?? (() => undefined),
     onSynced: handlers.onSynced ?? (() => undefined),
     onEpochGap: handlers.onEpochGap ?? (() => undefined),
+    onLive: handlers.onLive ?? (() => undefined),
   };
   FakeSocket.instances = [];
   const provider = new CollabProvider(
@@ -47,6 +51,21 @@ function makeProvider(
     throw new Error("the provider opened no socket");
   }
   return { doc, awareness, provider, socket };
+}
+
+/** The controls among `frames`, decoded, in order. */
+function decodeControls(frames: Uint8Array[]): object[] {
+  const out: object[] = [];
+  for (const frame of frames) {
+    const decoder = decoding.createDecoder(frame);
+    if (decoding.readVarUint(decoder) !== MESSAGE_CONTROL) continue;
+    out.push(
+      JSON.parse(
+        new TextDecoder().decode(decoding.readVarUint8Array(decoder)),
+      ) as object,
+    );
+  }
+  return out;
 }
 
 describe("collabUrl", () => {
@@ -65,6 +84,24 @@ describe("collabUrl", () => {
     );
     expect(collabUrl("eng", "alpha", "a b")).toBe(
       "/api/v1/collab/eng/alpha?overlay=a%20b",
+    );
+  });
+});
+
+describe("the reflection draft keys", () => {
+  it("never meet an engram's draft key or each other", () => {
+    // A permalink never holds ":", so neither key can be an engram's.
+    for (const path of ["guides/a.md", "PACT.md", "offer:x.md"]) {
+      expect(reflectionRoomKey(path)).toContain(":");
+      expect(reflectionOfferKey(path)).toContain(":");
+    }
+    // The prefixes differ before the path starts, so no two paths give the
+    // same key across the two kinds.
+    expect(reflectionRoomKey("offer:x.md")).not.toBe(
+      reflectionOfferKey("x.md"),
+    );
+    expect(reflectionOfferKey("guides/a.md")).toBe(
+      "reflection-offer:guides/a.md",
     );
   });
 });
@@ -172,7 +209,7 @@ describe("CollabProvider", () => {
     provider.destroy();
   });
 
-  it("hands control messages to the handler and sends flush/resolve", () => {
+  it("hands control messages to the handler, and sends flush/resolve only once live", () => {
     const controls: object[] = [];
     const { provider, socket } = makeProvider({
       onControl: (control) => controls.push(control),
@@ -186,21 +223,85 @@ describe("CollabProvider", () => {
       detail: "no frontmatter",
     });
 
+    // Not live yet: refused, nothing sent, nothing kept for later.
     socket.sent = [];
-    provider.flush();
-    provider.resolve("mine");
-    const decoded = socket.sent.map((frame) => {
-      const decoder = decoding.createDecoder(frame);
-      expect(decoding.readVarUint(decoder)).toBe(MESSAGE_CONTROL);
-      return JSON.parse(
-        new TextDecoder().decode(decoding.readVarUint8Array(decoder)),
-      ) as object;
-    });
-    expect(decoded).toEqual([
+    expect(provider.flush()).toBe(false);
+    expect(provider.resolve("mine")).toBe(false);
+    expect(decodeControls(socket.sent)).toEqual([]);
+
+    // Live once the room's SyncStep1 is answered.
+    const server = new Y.Doc();
+    socket.receive(concat(helloFrame("e1"), serverStep1(server)));
+    expect(provider.isLive).toBe(true);
+    expect(decodeControls(socket.sent)).toEqual([]);
+    expect(provider.flush()).toBe(true);
+    expect(provider.resolve("mine")).toBe(true);
+    expect(decodeControls(socket.sent)).toEqual([
       { kind: "flush" },
       { kind: "resolve", choice: "mine" },
     ]);
     provider.destroy();
+  });
+
+  it("never sends a control ahead of the text typed while reconnecting", () => {
+    vi.useFakeTimers();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    let lives = 0;
+    const { doc, provider, socket } = makeProvider({
+      onLive: () => {
+        lives += 1;
+      },
+    });
+    const server = new Y.Doc();
+    socket.open();
+    socket.receive(concat(helloFrame("e1"), serverStep1(server)));
+    expect(lives).toBe(1);
+
+    // The connection drops; the next socket opens ("connected") but its
+    // hello has not come yet.
+    socket.dropWith(1006);
+    vi.advanceTimersByTime(300);
+    const second = FakeSocket.instances[1];
+    if (!second) throw new Error("no second socket");
+    second.open();
+    // Typing in this window stays local, and no control goes out.
+    doc.getText("content").insert(0, "typed while away\n");
+    expect(provider.flush()).toBe(false);
+    expect(second.sent).toEqual([]);
+
+    // Hello and the room's SyncStep1: the answer carries the text, and only
+    // after it may a control go.
+    second.receive(concat(helloFrame("e1"), serverStep1(server)));
+    expect(lives).toBe(2);
+    expect(provider.flush()).toBe(true);
+    const kinds = second.sent.map((frame) => {
+      const decoder = decoding.createDecoder(frame);
+      const type = decoding.readVarUint(decoder);
+      if (type !== MESSAGE_SYNC) {
+        return type === MESSAGE_CONTROL ? "control" : "other";
+      }
+      return decoding.readVarUint(decoder) === syncProtocol.messageYjsSyncStep2
+        ? "step2"
+        : "sync";
+    });
+    expect(kinds.indexOf("step2")).toBeGreaterThanOrEqual(0);
+    expect(kinds.indexOf("step2")).toBeLessThan(kinds.indexOf("control"));
+    // And the text is in that answer.
+    const answered = new Y.Doc();
+    for (const frame of second.sent) {
+      const decoder = decoding.createDecoder(frame);
+      if (decoding.readVarUint(decoder) !== MESSAGE_SYNC) continue;
+      syncProtocol.readSyncMessage(
+        decoder,
+        encoding.createEncoder(),
+        answered,
+        "test",
+      );
+    }
+    expect(answered.getText("content").toJSON()).toContain("typed while away");
+    provider.destroy();
+    random.mockRestore();
+    vi.useRealTimers();
   });
 
   it("reconnects with backoff on ordinary closes but never on 44xx", () => {
@@ -361,6 +462,54 @@ describe("CollabProvider", () => {
     vi.advanceTimersByTime(CONNECT_TIMEOUT_MS + 100);
     expect(statuses.at(-1)).toBe("failed");
     expect(socket.readyState).toBe(3);
+    provider.destroy();
+    vi.useRealTimers();
+  });
+
+  it("asks once more after a missed deadline and hands on a moved close", () => {
+    vi.useFakeTimers();
+    const controls: unknown[] = [];
+    const statuses: string[] = [];
+    const { provider, socket } = makeProvider({
+      onControl: (control) => controls.push(control),
+      onStatus: (status) => statuses.push(status),
+    });
+    // A long move: every upgrade is refused until the deadline passes.
+    socket.dropWith(1006);
+    vi.advanceTimersByTime(CONNECT_TIMEOUT_MS + 100);
+    expect(statuses.at(-1)).toBe("failed");
+    const dialled = FakeSocket.instances.length;
+    vi.advanceTimersByTime(PROBE_AFTER_DEADLINE_MS);
+    const probe = FakeSocket.instances[dialled];
+    if (!probe) throw new Error("no probe socket");
+    probe.open();
+    const moved = { kind: "closed", reason: "moved", path: "guides/b.md" };
+    probe.receive(controlFrame(moved));
+    expect(controls).toEqual([moved]);
+    expect(probe.readyState).toBe(3);
+    expect(probe.sent).toHaveLength(0);
+    // Once is enough.
+    vi.advanceTimersByTime(60_000);
+    expect(FakeSocket.instances).toHaveLength(dialled + 1);
+    provider.destroy();
+    vi.useRealTimers();
+  });
+
+  it("the ask after the deadline answers no hello and hands on nothing else", () => {
+    vi.useFakeTimers();
+    const controls: unknown[] = [];
+    const { provider, socket } = makeProvider({
+      onControl: (control) => controls.push(control),
+    });
+    socket.dropWith(1006);
+    vi.advanceTimersByTime(CONNECT_TIMEOUT_MS + PROBE_AFTER_DEADLINE_MS + 100);
+    const probe = FakeSocket.instances.at(-1);
+    if (!probe || probe === socket) throw new Error("no probe socket");
+    probe.open();
+    probe.receive(helloFrame("e1"));
+    expect(controls).toEqual([]);
+    expect(probe.sent).toHaveLength(0);
+    expect(probe.readyState).toBe(3);
     provider.destroy();
     vi.useRealTimers();
   });

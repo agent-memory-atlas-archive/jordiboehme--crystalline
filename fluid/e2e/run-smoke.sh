@@ -4,8 +4,9 @@
 # One command, the same one locally and in CI: it stands up a daemon holding a
 # copy of each fixture domain, creates the admin account through the first-run
 # setup endpoint the browser wizard drives, seeds a peer and an outsider editor
-# with the CLI and closes the second fixture domain to the admin who owns it,
-# checks the web UI that daemon serves out of its own binary, then builds the
+# and a Reflection contributor with the CLI and closes the second fixture domain
+# to the admin who owns it, checks the web UI that daemon serves out of its own
+# binary, then builds the
 # bundle and hands both to Playwright, which serves the bundle with `vite
 # preview` (see playwright.config.ts) and drives a browser against it.
 #
@@ -109,6 +110,14 @@ FLUID_E2E_PRIVATE_DOMAIN="${FLUID_E2E_PRIVATE_DOMAIN:-smoke-vault}"
 # does not contain the badge's word.
 FLUID_E2E_OWNED_DOMAIN="${FLUID_E2E_OWNED_DOMAIN:-peer-shelf}"
 FLUID_E2E_LOCKED_DOMAIN="${FLUID_E2E_LOCKED_DOMAIN:-smoke-archive}"
+# The domain the Reflection journeys read, edit and comment in, private to the
+# admin, with its Reflection on. Its name starts with none of the names above
+# (the sidebar matches by prefix) and does not contain the badge's word.
+FLUID_E2E_REFLECTION_DOMAIN="${FLUID_E2E_REFLECTION_DOMAIN:-smoke-pages}"
+# The fourth account: knowledge level none, a Reflection contributor in that
+# domain and nothing else.
+FLUID_E2E_CONTRIBUTOR="${FLUID_E2E_CONTRIBUTOR:-contrib}"
+FLUID_E2E_CONTRIBUTOR_PASSWORD="${FLUID_E2E_CONTRIBUTOR_PASSWORD:-contrib-password}"
 # The label the single sign-on button wears, which is the whole of what the
 # sso spec asserts. The provider it names is never contacted: the button is a
 # link, the spec only reads it, and discovery does not happen until somebody
@@ -120,6 +129,7 @@ export FLUID_E2E_USER FLUID_E2E_PASSWORD FLUID_E2E_DOMAIN
 export FLUID_E2E_PEER FLUID_E2E_PEER_PASSWORD
 export FLUID_E2E_OUTSIDER FLUID_E2E_OUTSIDER_PASSWORD
 export FLUID_E2E_PRIVATE_DOMAIN FLUID_E2E_OWNED_DOMAIN FLUID_E2E_LOCKED_DOMAIN
+export FLUID_E2E_REFLECTION_DOMAIN FLUID_E2E_CONTRIBUTOR FLUID_E2E_CONTRIBUTOR_PASSWORD
 
 # A second run serves the daemon under a path prefix: its public_url names
 # the prefix, every curl below goes through it, and Playwright drives the
@@ -216,6 +226,8 @@ owned_root="$run_dir/owned-domain"
 cp -R "$here/fixtures/owned-domain" "$owned_root"
 locked_root="$run_dir/locked-domain"
 cp -R "$here/fixtures/locked-domain" "$locked_root"
+reflection_root="$run_dir/reflection-domain"
+cp -R "$here/fixtures/reflection-domain" "$reflection_root"
 
 echo "smoke: registering the fixture domains"
 "${isolated[@]}" "$bin" domain add "$FLUID_E2E_DOMAIN" "$domain_root"
@@ -227,6 +239,37 @@ echo "smoke: registering the fixture domains"
 "${isolated[@]}" "$bin" domain add "$FLUID_E2E_PRIVATE_DOMAIN" "$private_root"
 "${isolated[@]}" "$bin" domain add "$FLUID_E2E_OWNED_DOMAIN" "$owned_root"
 "${isolated[@]}" "$bin" domain add "$FLUID_E2E_LOCKED_DOMAIN" "$locked_root"
+"${isolated[@]}" "$bin" domain add "$FLUID_E2E_REFLECTION_DOMAIN" "$reflection_root"
+
+# One kept text, as a co-editing room leaves it when its last save could not
+# land: a plain file in the state folder, which the server lists on every
+# request. kept.spec.ts shows it on the domain settings and in the editor of
+# its engram, and drops it there. The engram is one no other journey edits.
+#
+# It must be written AFTER the `domain add` lines above: a registration sets
+# aside a kept folder no registered domain owns, so a text written first
+# would be moved out of reach before the journey ever looks for it.
+kept_dir="$run_dir/state/crystalline/kept/$FLUID_E2E_DOMAIN/engram"
+mkdir -p "$kept_dir"
+printf '%s\n' '---' 'title: Harbor Signal Log' '---' '' 'Typed in a room that could not save.' \
+    > "$kept_dir/harbor-signal-log.md.20261015T080000Z.md"
+
+# The server reads the same folder the CLI does, so the CLI's listing is the
+# server's: a layout the scan does not take, or a text set aside, fails the
+# setup here with its reason instead of a journey timing out on a missing row.
+kept_is_listed() {
+    local listing
+    listing="$("${isolated[@]}" "$bin" kept list --domain "$FLUID_E2E_DOMAIN" --json)" || {
+        echo "smoke: crystalline kept list failed ($1)" >&2
+        exit 1
+    }
+    if ! printf '%s' "$listing" | grep -q '"path":"harbor-signal-log.md","removed":false'; then
+        echo "smoke: the kept text fixture is not listed for $FLUID_E2E_DOMAIN ($1)" >&2
+        echo "smoke: kept list answered: $listing" >&2
+        exit 1
+    fi
+}
+kept_is_listed "after writing it"
 
 # The daemon comes up before any account exists, which is the state a real
 # first run is in: the admin below is created through the daemon's own setup
@@ -277,6 +320,9 @@ if [ "$ready" -ne 1 ]; then
     echo "smoke: the daemon never became healthy on $DAEMON_ADDR" >&2
     exit 1
 fi
+# Again once the daemon is up: its start sets aside kept folders no domain
+# owns, and the fixture must survive that too.
+kept_is_listed "after the daemon started"
 
 # The first admin, created the way a person creates one: through the endpoint
 # behind the browser's first-run wizard, over loopback, where no setup token is
@@ -371,6 +417,20 @@ echo "smoke: making $FLUID_E2E_PRIVATE_DOMAIN private"
 echo "smoke: handing $FLUID_E2E_OWNED_DOMAIN to $FLUID_E2E_PEER"
 "${isolated[@]}" "$bin" domain visibility "$FLUID_E2E_OWNED_DOMAIN" private \
     --owner "$FLUID_E2E_PEER"
+
+# The Reflection journeys' contributor: an account at knowledge none (it
+# reads no shared domain's engrams), invited into a private domain at
+# knowledge none with Reflection contributor. The admin owns the domain, so
+# the journeys see both sides: the admin with both modes and both axes on
+# the members card, the contributor with the Reflection alone.
+echo "smoke: seeding the contributor account"
+printf '%s' "$FLUID_E2E_CONTRIBUTOR_PASSWORD" \
+    | "${isolated[@]}" "$bin" users add "$FLUID_E2E_CONTRIBUTOR" --role none --password-stdin
+echo "smoke: making $FLUID_E2E_REFLECTION_DOMAIN private with a contributor"
+"${isolated[@]}" "$bin" domain visibility "$FLUID_E2E_REFLECTION_DOMAIN" private \
+    --owner "$FLUID_E2E_USER"
+"${isolated[@]}" "$bin" domain members "$FLUID_E2E_REFLECTION_DOMAIN" add "$FLUID_E2E_CONTRIBUTOR" \
+    --level none --reflection contributor
 
 # The embedded web UI, checked against the daemon's own port before the browser
 # journeys start. Playwright drives `vite preview` (the compose scenario, where

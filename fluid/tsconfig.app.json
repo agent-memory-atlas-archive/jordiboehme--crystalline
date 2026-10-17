@@ -41,6 +41,7 @@
   "exclude": [
     "src/theme/tokens.test.ts",
     "src/bundleBudget.test.ts",
-    "src/basePathRule.test.ts"
+    "src/basePathRule.test.ts",
+    "src/printSheet.test.ts"
   ]
 }

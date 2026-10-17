@@ -33,6 +33,52 @@ use flate2::write::GzEncoder;
 use sha2::{Digest, Sha256};
 use tar::Header;
 
+/// The Postgres URL the parity legs run against, or `None` with a note when
+/// `CRYSTALLINE_TEST_POSTGRES_URL` is unset.
+#[cfg(feature = "postgres")]
+pub fn pg_url() -> Option<String> {
+    use std::sync::Once;
+    static NOTE: Once = Once::new();
+    match std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") {
+        Ok(u) if !u.is_empty() => Some(u),
+        _ => {
+            NOTE.call_once(|| {
+                eprintln!(
+                    "note: skipping the postgres legs (CRYSTALLINE_TEST_POSTGRES_URL is unset); turso only"
+                )
+            });
+            None
+        }
+    }
+}
+
+/// A scratch schema named from `prefix`, dropped when it goes out of scope
+/// even if the test fails, or `None` without a URL. Declare it before any
+/// store opened in it, so it drops last.
+#[cfg(feature = "postgres")]
+pub fn scratch_schema(prefix: &str) -> Option<crystalline_index::ScratchSchema> {
+    pg_url().map(|url| crystalline_index::ScratchSchema::new(&url, prefix))
+}
+
+/// The instance id every engine of one test takes on a shared database,
+/// as one machine's daemon and its commands share theirs. An engine with no
+/// instance id walks no file domain there (`REFUSED_ANONYMOUS_WALK`), so a
+/// test that runs one engine as "the daemon" on Postgres gives it this id.
+pub const THIS_MACHINE: &str = "this-machine";
+
+/// `engine` with [`THIS_MACHINE`] as its instance id when `store` is shared
+/// by several instances (Postgres), else unchanged.
+pub async fn as_this_machine(
+    engine: crystalline_service::Engine,
+    store: &Arc<tokio::sync::Mutex<dyn crystalline_index::Store>>,
+) -> crystalline_service::Engine {
+    if store.lock().await.shares_database() {
+        engine.with_instance_id(THIS_MACHINE.to_string())
+    } else {
+        engine
+    }
+}
+
 /// Every operation the `/api/v1` router mounts, as `METHOD path`, spelled the
 /// way the OpenAPI document spells it (the engram wildcard becomes an ordinary
 /// `{permalink}` template, which is the only notation OpenAPI has for it).
@@ -80,6 +126,9 @@ pub const MOUNTED_OPERATIONS: &[&str] = &[
     "PUT /api/v1/domains/{domain}/members/{principal}",
     "DELETE /api/v1/domains/{domain}/members/{principal}",
     "PUT /api/v1/domains/{domain}/owner",
+    "GET /api/v1/domains/{domain}/kept",
+    "GET /api/v1/domains/{domain}/kept/{id}",
+    "DELETE /api/v1/domains/{domain}/kept/{id}",
     "GET /api/v1/domains/{domain}/sync",
     "POST /api/v1/domains/{domain}/sync",
     "GET /api/v1/domains/{domain}/sync/changes",
@@ -131,6 +180,7 @@ pub const MOUNTED_OPERATIONS: &[&str] = &[
     "POST /api/v1/domains/{domain}/reflection/threads/{id}/{action}",
     "GET /api/v1/domains/{domain}/reflection/queue",
     "GET /api/v1/domains/{domain}/reflection/review",
+    "GET /api/v1/domains/{domain}/reflection/summary",
     "GET /api/v1/domains/{domain}/reflection/search",
     "GET /api/v1/domains/{domain}/reflection/assets",
     "GET /api/v1/domains/{domain}/reflection/assets/{path}",

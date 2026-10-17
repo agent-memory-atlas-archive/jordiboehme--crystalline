@@ -285,6 +285,12 @@ impl Engine {
         if !self.reviews_changes(domain) || self.is_renaming(domain) || busy.contains(domain) {
             return false;
         }
+        // This only reads the draft, so it never meets the write view's host
+        // gate, which may claim a lock: a domain this instance does not host
+        // on a shared database answers false.
+        if !self.writes_here(domain).await {
+            return false;
+        }
         let scope = crate::scope::Scope::Unrestricted;
         let Ok(view) = DomainView::for_write(self, domain, &scope).await else {
             return false;

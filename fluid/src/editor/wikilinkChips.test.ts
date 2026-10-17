@@ -49,6 +49,7 @@ function hit(domain: string, permalink: string, title: string): EngramRow {
     kind: null,
     line: null,
     snippet: null,
+    recordedAt: null,
   };
 }
 

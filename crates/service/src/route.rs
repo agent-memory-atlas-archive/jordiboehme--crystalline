@@ -221,9 +221,9 @@ impl std::fmt::Display for RouteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RouteError::Refused(text) => f.write_str(text),
-            // The server's refusal, word for word.
+            // The server's refusal or argument error, word for word.
             RouteError::Source {
-                failure: RemoteFailure::Refused(text),
+                failure: RemoteFailure::Refused(text) | RemoteFailure::Invalid(text),
                 ..
             } => f.write_str(text),
             RouteError::Source {
@@ -460,6 +460,123 @@ pub async fn routed(
             )
         }
     }
+}
+
+/// One file of a mounted domain, as its server answered it.
+#[derive(Debug)]
+pub struct RoutedFile {
+    /// The file's bytes.
+    pub bytes: Vec<u8>,
+    /// Its MIME type, as the server resolved it.
+    pub mime: String,
+}
+
+/// Read one file of a mounted domain from the source that holds it: an
+/// engram attachment (`assets/...`) or a Reflection's file
+/// (`reflections/assets/...`), `path` domain-relative. `None` when no source
+/// mounts `domain`, and the caller reads its own file as before.
+///
+/// The server reads the file under the account's own right for its kind
+/// (engram rights for an attachment, the Reflection read right for a
+/// Reflection's file) and answers its own refusal, which comes back word for
+/// word. That includes a Reflection whose home is another instance on the
+/// server's shared database (`hosted_elsewhere`): the refusal names that
+/// instance, and this machine does not follow it there. A server older than
+/// 0.27.0 has no `file` command; that refusal is said in this machine's
+/// words and names the version.
+///
+/// Owner only, as [`routed`]: a stdio session asks, an HTTP session never
+/// does.
+pub async fn routed_file(
+    engine: &Arc<Engine>,
+    domain: &str,
+    path: &str,
+) -> Option<Result<RoutedFile, RouteError>> {
+    let sources = engine.sources()?;
+    if sources.is_empty() {
+        return None;
+    }
+    sync_local(engine, &sources).await;
+    let table = sources.routing_table();
+    let source = table.source_of(domain)?.to_string();
+    let names = table.names(&source);
+    let remote = names.to_remote.get(domain)?.clone();
+    // The mime is this machine's, from the file name, never the server's: it
+    // decides whether the bytes are served as text.
+    let Some(mime) = file_mime(path) else {
+        return Some(Err(RouteError::Refused(format!(
+            "'{path}' is not a file a domain keeps: a file lives under assets/ or \
+             reflections/assets/ and has a known file type"
+        ))));
+    };
+    // A file has the long limit: a large one over a slow link takes time,
+    // and the read runs as a cut that never marks the source down.
+    let answer = sources
+        .fetch_file(&source, &remote, path, CTL_TIMEOUT)
+        .await;
+    let failed = |failure: RemoteFailure| RouteError::Source {
+        source: source.clone(),
+        domain: domain.to_string(),
+        failure,
+    };
+    Some(match answer {
+        Ok(value) => {
+            decoded_file(&value, mime).map_err(|text| failed(RemoteFailure::Refused(text)))
+        }
+        Err(RemoteFailure::Refused(text)) if is_no_file_command(&text) => {
+            let url = sources.source_url(&source).unwrap_or_default();
+            Err(RouteError::Refused(format!(
+                "{source} at {url} cannot hand out files yet: reading a file of '{domain}' needs \
+                 Crystalline 0.27 or newer on that server"
+            )))
+        }
+        Err(failure) => Err(failed(within(failure, CTL_TIMEOUT))),
+    })
+}
+
+/// The MIME type of a file of a mounted domain, decided on this machine:
+/// `path` (domain-relative) must name a file of either kind
+/// (`assets/...` or `reflections/assets/...`) that a domain may hold, and
+/// the type comes from its name. `None` for anything else. A server's own
+/// word on either is never taken.
+pub fn file_mime(path: &str) -> Option<&'static str> {
+    let url = crystalline_core::CrystallineUrl {
+        domain: String::new(),
+        permalink: path.to_string(),
+        glob: false,
+    };
+    let (_, inner) = url.asset_ref()?;
+    crystalline_core::validate_asset_path(inner).ok()?;
+    crystalline_core::attachment_mime(inner.rsplit('/').next().unwrap_or(inner))
+}
+
+/// Whether a server's refusal is the one a server without the `file`
+/// command answers (0.26 and older): the allow-list's own sentence.
+fn is_no_file_command(text: &str) -> bool {
+    text == format!(
+        "'{}' {}",
+        crystalline_remote::FILE_COMMAND,
+        crate::remote_ctl::NOT_REMOTE
+    )
+}
+
+/// A `file` answer's bytes, checked against what it says about them: valid
+/// base64, the size it names, and never past the largest file a domain
+/// keeps. `mime` is this machine's ([`file_mime`]); the server's is ignored.
+fn decoded_file(value: &Value, mime: &'static str) -> Result<RoutedFile, String> {
+    use base64::Engine as _;
+    let broken = || "the server answered a file this machine cannot read".to_string();
+    let size = value["size"].as_u64().ok_or_else(broken)?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(value["base64"].as_str().ok_or_else(broken)?)
+        .map_err(|_| broken())?;
+    if bytes.len() as u64 != size || size > crystalline_core::MAX_ATTACHMENT_BYTES {
+        return Err(broken());
+    }
+    Ok(RoutedFile {
+        bytes,
+        mime: mime.to_string(),
+    })
 }
 
 /// Read this machine's domains again when the configuration file changed
@@ -709,7 +826,9 @@ async fn localized_local(engine: &Engine, tool: &str, args: Value) -> Result<Val
 }
 
 /// The ctl `tool` command's whole answer, and the in-process CLI's: routed
-/// when the call names a mounted domain or all domains, local otherwise.
+/// when the call names a mounted domain or all domains, local otherwise. A
+/// routed read answers as a local one does: the server's `files` list,
+/// which only an MCP session turns into links, is left out.
 pub async fn run_tool_routed(
     engine: &Arc<Engine>,
     tool: &str,
@@ -718,7 +837,14 @@ pub async fn run_tool_routed(
     deadline: Option<Duration>,
 ) -> anyhow::Result<Value> {
     match routed(engine, tool, &args, agent, deadline).await {
-        Some(Ok(value)) => Ok(value),
+        Some(Ok(mut value)) => {
+            if matches!(tool, "read_engram" | "read_reflection")
+                && let Some(obj) = value.as_object_mut()
+            {
+                obj.remove("files");
+            }
+            Ok(value)
+        }
         Some(Err(e)) => Err(anyhow::anyhow!(e.to_string())),
         None => crate::client::dispatch_engine(engine, tool, args).await,
     }
@@ -727,6 +853,54 @@ pub async fn run_tool_routed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 0.26 server's refusal of `file` is told apart from every other
+    /// refusal, and a file answer is checked against what it says.
+    #[test]
+    fn a_server_without_the_file_command_and_a_broken_file_answer_are_recognized() {
+        assert!(is_no_file_command(
+            "'file' is not available over a remote connection"
+        ));
+        assert!(!is_no_file_command(
+            "domain 'open' not registered; registered: [notes]"
+        ));
+        let file = decoded_file(
+            &json!({ "mime": "text/html", "size": 2, "base64": "aGk=" }),
+            "image/png",
+        )
+        .unwrap();
+        assert_eq!(file.bytes, b"hi");
+        assert_eq!(file.mime, "image/png", "the server's mime is ignored");
+        for broken in [
+            json!({ "size": 3, "base64": "aGk=" }),
+            json!({ "size": 2, "base64": "not base64!" }),
+            json!({ "base64": "aGk=" }),
+        ] {
+            assert!(decoded_file(&broken, "image/png").is_err(), "{broken}");
+        }
+    }
+
+    /// A file's mime is decided from its own name, for a path a domain may
+    /// hold, and nothing else gets one.
+    #[test]
+    fn a_mounted_files_mime_comes_from_its_name() {
+        assert_eq!(file_mime("assets/shot.png"), Some("image/png"));
+        assert_eq!(
+            file_mime("reflections/assets/deck.pdf"),
+            Some("application/pdf")
+        );
+        for refused in [
+            "MANIFEST.md",
+            "assets/../x.png",
+            "reflections/assets/../../assets/shot.png",
+            "../notes/assets/x.png",
+            "/etc/passwd",
+            "Assets/shot.png",
+            "assets/run.exe",
+        ] {
+            assert_eq!(file_mime(refused), None, "{refused}");
+        }
+    }
 
     /// A one-domain call whose source was not asked yet (this process was
     /// still starting) says so, and never reads as if the source had failed.

@@ -13,7 +13,7 @@ use super::*;
 use crate::scope::{ReflectionCaller, ReflectionRight};
 
 /// How an agent works the queue, returned with every page.
-pub const REFLECT_GUIDANCE: &str = "Work feedback items first: read what the person changed and decide - take it into the engrams (change them, then write_reflection the section with its sources), keep it as their text (write_reflection action=settle outcome=kept), or answer it in a thread (discuss with answers_feedback). Then update items: bring changed engrams into their sections and write them with sources; cover unreflected engrams with a new section or reflection; move pages the pact's structure does not fit; apply a changed pact to the pages it affects. Files under reflections/assets/: link an unreferenced file from the section it belongs to, or remove it with write_reflection action=delete_asset (ask first: removing is irreversible); for a missing file, ask a person to add it or correct the link; an engram attachment cannot be embedded, so ask a person to copy the file into reflections/assets/ and point the link there. Answer review threads in plain words - the people reading them may not see engrams.";
+pub const REFLECT_GUIDANCE: &str = "Work feedback items first: read what the person changed and decide - take it into the engrams (change them, then write_reflection the section with its sources), keep it as their text (write_reflection action=settle outcome=kept), or answer it in a thread (discuss with answers_feedback). Then update items: bring changed engrams into their sections and write them with sources; cover unreflected engrams with a new section or reflection; move pages the pact's structure does not fit; apply a changed pact to the pages it affects. Files under reflections/assets/: link an unreferenced file from the section it belongs to, or remove it with write_reflection action=delete_asset (ask first: removing is irreversible); for a missing file, ask a person to add it or correct the link; an engram attachment cannot be embedded, so ask a person to copy the file into reflections/assets/ and point the link there. A host_moved item means this instance took the domain over on a shared database and its disk lacks files the previous host wrote: their rows are kept and counted, never written here, so do not rewrite or delete those pages and files; ask a person to copy the domain folder over (or restore it) and sync, or to run the sync with --accept-disk if the files are gone for good. Answer review threads in plain words - the people reading them may not see engrams.";
 
 const DEFAULT_LIMIT: usize = 10;
 const MAX_LIMIT: usize = 100;
@@ -128,6 +128,13 @@ struct QueueScope {
     pending: Vec<String>,
 }
 
+/// Whether a queue item is shown to a caller at all. An unreflected item
+/// is about engrams (the folder they sit in and their names), so a caller
+/// who may not see engrams is not told of it, not even as a count.
+fn shown_to(item: &Item, engrams_visible: bool) -> bool {
+    engrams_visible || item.what != "unreflected"
+}
+
 /// How much of each item [`Engine::detect_reflection`] builds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Detail {
@@ -136,25 +143,33 @@ enum Detail {
     /// Only what ranks and counts an item; no diff is rendered and no
     /// source is looked up (the nudge counts).
     Count,
+    /// Only the update items, as [`Detail::Count`] builds them: no page is
+    /// compared with its baseline for feedback and no thread is queued (the
+    /// Reflection home's update count).
+    Updates,
 }
 
 impl Engine {
-    /// Every open item of one domain's Reflection, unranked.
+    /// Every open item of one domain's Reflection, unranked. `threads` is
+    /// [`Engine::all_threads`] of the same domain, read once by a caller
+    /// that needs the threads too.
     async fn detect_reflection(
         &self,
         domain: &str,
         access: &ReflectionAccess,
         detail: Detail,
+        threads: &[(String, th::Thread, String)],
     ) -> Result<Vec<Item>> {
         let full = detail == Detail::Full;
-        let rows = self
-            .store
-            .lock()
-            .await
-            .list_reflections(access.domain_id)
-            .await?;
+        let feedback = detail != Detail::Updates;
+        let (rows, host_move) = {
+            let store = self.store.lock().await;
+            (
+                store.list_reflections(access.domain_id).await?,
+                store.host_move(access.domain_id).await?,
+            )
+        };
         let facts = self.engram_facts(access.domain_id, domain).await?;
-        let threads = self.all_threads(access).await?;
         let open_thread = |id: &str| {
             threads
                 .iter()
@@ -170,12 +185,27 @@ impl Engine {
         let mut cited: HashSet<String> = HashSet::new();
         let mut items = Vec::new();
         for row in &rows {
-            let baseline = std::fs::read_to_string(access.abs(&r::baseline_path(&row.path)))
-                .unwrap_or_default();
+            // The baseline is read for feedback alone, and the pact's is
+            // always read: a changed pact is an update.
+            let baseline = if feedback || row.path == r::PACT_FILE {
+                std::fs::read_to_string(access.abs(&r::baseline_path(&row.path))).ok()
+            } else {
+                None
+            };
+            // While a host move is unresolved, a page whose baseline is not on
+            // this disk is one the previous host reflected: without the
+            // baseline every section would read as a person's change, so the
+            // move's one item stands in for that feedback.
+            let no_feedback = baseline.is_none() && host_move.is_some();
+            let baseline = baseline.unwrap_or_default();
             let row_age = secs_since_rfc3339(Some(&row.modified)).unwrap_or(0);
             let prov = r::read_provenance(&row.content);
             if row.path == r::PACT_FILE {
-                let changes = r::feedback_changes(&row.content, &baseline);
+                let changes = if no_feedback {
+                    Vec::new()
+                } else {
+                    r::feedback_changes(&row.content, &baseline)
+                };
                 if !changes.is_empty() {
                     let extra = if full {
                         let sections = r::split_sections(&row.content);
@@ -200,7 +230,12 @@ impl Engine {
                 }
                 continue;
             }
-            for change in r::feedback_changes(&row.content, &baseline) {
+            let changes = if no_feedback || !feedback {
+                Vec::new()
+            } else {
+                r::feedback_changes(&row.content, &baseline)
+            };
+            for change in changes {
                 let record = change.id.as_deref().and_then(|id| prov.get(id));
                 if record
                     .and_then(|rec| rec.answered_by.as_deref())
@@ -296,18 +331,17 @@ impl Engine {
         // editor, a room), and a file no page links. Reflections and
         // PACT.md are the pages that count; threads and the baseline never do.
         let assets = self.asset_list_in(AssetHome::Reflection, domain).await?;
-        let stored: HashSet<&str> = assets.iter().map(|a| a.path.as_str()).collect();
         let mut referenced: HashSet<String> = HashSet::new();
         for row in &rows {
             let row_age = secs_since_rfc3339(Some(&row.modified)).unwrap_or(0);
             for section in r::split_sections(&row.content) {
                 let mut missing: Vec<String> = Vec::new();
                 for asset in r::reflection_asset_refs(&section.text, &row.path) {
-                    // The disk too, so a file the walker has not indexed yet
-                    // is not reported.
-                    let there = stored.contains(asset.as_str())
-                        || reflection_abs(&access.root, &asset).is_file();
-                    if !there {
+                    // The disk, not the row: a file the walker has not indexed
+                    // yet is there, and a row whose bytes are not on this disk
+                    // (kept through a host move, or deleted while nothing
+                    // watched) is a broken image here (R26).
+                    if !reflection_abs(&access.root, &asset).is_file() {
                         missing.push(asset.clone());
                     }
                     referenced.insert(asset);
@@ -336,7 +370,11 @@ impl Engine {
             }
         }
         for asset in &assets {
-            if referenced.contains(&asset.path) {
+            // A file the previous host's disk keeps is the move's to report;
+            // nobody is asked to link or remove what is not here.
+            if referenced.contains(&asset.path)
+                || (host_move.is_some() && !reflection_abs(&access.root, &asset.path).is_file())
+            {
                 continue;
             }
             items.push(Item {
@@ -348,6 +386,23 @@ impl Engine {
                 heading: String::new(),
                 age_secs: secs_since_rfc3339(Some(&asset.modified)).unwrap_or(0),
                 extra: json!({ "asset": asset.path }),
+            });
+        }
+        // An unresolved host move with rows this disk lacks: one item for
+        // the domain, counts only (Task 50).
+        if let Some(host_move) = host_move
+            .as_ref()
+            .filter(|m| m.walked && m.only_elsewhere.total() > 0)
+        {
+            items.push(Item {
+                kind: "update",
+                what: "host_moved",
+                domain: domain.to_string(),
+                path: String::new(),
+                section: None,
+                heading: String::new(),
+                age_secs: secs_since_rfc3339(Some(&host_move.at)).unwrap_or(0),
+                extra: json!({ "only_elsewhere": host_move.only_elsewhere }),
             });
         }
         let mut loose: BTreeMap<String, Vec<&EngramFact>> = BTreeMap::new();
@@ -388,7 +443,7 @@ impl Engine {
                 }),
             });
         }
-        for (path, thread, text) in &threads {
+        for (path, thread, text) in threads.iter().filter(|_| feedback) {
             if thread.status != ThreadStatus::Open || th::waiting_on(thread) != Waiting::Agent {
                 continue;
             }
@@ -430,6 +485,7 @@ impl Engine {
         let filtered: Vec<&Item> = items
             .iter()
             .filter(|i| kinds.is_empty() || kinds.iter().any(|k| k == i.kind))
+            .filter(|i| shown_to(i, engrams_visible))
             .collect();
         let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
         let page = page.unwrap_or(1).max(1);
@@ -461,6 +517,8 @@ impl Engine {
                     obj.remove("sources");
                     obj.remove("engrams");
                     obj.remove("folder");
+                    // The engram file paths a page links.
+                    obj.remove("targets");
                 }
                 row
             })
@@ -520,7 +578,13 @@ impl Engine {
             match self.reflection_state(&name).await {
                 Ok(ReflectionState::On { .. }) => out.push(name),
                 Ok(ReflectionState::Pending { .. }) => pending.push(name),
-                Ok(_) => {}
+                // Not served here: another instance's queue, or nobody's yet.
+                Ok(
+                    ReflectionState::Off
+                    | ReflectionState::Homeless
+                    | ReflectionState::Elsewhere { .. }
+                    | ReflectionState::HostedElsewhere { .. },
+                ) => {}
                 Err(e) => {
                     tracing::warn!(
                         "reflect: the Reflection state of '{name}' could not be read: {e}"
@@ -578,9 +642,16 @@ impl Engine {
                 Err(_) => continue,
             };
             // One page answers every swept domain, so a domain that hides
-            // engrams from the caller strips the sources of the whole page.
+            // engrams from the caller strips the sources, folders, engrams and targets of the whole page.
             visible_everywhere &= access.engrams_visible;
-            match self.detect_reflection(&domain, &access, Detail::Full).await {
+            let found = match self.all_threads(&access).await {
+                Ok(threads) => {
+                    self.detect_reflection(&domain, &access, Detail::Full, &threads)
+                        .await
+                }
+                Err(e) => Err(e),
+            };
+            match found {
                 Ok(found) => items.extend(found),
                 Err(e) if named => return Err(e),
                 // One domain that cannot be read never costs the whole
@@ -618,8 +689,9 @@ impl Engine {
         let access = self
             .require_reflection(domain, caller, ReflectionRight::Read)
             .await?;
+        let threads = self.all_threads(&access).await?;
         let items = rank(
-            self.detect_reflection(domain, &access, Detail::Full)
+            self.detect_reflection(domain, &access, Detail::Full, &threads)
                 .await?,
         );
         let mut value = Self::page_json(&items, &[], limit, page, access.engrams_visible);
@@ -640,14 +712,15 @@ impl Engine {
         let mut people: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         let mut agent: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         let mut titles: HashMap<String, String> = HashMap::new();
-        for (path, thread, text) in self.all_threads(&access).await? {
+        let threads = self.all_threads(&access).await?;
+        for (path, thread, text) in &threads {
             if thread.status != ThreadStatus::Open {
                 continue;
             }
             titles
                 .entry(path.clone())
-                .or_insert_with(|| r::title_of(&text, &path));
-            let bucket = match th::waiting_on(&thread) {
+                .or_insert_with(|| r::title_of(text, path));
+            let bucket = match th::waiting_on(thread) {
                 Waiting::People => &mut people,
                 Waiting::Agent => &mut agent,
             };
@@ -655,7 +728,7 @@ impl Engine {
             bucket
                 .entry(path.clone())
                 .or_default()
-                .push(thread_view(&path, &thread, &text));
+                .push(thread_view(path, thread, text));
         }
         // "Oldest" is the opening time, as in the thread list: threads
         // inside a group and the groups by their first thread.
@@ -677,7 +750,7 @@ impl Engine {
             out.into_iter().map(|(_, v)| v).collect()
         };
         let items = rank(
-            self.detect_reflection(domain, &access, Detail::Full)
+            self.detect_reflection(domain, &access, Detail::Full, &threads)
                 .await?,
         );
         let mut queue = Self::page_json(&items, &[], Some(50), Some(1), access.engrams_visible);
@@ -687,6 +760,101 @@ impl Engine {
             "waiting_for_people": groups(people),
             "waiting_for_the_agent": groups(agent),
             "queue": queue,
+        }))
+    }
+
+    /// The Reflection home's summary: what [`Engine::reflection_review`]
+    /// answers, cut to what the home draws. The open threads by who they
+    /// wait on, the queue's update count (`updates`, the review's
+    /// `kinds.update`, counted with no page compared for feedback, no diff
+    /// rendered and no source looked up), the distinct pages those updates
+    /// are on (`pages_to_update`) and the open
+    /// threads by page, each thread with its first quote and the people in
+    /// it, never its entries. Pages and their threads come oldest first, by
+    /// when a thread was opened. The threads files are read once.
+    pub async fn reflection_summary(
+        &self,
+        domain: &str,
+        caller: &ReflectionCaller,
+    ) -> Result<Value> {
+        let access = self
+            .require_reflection(domain, caller, ReflectionRight::Read)
+            .await?;
+        let threads = self.all_threads(&access).await?;
+        let (mut for_people, mut for_agent) = (0usize, 0usize);
+        // Per page: its title and its open threads with their opening time.
+        type Opened<'a> = Vec<(&'a str, Value)>;
+        let mut pages: BTreeMap<&str, (String, Opened)> = BTreeMap::new();
+        for (path, thread, text) in &threads {
+            if thread.status != ThreadStatus::Open {
+                continue;
+            }
+            let waiting = th::waiting_on(thread);
+            match waiting {
+                Waiting::People => for_people += 1,
+                Waiting::Agent => for_agent += 1,
+            }
+            // Everyone who wrote in the thread, once, in the order they
+            // first wrote; an author's last entry says whether it is an agent.
+            let mut people: Vec<(&str, bool)> = Vec::new();
+            for entry in &thread.entries {
+                match people.iter_mut().find(|(n, _)| *n == entry.author.name) {
+                    Some(seen) => seen.1 = entry.author.agent,
+                    None => people.push((&entry.author.name, entry.author.agent)),
+                }
+            }
+            let view = json!({
+                "id": thread.id,
+                "quote": thread.anchor.quote,
+                "waiting_on": waiting.as_str(),
+                "opened_at": thread.opened_at(),
+                "people": people
+                    .iter()
+                    .map(|(name, agent)| json!({ "name": name, "agent": agent }))
+                    .collect::<Vec<_>>(),
+            });
+            pages
+                .entry(path.as_str())
+                .or_insert_with(|| (r::title_of(text, path), Vec::new()))
+                .1
+                .push((thread.opened_at(), view));
+        }
+        let mut open_by_page: Vec<(&str, Value)> = pages
+            .into_iter()
+            .map(|(path, (title, mut list))| {
+                list.sort_by(|a, b| a.0.cmp(b.0));
+                let oldest = list.first().map(|(at, _)| *at).unwrap_or_default();
+                let threads: Vec<Value> = list.into_iter().map(|(_, v)| v).collect();
+                (
+                    oldest,
+                    json!({ "path": path, "title": title, "threads": threads }),
+                )
+            })
+            .collect();
+        open_by_page.sort_by(|a, b| a.0.cmp(b.0));
+        let items = self
+            .detect_reflection(domain, &access, Detail::Updates, &threads)
+            .await?;
+        let shown: Vec<&Item> = items
+            .iter()
+            .filter(|i| i.kind == "update" && shown_to(i, access.engrams_visible))
+            .collect();
+        // A page counts once however many of its sections wait; an item of
+        // no page (a loose file, unreflected engrams, a host move) is in
+        // `updates` only.
+        let pages_to_update = shown
+            .iter()
+            .filter(|i| !i.path.is_empty())
+            .map(|i| i.path.as_str())
+            .collect::<BTreeSet<_>>()
+            .len();
+        Ok(json!({
+            "domain": domain,
+            "waiting_for_the_agent": for_agent,
+            "waiting_for_people": for_people,
+            "updates": shown.len(),
+            "pages_to_update": pages_to_update,
+            "open_by_page": open_by_page.into_iter().map(|(_, v)| v).collect::<Vec<_>>(),
         }))
     }
 
@@ -706,10 +874,14 @@ impl Engine {
             else {
                 continue;
             };
-            let n = match self
-                .detect_reflection(&domain, &access, Detail::Count)
-                .await
-            {
+            let found = match self.all_threads(&access).await {
+                Ok(threads) => {
+                    self.detect_reflection(&domain, &access, Detail::Count, &threads)
+                        .await
+                }
+                Err(e) => Err(e),
+            };
+            let n = match found {
                 Ok(items) => items.len(),
                 Err(e) => {
                     tracing::warn!(

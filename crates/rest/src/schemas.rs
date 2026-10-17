@@ -302,6 +302,41 @@ pub struct DomainChanged {
     pub audience: Option<DomainAudience>,
 }
 
+/// What happened in a domain's Reflection, as the `reflection` event says it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReflectionChangeKind {
+    /// A page's text or bookkeeping changed: a write, a settle, a room's
+    /// save, or a link that followed another page or file.
+    Changed,
+    /// A page moved; `from` is where it was.
+    Moved,
+    Deleted,
+    /// A thread on the page was opened, answered, resolved or reopened.
+    Threads,
+    /// A file under `reflections/assets/` was added, replaced, removed or
+    /// moved; `path` is the file, `from` its old path on a move.
+    Files,
+    /// The switch moved; `path` is empty.
+    Switched,
+}
+
+/// One change in a domain's Reflection, as a session that may read it hears
+/// it. A path and a kind, never text and never an engram name, so a person
+/// with knowledge `none` may hear it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+pub struct ReflectionChanged {
+    pub domain: String,
+    /// Inside `reflections/`, after the change; empty for `switched`.
+    pub path: String,
+    pub kind: ReflectionChangeKind,
+    /// `moved`, and `files` on a move: the path before.
+    pub from: Option<String>,
+    /// Who made the change, as a display label; null for a link that
+    /// followed, a room save with no single typist, and the machine owner.
+    pub actor: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::auth_store;
@@ -471,6 +506,28 @@ mod tests {
                 audience: None
             }]),
             published::<super::DomainChanged>()
+        );
+        assert_eq!(
+            keys([
+                bus::ReflectionChangeKind::Changed,
+                bus::ReflectionChangeKind::Moved,
+                bus::ReflectionChangeKind::Deleted,
+                bus::ReflectionChangeKind::Threads,
+                bus::ReflectionChangeKind::Files,
+                bus::ReflectionChangeKind::Switched,
+            ]),
+            published::<super::ReflectionChangeKind>()
+        );
+        assert_eq!(
+            keys([bus::ReflectionChanged {
+                domain: s(),
+                path: s(),
+                kind: bus::ReflectionChangeKind::Moved,
+                from: None,
+                actor: None,
+                audience: None,
+            }]),
+            published::<super::ReflectionChanged>()
         );
     }
 }

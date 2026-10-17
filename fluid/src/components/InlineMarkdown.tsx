@@ -19,9 +19,9 @@
  * flash of its own punctuation rather than a blank line.
  */
 
-import { Suspense, lazy } from "react";
+import { lazyPart } from "./lazyPart";
 
-const InlineMarkdownBody = lazy(() => import("./InlineMarkdownBody"));
+const InlineMarkdownBody = lazyPart(() => import("./InlineMarkdownBody"));
 
 export interface InlineMarkdownProps {
   /** The single line of prose to draw. */
@@ -32,9 +32,5 @@ export interface InlineMarkdownProps {
  * left as punctuation. No block elements, ever: a heading or a list written
  * into the source loses only its own wrapper, never the text inside it. */
 export function InlineMarkdown({ source }: InlineMarkdownProps) {
-  return (
-    <Suspense fallback={source}>
-      <InlineMarkdownBody source={source} />
-    </Suspense>
-  );
+  return <InlineMarkdownBody fallback={source} source={source} />;
 }

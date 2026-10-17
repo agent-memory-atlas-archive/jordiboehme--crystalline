@@ -8,6 +8,7 @@ use crystalline_core::threads::{
     self as th, Entry, EntryKind, SectionRef, Thread, ThreadError, ThreadStatus, ThreadTarget,
 };
 
+use super::fence::{DiskUndo, KeepText, OnRefusal};
 use super::reflection::{ReflectionAccess, thread_view};
 use super::*;
 use crate::reflection_backup::BackupCause;
@@ -68,7 +69,9 @@ impl Engine {
     ) -> Result<TargetAccess> {
         match target {
             ThreadTarget::Reflection { path } => {
-                let access = self.require_reflection(domain, caller, need).await?;
+                let access = self
+                    .require_reflection_to_write(domain, caller, need)
+                    .await?;
                 r::validate_reflection_path(path).map_err(EngineError::Invalid)?;
                 Ok(TargetAccess::Reflection(access))
             }
@@ -287,22 +290,55 @@ impl Engine {
         // The thread first, then the page that names it: a failed page write
         // leaves a plain thread, never a section that waits on a thread that
         // is not there.
+        let mut undo = DiskUndo::default();
+        undo.record(&threads_abs)?;
+        undo.record(&doc_abs)?;
         let existing = read_opt(&threads_abs)?.unwrap_or_default();
         write_file(&threads_abs, &th::open_thread(&existing, &thread))?;
         let mut document = document;
-        if let Some(page) = page_update {
-            match (target, &access) {
-                (ThreadTarget::Reflection { path }, TargetAccess::Reflection(access)) => {
-                    write_file(&doc_abs, &page)?;
-                    self.index_reflection(access.domain_id, path, &page, &doc_abs)
-                        .await?;
+        // The thread and the page commit behind the host-lock fence: a host
+        // that lost the lock since its gate keeps the comment in the kept
+        // folder and puts both files back.
+        match (target, &access) {
+            (ThreadTarget::Reflection { path }, TargetAccess::Reflection(access)) => {
+                let on_refusal = OnRefusal {
+                    domain,
+                    undo,
+                    keep: Some(KeepText {
+                        kind: crystalline_core::kept::KeptKind::Comment,
+                        path,
+                        text,
+                        caller,
+                        holds: &threads_abs,
+                    }),
+                    read: false,
+                };
+                match &page_update {
+                    Some(page) => {
+                        write_file(&doc_abs, page)?;
+                        self.index_reflection(access.domain_id, path, page, &doc_abs, on_refusal)
+                            .await?;
+                    }
+                    None => {
+                        self.commit_reflection_rows(access.domain_id, &[], on_refusal)
+                            .await?;
+                    }
                 }
             }
+        }
+        if let Some(page) = page_update {
             document = page;
         }
         match target {
-            ThreadTarget::Reflection { .. } => {
+            ThreadTarget::Reflection { path } => {
                 self.mark_reflection_dirty(domain, BackupCause::Settled);
+                self.announce_reflection(
+                    domain,
+                    path,
+                    ReflectionChangeKind::Threads,
+                    None,
+                    change_label(&caller.scope),
+                );
             }
         }
         Ok(match target {
@@ -349,14 +385,46 @@ impl Engine {
             .ok_or_else(|| EngineError::NotFound(format!("no thread {id} here")))?;
         let updated =
             th::append_entry(&file, id, &entry(kind, caller, text)).map_err(thread_error)?;
+        let mut undo = DiskUndo::default();
+        undo.record(&threads_abs)?;
         write_file(&threads_abs, &updated)?;
+        // Behind the host-lock fence, as `open_thread`; the entry has no
+        // row, so only the lock is read.
+        match (target, &access) {
+            (ThreadTarget::Reflection { path }, TargetAccess::Reflection(access)) => {
+                self.commit_reflection_rows(
+                    access.domain_id,
+                    &[],
+                    OnRefusal {
+                        domain,
+                        undo,
+                        keep: Some(KeepText {
+                            kind: crystalline_core::kept::KeptKind::Comment,
+                            path,
+                            text,
+                            caller,
+                            holds: &threads_abs,
+                        }),
+                        read: false,
+                    },
+                )
+                .await?;
+            }
+        }
         let thread = th::parse_threads(&updated)
             .into_iter()
             .find(|t| t.id == id)
             .expect("just appended");
         match target {
-            ThreadTarget::Reflection { .. } => {
+            ThreadTarget::Reflection { path } => {
                 self.mark_reflection_dirty(domain, BackupCause::Settled);
+                self.announce_reflection(
+                    domain,
+                    path,
+                    ReflectionChangeKind::Threads,
+                    None,
+                    change_label(&caller.scope),
+                );
             }
         }
         Ok(match target {
@@ -396,28 +464,91 @@ impl Engine {
         }))
     }
 
+    /// How many open threads a domain's Reflection holds, for a caller who
+    /// reads it: the domain listing's count. Refused like every other
+    /// reflection read.
+    pub async fn reflection_open_threads(
+        &self,
+        domain: &str,
+        caller: &ReflectionCaller,
+    ) -> Result<usize> {
+        let access = self
+            .require_reflection(domain, caller, ReflectionRight::Read)
+            .await?;
+        self.open_thread_count(&access).await
+    }
+
+    /// How many open threads the Reflection behind `access` holds: the pages
+    /// from the stamps listing, then each page's threads file, never a
+    /// page's text. The files are read on the blocking pool, with no store
+    /// lock held.
+    pub(crate) async fn open_thread_count(&self, access: &ReflectionAccess) -> Result<usize> {
+        let pages = self
+            .store
+            .lock()
+            .await
+            .list_reflection_stamps(access.domain_id)
+            .await?;
+        let files: Vec<PathBuf> = pages
+            .iter()
+            .map(|page| access.abs(&r::threads_path(&page.path)))
+            .collect();
+        tokio::task::spawn_blocking(move || {
+            let mut open = 0;
+            for file in files {
+                if let Some(text) = read_opt(&file)? {
+                    open += th::parse_threads(&text)
+                        .iter()
+                        .filter(|t| t.status == ThreadStatus::Open)
+                        .count();
+                }
+            }
+            Ok(open)
+        })
+        .await
+        .map_err(|e| EngineError::Internal(format!("the threads files could not be read: {e}")))?
+    }
+
     /// Every thread of a domain's Reflection with its reflection's path and
-    /// current text.
+    /// current text, page by page in the listing's order. The threads files
+    /// are read on the blocking pool, with no store lock held.
     pub(crate) async fn all_threads(
         &self,
         access: &ReflectionAccess,
     ) -> Result<Vec<(String, Thread, String)>> {
+        #[cfg(any(test, feature = "testing"))]
+        self.reflection_text_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let rows = self
             .store
             .lock()
             .await
             .list_reflections(access.domain_id)
             .await?;
-        let mut out = Vec::new();
-        for row in rows {
-            let Some(file) = read_opt(&access.abs(&r::threads_path(&row.path)))? else {
-                continue;
-            };
-            for thread in th::parse_threads(&file) {
-                out.push((row.path.clone(), thread, row.content.clone()));
+        let pages: Vec<(PathBuf, String, String)> = rows
+            .into_iter()
+            .map(|row| {
+                (
+                    access.abs(&r::threads_path(&row.path)),
+                    row.path,
+                    row.content,
+                )
+            })
+            .collect();
+        tokio::task::spawn_blocking(move || {
+            let mut out = Vec::new();
+            for (file, path, content) in pages {
+                let Some(text) = read_opt(&file)? else {
+                    continue;
+                };
+                for thread in th::parse_threads(&text) {
+                    out.push((path.clone(), thread, content.clone()));
+                }
             }
-        }
-        Ok(out)
+            Ok(out)
+        })
+        .await
+        .map_err(|e| EngineError::Internal(format!("the threads files could not be read: {e}")))?
     }
 }
 
@@ -530,5 +661,101 @@ mod tests {
             "no threads file is left at the old path"
         );
         assert!(!page_abs.exists());
+    }
+
+    /// Both walks over the threads files read them on the blocking pool:
+    /// every file read in `all_threads` and `open_thread_count` comes after
+    /// their `spawn_blocking`, never on a runtime worker (F2).
+    #[test]
+    fn the_threads_files_are_read_off_the_runtime() {
+        let src = include_str!("threads.rs");
+        for signature in [
+            "pub(crate) async fn all_threads(",
+            "pub(crate) async fn open_thread_count(",
+        ] {
+            let start = src
+                .find(signature)
+                .unwrap_or_else(|| panic!("source pin: {signature} is not in threads.rs"));
+            let end = start + src[start..].find("\n    }\n").expect("the function ends");
+            let body = &src[start..end];
+            // A source pin: it reads this file's text, not the running code.
+            let pin = "this is a source pin on threads.rs: a threads file must be read \
+                       inside spawn_blocking, never on a runtime worker. Move the read \
+                       back into the closure; if the function was renamed or reshaped \
+                       on purpose, update the signature or the needles here";
+            let blocking = body
+                .find("spawn_blocking(")
+                .unwrap_or_else(|| panic!("{signature} has no spawn_blocking; {pin}"));
+            let first_read = body
+                .find("read_opt(")
+                .unwrap_or_else(|| panic!("{signature} has no read_opt; {pin}"));
+            assert!(
+                first_read > blocking,
+                "{signature} reads a threads file before its spawn_blocking; {pin}"
+            );
+        }
+    }
+
+    /// The threads of every page, page by page in the listing's order and
+    /// each with its own page's text, as the reflect queue reads them.
+    #[tokio::test]
+    async fn all_threads_keeps_the_page_order_and_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (engine, _) = reflecting(tmp.path()).await;
+        let caller = ReflectionCaller::person(crate::scope::Scope::Unrestricted, "jordi");
+        let second = "# E\n\n## Day deploys\n<!-- r:bbbb2222 -->\n\nDeploys run by day.\n";
+        engine
+            .write_reflection(
+                &crate::params::WriteReflectionParams {
+                    domain: "eng".into(),
+                    path: "e.md".into(),
+                    markdown: Some(second.into()),
+                    ..Default::default()
+                },
+                &caller,
+            )
+            .await
+            .unwrap();
+        for (path, section) in [
+            ("e.md", "bbbb2222"),
+            ("d.md", "aaaa1111"),
+            ("e.md", "bbbb2222"),
+        ] {
+            engine
+                .discuss(
+                    &DiscussParams {
+                        domain: "eng".into(),
+                        path: Some(path.into()),
+                        section: Some(section.into()),
+                        text: Some("Still true?".into()),
+                        ..Default::default()
+                    },
+                    &caller,
+                )
+                .await
+                .unwrap();
+        }
+        let access = engine
+            .require_reflection("eng", &caller, ReflectionRight::Read)
+            .await
+            .unwrap();
+        let got: Vec<(String, bool)> = engine
+            .all_threads(&access)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(path, _, text)| {
+                let own = if path == "d.md" { "night" } else { "by day" };
+                (path, text.contains(own))
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("d.md".to_string(), true),
+                ("e.md".to_string(), true),
+                ("e.md".to_string(), true),
+            ]
+        );
     }
 }

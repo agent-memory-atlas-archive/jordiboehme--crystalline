@@ -21,8 +21,8 @@ use std::time::Instant;
 
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};
 use crystalline_core::config::registration::{
-    Registration, RegistrationRequest, choose_domain_name, decide_registration, infer_name_origin,
-    needs_manifest_write_back, validate_domain_name,
+    Registration, RegistrationRequest, case_twin, case_twin_refusal, choose_domain_name,
+    decide_registration, infer_name_origin, needs_manifest_write_back, validate_domain_name,
 };
 use crystalline_core::config::{
     DomainEntry, DomainKind as CoreDomainKind, GlobalConfig, NameOrigin, OriginConfig,
@@ -64,7 +64,8 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::changes::{
-    Change, ChangeKind, DomainAudience, DomainChanged, EngramChanged, MovedFrom, change_label,
+    Change, ChangeKind, DomainAudience, DomainChanged, EngramChanged, MovedFrom,
+    ReflectionChangeKind, change_label,
 };
 use crate::collab::session::AgentPeer;
 use crate::domain_view::{DomainView, shown};
@@ -297,10 +298,6 @@ pub(crate) fn stamped_model(actor: &str, model: Option<&str>) -> Option<String> 
 /// The default host-lock heartbeat interval, seconds. Overridable via
 /// `CRYSTALLINE_HEARTBEAT_SECS` (used to drive fast multi-instance verification).
 const DEFAULT_HEARTBEAT_SECS: i64 = 30;
-/// The default host-lock stale threshold, seconds (three missed heartbeats). A
-/// lock whose last heartbeat is older than this is takeable by another instance.
-/// Overridable via `CRYSTALLINE_STALE_SECS`.
-const DEFAULT_STALE_SECS: i64 = 90;
 
 /// The probability of following an edge rather than teleporting back to a
 /// seed during context ranking; the standard PageRank damping factor.
@@ -582,6 +579,17 @@ impl From<crystalline_index::IndexError> for EngineError {
             crystalline_index::IndexError::Constraint(m) => EngineError::Conflict(m),
             crystalline_index::IndexError::NotFound(m) => EngineError::NotFound(m),
             crystalline_index::IndexError::Invalid(m) => EngineError::Invalid(m),
+            crystalline_index::IndexError::NotHost(m)
+            | crystalline_index::IndexError::HostMoveChanged(m) => EngineError::Conflict(m),
+            crystalline_index::IndexError::InDomain { source, .. }
+                if matches!(
+                    *source,
+                    crystalline_index::IndexError::NotHost(_)
+                        | crystalline_index::IndexError::HostMoveChanged(_)
+                ) =>
+            {
+                EngineError::Conflict(source.to_string())
+            }
             // A stale compare-and-swap surfaces as a conflict, mirroring the
             // expected_replacements ergonomics: re-read and retry.
             crystalline_index::IndexError::StaleEdit { expected, found } => {
@@ -730,6 +738,25 @@ pub enum WatchEvent {
     Remove(String),
 }
 
+/// The middle of the sentence a write is refused with when it would create
+/// a page or file only the previous host of a host move has, after the
+/// host's name and before the domain. Public so a surface answers this
+/// refusal with its own status (REST: 409).
+pub const ONLY_ELSEWHERE: &str = ", which hosted this domain before; copy the domain folder over or restore it, then sync, or drop it with: crystalline sync --domain ";
+
+/// A row [`Engine::refuse_only_elsewhere`] looks for: a Reflection page by
+/// its path inside `reflections/`, an engram by its path in the domain, or a
+/// file by its table and path.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ElsewhereRow<'a> {
+    /// A Reflection page.
+    Page(&'a str),
+    /// An engram file, by its domain-relative path.
+    Engram(&'a str),
+    /// An engram attachment or a Reflection file.
+    Asset(crystalline_index::AssetTable, &'a str),
+}
+
 /// Where a domain's engram content comes from and goes to: files on disk for a
 /// file domain, or the database for a virtual domain. This is the one seam every
 /// content mutation branches on; everything after `parse_engram` is shared (see
@@ -742,6 +769,87 @@ pub(crate) enum ContentSource {
     },
     /// A virtual domain whose engrams live only in the database.
     Virtual,
+}
+
+/// How many engram rows under `reflections/` a Reflection gate reads at
+/// first. More than that is a pending switch, whose refusal names every
+/// engram, so the rest is read too.
+pub(crate) const UNDER_REFLECTIONS_PROBE: usize = 64;
+
+/// What a Reflection gate asks the index of a domain's engram rows
+/// ([`Engine::recorded_paths`]). The rule over it, in order: a folder spelled
+/// twice holds the switch whatever the rows are; no row at all (`!any`) is an
+/// empty index, where the files on disk decide; rows and none under the
+/// folder is nothing pending, answered without a file read; otherwise the
+/// rows under the folder are the ones the predicate is asked of, which gives
+/// the answer the whole stamp map gave, since only paths under the folder
+/// were ever asked.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct RecordedPaths {
+    /// Whether the index holds any base engram row of the domain.
+    pub any: bool,
+    /// The base engram rows under `reflections/`, in any letter case.
+    pub under_reflections: Vec<String>,
+}
+
+impl RecordedPaths {
+    /// Whether the fast path settles "nothing pending": rows recorded, none
+    /// under the folder, and the folder spelled once. The index functions are
+    /// never asked then, and must not be: they read an empty path list as an
+    /// empty index and walk the disk, where a hand-written page with no id
+    /// line counts as a pending engram. Blocking: lists the root's entries,
+    /// and only when the rows leave the answer open to the spelling.
+    pub(crate) fn nothing_pending(&self, root: &Path) -> bool {
+        self.any
+            && self.under_reflections.is_empty()
+            && crystalline_core::reflection::reflection_folders(root).len() < 2
+    }
+}
+
+/// What a Reflection gate remembers of one domain's engram rows (R83): the
+/// index-derived part only, [`RecordedPaths`]. The switch, the folder's
+/// spellings, the files' bytes, the home and the public URL are read fresh
+/// on every gate. An entry answers while the domain's generation, its root
+/// and its MANIFEST's length and modification time are the ones it was
+/// filled under, and, on a database other instances share, for
+/// [`crate::changes::VISIBILITY_TTL`] at most.
+#[derive(Debug)]
+struct PendingEntry {
+    /// The domain's generation read before the rows were: a write announced
+    /// while they were read has moved it on already, so the entry is stale
+    /// from the start rather than wrong.
+    generation: u64,
+    root: PathBuf,
+    /// The MANIFEST's `(len, mtime_ns)`, `None` when it could not be read.
+    manifest: Option<(u64, i64)>,
+    at: std::time::Instant,
+    /// Whether the store is shared with other instances, read with the rows.
+    shared: bool,
+    /// The domain's index row id, read under the same lock as the rows: the
+    /// gate's [`Engine::require_reflection`] answers it without the store.
+    domain_id: DomainId,
+    recorded: RecordedPaths,
+}
+
+/// The MANIFEST's length and modification time in nanoseconds, the key a
+/// remembered entry is held to. One `stat`.
+fn manifest_stamp(root: &Path) -> Option<(u64, i64)> {
+    let meta = std::fs::metadata(root.join("MANIFEST.md")).ok()?;
+    let nanos = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some((meta.len(), i64::try_from(nanos).unwrap_or(i64::MAX)))
+}
+
+/// The two signals of `Engine::hold_next_room_screen_until` and
+/// `Engine::hold_next_apply_until`.
+#[cfg(any(test, feature = "testing"))]
+struct RoomScreenGate {
+    entered: std::sync::Arc<tokio::sync::Notify>,
+    release: std::sync::Arc<tokio::sync::Notify>,
 }
 
 /// The shared service engine.
@@ -821,6 +929,24 @@ pub struct Engine {
     // `Engine::contradiction_fact_loads`.
     #[cfg(any(test, feature = "testing"))]
     contradiction_fact_loads: std::sync::atomic::AtomicU64,
+    // A test seam like `contradiction_fact_loads`: how many times a
+    // Reflection path loaded more of a domain's engram rows than the gate's
+    // probe. See `Engine::recorded_path_loads`.
+    #[cfg(any(test, feature = "testing"))]
+    recorded_path_loads: std::sync::atomic::AtomicU64,
+    // The same for every load of a Reflection's pages with their text, the
+    // rows `Engine::all_threads` reads. See `Engine::reflection_text_loads`.
+    #[cfg(any(test, feature = "testing"))]
+    reflection_text_loads: std::sync::atomic::AtomicU64,
+    // Per domain, a number every announced change of its base engram rows
+    // (an `engram` event that is no draft, a `domain` event) and every
+    // registration change moves on. Never reset or removed, so an entry
+    // filled under an old number can never match again. See
+    // `Engine::bump_reflection_generation`.
+    reflection_generations: std::sync::Mutex<HashMap<String, u64>>,
+    // What the Reflection gate read of each domain's engram rows, under the
+    // generation above (R83). See `PendingEntry`.
+    pending_cache: std::sync::Mutex<HashMap<String, PendingEntry>>,
     // What the contradiction walk parsed of each engram, per domain and path,
     // keyed by the content sha it was read at, so a walk reads only the
     // engrams whose stamp moved. Memory only, never written to the database;
@@ -851,18 +977,18 @@ pub struct Engine {
     // `EngineError::ReadOnly`. Set at construction from the effective mode
     // (explicit flag or `service.read_only`). Index maintenance is unaffected.
     read_only: bool,
-    // The first of this file's four test seams: when armed, the next source edit
-    // fails on its far side, once. See `Engine::fail_next_source_edit`.
+    // A test seam: when armed, the next source edit fails on its far side,
+    // once. See `Engine::fail_next_source_edit`.
     // Compiled only into a test build (`cfg(test)` for this crate's unit tests,
     // the `testing` feature for its integration tests), so a released binary
     // carries neither the flag nor the branches that read it.
-    // The third test seam: how many prune statements the embed pass has sent to
+    // A test counter: how many prune statements the embed pass has sent to
     // the store. The prune's whole point is the statements it does NOT send, and
     // a skipped scan is invisible from the outside. See
     // `Engine::prune_statements_issued`.
     #[cfg(any(test, feature = "testing"))]
     prune_statements: std::sync::atomic::AtomicU64,
-    // The fourth: how many detection walks a team domain's change list has paid
+    // Another counter: how many detection walks a team domain's change list has paid
     // for. A walk reads and hashes every file in the domain, and answering a
     // diff from one walk rather than one per changed file is invisible in the
     // JSON, which is byte for byte the same either way. See
@@ -871,12 +997,39 @@ pub struct Engine {
     detection_walks: std::sync::atomic::AtomicU64,
     #[cfg(any(test, feature = "testing"))]
     fail_next_source_edit: std::sync::atomic::AtomicBool,
-    // The second, and it is a stopwatch rather than a failure: when armed, the
+    // Beside it: when armed, the next swap a move's rewrite of a virtual
+    // linker makes loses as if another writer had won, once, and is retried.
+    // See `Engine::lose_next_relink_swap`.
+    #[cfg(any(test, feature = "testing"))]
+    lose_next_relink_swap: std::sync::atomic::AtomicBool,
+    // A seam that is a stopwatch rather than a failure: when armed, the
     // next edit of a draft sleeps this many milliseconds between reading the
     // draft and writing it back, holding whatever it holds. See
     // `Engine::hold_next_draft_edit`, and the same compile-out applies.
     #[cfg(any(test, feature = "testing"))]
     hold_next_draft_edit: std::sync::atomic::AtomicU64,
+    // A seam that is a gate rather than a stopwatch: when armed, the next move
+    // or delete of a Reflection signals `entered` after its live-room screen,
+    // then waits for `release` before it takes the page lock. See
+    // `Engine::hold_next_room_screen_until`.
+    #[cfg(any(test, feature = "testing"))]
+    hold_next_room_screen: std::sync::Mutex<Option<RoomScreenGate>>,
+    // A gate: when armed, the next domain a full sync walks
+    // signals `entered` between its scan and its apply, then waits for
+    // `release`. See `Engine::hold_next_apply_until`.
+    #[cfg(any(test, feature = "testing"))]
+    hold_next_apply: std::sync::Mutex<Option<RoomScreenGate>>,
+    // A gate: when armed, the next try of an edit's live arm, or an
+    // overwrite's, signals `entered` after it looked at the room and computed
+    // its target, then waits for `release` before it composes. See
+    // `Engine::hold_next_live_compose_until`.
+    #[cfg(any(test, feature = "testing"))]
+    hold_next_live_compose: std::sync::Mutex<Option<RoomScreenGate>>,
+    // A gate: when armed, the next fenced Reflection row commit signals
+    // `entered` after its files are written and before it reads the host
+    // lock, then waits for `release`. See `Engine::hold_next_row_fence_until`.
+    #[cfg(any(test, feature = "testing"))]
+    hold_next_row_fence: std::sync::Mutex<Option<RoomScreenGate>>,
     // The effective `skills.serve` value, snapshotted while this engine is
     // built and never re-read. See `Engine::skills_serve` for why it is frozen
     // and `Engine::with_env_overlay` for why the snapshot is taken twice.
@@ -886,13 +1039,36 @@ pub struct Engine {
     // Only a non-empty id claims host locks, scopes embedding and refuses a
     // non-host sync; the `serve` daemon sets it via `with_instance_id`.
     instance_id: String,
-    // The human label recorded alongside the host lock (currently the instance
-    // id; a stable, greppable handle in a shared database).
+    // The name this instance shows people, recorded with the host lock as its
+    // label (`crystalline_index::instance_label`): the host of
+    // `service.public_url`, else the machine's hostname, set by
+    // `with_instance_label`; the instance id when nothing named it.
     label: String,
+    // The label this instance's latest claim or heartbeat resolved
+    // (`crystalline_index::instance_label`), which the heartbeat writes on
+    // every lock it renews, so one instance shows one label.
+    resolved_label: std::sync::Mutex<Option<String>>,
     // The file domains this instance currently hosts, name to id, populated by a
     // successful `claim_domain_host` and renewed by the heartbeat timer. Drives
     // embed scoping, heartbeat renewal and graceful release.
     hosted: std::sync::RwLock<HashMap<String, DomainId>>,
+    // Whether the store is shared with other instances, read once: it is a
+    // property of the backend, fixed for the store's lifetime, so a gate
+    // that only needs it takes no store lock after the first.
+    shared_database: std::sync::OnceLock<bool>,
+    // Whether this engine is a one-shot command on a shared database
+    // (`Engine::with_one_shot_instance_id`): it sends no heartbeat, so it
+    // gives back after each walk the host locks it took for it, and it never
+    // claims a domain to serve its Reflection (`Engine::is_one_shot`). A
+    // daemon and the embedded MCP stack keep theirs and heartbeat them.
+    one_shot: bool,
+    // The domains whose lock this one-shot engine claimed for a walk, given
+    // back after it (`Engine::release_taken_hosts`).
+    taken: std::sync::Mutex<HashSet<String>>,
+    // What this engine keeps of each host claim it acquired, by domain name:
+    // the claim's token, which a release compares before it deletes, and
+    // for a one-shot command the live claim of this same id it replaced.
+    leases: std::sync::Mutex<HashMap<String, crystalline_index::HostLease>>,
     // The heartbeat interval and stale threshold, seconds. Defaults 30 and 90,
     // overridable via `CRYSTALLINE_HEARTBEAT_SECS`/`CRYSTALLINE_STALE_SECS` (a
     // short threshold makes multi-instance stale-takeover verification fast).
@@ -911,6 +1087,15 @@ pub struct Engine {
     // two browser tabs can reach. Created lazily, one `tokio::sync::Mutex` per
     // file ever written through those verbs.
     write_locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    // One engram move at a time in this process. A move gathers the engrams
+    // that link it before it writes and rewrites them after, so two moves
+    // that link each other could each rewrite a file the other one had just
+    // moved away. See `Engine::move_engram_as`.
+    move_lock: tokio::sync::Mutex<()>,
+    // How many moves wait for `move_lock` right now, for a test to see that
+    // a move is queued there rather than sleep and hope.
+    #[cfg(any(test, feature = "testing"))]
+    moves_waiting: std::sync::atomic::AtomicUsize,
     // A fixed provider used by every origin operation instead of the
     // production per-operation `GitHubProvider` build, for tests: an engine
     // built this way never reads config or the token store to decide who to
@@ -2121,6 +2306,12 @@ impl Engine {
             contradiction_fact_walks: std::sync::atomic::AtomicU64::new(0),
             #[cfg(any(test, feature = "testing"))]
             contradiction_fact_loads: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(any(test, feature = "testing"))]
+            recorded_path_loads: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(any(test, feature = "testing"))]
+            reflection_text_loads: std::sync::atomic::AtomicU64::new(0),
+            reflection_generations: std::sync::Mutex::default(),
+            pending_cache: std::sync::Mutex::default(),
             contradiction_facts_cache: std::sync::Mutex::default(),
             #[cfg(any(test, feature = "testing"))]
             contradiction_walks: std::sync::atomic::AtomicU64::new(0),
@@ -2138,15 +2329,33 @@ impl Engine {
             #[cfg(any(test, feature = "testing"))]
             fail_next_source_edit: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "testing"))]
+            lose_next_relink_swap: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(any(test, feature = "testing"))]
             hold_next_draft_edit: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(any(test, feature = "testing"))]
+            hold_next_room_screen: std::sync::Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            hold_next_apply: std::sync::Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            hold_next_live_compose: std::sync::Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            hold_next_row_fence: std::sync::Mutex::new(None),
             skills_serve,
             instance_id: String::new(),
             label: String::new(),
+            resolved_label: std::sync::Mutex::new(None),
             hosted: std::sync::RwLock::new(HashMap::new()),
+            shared_database: std::sync::OnceLock::new(),
+            one_shot: false,
+            taken: std::sync::Mutex::new(HashSet::new()),
+            leases: std::sync::Mutex::new(HashMap::new()),
             heartbeat_secs: env_secs("CRYSTALLINE_HEARTBEAT_SECS", DEFAULT_HEARTBEAT_SECS),
-            stale_secs: env_secs("CRYSTALLINE_STALE_SECS", DEFAULT_STALE_SECS),
+            stale_secs: crystalline_index::stale_secs(),
             origin_locks: std::sync::Mutex::new(HashMap::new()),
             write_locks: std::sync::Mutex::new(HashMap::new()),
+            move_lock: tokio::sync::Mutex::new(()),
+            #[cfg(any(test, feature = "testing"))]
+            moves_waiting: std::sync::atomic::AtomicUsize::new(0),
             origin_provider_override: None,
             origin_provider_override_login: None,
             backup_marks: Default::default(),
@@ -2272,6 +2481,167 @@ impl Engine {
         }
     }
 
+    /// Gate the next move of a Reflection or an engram, or delete of a
+    /// Reflection, between its screen for live rooms and its file lock, once,
+    /// so a test can try to open a room inside that window. Returns
+    /// `(entered, release)`: the verb notifies `entered` when it reaches the
+    /// gate and then waits for `release`, so the test awaits `entered`, tries
+    /// its room, and notifies `release`. Both are `Notify` permits, so either
+    /// order is safe.
+    ///
+    /// R81: the screen cannot run under the file lock, which would take the
+    /// registry lock after the file lock and reverse the order (registry, then
+    /// session, then file). For a move the window is closed instead by a
+    /// fence: the move closes the room and fences the document in one step
+    /// under the registry lock, and a join inside the window is refused
+    /// (`CollabSessions::close_for_move`). For a delete it is pinned, not
+    /// closed: a room that opens inside the window meets the deletion as a
+    /// conflict and keeps its text.
+    ///
+    /// Armed for ONE verb and consumed by it, and compiled out of a released
+    /// binary like the seams above.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn hold_next_room_screen_until(
+        &self,
+    ) -> (
+        std::sync::Arc<tokio::sync::Notify>,
+        std::sync::Arc<tokio::sync::Notify>,
+    ) {
+        let gate = RoomScreenGate {
+            entered: std::sync::Arc::new(tokio::sync::Notify::new()),
+            release: std::sync::Arc::new(tokio::sync::Notify::new()),
+        };
+        let handles = (gate.entered.clone(), gate.release.clone());
+        *self.hold_next_room_screen.lock().unwrap() = Some(gate);
+        handles
+    }
+
+    /// Hold the next walk of a full or named sync between its scan and its
+    /// apply: it signals `entered` there and waits for `release`. Lets a test
+    /// move the domain's host lock to another instance while a walk is in
+    /// flight. Armed for one walk and consumed by it, and compiled out of a
+    /// released binary like the seams above.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn hold_next_apply_until(
+        &self,
+    ) -> (
+        std::sync::Arc<tokio::sync::Notify>,
+        std::sync::Arc<tokio::sync::Notify>,
+    ) {
+        let gate = RoomScreenGate {
+            entered: std::sync::Arc::new(tokio::sync::Notify::new()),
+            release: std::sync::Arc::new(tokio::sync::Notify::new()),
+        };
+        let handles = (gate.entered.clone(), gate.release.clone());
+        *self.hold_next_apply.lock().unwrap() = Some(gate);
+        handles
+    }
+
+    /// The per-path write lock of `abs`, the one every file write takes, so
+    /// an integration test can hold it from outside and line writers up
+    /// behind it in a known order (the lock is fair: first come, first
+    /// served). Compiled out of a released binary like the seams below.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn file_write_lock(&self, abs: &Path) -> Arc<tokio::sync::Mutex<()>> {
+        self.write_lock(abs)
+    }
+
+    /// Hold the next try of an edit's live arm, or of an overwrite's,
+    /// between its look at the room and its compose: it signals `entered` there and waits for `release`.
+    /// Lets a test type into the room inside that window, which a real
+    /// person's typing cannot be timed to hit. Armed for one try and consumed
+    /// by it; a test that arms it again before it releases holds the next try
+    /// too. Compiled out of a released binary like the seams above.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn hold_next_live_compose_until(
+        &self,
+    ) -> (
+        std::sync::Arc<tokio::sync::Notify>,
+        std::sync::Arc<tokio::sync::Notify>,
+    ) {
+        let gate = RoomScreenGate {
+            entered: std::sync::Arc::new(tokio::sync::Notify::new()),
+            release: std::sync::Arc::new(tokio::sync::Notify::new()),
+        };
+        let handles = (gate.entered.clone(), gate.release.clone());
+        *self.hold_next_live_compose.lock().unwrap() = Some(gate);
+        handles
+    }
+
+    /// Hold the next fenced Reflection row commit after its files are
+    /// written and before it reads the host lock: it signals `entered` there
+    /// and waits for `release`. Lets a test move the domain's host lock to
+    /// another instance in the window a paused host would leave. Armed for
+    /// one commit and consumed by it, and compiled out of a released binary
+    /// like the seams above.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn hold_next_row_fence_until(
+        &self,
+    ) -> (
+        std::sync::Arc<tokio::sync::Notify>,
+        std::sync::Arc<tokio::sync::Notify>,
+    ) {
+        let gate = RoomScreenGate {
+            entered: std::sync::Arc::new(tokio::sync::Notify::new()),
+            release: std::sync::Arc::new(tokio::sync::Notify::new()),
+        };
+        let handles = (gate.entered.clone(), gate.release.clone());
+        *self.hold_next_row_fence.lock().unwrap() = Some(gate);
+        handles
+    }
+
+    /// The gate above, consuming the arming; returns at once when none is
+    /// armed. Does nothing at all outside a test build.
+    pub(super) async fn take_row_fence_hold(&self) {
+        #[cfg(any(test, feature = "testing"))]
+        {
+            let gate = self.hold_next_row_fence.lock().unwrap().take();
+            if let Some(gate) = gate {
+                gate.entered.notify_one();
+                gate.release.notified().await;
+            }
+        }
+    }
+
+    /// The gate above, consuming the arming; returns at once when none is
+    /// armed. Does nothing at all outside a test build.
+    pub(super) async fn take_live_compose_hold(&self) {
+        #[cfg(any(test, feature = "testing"))]
+        {
+            let gate = self.hold_next_live_compose.lock().unwrap().take();
+            if let Some(gate) = gate {
+                gate.entered.notify_one();
+                gate.release.notified().await;
+            }
+        }
+    }
+
+    /// The gate above, consuming the arming; returns at once when none is
+    /// armed. Does nothing at all outside a test build.
+    pub(crate) async fn take_apply_hold(&self) {
+        #[cfg(any(test, feature = "testing"))]
+        {
+            let gate = self.hold_next_apply.lock().unwrap().take();
+            if let Some(gate) = gate {
+                gate.entered.notify_one();
+                gate.release.notified().await;
+            }
+        }
+    }
+
+    /// The gate above, consuming the arming; returns at once when none is
+    /// armed. Does nothing at all outside a test build.
+    async fn take_room_screen_hold(&self) {
+        #[cfg(any(test, feature = "testing"))]
+        {
+            let gate = self.hold_next_room_screen.lock().unwrap().take();
+            if let Some(gate) = gate {
+                gate.entered.notify_one();
+                gate.release.notified().await;
+            }
+        }
+    }
+
     /// Whether the failure seam is armed, consuming the arming. Constant
     /// `false` outside a test build, where the flag does not exist: the two
     /// source-edit branches then compile to what they would have been without a
@@ -2280,6 +2650,59 @@ impl Engine {
         #[cfg(any(test, feature = "testing"))]
         {
             self.fail_next_source_edit
+                .swap(false, std::sync::atomic::Ordering::Relaxed)
+        }
+        #[cfg(not(any(test, feature = "testing")))]
+        {
+            false
+        }
+    }
+
+    /// How many engram moves wait for the one running in this process.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn moves_waiting(&self) -> usize {
+        self.moves_waiting
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Take the process's move lock; see `move_lock`.
+    async fn lock_moves(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        #[cfg(any(test, feature = "testing"))]
+        {
+            struct Waiting<'a>(&'a std::sync::atomic::AtomicUsize);
+            impl Drop for Waiting<'_> {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            self.moves_waiting
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let _waiting = Waiting(&self.moves_waiting);
+            self.move_lock.lock().await
+        }
+        #[cfg(not(any(test, feature = "testing")))]
+        {
+            self.move_lock.lock().await
+        }
+    }
+
+    /// Make the next compare and swap of a move's rewrite of a virtual linker
+    /// lose once, the way it loses when another instance wrote the row in
+    /// between, so the retry that applies the rewrite again to the stored row
+    /// can be driven. A real lost race cannot be timed from a test. Unlike
+    /// [`Engine::fail_next_source_edit`], which stands for a conflict and is
+    /// never retried, this stands for a race.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn lose_next_relink_swap(&self) {
+        self.lose_next_relink_swap
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The arming above, consumed. `false` outside a test build.
+    fn take_lost_relink_swap(&self) -> bool {
+        #[cfg(any(test, feature = "testing"))]
+        {
+            self.lose_next_relink_swap
                 .swap(false, std::sync::atomic::Ordering::Relaxed)
         }
         #[cfg(not(any(test, feature = "testing")))]
@@ -2308,6 +2731,17 @@ impl Engine {
     /// the row path it always took.
     fn collab_rooms(&self) -> Option<Arc<crate::collab::session::CollabSessions>> {
         self.collab.get().and_then(std::sync::Weak::upgrade)
+    }
+
+    /// Where a closing co-editing room keeps a text it could not save:
+    /// `<state dir>/kept`. `None` when this process knows no state
+    /// directory; under the test seam that is any engine built without
+    /// [`Engine::with_state_dir`], so a test never writes into the
+    /// developer's own state folder.
+    pub(crate) fn kept_dir(&self) -> Option<PathBuf> {
+        self.journal_state_dir()
+            .ok()
+            .map(|dir| dir.join(crystalline_core::kept::KEPT_DIR))
     }
 
     /// Hold the domain-admin lock for the whole of a registration or a removal.
@@ -2480,6 +2914,9 @@ impl Engine {
         let free = |name: &str| {
             !held.contains(name)
                 && !registered.contains_key(name)
+                // Nor one that differs from a domain's name only in letter
+                // case: the two would share one state folder.
+                && case_twin(name, None, registered.iter()).is_none()
                 && !registered
                     .values()
                     .any(|entry| entry.aliases.iter().any(|alias| alias == name))
@@ -2760,13 +3197,16 @@ impl Engine {
 
     /// The domain's Reflection mode in effect: `Effective` when switched on
     /// and no engram is left under `reflections/`, `Off` otherwise (pending
-    /// included). Decided by [`crystalline_index::reflection_mode`] over the
-    /// paths the index records, the call the sync makes, so the engine and
-    /// the sync never disagree; a domain the index holds no row of takes its
-    /// disk fallback. The MANIFEST is read first, so a domain without a
-    /// Reflection costs no store read, and the store lock is held for the
-    /// two reads only, never for the file reads that follow, which run on
-    /// the blocking pool.
+    /// included). The MANIFEST is read first, so a domain without a
+    /// Reflection costs no store read. Then the index is asked two questions
+    /// under one store lock (`Engine::recorded_paths`): a domain that
+    /// records engram rows and none under the folder is `Effective` with no
+    /// file read (unless the folder is spelled twice); otherwise
+    /// [`crystalline_index::reflection_mode`] decides over the rows under the
+    /// folder, the call the sync makes, so the engine and the sync never
+    /// disagree, and a domain the index holds no row of takes its disk
+    /// fallback. The file reads run on the blocking pool, never under the
+    /// store lock.
     pub async fn reflection_mode(&self, domain: &str) -> Result<crystalline_core::ReflectionMode> {
         let ContentSource::File { root } = self.read_source(domain) else {
             return Ok(crystalline_core::ReflectionMode::Off);
@@ -2774,11 +3214,16 @@ impl Engine {
         if crystalline_core::reflection_at(&root) == crystalline_core::ReflectionSwitch::Off {
             return Ok(crystalline_core::ReflectionMode::Off);
         }
-        let recorded = self.recorded_paths(domain).await?;
-        // The predicate reads the recorded files (or walks the folder on an
-        // empty index): blocking IO, so off the runtime's workers.
+        let recorded = self.recorded_paths(domain, &root).await?;
+        // The spelling check and the predicate read the disk (the root's
+        // entries, the recorded files, or the folder on an empty index):
+        // blocking IO, so off the runtime's workers.
         tokio::task::spawn_blocking(move || {
-            crystalline_index::reflection_mode(&root, recorded.iter())
+            if recorded.nothing_pending(&root) {
+                crystalline_core::ReflectionMode::Effective
+            } else {
+                crystalline_index::reflection_mode(&root, recorded.under_reflections.iter())
+            }
         })
         .await
         .map_err(|e| {
@@ -2788,15 +3233,184 @@ impl Engine {
         })
     }
 
-    /// The domain-relative paths the index records for `domain`'s files,
-    /// empty when it holds no row of the domain. The store lock is held for
-    /// the two reads only.
-    pub(crate) async fn recorded_paths(&self, domain: &str) -> Result<Vec<String>> {
-        let store = self.store.lock().await;
-        Ok(match store.domain_id(domain).await? {
-            Some(id) => store.file_stamps(id).await?.into_keys().collect(),
-            None => Vec::new(),
+    /// What the index records of `domain`'s engram rows, as much as a
+    /// Reflection gate needs (R82): whether it holds any base row, and the
+    /// base rows under `reflections/` in any letter case. Never the whole
+    /// stamp map: up to [`UNDER_REFLECTIONS_PROBE`] rows are read, and only a
+    /// domain with that many engrams under the folder (a pending switch,
+    /// whose refusal names them all) reads the rest. The store lock is held
+    /// for these reads only.
+    ///
+    /// Remembered per domain (R83, [`PendingEntry`]): an entry filled under
+    /// the domain's current generation, its `root` and its MANIFEST's stamp
+    /// answers without the store lock. The generation is read before
+    /// anything else, so rows that changed while they were read are stored
+    /// under a number the change's announce has already moved past.
+    pub(crate) async fn recorded_paths(&self, domain: &str, root: &Path) -> Result<RecordedPaths> {
+        let generation = self.reflection_generation(domain);
+        let manifest = manifest_stamp(root);
+        if let Some(recorded) = self.remembered_paths(domain, generation, root, manifest) {
+            return Ok(recorded);
+        }
+        let (recorded, shared, domain_id) = {
+            let store = self.store.lock().await;
+            let shared = store.shares_database();
+            let Some(id) = store.domain_id(domain).await? else {
+                return Ok(RecordedPaths::default());
+            };
+            let mut under_reflections = store
+                .engram_rows_under_reflections(id, UNDER_REFLECTIONS_PROBE)
+                .await?;
+            if under_reflections.len() >= UNDER_REFLECTIONS_PROBE {
+                #[cfg(any(test, feature = "testing"))]
+                self.recorded_path_loads
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                under_reflections = store.engram_rows_under_reflections(id, usize::MAX).await?;
+            }
+            // A row under the folder is a row: the second question only when
+            // there is none.
+            let any = !under_reflections.is_empty() || store.has_engram_rows(id).await?;
+            (
+                RecordedPaths {
+                    any,
+                    under_reflections,
+                },
+                shared,
+                id,
+            )
+        };
+        self.pending_cache.lock().unwrap().insert(
+            domain.to_string(),
+            PendingEntry {
+                generation,
+                root: root.to_path_buf(),
+                manifest,
+                at: std::time::Instant::now(),
+                shared,
+                domain_id,
+                recorded: recorded.clone(),
+            },
+        );
+        Ok(recorded)
+    }
+
+    /// The rows [`Engine::recorded_paths`] remembers of `domain`, when its
+    /// entry still holds: the same generation, root and MANIFEST stamp, and
+    /// on a shared database younger than [`crate::changes::VISIBILITY_TTL`].
+    fn remembered_paths(
+        &self,
+        domain: &str,
+        generation: u64,
+        root: &Path,
+        manifest: Option<(u64, i64)>,
+    ) -> Option<RecordedPaths> {
+        self.remembered(domain, generation, root, manifest, |entry| {
+            entry.recorded.clone()
         })
+    }
+
+    /// The index row id of `domain` that [`Engine::recorded_paths`]
+    /// remembered with its rows, under the same rule: the same generation,
+    /// root and MANIFEST stamp, and on a shared database younger than
+    /// [`crate::changes::VISIBILITY_TTL`]. A removal, a collection and a
+    /// rename move the generation on, so an id whose row went is never
+    /// answered. `None` while a rename pauses the domain, whose row is
+    /// looked up fresh ([`Engine::domain_source`]).
+    ///
+    /// What the window costs on a shared postgres: another instance's
+    /// removal or collection of the row is not announced here, so for up to
+    /// [`crate::changes::VISIBILITY_TTL`] (10 s) the gate can answer the
+    /// dropped row's id. A page read then shows its sources as missing, and
+    /// a page write fails on the foreign key after the file is on disk; the
+    /// next sync indexes that file under the row it makes.
+    pub(crate) fn remembered_domain_id(&self, domain: &str, root: &Path) -> Option<DomainId> {
+        if self.is_renaming(domain) {
+            return None;
+        }
+        let generation = self.reflection_generation(domain);
+        let manifest = manifest_stamp(root);
+        self.remembered(domain, generation, root, manifest, |entry| entry.domain_id)
+    }
+
+    /// One field of `domain`'s remembered entry, when the entry still holds.
+    fn remembered<T>(
+        &self,
+        domain: &str,
+        generation: u64,
+        root: &Path,
+        manifest: Option<(u64, i64)>,
+        pick: impl FnOnce(&PendingEntry) -> T,
+    ) -> Option<T> {
+        let cache = self.pending_cache.lock().unwrap();
+        let entry = cache.get(domain)?;
+        let fresh = entry.generation == generation
+            && entry.root == root
+            && manifest.is_some()
+            && entry.manifest == manifest
+            && (!entry.shared || entry.at.elapsed() < crate::changes::VISIBILITY_TTL);
+        fresh.then(|| pick(entry))
+    }
+
+    /// The domain's generation: see [`Engine::bump_reflection_generation`].
+    fn reflection_generation(&self, domain: &str) -> u64 {
+        self.reflection_generations
+            .lock()
+            .unwrap()
+            .get(domain)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Move `domain`'s generation on and forget the rows the Reflection gate
+    /// remembers of it. [`Engine::announce`] calls it for every change of the
+    /// domain's base engram rows; a path that writes or clears those rows
+    /// without an announce of that domain calls it itself (a removal, the
+    /// orphan collector). The number only grows, so an entry filled before
+    /// a bump never matches again, however the fills and bumps interleave.
+    pub(crate) fn bump_reflection_generation(&self, domain: &str) {
+        *self
+            .reflection_generations
+            .lock()
+            .unwrap()
+            .entry(domain.to_string())
+            .or_default() += 1;
+        self.pending_cache.lock().unwrap().remove(domain);
+    }
+
+    /// Bump `domain`'s generation once a sync's apply has committed rows,
+    /// before anything else runs: the index files' refresh and the overlay
+    /// restore ask the Reflection mode, and must not be answered from rows
+    /// remembered before the apply. [`Engine::announce_report`] bumps again
+    /// afterwards, which costs a refill and also covers its other callers.
+    pub(crate) fn bump_after_apply(&self, domain: &str, report: &SyncReport) {
+        if !report.changes.is_empty() {
+            self.bump_reflection_generation(domain);
+        }
+    }
+
+    /// How many times a Reflection path has loaded more of a domain's engram
+    /// rows than the gate's probe since this engine was built: every file
+    /// stamp of the domain (`engram_facts`, which a take-in and the queue
+    /// read), or every row under the folder past the first
+    /// [`UNDER_REFLECTIONS_PROBE`] (a pending switch with that many
+    /// engrams). Before R82 every gate loaded every recorded path of the
+    /// domain, which this counted too, so a gate, a page read or a sourced
+    /// write on an effective Reflection that moves it is a regression: those
+    /// read only the engrams the page cites (`cited_facts`).
+    #[cfg(any(test, feature = "testing"))]
+    pub fn recorded_path_loads(&self) -> u64 {
+        self.recorded_path_loads
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// How many times a Reflection's pages were loaded with their text to
+    /// walk its threads (`Engine::all_threads`) since this engine was built.
+    /// Counting open threads needs only the threads files, so the domain
+    /// listing that moves it is a regression.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn reflection_text_loads(&self) -> u64 {
+        self.reflection_text_loads
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Whether the domain's Reflection is in effect.
@@ -2916,10 +3530,41 @@ impl Engine {
     /// read that cannot learn what it may answer from refuses, and never widens.
     #[doc(hidden)]
     pub async fn hidden_for(&self, scope: &crate::scope::Scope) -> Result<HashSet<String>> {
-        let mut hidden = self.hidden_domains(scope).await?.unwrap_or_default();
+        let mut hidden = self.hidden_screens(scope).await?;
         hidden.extend(self.unregistered_domains().await?);
+        Ok(hidden)
+    }
+
+    /// [`Engine::hidden_for`] without its unregistered half, which is the
+    /// only half that reads the index: the domains `scope` may not see and
+    /// the ones a connected server shadows.
+    pub(crate) async fn hidden_screens(
+        &self,
+        scope: &crate::scope::Scope,
+    ) -> Result<HashSet<String>> {
+        let mut hidden = self.hidden_domains(scope).await?.unwrap_or_default();
         hidden.extend(self.shadowed_domains());
         Ok(hidden)
+    }
+
+    /// Whether the store is shared with other instances
+    /// ([`Store::shares_database`]). The store lock is taken only on the
+    /// first call: the answer is the backend's and never changes.
+    pub(crate) async fn store_is_shared(&self) -> bool {
+        if let Some(shared) = self.shared_database.get() {
+            return *shared;
+        }
+        let shared = self.store.lock().await.shares_database();
+        *self.shared_database.get_or_init(|| shared)
+    }
+
+    /// Whether `name` is one of [`Engine::known_domain_names`], the names
+    /// [`Engine::unregistered_domains`] never answers. In memory only, and
+    /// read through the same two tiers that listing reads.
+    pub(crate) fn knows_domain(&self, name: &str) -> bool {
+        !self
+            .known_domain_names_where(|known| known == name)
+            .is_empty()
     }
 
     /// The domains the index holds that this instance has no registration for.
@@ -3161,6 +3806,72 @@ impl Engine {
         self
     }
 
+    /// Name this instance for people: the label its host locks record, so
+    /// another instance's refusal, `crystalline status` and the Reflection
+    /// status show it instead of the id ([`GlobalConfig::instance_name`]).
+    /// Call it after [`Engine::with_instance_id`]; `None` keeps the id.
+    ///
+    /// [`GlobalConfig::instance_name`]: crystalline_core::config::GlobalConfig::instance_name
+    pub fn with_instance_label(mut self, name: Option<String>) -> Engine {
+        if let Some(name) = name.filter(|n| !n.trim().is_empty()) {
+            self.label = name;
+        }
+        self
+    }
+
+    /// [`Engine::with_instance_id`] for a one-shot command on a shared
+    /// database: it claims each file domain before a walk as this machine,
+    /// the id this machine's daemon uses, walks under the host-move rules
+    /// and gives back after the walk every lock it claimed. A lock this
+    /// machine's daemon (or another command here) held live is handed back
+    /// to that claim rather than deleted. It sends no heartbeat, so it holds
+    /// nothing past a walk, and it never claims a domain to serve its
+    /// Reflection.
+    pub fn with_one_shot_instance_id(mut self, instance_id: String) -> Engine {
+        self = self.with_instance_id(instance_id);
+        self.one_shot = true;
+        self
+    }
+
+    /// Whether this engine is a one-shot command on a shared database
+    /// ([`Engine::with_one_shot_instance_id`]): the one place that decides
+    /// both that it gives its locks back after each walk and that it serves
+    /// no Reflection it would have to claim for.
+    pub(super) fn is_one_shot(&self) -> bool {
+        self.one_shot
+    }
+
+    /// Give back the host locks this engine took for its walks, when it is
+    /// a one-shot command ([`Engine::with_one_shot_instance_id`]); nothing
+    /// otherwise. Each goes back through its lease
+    /// ([`crystalline_index::give_back`]), so a lock a later claim under the
+    /// same id took (this machine's daemon, another command) stays where it
+    /// is. Best effort: a lock left behind goes stale.
+    pub(super) async fn release_taken_hosts(&self) {
+        if !self.is_one_shot() {
+            return;
+        }
+        let taken: Vec<String> = self.taken.lock().unwrap().drain().collect();
+        if taken.is_empty() {
+            return;
+        }
+        let store = self.store.lock().await;
+        for name in taken {
+            let id = self.hosted.write().unwrap().remove(&name);
+            let lease = self.leases.lock().unwrap().remove(&name);
+            let id = match id {
+                Some(id) => Some(id),
+                None => store.domain_id(&name).await.ok().flatten(),
+            };
+            if let (Some(id), Some(lease)) = (id, lease)
+                && let Err(e) =
+                    crystalline_index::give_back(&*store, id, &self.instance_id, &lease).await
+            {
+                tracing::debug!("could not give back the host lock of '{name}': {e}");
+            }
+        }
+    }
+
     /// Install the channel the daemon's watcher listens on for domains
     /// discovered after startup. Only wired by `run_serve`.
     pub fn with_watch_channel(
@@ -3255,6 +3966,18 @@ impl Engine {
     ) {
         self.backup_marks
             .mark(domain, cause, std::time::Instant::now());
+    }
+
+    /// The domains with a Reflection backup marked, due or not, and the
+    /// marks forgotten. Test-only: lets a test see what an apply marked.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn take_reflection_backup_marks(&self) -> Vec<String> {
+        let later = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+        let marked = self.backup_marks.due_domains(later);
+        for domain in &marked {
+            self.backup_marks.clear(domain);
+        }
+        marked
     }
 
     /// Mark every domain whose Reflection is switched on, once, when the
@@ -3374,9 +4097,11 @@ impl Engine {
     }
 
     /// Whether this instance backs up `domain`'s Reflection: it is its home
-    /// (`On { home: Here }`), the domain is connected to a repository, and
-    /// the domain is not read-only. A Reflection never goes to a repository
-    /// its domain is not connected to.
+    /// (`On { home: Here }`), the domain is connected to a repository, the
+    /// domain is not read-only, and on a shared database this instance still
+    /// holds the domain's host lock and no host move of the domain is
+    /// unresolved. A Reflection never goes to a repository its domain is not
+    /// connected to.
     async fn backs_up_reflection_here(&self, domain: &str) -> bool {
         let home = matches!(
             self.reflection_state(domain).await,
@@ -3388,6 +4113,79 @@ impl Engine {
             .domain_entry(domain)
             .is_ok_and(|entry| entry.origin.is_some())
             && !self.domain_is_read_only(domain).await
+            // A takeover stops the old host's backup at once, not at its
+            // next heartbeat.
+            && matches!(self.confirm_reflection_host(domain).await, Ok(None))
+            // A new host whose disk lacks pages the previous host wrote would
+            // push a folder without them, and the backup branch is one way to
+            // get them back: it waits until the move is resolved.
+            && !self.host_move_unresolved(domain).await
+    }
+
+    /// Whether `domain` carries an unresolved host move on a shared
+    /// database (Task 50): its rows may name files only the previous host's
+    /// disk has. A move that could not be read counts as unresolved, so
+    /// what waits on it waits for the next try.
+    async fn host_move_unresolved(&self, domain: &str) -> bool {
+        let store = self.store.lock().await;
+        if !store.shares_database() {
+            return false;
+        }
+        match store.domain_id(domain).await {
+            Ok(Some(id)) => !matches!(store.host_move(id).await, Ok(None)),
+            Ok(None) => false,
+            Err(_) => true,
+        }
+    }
+
+    /// Refuse a write that would create `row`'s file on this disk while the
+    /// row is kept for the previous host of an unresolved host move (Task
+    /// 50): the file exists only on that host's disk, and the write would
+    /// replace the only shared copy of it. The caller holds the path's file
+    /// lock and has seen the file missing here. Turso, and a domain with no
+    /// mark, answer at once.
+    pub(crate) async fn refuse_only_elsewhere(
+        &self,
+        domain: &str,
+        domain_id: DomainId,
+        row: ElsewhereRow<'_>,
+    ) -> Result<()> {
+        let store = self.store.lock().await;
+        if !store.shares_database() {
+            return Ok(());
+        }
+        let Some(mark) = store.host_move(domain_id).await? else {
+            return Ok(());
+        };
+        let (path, kept) = match row {
+            ElsewhereRow::Page(path) => {
+                (path, store.get_reflection(domain_id, path).await?.is_some())
+            }
+            ElsewhereRow::Engram(path) => {
+                (path, store.engram_content(domain_id, path).await?.is_some())
+            }
+            ElsewhereRow::Asset(table, path) => (
+                path,
+                store.get_asset(table, domain_id, path).await?.is_some(),
+            ),
+        };
+        if !kept {
+            return Ok(());
+        }
+        // Not only a previous host's file: a row this host wrote after the
+        // move, whose file somebody then deleted by hand, is refused too.
+        // The walk cannot tell the two apart while the move is open; the
+        // remedy the sentence names (copy the folder over, or
+        // `--accept-disk`) resolves both, so the refusal stays on the safe
+        // side.
+        let host = mark
+            .only_elsewhere
+            .previous_host
+            .as_deref()
+            .unwrap_or("another instance");
+        Err(EngineError::Conflict(format!(
+            "'{path}' exists only on {host}{ONLY_ELSEWHERE}{domain} --accept-disk"
+        )))
     }
 
     /// The GitHub login the injected provider acts as, for tests that need a
@@ -3510,6 +4308,15 @@ impl Engine {
     /// bus takes only its own short mutex), at every place a change lands in
     /// the store and nowhere else.
     pub(crate) fn announce(&self, change: Change) {
+        // The rows the Reflection gate remembers go stale first, before any
+        // subscriber hears of the change (R83). A draft is no base row.
+        match &change {
+            Change::Engram(engram) if engram.draft_of.is_none() => {
+                self.bump_reflection_generation(&engram.domain)
+            }
+            Change::Domain(changed) => self.bump_reflection_generation(&changed.domain),
+            Change::Engram(_) | Change::Reflection(_) => {}
+        }
         if let Some(id) = self.changes.announce(change) {
             tracing::trace!(%id, "announced a change");
         }
@@ -3521,6 +4328,10 @@ impl Engine {
     /// regeneration by `refresh_index_files` that the watcher then sees
     /// announces nothing.
     pub(crate) fn announce_report(&self, name: &str, report: &SyncReport, actor: Option<&str>) {
+        // A generated listing's row is a row too, though no event names it.
+        if !report.changes.is_empty() {
+            self.bump_reflection_generation(name);
+        }
         let changes: Vec<&PathChange> = report
             .changes
             .iter()
@@ -3723,7 +4534,7 @@ impl Engine {
     /// Claim the host lock for one file domain against a locked store. Records
     /// the domain in `hosted` on success and drops it on a loss, so the heartbeat
     /// timer and embed scoping stay in step with what this instance actually
-    /// hosts.
+    /// hosts. A domain it gains is handed to the daemon's watcher.
     async fn claim_file_host(
         &self,
         store: &dyn Store,
@@ -3731,30 +4542,138 @@ impl Engine {
         root: &Path,
         take_over: bool,
     ) -> Result<HostClaim> {
+        self.claim_file_host_as(store, name, root, take_over, true)
+            .await
+    }
+
+    /// [`Engine::claim_file_host`]; `to_watcher` false for the watcher's
+    /// own claim, which arms the domain itself.
+    async fn claim_file_host_as(
+        &self,
+        store: &dyn Store,
+        name: &str,
+        root: &Path,
+        take_over: bool,
+        to_watcher: bool,
+    ) -> Result<HostClaim> {
         let id = store
             .upsert_domain(name, Some(&root.to_string_lossy()), DomainKind::File)
             .await?;
         let now = now_offset().to_rfc3339();
         let stale_before = (now_offset() - Duration::seconds(self.stale_secs)).to_rfc3339();
-        let claim = store
-            .claim_domain_host(
-                id,
-                &self.instance_id,
-                &self.label,
-                &now,
-                &stale_before,
-                take_over,
-            )
-            .await?;
-        match &claim {
-            HostClaim::Acquired => {
-                self.hosted.write().unwrap().insert(name.to_string(), id);
+        // On a shared database a claim that takes the domain from another
+        // instance, or from no known one, also marks a host move: this disk
+        // may lack files the previous host wrote, so the complete walks keep
+        // the rows they do not see until that is resolved (Task 50).
+        let claimed = crystalline_index::claim_host_marking_moves(
+            store,
+            id,
+            &self.instance_id,
+            &self.label,
+            &now,
+            &stale_before,
+            take_over,
+        )
+        .await?;
+        // The claim's token is kept for the release, the newest one: every
+        // claim writes a new token, a re-claim of a domain held here too. A
+        // re-claim of a lock this engine already holds keeps the claim the
+        // first one replaced, so a one-shot command gives the lock back to
+        // this machine's daemon, not to its own earlier claim.
+        {
+            let mut leases = self.leases.lock().unwrap();
+            match claimed.lease() {
+                Some(mut lease) => {
+                    if let Some(held) = leases.get(name)
+                        && lease.over.as_deref() == Some(held.token.as_str())
+                    {
+                        lease.over = held.over.clone();
+                    }
+                    leases.insert(name.to_string(), lease);
+                }
+                None => {
+                    leases.remove(name);
+                }
             }
-            HostClaim::HeldByOther(_) => {
-                self.hosted.write().unwrap().remove(name);
+        }
+        // A take-over is logged with both names: with --take-over, or on
+        // its own once the holder sent no heartbeat for the stale threshold
+        // (a sync, a Reflection request or a daemon start here).
+        if let Some(old) = &claimed.took_from {
+            if old.heartbeat_at.as_str() < stale_before.as_str() {
+                tracing::warn!(
+                    "{} took over the host lock of domain '{name}' from {}, which sent no heartbeat since {}",
+                    claimed.label,
+                    old.label,
+                    old.heartbeat_at
+                );
+            } else {
+                tracing::warn!(
+                    "{} took over the host lock of domain '{name}' from {} with --take-over",
+                    claimed.label,
+                    old.label
+                );
+            }
+        }
+        if claimed.claim.is_acquired() {
+            *self.resolved_label.lock().unwrap() = Some(claimed.label.clone());
+        }
+        let claim = claimed.claim;
+        if self.is_one_shot() && claim.is_acquired() {
+            self.taken.lock().unwrap().insert(name.to_string());
+            // Also kept for the end of the process, whatever path it leaves
+            // by ([`release_command_locks_everywhere`]).
+            if let Some(lease) = self.leases.lock().unwrap().get(name).cloned() {
+                COMMAND_LEASES.lock().unwrap().push(CommandLease {
+                    store: self.store.clone(),
+                    domain: id,
+                    instance_id: self.instance_id.clone(),
+                    lease,
+                });
+            }
+        }
+        let moved = match &claim {
+            HostClaim::Acquired { .. } => self
+                .hosted
+                .write()
+                .unwrap()
+                .insert(name.to_string(), id)
+                .is_none(),
+            HostClaim::HeldByOther(_) => self.hosted.write().unwrap().remove(name).is_some(),
+        };
+        if moved {
+            self.announce_host_moved(name);
+            // A daemon that gains a domain watches it from now on, whatever
+            // claimed it (a sync, a Reflection write), and walks it once:
+            // the watcher arms a new domain and runs a catch-up sync for one
+            // it already watches.
+            if to_watcher
+                && claim.is_acquired()
+                && !self.is_one_shot()
+                && let Some(tx) = &self.watch_tx
+            {
+                let _ = tx.send(WatchEvent::Add(name.to_string(), root.to_path_buf()));
             }
         }
         Ok(claim)
+    }
+
+    /// Tell the domain's listeners that the instance serving its Reflection
+    /// changed (R92): on a shared database the host lock decides which
+    /// instance serves it, so gaining or losing the lock moves the Reflection
+    /// to or from here as a switch does. Announced as `switched`, the event
+    /// a Reflection reader already re-reads the status on, and only when the
+    /// switch is on, since an off Reflection is served nowhere.
+    fn announce_host_moved(&self, name: &str) {
+        if self.reflection_switch(name) != crystalline_core::ReflectionSwitch::Off {
+            self.announce_reflection(
+                name,
+                "",
+                crate::changes::ReflectionChangeKind::Switched,
+                None,
+                None,
+            );
+        }
     }
 
     /// Whether another instance holds this domain's host lock and is still
@@ -3814,13 +4733,18 @@ impl Engine {
         // A domain a rename has paused is claimed by the sync that ends the
         // rename, under the name it ends with.
         if self.instance_id.is_empty() || self.is_renaming(name) {
-            return Ok(HostClaim::Acquired);
+            return Ok(HostClaim::Acquired {
+                token: String::new(),
+            });
         }
         let ContentSource::File { root } = self.content_source(name)? else {
-            return Ok(HostClaim::Acquired);
+            return Ok(HostClaim::Acquired {
+                token: String::new(),
+            });
         };
         let store = self.store.lock().await;
-        self.claim_file_host(&*store, name, &root, take_over).await
+        self.claim_file_host_as(&*store, name, &root, take_over, false)
+            .await
     }
 
     /// Renew this instance's heartbeat on every host lock it holds. A lock that
@@ -3843,14 +4767,37 @@ impl Engine {
         }
         let now = now_offset().to_rfc3339();
         let store = self.store.lock().await;
+        // The label is resolved again on each beat, so an instance that
+        // raced a twin to the same bare name takes its short id here
+        // ([`crystalline_index::instance_label`]).
+        let label = match crystalline_index::instance_label(&*store, &self.label, &self.instance_id)
+            .await
+        {
+            Ok(label) => {
+                *self.resolved_label.lock().unwrap() = Some(label.clone());
+                label
+            }
+            Err(e) => {
+                tracing::warn!("could not resolve this instance's label: {e}");
+                self.resolved_label
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_default()
+            }
+        };
         for (name, id) in hosted {
-            match store.renew_domain_host(id, &self.instance_id, &now).await {
+            match store
+                .renew_domain_host(id, &self.instance_id, &label, &now)
+                .await
+            {
                 Ok(true) => {}
                 Ok(false) => {
                     tracing::warn!(
                         "lost the host lock for domain '{name}'; another instance took over"
                     );
                     self.hosted.write().unwrap().remove(&name);
+                    self.announce_host_moved(&name);
                 }
                 Err(e) => tracing::warn!("failed to renew the host lock for '{name}': {e}"),
             }
@@ -3876,8 +4823,15 @@ impl Engine {
         }
         {
             let store = self.store.lock().await;
-            for (_, id) in &hosted {
-                let _ = store.release_domain_host(*id, &self.instance_id).await;
+            for (name, id) in &hosted {
+                // Released under the token of this instance's newest claim,
+                // so a row another claim wrote since stays.
+                let lease = self.leases.lock().unwrap().remove(name);
+                if let Some(lease) = lease {
+                    let _ = store
+                        .release_domain_host(*id, &self.instance_id, &lease.token)
+                        .await;
+                }
             }
         }
         self.hosted.write().unwrap().clear();
@@ -4024,11 +4978,157 @@ impl Engine {
         name: &str,
         scope: &crate::scope::Scope,
     ) -> Result<()> {
-        if !self.domain_is_read_only(name).await {
+        self.refuse_read_only_flag(name, scope).await?;
+        self.require_file_host(name, scope).await
+    }
+
+    /// The read-only half of [`Engine::refuse_read_only_domain`] alone, for
+    /// a preview (a dry run) that must say what a write would meet without
+    /// claiming a host lock.
+    pub(crate) async fn refuse_read_only_flag(
+        &self,
+        name: &str,
+        scope: &crate::scope::Scope,
+    ) -> Result<()> {
+        if self.domain_is_read_only(name).await {
+            self.require_domain(name, scope).await?;
+            return Err(EngineError::DomainReadOnly(read_only_sentence(name)));
+        }
+        Ok(())
+    }
+
+    /// Whether this instance may write `name` in a sweep over several
+    /// domains: a virtual domain always, a file domain unless another live
+    /// instance holds its lock. With `claim`, a lock nobody holds or whose
+    /// holder went silent is claimed through the host gate, as a write
+    /// claims it; without (a dry run), nothing is claimed. A sweep leaves
+    /// the others out and names them.
+    pub(crate) async fn writes_domain_here(&self, name: &str, claim: bool) -> bool {
+        if matches!(self.content_source(name), Ok(ContentSource::Virtual))
+            || self.writes_here(name).await
+        {
+            return true;
+        }
+        if claim {
+            return self
+                .require_file_host(name, &crate::scope::Scope::Unrestricted)
+                .await
+                .is_ok();
+        }
+        let store = self.store.lock().await;
+        let holder = match store.domain_id(name).await {
+            Ok(Some(id)) => store.domain_host(id).await.ok().flatten(),
+            _ => None,
+        };
+        drop(store);
+        holder.is_none_or(|host| {
+            host.instance_id == self.instance_id || self.lock_is_stale(&host.heartbeat_at)
+        })
+    }
+
+    /// The host gate of a write into a file domain on a shared database:
+    /// only the instance that holds the domain's host lock writes it (its
+    /// files are its disk's, and its rows follow them). Part of
+    /// [`Engine::refuse_read_only_domain`], the one check every write meets,
+    /// so every write path meets this too.
+    ///
+    /// The lock row is read on every write (one query), so a host that lost
+    /// the lock while it slept refuses at once. A lock another live instance holds
+    /// refuses, naming that instance (to a caller who is not signed in, as
+    /// "another instance"). A lock nobody holds, or whose holder sent no
+    /// heartbeat for the stale threshold, is claimed here, as a sync claims
+    /// it: every caller of this gate is a write its surface already allowed.
+    /// A command without a daemon claims it too and gives it back when the
+    /// command ends ([`Engine::release_command_locks`]). Off a shared
+    /// database, without an instance id, for a virtual domain and while a
+    /// rename has the domain paused, nothing is checked.
+    pub(crate) async fn require_file_host(
+        &self,
+        name: &str,
+        scope: &crate::scope::Scope,
+    ) -> Result<()> {
+        if self.instance_id.is_empty() || self.is_renaming(name) || !self.store_is_shared().await {
             return Ok(());
         }
-        self.require_domain(name, scope).await?;
-        Err(EngineError::DomainReadOnly(read_only_sentence(name)))
+        let Ok(ContentSource::File { root }) = self.content_source(name) else {
+            return Ok(());
+        };
+        let store = self.store.lock().await;
+        let holder = match store.domain_id(name).await? {
+            Some(id) => store.domain_host(id).await?,
+            None => None,
+        };
+        // Read again even when this instance remembers hosting the domain,
+        // so a host that slept and lost the lock refuses at once rather than
+        // at its next heartbeat.
+        if let Some(host) = holder.as_ref()
+            && host.instance_id == self.instance_id
+            && (self.hosted.read().unwrap().contains_key(name)
+                || !self.lock_is_stale(&host.heartbeat_at))
+        {
+            // This machine holds it (its daemon, an embedded session or
+            // another command), the same disk under the same id.
+            return Ok(());
+        }
+        if let Some(host) = holder.as_ref()
+            && host.instance_id != self.instance_id
+            && !self.lock_is_stale(&host.heartbeat_at)
+        {
+            drop(store);
+            if self.hosted.write().unwrap().remove(name).is_some() {
+                tracing::warn!(
+                    "lost the host lock for domain '{name}'; another instance took over"
+                );
+                self.announce_host_moved(name);
+            }
+            return Err(file_host_refusal(
+                name,
+                &self.host_label_for(&host.label, scope),
+            ));
+        }
+        match self.claim_file_host(&*store, name, &root, false).await? {
+            HostClaim::Acquired { .. } => Ok(()),
+            HostClaim::HeldByOther(host) => Err(file_host_refusal(
+                name,
+                &self.host_label_for(&host.label, scope),
+            )),
+        }
+    }
+
+    /// Whether a write into `name` would pass the host gate without
+    /// claiming anything: off a shared database, without an instance id, or
+    /// while this instance hosts the domain.
+    pub(crate) async fn writes_here(&self, name: &str) -> bool {
+        self.instance_id.is_empty()
+            || self.hosted.read().unwrap().contains_key(name)
+            || !self.store_is_shared().await
+    }
+
+    /// Whether a heartbeat is older than the stale threshold; one that does
+    /// not parse counts as live, the direction that refuses.
+    fn lock_is_stale(&self, beat: &str) -> bool {
+        DateTime::parse_from_rfc3339(beat).is_ok_and(|beat| {
+            Utc::now().signed_duration_since(beat.with_timezone(&Utc))
+                > Duration::seconds(self.stale_secs)
+        })
+    }
+
+    /// The host's label as `scope` may read it: a caller who is not signed
+    /// in (and not the open tier) reads "another instance", since the label
+    /// is a machine's hostname or address.
+    pub(crate) fn host_label_for(&self, label: &str, scope: &crate::scope::Scope) -> String {
+        if matches!(scope, crate::scope::Scope::Anonymous) && self.auth_mcp() {
+            reflection::ANOTHER_INSTANCE.to_string()
+        } else {
+            label.to_string()
+        }
+    }
+
+    /// Give back the host locks a command without a daemon claimed for its
+    /// writes, when it is done. A no-op for a daemon and an embedded
+    /// session, which keep theirs.
+    pub async fn release_command_locks(&self) {
+        self.release_taken_hosts().await;
     }
 
     /// Every registered domain that is read-only right now.
@@ -4159,7 +5259,26 @@ impl Engine {
     /// `no_engine_function_composes_into_a_room_under_a_file_write_lock` scans
     /// for exactly that and names `.live_text(` among its needles, so a caller
     /// that gets this wrong fails the suite rather than the field.
+    ///
+    /// **Only a room that saves answers.** A read shows what an edit would
+    /// write to, and an edit composes only into a room that will save it
+    /// (`Engine::apply_source_edit_staged`); one in conflict, with a failed
+    /// save, or past its final save sends the edit to the file or the row
+    /// behind it. So this probe answers `None` for such a room, and every
+    /// verb that guards on a checksum reads and compares the stored text it
+    /// will write. [`Engine::room_at`] is the look that sees it anyway.
     async fn live_text_at(
+        &self,
+        desc: &EngramDescriptor,
+        view: &DomainView<'_>,
+    ) -> Option<crate::collab::session::LiveText> {
+        self.room_at(desc, view).await.filter(|live| live.saving)
+    }
+
+    /// The room open over this engram in this view, whether or not it will
+    /// save: for a caller that tells somebody about a room that cannot save.
+    /// Called above every file lock, as [`Engine::live_text_at`] is.
+    async fn room_at(
         &self,
         desc: &EngramDescriptor,
         view: &DomainView<'_>,
@@ -4986,6 +6105,9 @@ impl Engine {
     fn refresh_domain(&self, name: &str) -> Option<DomainEntry> {
         let fresh = self.reread_config()?;
         let entry = fresh.domains.get(name)?.clone();
+        // Before the domain is served: kept texts left under its name
+        // belong to an earlier domain of that name.
+        self.set_aside_kept_for_discovered(name);
         self.discovered_domains
             .write()
             .unwrap()
@@ -5268,15 +6390,30 @@ impl Engine {
     /// [`Engine::registered_domain_names`] to decide whether a domain is
     /// registered at all.
     fn known_domain_names(&self) -> Vec<String> {
+        self.known_domain_names_where(|_| true)
+    }
+
+    /// The names of [`Engine::known_domain_names`] that `keep` accepts: the
+    /// one place that reads its two tiers, so [`Engine::knows_domain`] can
+    /// never disagree with it.
+    fn known_domain_names_where(&self, keep: impl Fn(&str) -> bool) -> Vec<String> {
         let mut names: Vec<String> = self
             .config
             .read()
             .unwrap()
             .domains
             .keys()
+            .filter(|name| keep(name))
             .cloned()
             .collect();
-        names.extend(self.discovered_domains.read().unwrap().keys().cloned());
+        names.extend(
+            self.discovered_domains
+                .read()
+                .unwrap()
+                .keys()
+                .filter(|name| keep(name))
+                .cloned(),
+        );
         names
     }
 
@@ -5291,6 +6428,7 @@ impl Engine {
     /// daemon's sweep. A reindex is never the remedy for a row.
     pub fn forget_domain(&self, name: &str) {
         self.forget_contradiction_domain(name);
+        self.bump_reflection_generation(name);
         self.discovered_domains.write().unwrap().remove(name);
         self.mark_names_stale();
         if let Some(tx) = &self.watch_tx {
@@ -5559,6 +6697,34 @@ impl Engine {
         expected_sha: Option<&str>,
         store_full: bool,
     ) -> Result<EngramId> {
+        self.index_markdown_in(
+            store,
+            domain_id,
+            rel,
+            text,
+            stamp,
+            expected_sha,
+            store_full,
+            None,
+        )
+        .await
+    }
+
+    /// [`Engine::index_markdown`], behind the host-lock fence of the file
+    /// domain whose folder is `fenced` ([`Engine::file_row_fence`]): the
+    /// rows commit only while this instance still holds its lock.
+    #[allow(clippy::too_many_arguments)]
+    async fn index_markdown_in(
+        &self,
+        store: &dyn Store,
+        domain_id: DomainId,
+        rel: &str,
+        text: &str,
+        stamp: FileStamp,
+        expected_sha: Option<&str>,
+        store_full: bool,
+        fenced: Option<&Path>,
+    ) -> Result<EngramId> {
         // The index holds LF only, whatever line endings the text came with: a
         // file domain's CRLF file is indexed as LF (its stamp stays the one of
         // the bytes on disk, which a read never rewrites), and a virtual row
@@ -5578,6 +6744,9 @@ impl Engine {
 
         store.begin().await?;
         let result = async {
+            if let Some(root) = fenced {
+                self.file_row_fence(store, domain_id, root).await?;
+            }
             let id = store
                 .upsert_engram_checked(domain_id, &record, expected_sha)
                 .await?;
@@ -5629,7 +6798,8 @@ impl Engine {
         let text =
             String::from_utf8(bytes).map_err(|_| EngineError::Invalid(not_utf8_message(&abs)))?;
         // A file domain stores the body only; its source of truth is the file.
-        self.index_markdown(store, domain_id, rel, &text, stamp, None, false)
+        // Its rows are written only by the domain's host.
+        self.index_markdown_in(store, domain_id, rel, &text, stamp, None, false, Some(root))
             .await
     }
 
@@ -5741,7 +6911,7 @@ mod domain_lookup_tests {
 // lists them in the order they stood in the single engine.rs.
 mod adopt_names;
 mod asset_home;
-pub use asset_home::MOVE_ONTO_A_FILE;
+pub use asset_home::{ASSET_EXISTS, MOVE_ONTO_A_FILE};
 pub(crate) use asset_home::{AssetHome, ReplaceRule, WrittenAsset};
 mod attachments;
 mod close_folders;
@@ -5753,13 +6923,18 @@ pub use contradictions::run_contradiction_worker;
 mod delete;
 mod doc_file;
 #[allow(unused_imports)] // the Reflection verbs (Task 12) use the rest
-use doc_file::{FileLock, Swap, SwapRefused, check_swap, read_opt, read_stamped, remove_if_there};
+use doc_file::{
+    FileLock, Swap, SwapRefused, check_swap, is_case_only_rename, read_opt, read_stamped,
+    remove_if_there,
+};
 mod domain_add;
 mod domain_settings;
 mod domains;
 mod edit;
 mod evolve;
+mod fence;
 mod github;
+mod kept;
 mod move_;
 mod name_report;
 mod names;
@@ -5769,10 +6944,13 @@ mod reflect;
 pub use reflect::REFLECT_GUIDANCE;
 mod reflection;
 mod reflection_assets;
+pub use fence::KEPT_HERE;
 pub use reflection::{
-    ANONYMOUS_COMMENT, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS, REFUSED_OFF_START,
-    REFUSED_PENDING, REFUSED_PENDING_NAMED, REFUSED_PENDING_SPELLINGS, REFUSED_PENDING_UNOPENED,
-    REFUSED_PENDING_UNREADABLE, ReflectionSearch,
+    ANONYMOUS_COMMENT, ANOTHER_INSTANCE, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS,
+    REFUSED_HOSTED_START, REFUSED_NOT_BY_A_COMMAND, REFUSED_OFF_START, REFUSED_PENDING,
+    REFUSED_PENDING_NAMED, REFUSED_PENDING_SPELLINGS, REFUSED_PENDING_UNOPENED,
+    REFUSED_PENDING_UNREADABLE, ROOM_READ_NOTE, ROOM_WAITING_NOTE, ReflectionSearch,
+    SectionAuthors, TARGET_TAKEN,
 };
 pub use reflection_assets::WrittenReflectionAsset;
 mod rename_domain;
@@ -6369,6 +7547,17 @@ pub async fn open_standalone(
     // does; the service's opener sets this while it takes the lock for a
     // recovery.
     engine.set_holds_state_dir(false);
+    // On a database other instances share, a command acts as this machine:
+    // it claims a file domain before a walk, as the daemon would, and gives
+    // the lock back after it. Without an id it would walk no file domain.
+    if engine.store.lock().await.shares_database() {
+        let id = crystalline_core::config::read_or_create_instance_id()
+            .map_err(|e| anyhow::anyhow!("could not read this machine's instance id: {e}"))?;
+        let name = engine.config().instance_name();
+        engine = engine
+            .with_one_shot_instance_id(id)
+            .with_instance_label(name);
+    }
     // The daemonless engine is told where this machine's state directory is,
     // rather than leaving [`Engine::journal_state_dir`] to resolve it. Both
     // halves matter. In production it is the same path either way, and saying
@@ -6579,12 +7768,95 @@ fn yaml_number(value: Option<&YamlValue>) -> Option<f64> {
     }
 }
 
-/// The refusal message for a named sync of a file domain hosted by another live
-/// instance: names the host and its last heartbeat and points at `--take-over`.
+/// Why an engine with no instance id walks no file domain of a shared
+/// database (see `Engine::walks_no_file_domain`).
+pub const REFUSED_ANONYMOUS_WALK: &str = "this process does not sync file domains on a shared database: it has no instance id, so it cannot hold a domain's host lock. Start the daemon (crystalline serve), or run crystalline sync";
+
+/// A host lock a command without a daemon claimed, kept until the process
+/// gives it back ([`release_command_locks_everywhere`]).
+struct CommandLease {
+    store: Arc<Mutex<dyn Store>>,
+    domain: DomainId,
+    instance_id: String,
+    lease: crystalline_index::HostLease,
+}
+
+/// Every host lock a command without a daemon claimed in this process. A
+/// give-back is a compare-and-delete on the claim's token, so giving one
+/// back twice, or after the command's own walk gave it back, changes
+/// nothing.
+static COMMAND_LEASES: std::sync::Mutex<Vec<CommandLease>> = std::sync::Mutex::new(Vec::new());
+
+/// Record a host lock as a command's, as a one-shot claim does, for a test
+/// of the process end's give-back. Not for production code.
+#[doc(hidden)]
+pub fn note_command_lock(
+    store: Arc<Mutex<dyn Store>>,
+    domain: DomainId,
+    instance_id: &str,
+    lease: crystalline_index::HostLease,
+) {
+    COMMAND_LEASES.lock().unwrap().push(CommandLease {
+        store,
+        domain,
+        instance_id: instance_id.to_string(),
+        lease,
+    });
+}
+
+/// How many host locks this process holds for its command, for a test.
+#[doc(hidden)]
+pub fn command_locks_pending() -> usize {
+    COMMAND_LEASES.lock().unwrap().len()
+}
+
+/// Give back every host lock a command without a daemon claimed in this
+/// process: the CLI calls this when a command ends, on every path it ends
+/// by, so a command never leaves a lock it sends no heartbeat for. A lock
+/// it took from a live claim of this machine goes back to that claim.
+pub async fn release_command_locks_everywhere() {
+    let leases: Vec<CommandLease> = std::mem::take(&mut *COMMAND_LEASES.lock().unwrap());
+    for held in leases {
+        let store = held.store.lock().await;
+        if let Err(e) =
+            crystalline_index::give_back(&*store, held.domain, &held.instance_id, &held.lease).await
+        {
+            tracing::debug!("could not give back a command's host lock: {e}");
+        }
+    }
+}
+
+/// What every refusal of a write on an instance that does not host the file
+/// domain carries, so each surface can
+/// tell it apart (409 over REST).
+pub const FILE_HOSTED_MARK: &str = ", the instance that hosts it;";
+
+/// What the refusal of a write into a file domain whose lock nobody holds
+/// any more carries (409 over REST, as [`FILE_HOSTED_MARK`]).
+pub const FILE_NO_HOST_MARK: &str = " has no host right now;";
+
+/// Why a write into a file domain is refused when nobody holds its lock
+/// any more (its holder released it while the write waited).
+pub(crate) fn file_no_host_refusal(name: &str) -> EngineError {
+    EngineError::Conflict(format!("domain '{name}'{FILE_NO_HOST_MARK} try again"))
+}
+
+/// Why a write into a file domain is refused on an instance that does not
+/// host it: names the host and the two ways on.
+pub(crate) fn file_host_refusal(name: &str, label: &str) -> EngineError {
+    EngineError::Conflict(format!(
+        "domain '{name}' is written by {label}{FILE_HOSTED_MARK} write there, or move the domain here with crystalline sync --domain {name} --take-over"
+    ))
+}
+
+/// Why a walk of a file domain another live instance hosts is refused or
+/// left out: names the host by its label and its last heartbeat, and the two
+/// ways on, a take-over with the one command that takes `--take-over` for a
+/// domain, or the same work on the host.
 fn host_refusal(name: &str, host: &DomainHost) -> String {
     format!(
-        "domain '{name}' is hosted by instance {} (last heartbeat {}); this instance serves it read-from-database only. Pass --take-over to migrate hosting here.",
-        host.instance_id, host.heartbeat_at
+        "domain '{name}' is hosted by {} (last heartbeat {}); run crystalline sync --domain {name} --take-over, or run this on the host",
+        host.label, host.heartbeat_at
     )
 }
 
@@ -6644,6 +7916,10 @@ struct SourceEdited {
     /// no file, no row, no draft, no live compose and no generated stamp.
     /// Only an edit that asked for the check (`skip_unchanged`) reports it.
     unchanged: bool,
+    /// Whether a room was open over the document and did not take the edit
+    /// (it would not save it, or kept moving under it), so the edit was
+    /// written to the source behind it instead.
+    room_passed: bool,
 }
 
 /// A source edit that failed, and whether the source may already carry the new
@@ -6811,6 +8087,11 @@ fn existing_file_domain_at<'a>(canonical: &Path, cfg: &'a GlobalConfig) -> Optio
 /// domain already using `name` counts as taken, since it has no path to
 /// compare. Drives [`unique_domain_name`]'s collision search.
 fn name_taken_by_other(name: &str, canonical: &Path, cfg: &GlobalConfig) -> bool {
+    // A name that folds onto another domain's local name is taken too: the
+    // two would share one state folder on a disk that ignores case.
+    if case_twin(name, None, cfg.domains.iter()).is_some() {
+        return true;
+    }
     match cfg.domains.get(name) {
         None => false,
         Some(entry) => canonicalized_file_path(entry).as_deref() != Some(canonical),
@@ -7679,51 +8960,16 @@ fn rewrite_carried_refs(content: &str, renames: &BTreeMap<String, String>) -> St
 /// is never rewritten into a path the snippet did not mean.
 fn rewrite_asset_refs(body: &str, renames: &BTreeMap<String, String>) -> String {
     let mut out = String::with_capacity(body.len());
-    let mut fence: Option<(char, usize)> = None;
+    let mut fence = crystalline_core::FenceTracker::new();
     for line in body.split_inclusive('\n') {
         let text = line.trim_end_matches(['\n', '\r']);
-        match fence {
-            None => {
-                if let Some((marker, count)) = asset_fence_marker(text) {
-                    fence = Some((marker, count));
-                    out.push_str(line);
-                    continue;
-                }
-            }
-            Some((open_marker, open_count)) => {
-                if let Some((marker, count)) = asset_fence_marker(text)
-                    && marker == open_marker
-                    && count >= open_count
-                    && text.trim_start()[count..].trim().is_empty()
-                {
-                    fence = None;
-                }
-                out.push_str(line);
-                continue;
-            }
+        if fence.in_fence(text) {
+            out.push_str(line);
+            continue;
         }
         out.push_str(&rewrite_line_asset_refs(line, renames));
     }
     out
-}
-
-/// A fenced code block's opening or closing marker: the character and how many
-/// of it, for a line indented no more than three spaces.
-///
-/// The same rule the core parser reads fences by, restated here because it is
-/// crate-private there and this is the only reader of it outside core.
-fn asset_fence_marker(line: &str) -> Option<(char, usize)> {
-    let indent = line.len() - line.trim_start_matches(' ').len();
-    if indent > 3 {
-        return None;
-    }
-    let rest = &line[indent..];
-    let first = rest.chars().next()?;
-    if first != '`' && first != '~' {
-        return None;
-    }
-    let count = rest.chars().take_while(|c| *c == first).count();
-    (count >= 3).then_some((first, count))
 }
 
 /// One line's `](assets/...)` destinations rewritten, every other byte of the
@@ -7959,6 +9205,23 @@ pub(crate) fn is_manifest_path(rel: &str) -> bool {
 /// Why an import leaves out a file under `reflections/` where a Reflection
 /// keeps that folder; re-exported so the archive screen gives the same words.
 pub use crystalline_core::reflection::REFLECTION_NOT_IMPORTED;
+
+/// Why a move or a delete of a file domain's MANIFEST is refused: a domain
+/// needs it, and routing reads it.
+pub(crate) const MANIFEST_REQUIRED: &str =
+    "MANIFEST.md is required for a domain. Edit it instead, or remove the domain to drop it.";
+
+/// Refuse a move or a delete that would take a file domain's MANIFEST away
+/// (Jordi's decision, 2026-10-15). Compared in any letter case, as the
+/// write checks compare it. A virtual domain's MANIFEST row is left as it
+/// was: deleting it empties its routing, and a virtual domain keeps no
+/// Reflection to switch.
+pub(crate) fn refuse_manifest_removal(source: &ContentSource, rel: &str) -> Result<()> {
+    if matches!(source, ContentSource::File { .. }) && names_the_manifest(rel) {
+        return Err(EngineError::Invalid(MANIFEST_REQUIRED.to_string()));
+    }
+    Ok(())
+}
 
 /// Whether `rel` names the MANIFEST in any letter case. The write and move
 /// checks use this: a case-insensitive file system (the macOS and Windows
@@ -8526,6 +9789,13 @@ fn json_to_yaml(v: &Value) -> YamlValue {
 struct DaemonReindexHooks<'a> {
     engine: &'a Engine,
     collab: bool,
+    /// The domains whose walk was not applied because another instance took
+    /// them over meanwhile, with the reason, for the run's answer.
+    lost: std::sync::Mutex<Vec<Value>>,
+    /// The domains this run left out before walking them, with the reason.
+    skipped: std::sync::Mutex<Vec<Value>>,
+    /// [`Engine::walks_no_file_domain`]'s reason, when this engine walks none.
+    anonymous: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -8542,6 +9812,14 @@ impl ReindexHooks for DaemonReindexHooks<'_> {
         name: &str,
         root: &Path,
     ) -> crystalline_index::Result<bool> {
+        if let Some(reason) = &self.anonymous {
+            tracing::info!("reindex of '{name}' skipped: {reason}");
+            self.skipped
+                .lock()
+                .unwrap()
+                .push(json!({ "domain": name, "reason": reason }));
+            return Ok(false);
+        }
         if !self.collab {
             return Ok(true);
         }
@@ -8555,12 +9833,14 @@ impl ReindexHooks for DaemonReindexHooks<'_> {
             .await
             .map_err(|e| IndexError::Db(e.to_string()))?;
         match claim {
-            HostClaim::Acquired => Ok(true),
+            HostClaim::Acquired { .. } => Ok(true),
             HostClaim::HeldByOther(host) => {
-                tracing::info!(
-                    "skipping reindex of '{name}' hosted by instance {}",
-                    host.instance_id
-                );
+                let reason = host_refusal(name, &host);
+                tracing::info!("reindex skipped: {reason}");
+                self.skipped
+                    .lock()
+                    .unwrap()
+                    .push(json!({ "domain": name, "reason": reason }));
                 Ok(false)
             }
         }
@@ -8570,10 +9850,32 @@ impl ReindexHooks for DaemonReindexHooks<'_> {
     /// no store lock held; the refresh takes it once, briefly, to read the
     /// Reflection mode in effect.
     async fn after_apply(&self, name: &str, report: &SyncReport) {
+        self.engine.bump_after_apply(name, report);
         if changed_anything(report) {
             self.engine.refresh_index_files(name).await;
         }
         self.engine.announce_report(name, report, None);
+        self.engine.after_host_move_resolved(name, report);
+    }
+
+    /// A walk of `name` was not applied: the run's answer names it, and when
+    /// another instance took the domain over, this instance stops hosting it
+    /// at once.
+    async fn not_applied(&self, name: &str, why: &str, host_lost: bool) {
+        tracing::warn!("{why}");
+        if host_lost {
+            self.engine.lost_host(name);
+        }
+        self.lost
+            .lock()
+            .unwrap()
+            .push(json!({ "domain": name, "error": why }));
+    }
+
+    /// This instance, when it claims: a walk applies only while it holds the
+    /// domain's lock.
+    fn walker(&self) -> Option<String> {
+        self.collab.then(|| self.engine.instance_id.clone())
     }
 }
 
@@ -8795,6 +10097,24 @@ mod lock_tests {
         assert_eq!(engine.origin_locks.lock().unwrap().len(), 1);
     }
 
+    /// A write into a name that is not registered any more is refused with
+    /// the reason, whether or not it waited for a rename's pause: a rename
+    /// that finished just before the write was counted leaves the name the
+    /// write holds gone just the same.
+    #[tokio::test]
+    async fn a_write_into_a_name_renamed_meanwhile_is_refused_without_a_wait() {
+        let engine = engine_with_domains(&["known"]).await;
+        assert!(engine.enter_write("known").await.is_ok());
+        match engine.enter_write("gone").await {
+            Err(EngineError::Conflict(message)) => assert!(
+                message.contains("'gone'") && message.contains("send it again"),
+                "{message}"
+            ),
+            Err(other) => panic!("expected a conflict, got {other}"),
+            Ok(_) => panic!("a write into a name nobody registers was counted"),
+        }
+    }
+
     /// One lock per file, whoever asks for it.
     #[tokio::test]
     async fn one_file_has_one_write_lock() {
@@ -8848,6 +10168,88 @@ mod lock_tests {
         let engine = Arc::new(Engine::new(Arc::new(Mutex::new(store)), config, None, None));
         engine.sync(None).await.unwrap();
         engine
+    }
+
+    /// An engram renamed only by letter case keeps its text and ends up with
+    /// the new spelling, on a case-sensitive and a case-insensitive disk alike.
+    #[tokio::test]
+    async fn an_engram_moved_only_by_letter_case_keeps_its_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        let text = engram("Gamma", "notes/gamma", "The body.");
+        std::fs::write(root.join("notes/gamma.md"), &text).unwrap();
+        let engine = file_engine(&root).await;
+        engine
+            .move_engram(
+                &MoveParams {
+                    identifier: "notes/gamma".to_string(),
+                    domain: "eng".to_string(),
+                    destination: "notes/Gamma".to_string(),
+                    destination_domain: None,
+                    permalink: Some("keep".to_string()),
+                    update_links: None,
+                },
+                &crate::scope::Scope::Unrestricted,
+            )
+            .await
+            .unwrap();
+        let names: Vec<String> = std::fs::read_dir(root.join("notes"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.to_lowercase().starts_with("gamma"))
+            .collect();
+        assert_eq!(names, ["Gamma.md"]);
+        let kept = std::fs::read_to_string(root.join("notes/Gamma.md")).unwrap();
+        assert!(kept.contains("The body."), "{kept}");
+    }
+
+    /// The same move with the default permalink, which follows the path. A
+    /// permalink is folded to lower case, so it stays `notes/gamma`; the
+    /// file keeps its body under the new spelling, and the index finds the
+    /// engram at the new path.
+    #[tokio::test]
+    async fn an_engram_moved_only_by_letter_case_follows_its_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        let text = engram("Gamma", "notes/gamma", "The body.");
+        std::fs::write(root.join("notes/gamma.md"), &text).unwrap();
+        let engine = file_engine(&root).await;
+        let moved = engine
+            .move_engram(
+                &MoveParams {
+                    identifier: "notes/gamma".to_string(),
+                    domain: "eng".to_string(),
+                    destination: "notes/Gamma".to_string(),
+                    destination_domain: None,
+                    permalink: None,
+                    update_links: None,
+                },
+                &crate::scope::Scope::Unrestricted,
+            )
+            .await
+            .unwrap();
+        assert_eq!(moved["to"]["path"], "notes/Gamma.md", "{moved}");
+        assert_eq!(moved["to"]["permalink"], "notes/gamma", "{moved}");
+        let names: Vec<String> = std::fs::read_dir(root.join("notes"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.to_lowercase().starts_with("gamma"))
+            .collect();
+        assert_eq!(names, ["Gamma.md"]);
+        let kept = std::fs::read_to_string(root.join("notes/Gamma.md")).unwrap();
+        assert!(kept.contains("The body."), "{kept}");
+        assert!(kept.contains("permalink: notes/gamma\n"), "{kept}");
+        let found = engine
+            .store
+            .lock()
+            .await
+            .find_engram("eng", "notes/gamma")
+            .await
+            .unwrap()
+            .expect("the engram is indexed");
+        assert_eq!(found.path, "notes/Gamma.md");
     }
 
     /// The markdown of a minimal engram, for the tests below.
@@ -8979,6 +10381,294 @@ mod lock_tests {
         assert!(
             final_text.contains("From the agent."),
             "and the edit still applied, on top of it: {final_text}"
+        );
+    }
+
+    /// A move rewrites a linking engram inside that file's lock, so an edit
+    /// that lands on the linker while the move runs is built on, not dropped.
+    ///
+    /// The lock on `beta` is held from outside, so the move has moved `alpha`
+    /// and now waits to rewrite the link in `beta`. Another writer changes
+    /// `beta` in that window. Both the rewritten link and that change have to
+    /// be in `beta` afterwards.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_relink_waits_for_the_linkers_write_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("alpha.md"),
+            engram("Alpha", "alpha", "The target."),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("beta.md"),
+            engram("Beta", "beta", "See [[alpha]]."),
+        )
+        .unwrap();
+        let engine = file_engine(&root).await;
+
+        let abs = root.join("beta.md");
+        let lock = engine.write_lock(&abs);
+        let held = lock.lock().await;
+
+        let mover = engine.clone();
+        let task = tokio::spawn(async move {
+            mover
+                .move_engram(
+                    &MoveParams {
+                        identifier: "alpha".to_string(),
+                        domain: "eng".to_string(),
+                        destination: "gamma.md".to_string(),
+                        destination_domain: None,
+                        permalink: None,
+                        update_links: None,
+                    },
+                    &crate::scope::Scope::Unrestricted,
+                )
+                .await
+        });
+
+        // Waited for, not slept on: a task waiting on the lock holds a clone
+        // of its `Arc` (`lock_owned`), so a third count means the move has
+        // reached the linker's lock. Before the fix the move never waits
+        // there and finishes instead.
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while Arc::strong_count(&lock) < 3 && !task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the move reaches the linker's lock or finishes");
+        assert!(
+            !task.is_finished(),
+            "the move must be waiting on the linker's file lock, not already past its rewrite"
+        );
+        assert!(root.join("gamma.md").is_file(), "alpha has moved");
+        assert!(
+            std::fs::read_to_string(&abs)
+                .unwrap()
+                .contains("See [[alpha]]."),
+            "and beta is not rewritten yet"
+        );
+
+        // The other writer's change lands while the move is blocked, after
+        // the move reached the lock: a move that read beta before taking the
+        // lock would write this change away.
+        std::fs::write(
+            &abs,
+            engram("Beta", "beta", "See [[alpha]].\n\nFrom the browser."),
+        )
+        .unwrap();
+        drop(held);
+
+        let receipt = task.await.unwrap().expect("the move lands");
+        assert_eq!(receipt["links_rewritten"], 1, "{receipt}");
+        let final_text = std::fs::read_to_string(&abs).unwrap();
+        assert!(
+            final_text.contains("See [[gamma]]."),
+            "the link follows the move: {final_text}"
+        );
+        assert!(
+            final_text.contains("From the browser."),
+            "and the concurrent write is not dropped: {final_text}"
+        );
+    }
+
+    /// A move reads, writes and removes the moved engram inside its file's
+    /// lock, so an edit of the source that lands while the move runs moves
+    /// with it rather than being lost or bringing the source back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_move_reads_and_removes_its_source_inside_the_file_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("alpha.md"),
+            engram("Alpha", "alpha", "The target."),
+        )
+        .unwrap();
+        let engine = file_engine(&root).await;
+
+        let abs = root.join("alpha.md");
+        let lock = engine.write_lock(&abs);
+        let held = lock.lock().await;
+        let mover = engine.clone();
+        let task = tokio::spawn(async move {
+            mover
+                .move_engram(
+                    &MoveParams {
+                        identifier: "alpha".to_string(),
+                        domain: "eng".to_string(),
+                        destination: "gamma.md".to_string(),
+                        destination_domain: None,
+                        permalink: None,
+                        update_links: None,
+                    },
+                    &crate::scope::Scope::Unrestricted,
+                )
+                .await
+        });
+        // The move holds a clone of the lock's `Arc` while it waits for it.
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while Arc::strong_count(&lock) < 3 && !task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the move reaches alpha's lock or finishes");
+        assert!(!task.is_finished(), "the move waits for alpha's lock");
+
+        // An edit lands in alpha while the move waits.
+        std::fs::write(
+            &abs,
+            engram("Alpha", "alpha", "The target.\n\nEdited meanwhile."),
+        )
+        .unwrap();
+        drop(held);
+
+        task.await.unwrap().expect("the move lands");
+        assert!(!abs.exists(), "the source is gone");
+        let moved = std::fs::read_to_string(root.join("gamma.md")).unwrap();
+        assert!(
+            moved.contains("Edited meanwhile."),
+            "the edit moved with the engram: {moved}"
+        );
+    }
+
+    /// A move onto the MANIFEST is screened against the text it writes. The
+    /// screens run before the move takes its locks, so the text they read can
+    /// change before the move reads it again under the locks. Here alpha is
+    /// switched-off text when the move screens it and says `reflection: on`
+    /// by the time the move holds its lock; reflections/ holds an engram, so
+    /// switching on is refused, and the move must refuse too.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_move_onto_the_manifest_screens_the_text_it_read_under_the_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(root.join("reflections")).unwrap();
+        std::fs::write(root.join("alpha.md"), engram("Alpha", "alpha", "Routing.")).unwrap();
+        std::fs::write(
+            root.join("reflections/held.md"),
+            engram("Held", "reflections/held", "An engram in the way."),
+        )
+        .unwrap();
+        let engine = file_engine(&root).await;
+
+        let abs = root.join("alpha.md");
+        let lock = engine.write_lock(&abs);
+        let held = lock.lock().await;
+        let mover = engine.clone();
+        let task = tokio::spawn(async move {
+            mover
+                .move_engram(
+                    &MoveParams {
+                        identifier: "alpha".to_string(),
+                        domain: "eng".to_string(),
+                        destination: "MANIFEST.md".to_string(),
+                        destination_domain: None,
+                        permalink: None,
+                        update_links: None,
+                    },
+                    &crate::scope::Scope::Unrestricted,
+                )
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while Arc::strong_count(&lock) < 3 && !task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the move reaches alpha's lock or finishes");
+        assert!(!task.is_finished(), "the move waits for alpha's lock");
+
+        std::fs::write(
+            &abs,
+            engram("Alpha", "alpha", "Routing.").replacen("---\n\n", "reflection: on\n---\n\n", 1),
+        )
+        .unwrap();
+        drop(held);
+
+        let err = task
+            .await
+            .unwrap()
+            .expect_err("the switch-on text is screened");
+        assert!(err.to_string().contains("reflections/"), "{err}");
+        assert!(abs.exists(), "nothing moved");
+        assert!(!root.join("MANIFEST.md").exists(), "nothing landed");
+    }
+
+    /// Two moves of engrams that link each other's address, run at once, leave
+    /// no link to an old address behind and no old file in place.
+    ///
+    /// alpha links beta. With alpha's lock held from outside, move A (alpha to
+    /// gamma) queues on it. Move B (beta to delta) then either queues behind A
+    /// on the process's move lock, or, without that lock, gathers `alpha.md`
+    /// as its linker, moves beta and queues on alpha's lock too, to find the
+    /// file gone once A has moved it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn crossing_moves_leave_no_link_to_an_old_address() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("alpha.md"),
+            engram("Alpha", "alpha", "See [[beta]]."),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("beta.md"),
+            engram("Beta", "beta", "The other one."),
+        )
+        .unwrap();
+        let engine = file_engine(&root).await;
+        let mv = |engine: Arc<Engine>, from: &'static str, to: &'static str| {
+            tokio::spawn(async move {
+                engine
+                    .move_engram(
+                        &MoveParams {
+                            identifier: from.to_string(),
+                            domain: "eng".to_string(),
+                            destination: to.to_string(),
+                            destination_domain: None,
+                            permalink: None,
+                            update_links: None,
+                        },
+                        &crate::scope::Scope::Unrestricted,
+                    )
+                    .await
+            })
+        };
+
+        let lock = engine.write_lock(&root.join("alpha.md"));
+        let held = lock.lock().await;
+        let a = mv(engine.clone(), "alpha", "gamma.md");
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while Arc::strong_count(&lock) < 3 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("move A queues on alpha's lock");
+        let b = mv(engine.clone(), "beta", "delta.md");
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while Arc::strong_count(&lock) < 4 && engine.moves_waiting() < 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("move B queues behind move A");
+        drop(held);
+
+        a.await.unwrap().expect("move A lands");
+        b.await.unwrap().expect("move B lands");
+        assert!(!root.join("alpha.md").exists(), "alpha.md is gone");
+        assert!(!root.join("beta.md").exists(), "beta.md is gone");
+        let gamma = std::fs::read_to_string(root.join("gamma.md")).unwrap();
+        assert!(
+            gamma.contains("See [[delta]]."),
+            "the link follows beta to its new address: {gamma}"
         );
     }
 
@@ -10433,5 +12123,184 @@ mod hidden_copy_tests {
             matches!(refused, EngineError::UnknownDomain { .. }),
             "{refused}"
         );
+    }
+}
+
+#[cfg(test)]
+mod pending_cache_tests {
+    use super::*;
+    use crystalline_index::TursoStore;
+
+    fn entry(root: &Path, shared: bool, age: std::time::Duration) -> PendingEntry {
+        PendingEntry {
+            generation: 0,
+            root: root.to_path_buf(),
+            manifest: manifest_stamp(root),
+            at: std::time::Instant::now().checked_sub(age).unwrap(),
+            shared,
+            domain_id: DomainId(7),
+            recorded: RecordedPaths {
+                any: true,
+                under_reflections: Vec::new(),
+            },
+        }
+    }
+
+    /// A remembered entry answers only under the key it was filled under:
+    /// the generation, the root and the MANIFEST's stamp; on a database
+    /// other instances share, for `VISIBILITY_TTL` at most, since their
+    /// writes are never announced here (R83).
+    #[tokio::test]
+    async fn a_remembered_entry_holds_only_under_its_key_and_its_age() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("MANIFEST.md"), "---\ntitle: eng\n---\n").unwrap();
+        let store = TursoStore::open_in_memory().await.unwrap();
+        let engine = Engine::new(
+            Arc::new(Mutex::new(store)),
+            GlobalConfig::default(),
+            None,
+            None,
+        );
+        let ttl = crate::changes::VISIBILITY_TTL;
+        let past_ttl = ttl + std::time::Duration::from_secs(1);
+        let ask = |root: &Path| {
+            engine.remembered_paths(
+                "eng",
+                engine.reflection_generation("eng"),
+                root,
+                manifest_stamp(root),
+            )
+        };
+        let put = |e: PendingEntry| {
+            engine
+                .pending_cache
+                .lock()
+                .unwrap()
+                .insert("eng".to_string(), e)
+        };
+
+        put(entry(&root, false, past_ttl));
+        assert!(ask(&root).is_some(), "a store of its own: no age limit");
+        assert!(ask(&tmp.path().join("other")).is_none(), "another root");
+
+        put(entry(&root, true, std::time::Duration::ZERO));
+        assert!(ask(&root).is_some(), "a shared store, young");
+        put(entry(&root, true, past_ttl));
+        assert!(ask(&root).is_none(), "a shared store, past the window");
+
+        put(entry(&root, false, std::time::Duration::ZERO));
+        std::fs::write(root.join("MANIFEST.md"), "---\ntitle: eng, longer\n---\n").unwrap();
+        assert!(ask(&root).is_none(), "the MANIFEST changed");
+
+        put(entry(&root, false, std::time::Duration::ZERO));
+        assert!(ask(&root).is_some());
+        engine.bump_reflection_generation("eng");
+        assert!(ask(&root).is_none(), "a bump forgets the entry");
+        put(entry(&root, false, std::time::Duration::ZERO));
+        assert!(
+            ask(&root).is_none(),
+            "an entry filled under the old generation never matches again"
+        );
+    }
+
+    /// The row id the gate remembers with the rows answers under the same
+    /// key and age, and never while a rename pauses the domain, whose row
+    /// is looked up fresh (F2).
+    #[tokio::test]
+    async fn a_remembered_row_id_holds_only_with_its_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("eng");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("MANIFEST.md"), "---\ntitle: eng\n---\n").unwrap();
+        let store = TursoStore::open_in_memory().await.unwrap();
+        let engine = Engine::new(
+            Arc::new(Mutex::new(store)),
+            GlobalConfig::default(),
+            None,
+            None,
+        );
+        let past_ttl = crate::changes::VISIBILITY_TTL + std::time::Duration::from_secs(1);
+        let put = |e: PendingEntry| {
+            engine
+                .pending_cache
+                .lock()
+                .unwrap()
+                .insert("eng".to_string(), e)
+        };
+
+        assert_eq!(
+            engine.remembered_domain_id("eng", &root),
+            None,
+            "nothing yet"
+        );
+        put(entry(&root, false, std::time::Duration::ZERO));
+        assert_eq!(engine.remembered_domain_id("eng", &root), Some(DomainId(7)));
+        assert_eq!(
+            engine.remembered_domain_id("eng", &tmp.path().join("other")),
+            None,
+            "another root"
+        );
+        put(entry(&root, true, past_ttl));
+        assert_eq!(
+            engine.remembered_domain_id("eng", &root),
+            None,
+            "a shared store, past the window"
+        );
+        put(entry(&root, false, std::time::Duration::ZERO));
+        engine.rename_pause.pause(&["eng", "platform"]);
+        assert_eq!(
+            engine.remembered_domain_id("eng", &root),
+            None,
+            "a paused domain's row is looked up fresh"
+        );
+        engine.rename_pause.resume(&["eng", "platform"]);
+        assert_eq!(engine.remembered_domain_id("eng", &root), Some(DomainId(7)));
+        engine.bump_reflection_generation("eng");
+        assert_eq!(
+            engine.remembered_domain_id("eng", &root),
+            None,
+            "a bump forgets the row id with the rows"
+        );
+    }
+
+    /// An empty row `doctor --fix` drops takes the row id the gate may
+    /// remember of its name along: a name registered again later gets a new
+    /// row, never the dropped one's id.
+    #[tokio::test]
+    async fn a_dropped_empty_row_forgets_its_remembered_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("gone");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("MANIFEST.md"), "---\ntitle: gone\n---\n").unwrap();
+        let store = TursoStore::open_in_memory().await.unwrap();
+        store
+            .upsert_domain("gone", Some(&root.to_string_lossy()), DomainKind::File)
+            .await
+            .unwrap();
+        let cfg = GlobalConfig::default();
+        let config_path = tmp.path().join("config.yaml");
+        crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
+        let engine = Engine::new(Arc::new(Mutex::new(store)), cfg, None, Some(config_path))
+            .with_state_dir(tmp.path().join("state"));
+        engine.pending_cache.lock().unwrap().insert(
+            "gone".to_string(),
+            entry(&root, false, std::time::Duration::ZERO),
+        );
+        assert_eq!(
+            engine.remembered_domain_id("gone", &root),
+            Some(DomainId(7))
+        );
+        let fixed = engine.collect_orphaned_domains(None, false).await.unwrap();
+        let row = fixed["considered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["domain"] == "gone")
+            .cloned()
+            .unwrap_or_else(|| panic!("{fixed}"));
+        assert_eq!(row["row_dropped"], true, "{row}");
+        assert_eq!(engine.remembered_domain_id("gone", &root), None);
     }
 }

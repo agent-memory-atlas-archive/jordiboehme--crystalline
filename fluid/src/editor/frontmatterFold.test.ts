@@ -1,27 +1,40 @@
 /**
- * The frontmatter fold, as the things a reader of it needs to be true: the
- * block is one chip, the caret walks past it rather than into it, the chip's
- * own effect brings the yaml back, and an edit dispatched INTO the folded
- * region (which is what the frontmatter form does all day) leaves the summary
- * current rather than stale.
+ * The hidden frontmatter, as the things an author needs to be true: the block
+ * takes no room in the text, the caret walks past it rather than into it,
+ * typing and deleting cannot reach it, and an edit dispatched INTO the region
+ * (which is what the Details form does all day) keeps it hidden and current.
  */
 
 import {
   cursorCharLeft,
   deleteCharBackward,
+  deleteCharForward,
   history,
+  selectAll,
   undo,
 } from "@codemirror/commands";
 import type { Extension } from "@codemirror/state";
-import { EditorState } from "@codemirror/state";
+import {
+  Compartment,
+  EditorSelection,
+  EditorState,
+  StateEffect,
+  Transaction,
+} from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { describe, expect, test } from "vitest";
+import { yCollab } from "y-codemirror.next";
+import { pickedCompletion } from "@codemirror/autocomplete";
+import * as Y from "yjs";
 
-import { frontmatterFold, unfoldEffect } from "./frontmatterFold";
-import { baseExtensions } from "./setup";
+import { frontmatterFold, frontmatterHidden } from "./frontmatterFold";
+import { docText } from "./setup";
 
 const DOC =
   "---\ntype: guide\nstatus: current\ntags:\n- protocol\n---\n\n# Body\n";
+/** Where the body starts: the line after the closing fence. */
+const BODY = DOC.lastIndexOf("---") + "---\n".length;
+const FENCE_END = DOC.lastIndexOf("---") + "---".length;
 
 function mount(doc: string, extensions: Extension[] = []): EditorView {
   return new EditorView({
@@ -33,161 +46,345 @@ function mount(doc: string, extensions: Extension[] = []): EditorView {
   });
 }
 
-/**
- * The ancestor scope of every emitted chip rule: one per scheme, because a
- * base theme rewrites both the bare selector and its `&dark` variant to a
- * class the view puts on its own root.
- */
-function chipScopes(): string[] {
-  return Array.from(document.styleSheets)
-    .flatMap((sheet) => Array.from(sheet.cssRules))
-    .filter((rule): rule is CSSStyleRule => "selectorText" in rule)
-    .map((rule) => rule.selectorText)
-    .filter((selector) => selector.includes("cm-frontmatter-chip"))
-    .map((selector) => selector.replace(/\s*\.cm-frontmatter-chip.*$/, ""));
+/** What a keystroke does: the same user event CodeMirror's input carries. */
+function type(view: EditorView, text: string): void {
+  const { from, to } = view.state.selection.main;
+  view.dispatch({
+    changes: { from, to, insert: text },
+    selection: { anchor: from + text.length },
+    userEvent: "input.type",
+  });
 }
 
 describe("frontmatterFold", () => {
-  test("the block is replaced by a summary chip", () => {
+  test("the block is hidden from the text, with no chip in its place", () => {
     const view = mount(DOC);
-    const chip = view.dom.querySelector(".cm-frontmatter-chip");
-    expect(chip?.textContent).toContain("guide");
-    expect(chip?.textContent).toContain("current");
-    // The yaml lines are not in the visible DOM while folded.
     expect(view.contentDOM.textContent).not.toContain("status: current");
+    expect(view.contentDOM.textContent).not.toContain("Frontmatter");
+    expect(view.dom.querySelector("button")).toBeNull();
+    expect(frontmatterHidden(view.state)).toBe(true);
     view.destroy();
   });
 
-  test("the chip counts a tag list written flush against the margin", () => {
-    // The shape this fixture already has, now asserted: block items at zero
-    // indentation are a tag list, and a summary that counted none of them
-    // told the reader the block held fewer tags than it does.
-    const view = mount(DOC.replace("- protocol\n", "- protocol\n- smoke\n"));
-    expect(
-      view.dom.querySelector(".cm-frontmatter-chip")?.textContent,
-    ).toContain("2 tags");
-    view.destroy();
-  });
-
-  test("cursor motion steps over the fold rather than into it", () => {
+  test("cursor motion steps over the hidden block rather than into it", () => {
     const view = mount(DOC);
-    // Put the caret just after the fold, then walk left. The first two steps
-    // are ordinary text motion - body start to blank line to the region's
-    // trailing edge - and prove nothing about atomicity: a fold without
-    // `atomicRanges` sits at the same 52. The THIRD step is the one that
-    // discriminates. Atomic, it jumps the whole hidden block and lands at 0;
-    // non-atomic, it walks to 51, one character inside yaml nobody can see.
+    // Body start to blank line to the region's trailing edge are ordinary
+    // motion. The THIRD step is the one that discriminates: atomic, it jumps
+    // the whole hidden block and lands at 0.
     view.dispatch({ selection: { anchor: DOC.indexOf("# Body") } });
     cursorCharLeft(view);
     cursorCharLeft(view);
-    expect(view.state.selection.main.head).toBe(
-      DOC.lastIndexOf("---") + "---".length,
-    );
+    expect(view.state.selection.main.head).toBe(FENCE_END);
     cursorCharLeft(view);
     expect(view.state.selection.main.head).toBe(0);
     view.destroy();
   });
 
-  test("the unfold effect brings the yaml back", () => {
-    const view = mount(DOC);
-    view.dispatch({ effects: unfoldEffect.of(true) });
-    expect(view.contentDOM.textContent).toContain("status: current");
-    view.destroy();
-  });
-
-  test("the chip is a button, and activating it hands focus to the text", () => {
-    // A real button, so Enter and Space reach it the way a click does; and
-    // since activating it REMOVES it from the DOM, focus has to be put
-    // somewhere deliberate or a keyboard user is dumped back on the body.
-    const view = mount(DOC);
-    const chip = view.dom.querySelector<HTMLButtonElement>(
-      "button.cm-frontmatter-chip",
-    );
-    chip?.click();
-    expect(view.contentDOM.textContent).toContain("status: current");
-    expect(view.dom.querySelector(".cm-frontmatter-chip")).toBeNull();
-    expect(document.activeElement).toBe(view.contentDOM);
-    // The caret is on the first line of the yaml that just appeared.
-    expect(view.state.doc.lineAt(view.state.selection.main.head).number).toBe(
-      2,
-    );
-    view.destroy();
-  });
-
-  test("a document with no frontmatter shows no chip", () => {
+  test("a document with no frontmatter hides nothing", () => {
     const view = mount("# Just a body\n");
-    expect(view.dom.querySelector(".cm-frontmatter-chip")).toBeNull();
+    expect(view.contentDOM.textContent).toContain("Just a body");
+    expect(frontmatterHidden(view.state)).toBe(false);
     view.destroy();
   });
 
-  test("a form edit into the folded region refreshes the summary", () => {
+  test("a form edit into the hidden region lands and keeps it hidden", () => {
     const view = mount(DOC);
-    // `sliceDoc` rather than `doc.toString()`: the sanctioned read, the one
-    // `docText` itself makes.
     const at = view.state.sliceDoc().indexOf("current");
+    // No user event: the shape of the Details form's own dispatch.
     view.dispatch({
       changes: { from: at, to: at + "current".length, insert: "draft" },
     });
-    expect(
-      view.dom.querySelector(".cm-frontmatter-chip")?.textContent,
-    ).toContain("draft");
+    expect(view.state.sliceDoc()).toContain("status: draft");
+    expect(frontmatterHidden(view.state)).toBe(true);
     view.destroy();
   });
 
-  test("a hand edit that removes the closing fence unfolds rather than hides", () => {
-    // Nothing may stay behind a chip once there is no block to summarize:
-    // the region goes null, the recompute hands back an empty set and every
-    // line is on screen again - including the ones that were folded.
+  test("a hand edit that removes the closing fence shows the text again", () => {
     const view = mount(DOC);
     const at = view.state.sliceDoc().lastIndexOf("---");
     view.dispatch({ changes: { from: at, to: at + 3, insert: "" } });
-    expect(view.dom.querySelector(".cm-frontmatter-chip")).toBeNull();
     expect(view.contentDOM.textContent).toContain("status: current");
     view.destroy();
   });
 
-  test("backspace at the fold's edge takes the whole block, and undo restores it", () => {
-    // The sharp end of atomicity, pinned rather than discovered later: with
-    // the caret at the region's trailing edge - exactly where the left-arrow
-    // walk above parks it - one Backspace deletes all six hidden lines,
-    // because the delete command pulls its target out of the atomic range to
-    // the range's start. This is CodeMirror's own folded-range behavior and
-    // it is accepted (see the module doc); what must not change silently is
-    // that it stays ONE undo away.
+  test("Backspace beside the hidden block deletes nothing of it", () => {
+    // At the region's trailing edge, where the left-arrow walk parks the
+    // caret, and at the start of the body: neither the block nor the break
+    // after its fence may go, because nobody would see them go.
     const view = mount(DOC, [history()]);
-    view.dispatch({
-      selection: { anchor: DOC.lastIndexOf("---") + "---".length },
-    });
+    view.dispatch({ selection: { anchor: FENCE_END } });
     deleteCharBackward(view);
-    expect(view.state.sliceDoc()).toBe("\n\n# Body\n");
-    // Loudly, rather than quietly: the chip is gone and no yaml took its
-    // place, so nothing about the screen suggests the block is still there.
-    expect(view.dom.querySelector(".cm-frontmatter-chip")).toBeNull();
+    expect(view.state.sliceDoc()).toBe(DOC);
+    view.dispatch({ selection: { anchor: BODY } });
+    deleteCharBackward(view);
+    expect(view.state.sliceDoc()).toBe(DOC);
+    view.dispatch({ selection: { anchor: 0 } });
+    deleteCharForward(view);
+    expect(view.state.sliceDoc()).toBe(DOC);
+    view.destroy();
+  });
+
+  test("a deletion across the block removes only the body part of it", () => {
+    const view = mount(DOC, [history()]);
+    selectAll(view);
+    deleteCharBackward(view);
+    expect(view.state.sliceDoc()).toBe(DOC.slice(0, BODY));
+    // And undo brings the body back.
     undo(view);
     expect(view.state.sliceDoc()).toBe(DOC);
-    // Restored as text, not as a chip: the unfolded state is terminal, so
-    // what comes back is the block itself, in full view.
-    expect(view.contentDOM.textContent).toContain("status: current");
     view.destroy();
   });
 
-  test("the dark chip rule is scoped to a class the dark editor wears", () => {
-    // The trap this pins: a base theme's `&dark` block is rewritten to the
-    // view's dark scope class, and it applies only if the editor root
-    // actually carries that class. Asserted through the emitted stylesheet
-    // and the root's own classes, because jsdom resolves neither `var()` nor
-    // cascade order through `getComputedStyle`.
-    const dark = mount(DOC, baseExtensions(true));
-    const light = mount(DOC, baseExtensions(false));
-    const scopes = chipScopes();
-    // One rule per scheme: the plain one and the `&dark` one.
-    expect(scopes).toHaveLength(2);
-    // The dark root wears both scopes (base plus dark, and the dark rule is
-    // emitted second, so it wins at equal specificity); the light root wears
-    // only the base one.
-    expect(scopes.filter((scope) => dark.dom.matches(scope))).toHaveLength(2);
-    expect(scopes.filter((scope) => light.dom.matches(scope))).toHaveLength(1);
-    dark.destroy();
-    light.destroy();
+  test("text typed beside the hidden block lands at the start of the body, in order", () => {
+    const view = mount(DOC);
+    view.dispatch({ selection: { anchor: FENCE_END } });
+    type(view, "a");
+    type(view, "b");
+    expect(view.state.sliceDoc()).toBe(
+      `${DOC.slice(0, BODY)}ab${DOC.slice(BODY)}`,
+    );
+    expect(view.state.selection.main.head).toBe(BODY + 2);
+    view.destroy();
+  });
+
+  test("typing over a selection that starts in the block keeps the block", () => {
+    const view = mount(DOC);
+    selectAll(view);
+    type(view, "Fresh");
+    expect(view.state.sliceDoc()).toBe(`${DOC.slice(0, BODY)}Fresh`);
+    view.destroy();
+  });
+
+  test("a frontmatter-only file starts its body after one blank line", () => {
+    const doc = "---\ntype: guide\n---";
+    const view = mount(doc);
+    view.dispatch({ selection: { anchor: doc.length } });
+    type(view, "x");
+    type(view, "y");
+    expect(view.state.sliceDoc()).toBe(`${doc}\n\nxy`);
+    expect(view.state.selection.main.head).toBe(doc.length + 4);
+    view.destroy();
+  });
+
+  test("edits that are not typing pass untouched", () => {
+    // A draft restore, the room's sync and undo carry no input event: they
+    // may rewrite the block, as they always could.
+    const view = mount(DOC);
+    view.dispatch({ changes: { from: 0, to: BODY, insert: "" } });
+    expect(view.state.sliceDoc()).toBe(DOC.slice(BODY));
+    view.destroy();
+  });
+
+  test("CRLF: the block and the break after it are kept, text lands in the body", () => {
+    const crlf = DOC.replace(/\n/g, "\r\n");
+    const view = mount(crlf, [EditorState.lineSeparator.of("\r\n")]);
+    view.dispatch({ selection: { anchor: FENCE_END } });
+    deleteCharBackward(view);
+    view.dispatch({ selection: { anchor: BODY } });
+    deleteCharBackward(view);
+    expect(docText(view.state)).toBe(crlf);
+    view.dispatch({ selection: { anchor: FENCE_END } });
+    type(view, "x");
+    expect(docText(view.state)).toBe(
+      crlf.replace("---\r\n\r\n# Body", "---\r\nx\r\n# Body"),
+    );
+    view.destroy();
+  });
+
+  test("a paste beside the block lands in the body as one change", () => {
+    const view = mount(DOC);
+    view.dispatch({ selection: { anchor: 0 } });
+    view.dispatch({
+      changes: { from: 0, insert: "one\ntwo" },
+      userEvent: "input.paste",
+    });
+    expect(view.state.sliceDoc()).toBe(
+      `${DOC.slice(0, BODY)}one\ntwo${DOC.slice(BODY)}`,
+    );
+    expect(view.state.selection.main.head).toBe(BODY + "one\ntwo".length);
+    view.destroy();
+  });
+
+  test("a drop into the block moves its text to the body and still takes it from where it was", () => {
+    const view = mount(DOC);
+    const from = DOC.indexOf("Body");
+    view.dispatch({
+      changes: [
+        { from: 4, insert: "Body" },
+        { from, to: from + 4, insert: "" },
+      ],
+      userEvent: "move.drop",
+    });
+    expect(view.state.sliceDoc()).toBe(
+      `${DOC.slice(0, BODY)}Body${DOC.slice(BODY, from)}${DOC.slice(from + 4)}`,
+    );
+    view.destroy();
+  });
+
+  test("a cut across the block takes only the body part, and undo puts it back", () => {
+    const view = mount(DOC, [history()]);
+    view.dispatch({
+      changes: { from: 10, to: DOC.indexOf("Body") },
+      userEvent: "delete.cut",
+    });
+    expect(view.state.sliceDoc()).toBe(
+      `${DOC.slice(0, BODY)}${DOC.slice(DOC.indexOf("Body"))}`,
+    );
+    undo(view);
+    expect(view.state.sliceDoc()).toBe(DOC);
+    view.destroy();
+  });
+
+  test("undo takes back a guarded keystroke", () => {
+    const view = mount(DOC, [history()]);
+    view.dispatch({ selection: { anchor: FENCE_END } });
+    type(view, "x");
+    undo(view);
+    expect(view.state.sliceDoc()).toBe(DOC);
+    view.destroy();
+  });
+
+  test("every caret keeps its place, and a caret beside the block goes to the body", () => {
+    const view = mount(DOC, [EditorState.allowMultipleSelections.of(true)]);
+    const end = DOC.length;
+    view.dispatch({
+      selection: EditorSelection.create([
+        EditorSelection.cursor(FENCE_END),
+        EditorSelection.cursor(end),
+      ]),
+    });
+    view.dispatch(view.state.replaceSelection("z"), {
+      userEvent: "input.type",
+    });
+    expect(view.state.sliceDoc()).toBe(
+      `${DOC.slice(0, BODY)}z${DOC.slice(BODY)}z`,
+    );
+    const heads = view.state.selection.ranges.map((range) => range.head);
+    expect(heads).toEqual([BODY + 1, end + 2]);
+    view.destroy();
+  });
+
+  test("the transaction's own effects ride along", () => {
+    const mark = StateEffect.define<number>({
+      map: (value, mapping) => mapping.mapPos(value),
+    });
+    let seen: number | null = null;
+    const watch = EditorView.updateListener.of((update) => {
+      for (const tr of update.transactions) {
+        for (const effect of tr.effects) {
+          if (effect.is(mark)) {
+            seen = effect.value;
+          }
+        }
+      }
+    });
+    const view = mount(DOC, [watch]);
+    view.dispatch({
+      changes: { from: FENCE_END, insert: "x" },
+      effects: mark.of(DOC.length + 1),
+      userEvent: "input.type",
+    });
+    expect(seen).toBe(DOC.length + 1);
+    view.destroy();
+  });
+
+  test("a Raw round trip shows the block, then hides and guards it again", () => {
+    const preview = new Compartment();
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: DOC,
+        extensions: [preview.of(frontmatterFold())],
+      }),
+      parent: document.body,
+    });
+    view.dispatch({ effects: preview.reconfigure([]) });
+    expect(frontmatterHidden(view.state)).toBe(false);
+    view.dispatch({ selection: { anchor: 4 } });
+    type(view, "x");
+    expect(view.state.sliceDoc()).toContain("---\nxtype");
+    view.dispatch({ effects: preview.reconfigure(frontmatterFold()) });
+    expect(frontmatterHidden(view.state)).toBe(true);
+    view.dispatch({ selection: { anchor: 4 } });
+    type(view, "y");
+    expect(view.state.sliceDoc()).toContain("---\nxtype");
+    expect(view.state.sliceDoc()).not.toContain("ytype");
+    view.destroy();
+  });
+
+  test("a room: remote edits into the block pass, guarded typing reaches the shared text", () => {
+    const doc = new Y.Doc();
+    const ytext = doc.getText("t");
+    ytext.insert(0, DOC);
+    const view = mount(DOC, [yCollab(ytext, null)]);
+    // A remote author rewrites the status inside the hidden block.
+    const at = DOC.indexOf("current");
+    doc.transact(() => {
+      ytext.delete(at, "current".length);
+      ytext.insert(at, "draft");
+    }, "remote");
+    expect(view.state.sliceDoc()).toContain("status: draft");
+    // And typing beside the block lands in the body, in both copies.
+    view.dispatch({
+      selection: { anchor: view.state.sliceDoc().lastIndexOf("---") + 3 },
+    });
+    type(view, "x");
+    expect(ytext.toJSON()).toBe(view.state.sliceDoc());
+    expect(ytext.toJSON()).toContain("---\nx\n# Body");
+    view.destroy();
+  });
+
+  test("a block added after a frontmatter-only file keeps its own caret and blank line", () => {
+    // The shape `appendBlock` dispatches: two breaks, the lines, a closing
+    // break, and the caret at the end of the first line.
+    const doc = "---\ntype: guide\n---";
+    const view = mount(doc);
+    const from = doc.length;
+    view.dispatch({
+      changes: { from, insert: "\n\n![a](assets/a.png)\nnext\n" },
+      selection: { anchor: from + 2 + "![a](assets/a.png)".length },
+      userEvent: "input",
+    });
+    expect(view.state.sliceDoc()).toBe(`${doc}\n\n![a](assets/a.png)\nnext\n`);
+    expect(view.state.selection.main.head).toBe(
+      from + 2 + "![a](assets/a.png)".length,
+    );
+    view.destroy();
+  });
+
+  test("a rewritten transaction keeps its annotations, a picked completion among them", () => {
+    let picked: unknown = null;
+    const watch = EditorView.updateListener.of((update) => {
+      for (const tr of update.transactions) {
+        picked = tr.annotation(pickedCompletion) ?? picked;
+      }
+    });
+    const view = mount(DOC, [watch]);
+    const completion = { label: "[[Beta]]" };
+    view.dispatch({
+      changes: { from: FENCE_END, insert: "[[Beta]]" },
+      annotations: pickedCompletion.of(completion),
+      userEvent: "input.complete",
+    });
+    expect(view.state.sliceDoc()).toContain("---\n[[Beta]]\n# Body");
+    expect(picked).toBe(completion);
+    view.destroy();
+  });
+
+  test("a transaction still carries its annotations as an array", () => {
+    // The guard reads this internal field to keep every annotation when it
+    // rewrites a transaction. A @codemirror/state release that renames or
+    // removes it must fail here, not quietly drop annotations.
+    const state = EditorState.create({ doc: "x" });
+    const tr = state.update({
+      changes: { from: 0, insert: "y" },
+      userEvent: "input.type",
+    });
+    const carried = (tr as unknown as { annotations?: unknown }).annotations;
+    expect(Array.isArray(carried)).toBe(true);
+    expect(
+      (carried as { type: unknown }[]).some(
+        (one) => one.type === Transaction.userEvent,
+      ),
+    ).toBe(true);
   });
 });

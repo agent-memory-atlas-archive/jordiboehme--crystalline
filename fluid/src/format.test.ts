@@ -14,6 +14,7 @@ import {
   formatActor,
   formatBytes,
   formatDay,
+  formatDayLong,
   formatInstant,
   localDay,
   relativeTime,
@@ -147,5 +148,22 @@ describe("how long ago an instant was, in the words a reader reads", () => {
 
   it("returns null when the value does not parse", () => {
     expect(relativeTime("not a date", after(0))).toBeNull();
+  });
+});
+
+describe("formatDayLong", () => {
+  it("names the day written, whatever the zone", () => {
+    const text = formatDayLong("2026-09-12");
+    expect(text).toMatch(/12/);
+    expect(text).toMatch(/2026/);
+    expect(text).not.toContain("2026-09-12");
+  });
+
+  it("keeps the first of a month in its own month", () => {
+    expect(formatDayLong("2026-10-01")).toMatch(/\b1\b/);
+  });
+
+  it("returns what is not a day as written", () => {
+    expect(formatDayLong("soon")).toBe("soon");
   });
 });

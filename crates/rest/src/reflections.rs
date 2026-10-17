@@ -15,9 +15,10 @@ use utoipa::{IntoParams, ToSchema};
 use super::auth::Identity;
 use super::{ApiError, ApiJson, ApiPath, ApiQuery, ProblemDetail, RestState, refuse_read_only};
 use crate::engine::{
-    ANONYMOUS_COMMENT, EngineError, MOVE_ONTO_A_FILE, REFUSED_ELSEWHERE_START, REFUSED_HOMELESS,
-    REFUSED_OFF_START, REFUSED_PENDING, REFUSED_PENDING_NAMED, REFUSED_PENDING_SPELLINGS,
-    REFUSED_PENDING_UNOPENED, REFUSED_PENDING_UNREADABLE, ReflectionSearch,
+    ANONYMOUS_COMMENT, ASSET_EXISTS, EngineError, MOVE_ONTO_A_FILE, REFUSED_ELSEWHERE_START,
+    REFUSED_HOMELESS, REFUSED_HOSTED_START, REFUSED_OFF_START, REFUSED_PENDING,
+    REFUSED_PENDING_NAMED, REFUSED_PENDING_SPELLINGS, REFUSED_PENDING_UNOPENED,
+    REFUSED_PENDING_UNREADABLE, ReflectionSearch, TARGET_TAKEN,
 };
 use crate::files::{AttachmentView, attachment_response};
 use crate::params::{DiscussParams, WriteReflectionParams};
@@ -61,12 +62,14 @@ pub(crate) async fn refuse_anonymous(
     Err(ApiError::unauthorized(sentence))
 }
 
-/// Engine errors as this surface answers them: the four Reflection states a
+/// Engine errors as this surface answers them: the five Reflection states a
 /// verb refuses on are 409 (the request is fine, the Reflection is not where
 /// it could serve it), with `home_url` when it lives elsewhere; a stale
 /// checksum, a create over an existing page, a move or delete of a page
-/// somebody is editing and a file move onto a path that already holds a
-/// file are 409 (the shared mapping answers every other `Conflict` 422);
+/// somebody is editing, a page move onto a taken target and a file move
+/// onto a path that already holds a file are 409 (the shared mapping answers a write onto a path only the
+/// previous host of a host move has 409 too, and every other `Conflict`
+/// 422);
 /// everything else keeps the shared mapping.
 pub(crate) fn reflection_error(e: EngineError) -> ApiError {
     match &e {
@@ -76,6 +79,7 @@ pub(crate) fn reflection_error(e: EngineError) -> ApiError {
         }
         EngineError::Refused(text)
             if text.starts_with(REFUSED_OFF_START)
+                || text.starts_with(REFUSED_HOSTED_START)
                 || text.contains(REFUSED_PENDING_NAMED)
                 || text.contains(REFUSED_PENDING)
                 || text.contains(REFUSED_PENDING_UNREADABLE)
@@ -90,11 +94,17 @@ pub(crate) fn reflection_error(e: EngineError) -> ApiError {
         EngineError::Forbidden(text) if text == ANONYMOUS_COMMENT => {
             ApiError::unauthorized(text.clone())
         }
+        // A create-only upload onto a path that holds a file: the request's
+        // own precondition failed.
+        EngineError::Conflict(text) if text.ends_with(ASSET_EXISTS) => {
+            ApiError::precondition_failed_plain(text.clone())
+        }
         EngineError::Conflict(text)
             if text.starts_with("stale edit")
                 || text.starts_with("a reflection already lives at")
                 || text.starts_with("somebody is editing")
-                || text.ends_with(MOVE_ONTO_A_FILE) =>
+                || text.ends_with(MOVE_ONTO_A_FILE)
+                || text.ends_with(TARGET_TAKEN) =>
         {
             ApiError::conflict(text.clone())
         }
@@ -121,16 +131,22 @@ pub(crate) fn reflection_error(e: EngineError) -> ApiError {
         (
             status = 200,
             description = "ReflectionDomains: `{ domains: [{ domain, state, right, \
-                           engrams_visible, home, home_url, open_threads }] }`. \
-                           `state` is `on`, `pending`, `homeless` or `elsewhere`; \
-                           `home` is `here`, `local`, `elsewhere` (then \
-                           `home_url` is set) or `null` (`pending`, \
-                           `homeless`); `open_threads` is 0 unless `state` is \
+                           engrams_visible, home, home_url, host_label, \
+                           open_threads }] }`. `state` is `on`, `pending`, \
+                           `homeless`, `elsewhere` or `hosted_elsewhere` \
+                           (another instance on this shared database holds \
+                           the domain's host lock and serves it); `home` is \
+                           `here`, `local`, `elsewhere` (then `home_url` is \
+                           set) or `null` (`pending`, `homeless`, \
+                           `hosted_elsewhere`); `host_label` names the serving \
+                           instance for `hosted_elsewhere` (`null` while a \
+                           rename pauses a domain nobody holds) and is `null` \
+                           otherwise; `open_threads` is 0 unless `state` is \
                            `on`.",
             body = Object,
             example = json!({ "domains": [ { "domain": "eng", "state": "on",
                 "right": "edit", "engrams_visible": false, "home": "here",
-                "home_url": null, "open_threads": 3 } ] }),
+                "home_url": null, "host_label": null, "open_threads": 3 } ] }),
         ),
     ),
 )]
@@ -156,9 +172,8 @@ pub async fn domains(
         let open = if status["state"] == "on" {
             state
                 .engine
-                .list_reflection_threads(&name, None, "open", &caller)
+                .reflection_open_threads(&name, &caller)
                 .await
-                .map(|v| v["threads"].as_array().map(Vec::len).unwrap_or(0))
                 .unwrap_or(0)
         } else {
             0
@@ -170,6 +185,7 @@ pub async fn domains(
             "engrams_visible": status["engrams_visible"],
             "home": status["home"],
             "home_url": status["home_url"],
+            "host_label": status["host_label"],
             "open_threads": open,
         }));
     }
@@ -192,13 +208,19 @@ pub async fn domains(
             description = "ReflectionStatus. `state` is `off`, `pending` (then \
                            `pending_engrams` lists the engrams still under \
                            `reflections/` for a caller with `engrams_visible`, \
-                           and is empty for anyone else), `homeless`, `on` or \
-                           `elsewhere` (then `home_url` is set). `member` is \
-                           true when the caller holds a membership row it may \
+                           and is empty for anyone else), `homeless`, `on`, \
+                           `elsewhere` (then `home_url` is set) or \
+                           `hosted_elsewhere` (another instance on this shared \
+                           database holds the domain's host lock and serves \
+                           it; then `host_label` names that instance, or is \
+                           `null` while a rename pauses a domain whose lock \
+                           nobody holds, and it is `null` in every other \
+                           state). `member` is true \
+                           when the caller holds a membership row it may \
                            leave.",
             body = Object,
             example = json!({ "domain": "eng", "enabled": true, "state": "on",
-                "home": "here", "home_url": null, "right": "curate",
+                "home": "here", "home_url": null, "host_label": null, "right": "curate",
                 "engrams_visible": true, "member": false, "pending_engrams": [] }),
         ),
         (
@@ -267,8 +289,10 @@ pub async fn status(
         ),
         (
             status = 409,
-            description = "The Reflection is off, pending, homeless or lives \
-                           elsewhere (then the `home_url` member names where).",
+            description = "The Reflection is off, pending, homeless, lives \
+                           elsewhere (then the `home_url` member names where) \
+                           or is served by another instance on this shared \
+                           database (the text names it).",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -318,7 +342,7 @@ pub async fn tree(
                     "heading": "Night deploys", "line": 12, "changed": true,
                     "sources": [ { "permalink": "runbooks/deploy",
                         "title": "Deploy runbook", "state": "current" } ] } ],
-                "threads": [] }),
+                "threads": [], "live": { "present": ["jordi"] } }),
         ),
         (
             status = 404,
@@ -328,8 +352,9 @@ pub async fn tree(
         ),
         (
             status = 409,
-            description = "The Reflection is not here (off, pending, homeless or \
-                           elsewhere, then with `home_url`).",
+            description = "The Reflection is not here (off, pending, homeless, \
+                           elsewhere, then with `home_url`, or served by \
+                           another instance on this shared database).",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -425,8 +450,10 @@ pub struct SaveReflectionBody {
         (
             status = 409,
             description = "A stale `expected_checksum` (detail starting \"stale \
-                           edit\"), a create over an existing page, or the \
-                           Reflection is not here (then possibly `home_url`).",
+                           edit\"), a create over an existing page, a page \
+                           only the previous host of a host move has (the \
+                           detail names the remedy), or the Reflection is not \
+                           here (then possibly `home_url`).",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -548,7 +575,7 @@ pub struct MoveReflectionBody {
             status = 200,
             description = "Moved with its threads and baseline; links to it \
                            rewritten: `{ from, to, links_rewritten, threads_moved }`. \
-                           `links_failed`, `[{ path, reason }]`, appears only \
+                           `links_failed`, `[{ domain, path, reason }]`, appears only \
                            when a page that links it could not be rewritten \
                            after the move.",
             body = Object,
@@ -577,7 +604,12 @@ pub struct MoveReflectionBody {
         ),
         (
             status = 409,
-            description = "Somebody is editing it, or the Reflection is not here.",
+            description = "Somebody is editing a page that links it (an \
+                           editor open on the page itself does not refuse: \
+                           it saves, closes and is told the new path), the \
+                           new path is taken or is a page only the previous \
+                           host of a host move has, or the Reflection is not \
+                           here.",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -926,8 +958,9 @@ pub struct QueueQuery {
                            `changed`, `removed`), `update` (`source_changed`, \
                            `source_retired`, `source_missing`, `unreflected`, \
                            `off_structure`, `pact_changed`) or `review` \
-                           (`thread`). `sources`, and an `unreflected` item's \
-                           `folder` and `engrams`, are absent for a caller who \
+                           (`thread`). `sources`, an `unreflected` item's \
+                           `folder` and `engrams`, and an `engram_attachment` \
+                           item's `targets` are absent for a caller who \
                            cannot read engrams. The MCP `reflect` tool answers \
                            the same shape with `scope: { domains, kinds }` in \
                            place of `domain` and a `domain` member on each row; \
@@ -937,9 +970,15 @@ pub struct QueueQuery {
                            Reflection waits for engrams to leave \
                            `reflections/`. An update item's `what` may also \
                            be `asset_missing` (per section, with `assets`), \
-                           `engram_attachment` (per section, with `targets`) \
-                           or `asset_unreferenced` (`path` empty, with \
-                           `asset`).",
+                           `engram_attachment` (per section, with `targets`), \
+                           `asset_unreferenced` (`path` empty, with \
+                           `asset`) or `host_moved` (`path` empty, one per \
+                           domain, after the domain moved to this instance \
+                           on a shared database and this disk lacks files \
+                           the previous host wrote: `only_elsewhere` is \
+                           `{ previous_host, engrams, attachments, pages, \
+                           files }`, counts only, `previous_host` null when \
+                           unknown).",
             body = Object,
             example = json!({ "domain": "eng", "total": 1, "page": 1, "limit": 10,
                 "count": 1, "kinds": { "feedback": 0, "update": 1, "review": 0 },
@@ -1025,6 +1064,73 @@ pub async fn review(
     state
         .engine
         .reflection_review(&domain, &caller(&identity))
+        .await
+        .map(Json)
+        .map_err(reflection_error)
+}
+
+/// `GET /domains/{domain}/reflection/summary`
+#[utoipa::path(
+    get,
+    path = "/api/v1/domains/{domain}/reflection/summary",
+    tag = "reflection",
+    operation_id = "get_reflection_summary",
+    summary = "The Reflection home: what waits for review, in counts and by page.",
+    description = "The cheap cut of the review the Reflection home draws: \
+                   how many open threads wait for the agent and for people, \
+                   `updates` (the review queue's `kinds.update`, counted \
+                   without rendering a diff or looking up a source), \
+                   `pages_to_update` (the distinct pages those updates are \
+                   on; an update of no page, such as unreflected engrams or \
+                   a loose file, is in `updates` only) and the open threads \
+                   by page. A thread carries its id, its \
+                   first quote (`null` for a whole section), who it waits on, \
+                   when it was opened and the people who wrote in it, never \
+                   its entries. Pages and threads come oldest first. The same \
+                   rights as the review: a reader without engram rights is \
+                   not counted any update about engrams that no page cites.",
+    params(("domain" = String, Path, description = "The domain.")),
+    responses(
+        (
+            status = 200,
+            description = "ReflectionSummary.",
+            body = Object,
+            example = json!({ "domain": "eng",
+                "waiting_for_the_agent": 1,
+                "waiting_for_people": 0,
+                "updates": 3,
+                "pages_to_update": 2,
+                "open_by_page": [ { "path": "guides/deploying.md",
+                    "title": "Deploying",
+                    "threads": [ { "id": "t-0a1b2c3d",
+                        "quote": "at night",
+                        "waiting_on": "agent",
+                        "opened_at": "2026-10-14T09:12:00Z",
+                        "people": [ { "name": "ann", "agent": false } ] } ] } ] }),
+        ),
+        (
+            status = 404,
+            description = "No such domain, or none this caller may see (the \
+                           anonymous viewer included).",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 409,
+            description = "The Reflection is not here (then possibly `home_url`).",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+    ),
+)]
+pub async fn summary(
+    State(state): State<RestState>,
+    identity: Identity,
+    ApiPath(domain): ApiPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    state
+        .engine
+        .reflection_summary(&domain, &caller(&identity))
         .await
         .map(Json)
         .map_err(reflection_error)
@@ -1217,8 +1323,9 @@ pub struct MoveReflectionAssetBody {
         ),
         (
             status = 409,
-            description = "The Reflection is not here (off, pending, homeless or \
-                           elsewhere, then with `home_url`).",
+            description = "The Reflection is not here (off, pending, homeless, \
+                           elsewhere, then with `home_url`, or served by \
+                           another instance on this shared database).",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -1320,12 +1427,23 @@ pub async fn asset_read(
                    file, since a replace removes the old bytes. The request \
                    body is the raw file, not multipart; the extension \
                    allowlist decides the mime. The path rules, the allowlist \
-                   and the 10 MiB ceiling are the engram attachments' own.",
+                   and the 10 MiB ceiling are the engram attachments' own. \
+                   With `If-None-Match: *` the upload only creates: a path \
+                   that already holds a file is refused with 412, for a \
+                   curator too, so two people cannot replace each other's \
+                   upload by accident.",
     params(
         ("domain" = String, Path, description = "The domain."),
         ("path" = String, Path, description = "Where to store it, under \
                                                reflections/assets/; may contain slashes.",
          example = "diagrams/flow.png"),
+        (
+            "If-None-Match" = Option<String>,
+            Header,
+            description = "`*` to only create: a path that already holds a \
+                           file is refused with 412 and left as it is. Any \
+                           other value is 422.",
+        ),
     ),
     request_body(
         description = "The raw file bytes.",
@@ -1364,7 +1482,16 @@ pub async fn asset_read(
         ),
         (
             status = 409,
-            description = "The Reflection is not here (then possibly `home_url`).",
+            description = "The path is a file only the previous host of a \
+                           host move has, or the Reflection is not here (then \
+                           possibly `home_url`).",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 412,
+            description = "`If-None-Match: *` and the path already holds a \
+                           file; nothing was stored. Pick another name.",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -1376,7 +1503,8 @@ pub async fn asset_read(
         ),
         (
             status = 422,
-            description = "A path rule or the extension allowlist refused it.",
+            description = "A path rule or the extension allowlist refused it, \
+                           or `If-None-Match` carried something other than `*`.",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -1385,21 +1513,27 @@ pub async fn asset_read(
 pub async fn asset_write(
     State(state): State<RestState>,
     identity: Identity,
+    headers: HeaderMap,
     ApiPath((domain, rel)): ApiPath<(String, String)>,
+    // Last: the only extractor here that consumes the body.
     body: Bytes,
 ) -> Result<Json<UploadedReflectionAsset>, ApiError> {
     refuse_anonymous(&state, &identity, &domain, ANONYMOUS_EDIT).await?;
     refuse_read_only(&state)?;
-    let written = state
-        .engine
-        .reflection_asset_write(
-            &domain,
-            &asset_path(&rel),
-            body.to_vec(),
-            &caller(&identity),
-        )
-        .await
-        .map_err(reflection_error)?;
+    let create_only = super::create_only(&headers)?;
+    let (path, bytes, who) = (asset_path(&rel), body.to_vec(), caller(&identity));
+    let written = if create_only {
+        state
+            .engine
+            .reflection_asset_create(&domain, &path, bytes, &who)
+            .await
+    } else {
+        state
+            .engine
+            .reflection_asset_write(&domain, &path, bytes, &who)
+            .await
+    }
+    .map_err(reflection_error)?;
     Ok(Json(UploadedReflectionAsset {
         path: written.row.path,
         mime: written.row.mime,
@@ -1450,7 +1584,9 @@ pub async fn asset_write(
         ),
         (
             status = 409,
-            description = "The Reflection is not here (then possibly `home_url`).",
+            description = "The file is one only the previous host of a host move \
+                           has, whose row a delete here would drop; or the \
+                           Reflection is not here (then possibly `home_url`).",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -1496,7 +1632,7 @@ pub async fn asset_remove(
             status = 200,
             description = "Moved: `{ domain, from, to, links_rewritten }`. \
                            Two keys appear only when needed: `links_failed`, \
-                           `[{ path, reason }]` for each page whose link \
+                           `[{ domain, path, reason }]` for each page whose link \
                            could not be rewritten after the file moved, and \
                            `note`, a sentence saying the file moved and its \
                            index row did not follow (the next sync brings it \
@@ -1527,9 +1663,10 @@ pub async fn asset_remove(
         ),
         (
             status = 409,
-            description = "The new path already holds a file, a page that links \
-                           it is open in a co-editing room, or the Reflection \
-                           is not here (then possibly `home_url`).",
+            description = "The new path already holds a file or is a file only \
+                           the previous host of a host move has, a page that \
+                           links it is open in a co-editing room, or the \
+                           Reflection is not here (then possibly `home_url`).",
             body = ProblemDetail,
             content_type = "application/problem+json",
         ),
@@ -1563,7 +1700,35 @@ mod tests {
 
     use super::*;
 
-    /// The four "not here" states are 409, and only the elsewhere one names
+    /// A write onto a page or file only the previous host has is 409, on
+    /// this surface, on the engram files routes and through the shared
+    /// mapping every engram route uses.
+    #[test]
+    fn a_write_onto_a_path_only_the_previous_host_has_is_a_conflict() {
+        use crate::engine::ONLY_ELSEWHERE;
+        let text =
+            format!("'guides/kept.md' exists only on alpha{ONLY_ELSEWHERE}eng --accept-disk");
+        assert_eq!(
+            reflection_error(EngineError::Conflict(text.clone())).status,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            crate::files::malformed_path_is_a_bad_request(EngineError::Conflict(text.clone()))
+                .status,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            ApiError::from(EngineError::Conflict(text)).status,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            ApiError::from(EngineError::Conflict("another conflict".into())).status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "every other conflict keeps its 422"
+        );
+    }
+
+    /// The five "not here" states are 409, and only the elsewhere one names
     /// the home.
     #[test]
     fn the_reflection_states_are_conflicts_and_elsewhere_names_its_home() {
@@ -1583,6 +1748,7 @@ mod tests {
             format!("Reflection for 'eng' {REFUSED_PENDING_UNOPENED}: reflections/y.md"),
             format!("Reflection for 'eng' {REFUSED_PENDING_SPELLINGS}: Reflections/, reflections/"),
             REFUSED_HOMELESS.to_string(),
+            format!("{REFUSED_HOSTED_START}alpha; move it with crystalline serve --take-over"),
         ] {
             let e = reflection_error(EngineError::Refused(text.clone()));
             assert_eq!(e.status, StatusCode::CONFLICT, "{text}");

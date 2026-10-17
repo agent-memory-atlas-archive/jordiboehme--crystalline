@@ -59,15 +59,19 @@ function imageNodeAt(state: EditorState, pos: number): SyntaxNode | null {
  *
  * Null for an external image and for a link to a document as well as for
  * prose: neither is a picture this app places, so the menu has nothing to
- * offer about either.
+ * offer about either. `resolve` says which targets are attachments; absent,
+ * it is the engram kind's (`imageRefsIn`'s default).
  */
-export function imageContextAt(state: EditorState): ImageContext | null {
+export function imageContextAt(
+  state: EditorState,
+  resolve?: (target: string) => string | null,
+): ImageContext | null {
   const pos = state.selection.main.head;
   const node = imageNodeAt(state, pos);
   if (node === null) {
     return null;
   }
-  const [ref] = imageRefsIn(state.doc.sliceString(node.from, node.to));
+  const [ref] = imageRefsIn(state.doc.sliceString(node.from, node.to), resolve);
   if (ref === undefined) {
     return null;
   }
@@ -158,15 +162,17 @@ export function setImageWidth(view: EditorView, width: string | null): boolean {
  * the format menu is drawn only where it has something to act on.
  *
  * Crossings only, like the table listener beside it: this costs a render when
- * the answer changes rather than one per keystroke.
+ * the answer changes rather than one per keystroke. `resolve` is
+ * {@link imageContextAt}'s own.
  */
 export function imageContextListener(
   onChange: (onImage: boolean) => void,
+  resolve?: (target: string) => string | null,
 ): Extension {
   let last: boolean | null = null;
   /** The crossing watch itself, shared by the plugin and the listener below. */
   const cross = (state: EditorState) => {
-    const now = imageContextAt(state) !== null;
+    const now = imageContextAt(state, resolve) !== null;
     if (now === last) {
       return;
     }

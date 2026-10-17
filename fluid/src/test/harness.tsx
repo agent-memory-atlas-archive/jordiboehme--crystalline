@@ -328,9 +328,12 @@ export function soloCollabSession(): CollabSession {
     conflict: null,
     participants: [],
     permalink: "alpha",
-    flush: () => undefined,
-    resolve: () => undefined,
+    flush: () => false,
+    live: false,
+    resolve: () => false,
     closed: false,
+    closedReason: null,
+    movedTo: null,
     mergeNotice: false,
   };
 }

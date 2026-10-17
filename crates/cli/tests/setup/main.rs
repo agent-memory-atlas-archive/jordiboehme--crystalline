@@ -19,12 +19,14 @@ mod daemon_task;
 mod desktop_state;
 mod doctor;
 mod doctor_names;
+mod domain_case;
 #[cfg(unix)]
 mod harness_install;
 #[cfg(unix)]
 mod hook;
 #[cfg(unix)]
 mod install;
+mod kept;
 mod prompt;
 #[cfg(unix)]
 mod provision;

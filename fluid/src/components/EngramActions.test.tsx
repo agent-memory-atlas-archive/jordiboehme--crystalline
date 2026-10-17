@@ -27,8 +27,10 @@ const ENGRAM = {
   frontmatter: {
     type: null,
     status: null,
+    description: null,
     tags: [],
     salience: null,
+    recordedAt: null,
     validFrom: null,
     validTo: null,
     staleAfter: null,

@@ -12,6 +12,7 @@
 
 import { api, encodeSegment } from "./client";
 import type { EngramRow } from "./engrams";
+import { isDomainManifestPath } from "../paths";
 import { readEngramRow } from "./engrams";
 import { asArray, asNumber, asObject, asString, asStrings } from "./json";
 
@@ -27,6 +28,12 @@ export interface DomainTree {
    * cap, so a level too big to draw still names every folder under it.
    */
   folders: string[];
+  /**
+   * How many engrams each of `folders` holds at any depth, the reader's
+   * drafts included: the total the listing scoped to that folder reports.
+   * Empty from a server that predates the field.
+   */
+  folderCounts: Record<string, number>;
   /** The engrams directly in this folder, up to the server's per-level cap. */
   engrams: EngramRow[];
   /**
@@ -39,6 +46,12 @@ export interface DomainTree {
   truncated: boolean;
   /** How many engrams the level holds, cap or no cap. */
   total: number;
+  /**
+   * The permalink of the domain's MANIFEST, read off the row whose file is
+   * the root `MANIFEST.md` the way the server names it, or null when this
+   * level holds none (any level but the root, or a domain without one).
+   */
+  manifestPermalink: string | null;
 }
 
 /**
@@ -58,14 +71,35 @@ export function readTree(
   const engrams = asArray(record?.engrams)
     .map((entry) => readEngramRow(entry, domain))
     .filter((row): row is EngramRow => row !== null);
+  const manifest =
+    path === ""
+      ? asArray(record?.engrams).find((entry) => {
+          const file = asString(asObject(entry)?.path);
+          return file !== null && isDomainManifestPath(file);
+        })
+      : undefined;
   return {
     domain: asString(record?.domain) ?? domain,
     path,
     folders: asStrings(record?.folders),
+    folderCounts: readFolderCounts(record?.folder_counts),
     engrams,
     truncated: record?.truncated === true,
     total: asNumber(record?.total) ?? engrams.length,
+    manifestPermalink: asString(asObject(manifest)?.permalink),
   };
+}
+
+/** The per-folder counts, keeping only names that carry a number. */
+function readFolderCounts(value: unknown): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const [name, n] of Object.entries(asObject(value) ?? {})) {
+    const count = asNumber(n);
+    if (count !== null) {
+      counts[name] = count;
+    }
+  }
+  return counts;
 }
 
 /** The cache key of every folder of one domain, which is what a write moves. */
@@ -452,6 +486,13 @@ export interface PolicyWrite {
   sections: ManifestSections | null;
   /** True in a domain that reviews changes: the write is the caller's draft of the MANIFEST. */
   draft: boolean;
+  /**
+   * What the switch changed besides the line, to show as given: today only a
+   * Reflection switched off on a GitHub-connected domain says something
+   * ("share changes" then offers the files in `reflections/` as engram
+   * changes). Never set together with `draft`.
+   */
+  note: string | null;
 }
 
 /**
@@ -480,5 +521,6 @@ export async function setDomainPolicies(
     // Said only when the server said it: an ordinary domain's answer carries
     // no such key, and the write landed in the domain itself.
     draft: record?.draft === true,
+    note: asString(record?.note),
   };
 }

@@ -10,9 +10,9 @@
  */
 
 import type { ReactElement } from "react";
-import { Suspense, lazy } from "react";
+import { lazyPart } from "./lazyPart";
 
-const ConflictDialogBody = lazy(() => import("./ConflictDialogBody"));
+const ConflictDialogBody = lazyPart(() => import("./ConflictDialogBody"));
 
 export interface ConflictDialogProps {
   /** The team domain the conflict belongs to. */
@@ -25,7 +25,8 @@ export interface ConflictDialogProps {
 
 export function ConflictDialog(props: ConflictDialogProps): ReactElement {
   return (
-    <Suspense
+    <ConflictDialogBody
+      overlay
       fallback={
         // Plain markup rather than another Radix dialog: reaching for the
         // primitive here would defeat the point of keeping it out of this
@@ -36,8 +37,7 @@ export function ConflictDialog(props: ConflictDialogProps): ReactElement {
           </p>
         </div>
       }
-    >
-      <ConflictDialogBody {...props} />
-    </Suspense>
+      {...props}
+    />
   );
 }

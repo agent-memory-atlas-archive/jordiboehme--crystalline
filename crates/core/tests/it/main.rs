@@ -17,6 +17,7 @@ mod names;
 mod orchestrate;
 mod provision;
 mod reconcile;
+mod reflection_asset_corpus;
 mod roundtrip;
 mod schema;
 mod structure;

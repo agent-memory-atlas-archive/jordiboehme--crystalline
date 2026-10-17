@@ -37,14 +37,13 @@ import {
   Workflow,
 } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
-import type { ChangeEvent, MouseEvent, ReactElement } from "react";
-import { useId, useRef } from "react";
+import type { MouseEvent, ReactElement, ReactNode } from "react";
+import { useId } from "react";
 
-import { ATTACHMENT_ACCEPT } from "../api/files";
 import { ITEM_CLASSES, MENU_CLASSES } from "../components/menu";
 import { IconButton } from "../components/primitives";
 import type { IconComponent } from "../components/primitives";
-import { AttachIcon } from "./attachIcon";
+import { AttachButton } from "./AttachButton";
 import { TableSizePicker } from "./TableSizePicker";
 import type { ImageAlign } from "./imageFormat";
 import {
@@ -180,6 +179,8 @@ export function EditorToolbar({
   tableActive = false,
   imageActive = false,
   onAttach,
+  bare = false,
+  trailing,
 }: {
   view: EditorView | null;
   /** Whether the caret is in a table right now; the screen watches for it. */
@@ -196,25 +197,18 @@ export function EditorToolbar({
    * is simply not drawn rather than drawn and refusing.
    */
   onAttach?: (files: File[]) => void;
+  /**
+   * The reading-column face: a sticky row with a hairline under it and no box
+   * around it, one line that scrolls sideways on a narrow screen rather than
+   * wrapping. The default is the boxed bar the MANIFEST editor still wears.
+   */
+  bare?: boolean;
+  /** Drawn at the row's right end, past the verbs: the engram editor's Raw. */
+  trailing?: ReactNode;
 }): ReactElement {
   const off = view === null;
   /** The stem the diagram menu's group headings hang their ids off. */
   const groupId = useId();
-  /**
-   * The picker itself. A native file input is the only way to open the
-   * dialog, and it is kept hidden rather than styled: the button beside it is
-   * this bar's own, so the row reads as one kind of thing.
-   */
-  const picker = useRef<HTMLInputElement | null>(null);
-  const picked = (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? []);
-    // Cleared before the callback runs, so picking the same file twice in a
-    // row still fires a change the second time.
-    event.target.value = "";
-    if (files.length > 0) {
-      onAttach?.(files);
-    }
-  };
   const act = (run: (view: EditorView) => boolean) => () => {
     if (view) {
       run(view);
@@ -228,7 +222,11 @@ export function EditorToolbar({
       role="toolbar"
       aria-label="Formatting"
       onMouseDown={keepSelection}
-      className="sticky top-14 z-10 flex flex-wrap items-center gap-0.5 rounded-t border-b border-slate-200 bg-white/95 px-1.5 py-1 backdrop-blur print:hidden dark:border-slate-800 dark:bg-slate-950/95"
+      className={
+        bare
+          ? "sticky top-14 z-10 flex flex-nowrap items-center gap-0.5 overflow-x-auto border-b border-hair bg-canvas/95 py-1.5 backdrop-blur print:hidden"
+          : "sticky top-14 z-10 flex flex-wrap items-center gap-0.5 rounded-t border-b border-slate-200 bg-white/95 px-1.5 py-1 backdrop-blur print:hidden dark:border-slate-800 dark:bg-slate-950/95"
+      }
     >
       <IconButton
         label="Bold"
@@ -403,30 +401,7 @@ export function EditorToolbar({
         no button at all, so this is the way in for a file that is neither on
         the clipboard nor draggable onto the buffer.
       */}
-      {onAttach && (
-        <>
-          <IconButton
-            label="Attach a file"
-            icon={AttachIcon}
-            disabled={off}
-            onClick={() => {
-              picker.current?.click();
-            }}
-          />
-          <input
-            ref={picker}
-            type="file"
-            multiple
-            // The allowlist as the dialog's own filter, so a file the server
-            // would refuse is hard to pick in the first place. It is a hint
-            // rather than a gate - every picker offers a way past it - which
-            // is why the upload checks the extension again.
-            accept={ATTACHMENT_ACCEPT}
-            className="hidden"
-            onChange={picked}
-          />
-        </>
-      )}
+      {onAttach && <AttachButton onAttach={onAttach} disabled={off} />}
       {imageActive && (
         <>
           {/*
@@ -578,6 +553,11 @@ export function EditorToolbar({
             onClick={act(tablePrettify)}
           />
         </>
+      )}
+      {trailing !== undefined && (
+        <div className="ml-auto flex shrink-0 items-center pl-2">
+          {trailing}
+        </div>
       )}
     </div>
   );

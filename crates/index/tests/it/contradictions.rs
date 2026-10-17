@@ -97,41 +97,6 @@ async fn sync_and_embed(store: &dyn Store, name: &str, root: &Path, provider: &F
 
 // --- backend runner (mirrored from tests/it/lead_vectors.rs) ---------------------
 
-#[cfg(feature = "postgres")]
-fn pg_url() -> Option<String> {
-    use std::sync::Once;
-    static NOTE: Once = Once::new();
-    match std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") {
-        Ok(u) if !u.is_empty() => Some(u),
-        _ => {
-            NOTE.call_once(|| {
-                eprintln!(
-                    "note: skipping the postgres parity leg (CRYSTALLINE_TEST_POSTGRES_URL is unset); turso only"
-                )
-            });
-            None
-        }
-    }
-}
-
-/// A distinct schema name per test invocation. The pid keeps runs apart, the
-/// counter keeps tests within a run apart; both stay well under Postgres's
-/// 63-byte identifier limit.
-/// A hash salt keeps a recycled pid from adopting a schema a panicking run left behind.
-#[cfg(feature = "postgres")]
-fn unique_schema() -> String {
-    use std::hash::{BuildHasher, RandomState};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "ct_{}_{}_{:x}",
-        std::process::id(),
-        n,
-        RandomState::new().hash_one(n)
-    )
-}
-
 /// Run a parity body against Turso (always) and Postgres (when configured),
 /// giving each backend a fresh, isolated store.
 macro_rules! parity {
@@ -144,16 +109,14 @@ macro_rules! parity {
             }
             #[cfg(feature = "postgres")]
             {
-                if let Some(url) = pg_url() {
-                    let schema = unique_schema();
-                    let store = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                        .await
-                        .expect("open the postgres test schema");
+                if let Some(scratch) = crate::pg::scratch("ct") {
+                    let store = crystalline_index::PostgresStore::open_in_schema(
+                        scratch.url(),
+                        scratch.name(),
+                    )
+                    .await
+                    .expect("open the postgres test schema");
                     $body(&store).await;
-                    store
-                        .drop_schema()
-                        .await
-                        .expect("drop the postgres test schema");
                 }
             }
         }
@@ -861,18 +824,13 @@ async fn a_turso_store_does_not_share_its_database() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn a_postgres_store_shares_its_database() {
-    let Some(url) = pg_url() else {
+    let Some(scratch) = crate::pg::scratch("ct") else {
         return;
     };
-    let schema = unique_schema();
-    let store = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
+    let store = crystalline_index::PostgresStore::open_in_schema(scratch.url(), scratch.name())
         .await
         .expect("open the postgres test schema");
     assert!(store.shares_database());
-    store
-        .drop_schema()
-        .await
-        .expect("drop the postgres test schema");
 }
 
 // --- the work claim ------------------------------------------------------------
@@ -929,21 +887,24 @@ async fn a_work_claim_is_exclusive_on_postgres_and_free_on_turso() {
     }
     #[cfg(feature = "postgres")]
     {
-        if let Some(url) = pg_url() {
-            let schema = unique_schema();
-            let first = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                .await
-                .expect("open the postgres test schema");
-            let second = crystalline_index::PostgresStore::open_in_schema(&url, &schema)
-                .await
-                .expect("open the postgres test schema again");
+        if let Some(scratch) = crate::pg::scratch("ct") {
+            let first =
+                crystalline_index::PostgresStore::open_in_schema(scratch.url(), scratch.name())
+                    .await
+                    .expect("open the postgres test schema");
+            let second =
+                crystalline_index::PostgresStore::open_in_schema(scratch.url(), scratch.name())
+                    .await
+                    .expect("open the postgres test schema again");
             // Advisory locks are the database's, not the schema's: another
             // schema on the same database claims the same key on its own.
-            let elsewhere_schema = unique_schema();
-            let elsewhere =
-                crystalline_index::PostgresStore::open_in_schema(&url, &elsewhere_schema)
-                    .await
-                    .expect("open another postgres test schema");
+            let elsewhere_scratch = crate::pg::scratch("ct").expect("the postgres url is set");
+            let elsewhere = crystalline_index::PostgresStore::open_in_schema(
+                elsewhere_scratch.url(),
+                elsewhere_scratch.name(),
+            )
+            .await
+            .expect("open another postgres test schema");
             let held = first.try_work_claim("contradictions:1").await.unwrap();
             assert!(
                 elsewhere
@@ -956,11 +917,6 @@ async fn a_work_claim_is_exclusive_on_postgres_and_free_on_turso() {
             held.unwrap().release().await;
 
             work_claims(&first, &second, true).await;
-            elsewhere.drop_schema().await.unwrap();
-            first
-                .drop_schema()
-                .await
-                .expect("drop the postgres test schema");
         }
     }
 }

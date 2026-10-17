@@ -56,38 +56,6 @@ fn fixture(dir: &Path) {
     }
 }
 
-#[cfg(feature = "postgres")]
-fn pg_url() -> Option<String> {
-    use std::sync::Once;
-    static NOTE: Once = Once::new();
-    match std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") {
-        Ok(u) if !u.is_empty() => Some(u),
-        _ => {
-            NOTE.call_once(|| {
-                eprintln!(
-                    "note: skipping the postgres parity leg (CRYSTALLINE_TEST_POSTGRES_URL is unset); turso only"
-                )
-            });
-            None
-        }
-    }
-}
-
-/// A recycled pid must never adopt a schema a panicking run left behind.
-#[cfg(feature = "postgres")]
-fn unique_schema() -> String {
-    use std::hash::{BuildHasher, RandomState};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "cs_{}_{}_{:x}",
-        std::process::id(),
-        n,
-        RandomState::new().hash_one(n)
-    )
-}
-
 /// Run a parity body against Turso (always) and Postgres (when configured). The
 /// body takes two fresh stores because every case here compares one against the
 /// other.
@@ -106,17 +74,15 @@ macro_rules! parity2 {
             }
             #[cfg(feature = "postgres")]
             {
-                if let Some(url) = pg_url() {
-                    let (sa, sb) = (unique_schema(), unique_schema());
-                    let a = crystalline_index::PostgresStore::open_in_schema(&url, &sa)
+                if let Some(sa) = crate::pg::scratch("cs") {
+                    let sb = crate::pg::scratch("cs").expect("the postgres url is set");
+                    let a = crystalline_index::PostgresStore::open_in_schema(sa.url(), sa.name())
                         .await
                         .expect("open the postgres test schema");
-                    let b = crystalline_index::PostgresStore::open_in_schema(&url, &sb)
+                    let b = crystalline_index::PostgresStore::open_in_schema(sb.url(), sb.name())
                         .await
                         .expect("open the postgres test schema");
                     $body(&a, &b).await;
-                    a.drop_schema().await.expect("drop the postgres schema");
-                    b.drop_schema().await.expect("drop the postgres schema");
                 }
             }
         }

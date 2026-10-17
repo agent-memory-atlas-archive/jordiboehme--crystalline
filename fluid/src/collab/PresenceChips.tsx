@@ -1,23 +1,31 @@
 /**
- * Who else is in the room, as a row of name chips beside the buffer.
+ * Who is in the room, as a row of overlapping avatars in the editor's header.
  *
- * The colored dot is the same color the participant's caret and selection are
- * painted in inside the text, so a cursor in the margin of somebody's screen
- * and the chip in the header are recognisably the same person. The chips are
- * a list rather than a paragraph, and the list itself carries the names, so a
- * screen reader hears who is here without walking the row item by item.
+ * Each avatar wears the color the participant's caret, selection and name
+ * flag are painted in inside the text, so a cursor on the page and a circle in
+ * the header are recognisably the same person. The list itself carries the
+ * names ("In this session: ..."), so a screen reader hears who is here without
+ * walking the row; each avatar also holds its name as text for the same
+ * reason, with the initial drawn for sighted readers only.
  *
- * An agent working in the document is one of the chips rather than a notice of
- * its own: it is in here, it is changing the text under your cursor, and it
- * has a name and a color like anybody else. What marks it is a glyph beside
- * the name, so somebody watching a line appear knows whether a colleague or an
- * agent wrote it.
+ * An agent working in the document is one of the avatars rather than a notice
+ * of its own: it is in here, it is changing the text under your cursor, and it
+ * has a name and a color like anybody else. Its avatar shows a robot glyph
+ * instead of an initial, so somebody watching a line appear knows whether a
+ * colleague or an agent wrote it.
  */
 
 import { Bot } from "lucide-react";
 import type { ReactElement } from "react";
 
+import { inkOn } from "./colors";
 import type { CollabParticipant } from "./useCollabSession";
+
+/** The letter an avatar shows: the name's first letter, or a dot. */
+function initialOf(name: string): string {
+  const letter = /\p{L}|\p{N}/u.exec(name)?.[0];
+  return letter === undefined ? "?" : letter.toUpperCase();
+}
 
 export function PresenceChips({
   participants,
@@ -25,7 +33,7 @@ export function PresenceChips({
 }: {
   participants: CollabParticipant[];
   /** True while the socket is down: who is where stopped being current the
-   *  moment the awareness channel went quiet, so the row is dimmed rather
+   *  moment the awareness channel went quiet, so the row turns grey rather
    *  than emptied - those people have not left, this tab just cannot hear
    *  them. */
   offline?: boolean;
@@ -39,36 +47,28 @@ export function PresenceChips({
   return (
     <ul
       aria-label={`In this session: ${names}`}
-      className={
-        offline
-          ? "flex flex-wrap items-center gap-2 opacity-50"
-          : "flex flex-wrap items-center gap-2"
-      }
+      // Offline: grey rather than faded, so the initial keeps its
+      // contrast on the avatar (fading both lowers it below 3:1).
+      className={`flex items-center ${offline ? "grayscale" : ""}`}
     >
       {participants.map((one, index) => (
         <li
           // Two people may share a display name; the position in the room's
-          // own ordering is what tells those chips apart.
+          // own ordering is what tells those avatars apart.
           key={`${one.name}:${String(index)}`}
-          className="flex items-center gap-1.5 rounded-full border border-slate-300 px-2 py-0.5 text-xs text-slate-700 dark:border-slate-700 dark:text-slate-200"
+          title={one.self ? `${one.name} (you)` : one.name}
+          data-self={one.self ? "true" : undefined}
+          className="relative -ml-1.5 flex size-7 items-center justify-center rounded-full text-xs font-semibold ring-2 ring-canvas first:ml-0"
+          style={{ backgroundColor: one.color, color: inkOn(one.color) }}
         >
-          <span
-            aria-hidden="true"
-            className="size-2 rounded-full"
-            style={{ backgroundColor: one.color }}
-          />
-          {one.agent && (
-            <Bot
-              aria-hidden="true"
-              size={12}
-              strokeWidth={1.75}
-              className="shrink-0"
-            />
-          )}
-          {one.name}
-          {one.self && (
-            <span className="text-slate-500 dark:text-slate-400">you</span>
-          )}
+          <span aria-hidden="true">
+            {one.agent ? (
+              <Bot size={14} strokeWidth={2} className="shrink-0" />
+            ) : (
+              initialOf(one.name)
+            )}
+          </span>
+          <span className="sr-only">{one.name}</span>
         </li>
       ))}
     </ul>

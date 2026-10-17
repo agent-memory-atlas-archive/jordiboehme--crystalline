@@ -44,12 +44,20 @@ export class ApiProblem extends Error {
   readonly detail: string;
   /** Every other member of the problem body, verbatim. Empty when none arrived. */
   readonly extensions: Record<string, unknown>;
+  /**
+   * Whether the server described the problem in a problem body. False when
+   * only the status is known: a proxy or a static file server answered, or
+   * the body was not the problem detail it should be. A 404 without one says
+   * nothing about whether the thing asked for exists.
+   */
+  readonly described: boolean;
 
   constructor(
     status: number,
     title: string,
     detail: string,
     extensions: Record<string, unknown> = {},
+    described = true,
   ) {
     super(detail || title);
     this.name = "ApiProblem";
@@ -57,6 +65,7 @@ export class ApiProblem extends Error {
     this.title = title;
     this.detail = detail;
     this.extensions = extensions;
+    this.described = described;
   }
 }
 
@@ -208,7 +217,13 @@ async function problemFrom(response: Response): Promise<ApiProblem> {
     }
     return new ApiProblem(response.status, title, detail, extensions);
   }
-  return new ApiProblem(response.status, fallbackTitle, fallbackTitle);
+  return new ApiProblem(
+    response.status,
+    fallbackTitle,
+    fallbackTitle,
+    {},
+    false,
+  );
 }
 
 /**

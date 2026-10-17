@@ -17,22 +17,21 @@
  * frontmatter panel: the honest rendering of a fact nobody recorded is nothing
  * at all.
  *
- * Folded away by default, like the neighborhood below it. This is a second way
- * of reading a page whose first job is the prose.
+ * Folded away by default, and opened from the Explore row in the details rail,
+ * which owns the switch: this draws the panel only. This is a second way of
+ * reading a page whose first job is the prose.
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight } from "lucide-react";
 
 import { DOMAINS_QUERY_KEY, fetchDomains } from "../api/domains";
-import { useRememberedDisclosure } from "../disclosure";
-import { BUTTON } from "./primitives";
+import { AGENTS_EYE_PANEL_ID } from "./ExploreBlock";
 
 /** How many characters one token is worth, as a rule of thumb. */
 const CHARS_PER_TOKEN = 4;
 
 /** Where this section writes down whether it was left open. */
-const SECTION_KEY = "fluid.section.agents-eye";
+export const AGENTS_EYE_KEY = "fluid.section.agents-eye";
 
 export interface AgentsEyeProps {
   /** The domain this engram lives in, whose routing lines are read here. */
@@ -41,10 +40,11 @@ export interface AgentsEyeProps {
   salience: number | null;
   /** The markdown as written, which is what an agent is handed. */
   content: string;
+  /** Whether the Explore row has opened it. */
+  open: boolean;
 }
 
-export function AgentsEye({ domain, salience, content }: AgentsEyeProps) {
-  const [open, toggle] = useRememberedDisclosure(SECTION_KEY);
+export function AgentsEye({ domain, salience, content, open }: AgentsEyeProps) {
   // The listing the sidebar already read, under the same key: the routing
   // lines cost nothing on the wire.
   const listing = useQuery({
@@ -56,31 +56,16 @@ export function AgentsEye({ domain, salience, content }: AgentsEyeProps) {
     [];
   const tokens = Math.ceil(content.length / CHARS_PER_TOKEN);
 
+  // The wrapper is always there, empty while closed, so the Explore row's
+  // aria-controls resolves; an empty one takes no room and no gap.
   return (
-    <section aria-labelledby="engram-agents-eye">
-      <h2 id="engram-agents-eye" className="mb-2 text-section">
-        Agent&apos;s eye
-      </h2>
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-controls="engram-agents-eye-panel"
-        onClick={toggle}
-        className={`${BUTTON.ghost} inline-flex items-center gap-1.5`}
-      >
-        <ChevronRight
-          aria-hidden="true"
-          size={14}
-          strokeWidth={1.75}
-          className={
-            open ? "rotate-90 transition-transform" : "transition-transform"
-          }
-        />
-        {open ? "Hide what an agent is taught" : "Show what an agent is taught"}
-      </button>
-      <div id="engram-agents-eye-panel" className="mt-3">
-        {open && (
-          <div className="flex flex-col gap-3 rounded border border-slate-200 px-4 py-3 text-sm dark:border-slate-800">
+    <div id={AGENTS_EYE_PANEL_ID} className="empty:hidden print:hidden">
+      {open && (
+        <section aria-labelledby="engram-agents-eye">
+          <h2 id="engram-agents-eye" className="mb-2 text-section">
+            Agent&apos;s eye
+          </h2>
+          <div className="flex flex-col gap-3 border-l-2 border-hair pl-4 text-sm">
             <p className="text-slate-500 dark:text-slate-400">
               This is what an agent is taught about this knowledge.
             </p>
@@ -122,8 +107,8 @@ export function AgentsEye({ domain, salience, content }: AgentsEyeProps) {
               </div>
             </dl>
           </div>
-        )}
-      </div>
-    </section>
+        </section>
+      )}
+    </div>
   );
 }

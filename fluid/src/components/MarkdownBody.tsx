@@ -31,10 +31,8 @@
 import { Link as LinkIcon } from "lucide-react";
 import {
   Children,
-  Suspense,
   createContext,
   isValidElement,
-  lazy,
   useCallback,
   useContext,
   useEffect,
@@ -44,7 +42,7 @@ import {
   useState,
 } from "react";
 import type { ComponentProps, ReactNode } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import type { Components } from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import { Link, useLocation, useNavigate } from "react-router";
@@ -56,23 +54,27 @@ import {
   headingIds,
   sectionUrl,
 } from "../anchors";
-import { attachmentUrl } from "../api/files";
+import type { AssetResolver } from "../api/files";
 import { documentHref } from "../base";
 import {
-  assetPath,
   decodeTarget,
+  engramAssetHome,
   imageStyle,
   parseImageFragment,
 } from "../editor/imageFormat";
+import { printUrl } from "../printUrl";
+import { SOURCE_ATTR, spanPieces } from "../reflectionQuotes";
+import { isIdLine } from "../reflectionText";
 import { WIKILINK, referenceState } from "../wikilinks";
 import type { WikilinkResolution, WikilinkResolver } from "../wikilinks";
 import DiagramOverlay from "./DiagramOverlay";
 import DiagramToolbar from "./DiagramToolbar";
 import { imageFileName } from "./downloads";
+import { lazyPart } from "./lazyPart";
 import { Chip, FOCUS_RING } from "./primitives";
 import { useSaid } from "./useSaid";
 
-const MermaidDiagram = lazy(() => import("./MermaidDiagram"));
+const MermaidDiagram = lazyPart(() => import("./MermaidDiagram"));
 
 /**
  * The renderer's own plugin-list type, taken from its props rather than from
@@ -132,6 +134,8 @@ interface HastNode {
   properties?: Record<string, unknown>;
   children?: HastNode[];
   value?: string;
+  /** Where the parser found the node, for the source-span stamp. */
+  position?: { start?: { offset?: number }; end?: { offset?: number } };
 }
 
 /** Every character inside a node, in order. */
@@ -266,6 +270,208 @@ function element(resolution: WikilinkResolution, literal: string): HastNode {
   };
 }
 
+/**
+ * Stamp every text node the parser positioned with its offset into the
+ * source, for the reflection page: a selection's ends read the offsets back
+ * and become a quote of the source text a comment anchors on
+ * (`reflectionQuotes.ts`). First in the chain, so the positions are the
+ * parser's own. Text the parser gives no position (a fenced code block) or
+ * whose words are not one piece of the source (an escape, an entity, a
+ * continuation line) stays unstamped, and a selection that ends there becomes
+ * a section comment rather than a guessed quote.
+ *
+ * A section id comment is dropped on the way: it is bookkeeping, and the
+ * renderer would otherwise draw it as the text it was written as.
+ */
+function sourceSpanStamp(source: string) {
+  return function plugin() {
+    return function transform(tree: unknown) {
+      stamp(tree as HastNode, source);
+    };
+  };
+}
+
+/** Wrap each positioned text child of `node` in a stamped span, all the way down. */
+function stamp(node: HastNode, source: string): void {
+  if (!node.children) {
+    return;
+  }
+  node.children = node.children
+    .filter((child) => !(child.type === "raw" && isIdLine(child.value ?? "")))
+    .flatMap((child) => {
+      if (child.type !== "text") {
+        stamp(child, source);
+        return [child];
+      }
+      const pieces = spanPieces(
+        source,
+        child.position?.start?.offset,
+        child.position?.end?.offset,
+        child.value ?? "",
+      );
+      if (pieces.length === 1 && pieces[0]?.base === null) {
+        return [child];
+      }
+      return pieces.map(({ value, base }) =>
+        base === null
+          ? { type: "text", value }
+          : {
+              type: "element",
+              tagName: "span",
+              properties: { [SOURCE_ATTR]: String(base) },
+              children: [{ type: "text", value }],
+            },
+      );
+    });
+}
+
+/**
+ * Stamp the words of a fenced code block, after the highlighter.
+ *
+ * The highlighter rebuilds a fence's children from its text, so a stamp
+ * made before it would be lost, and the text node of a fence carries no
+ * position of its own anyway. The `code` element does: its fence spans the
+ * opening line, the code and the closing line. The code starts on the line
+ * after the opening one; where the source holds the block's text there as
+ * one piece (a fence at the margin), every text node the highlighter made
+ * is stamped at its running offset, in order. A fence whose lines carry an
+ * indent or a quote marker is left unstamped: a selection in it is a comment
+ * on the section, and a quote in it is not painted, never painted wrong. A
+ * diagram is no text on the page and is left alone.
+ */
+function codeSpanStamp(source: string) {
+  return function plugin() {
+    return function transform(tree: unknown) {
+      const walk = (node: HastNode, parent: HastNode | null): void => {
+        if (
+          node.type === "element" &&
+          node.tagName === "code" &&
+          parent?.tagName === "pre"
+        ) {
+          stampFence(node, source);
+          return;
+        }
+        for (const child of node.children ?? []) {
+          walk(child, node);
+        }
+      };
+      walk(tree as HastNode, null);
+    };
+  };
+}
+
+/** Stamp one fence's text nodes at their offsets, or leave it as it is. */
+function stampFence(code: HastNode, source: string): void {
+  if (languageOf(code) === "mermaid") {
+    return;
+  }
+  const start = code.position?.start?.offset;
+  const end = code.position?.end?.offset;
+  const text = textOf(code);
+  if (start === undefined || end === undefined || text === "") {
+    return;
+  }
+  const opening = source.indexOf("\n", start);
+  if (opening < 0 || opening >= end) {
+    return;
+  }
+  const base = opening + 1;
+  if (
+    base + text.length > end ||
+    source.slice(base, base + text.length) !== text
+  ) {
+    return;
+  }
+  let at = base;
+  const wrap = (node: HastNode): void => {
+    node.children = (node.children ?? []).map((child) => {
+      if (child.type !== "text") {
+        wrap(child);
+        return child;
+      }
+      const value = child.value ?? "";
+      const stamped: HastNode = {
+        type: "element",
+        tagName: "span",
+        properties: { [SOURCE_ATTR]: String(at) },
+        children: [{ type: "text", value }],
+      };
+      at += value.length;
+      return value === "" ? child : stamped;
+    });
+  };
+  wrap(code);
+}
+
+/**
+ * The line under the first title, handed to the heading through context and
+ * not through the component map or the plugin chain: those are memoised so a
+ * changed line cannot remount what the document drew (images, diagrams, an
+ * open full window, a selection in progress).
+ */
+const TitleNoteContext = createContext<string | undefined>(undefined);
+
+/** The marker the first level-one heading carries for `titleNote`. */
+const FIRST_TITLE = "dataFirstTitle";
+/** The same marker as the component receives it: hast `dataFirstTitle` is `data-first-title`. */
+const FIRST_TITLE_PROP = "data-first-title";
+
+/**
+ * A small control drawn at the right end of the document's first heading,
+ * outside its text, handed down the same way as `titleNote` and for the same
+ * reason: a changed control re-renders its heading and remounts nothing.
+ */
+const HeadingAsideContext = createContext<HeadingAside | undefined>(undefined);
+
+/**
+ * What a page draws beside its first heading: `aside` inside the heading at
+ * its right end, `after` straight after it in a zero-height box, for
+ * something laid over the text (a list the control opens) that must not be
+ * part of the heading.
+ */
+export interface HeadingAside {
+  aside: ReactNode;
+  after?: ReactNode;
+}
+
+/** The marker the first heading of any level carries for `headingAside`. */
+const FIRST_HEADING = "dataFirstHeading";
+/** The same marker as the component receives it. */
+const FIRST_HEADING_PROP = "data-first-heading";
+
+/**
+ * Mark the document's first `<h1>`, in document order, so the heading
+ * component can draw a note straight under it. Walks the tree once and
+ * changes nothing but that one property; first in the chain, before the
+ * source-span stamp, so no position moves.
+ */
+function markFirstTitle() {
+  return function transform(tree: unknown) {
+    const walk = (node: HastNode): boolean => {
+      if (node.type === "element" && node.tagName === "h1") {
+        node.properties = { ...node.properties, [FIRST_TITLE]: "true" };
+        return true;
+      }
+      return (node.children ?? []).some(walk);
+    };
+    walk(tree as HastNode);
+    const first = (node: HastNode): boolean => {
+      if (node.type === "element" && /^h[1-6]$/.test(node.tagName ?? "")) {
+        node.properties = { ...node.properties, [FIRST_HEADING]: "true" };
+        return true;
+      }
+      return (node.children ?? []).some(first);
+    };
+    first(tree as HastNode);
+  };
+}
+
+/** The source offset a stamped span carries, or undefined for any other span. */
+function sourceStamp(node: unknown): string | undefined {
+  const value = (node as HastNode | undefined)?.properties?.[SOURCE_ATTR];
+  return typeof value === "string" ? value : undefined;
+}
+
 /** The language a fenced code block declared, or null when it declared none. */
 function languageOf(node: HastNode | undefined): string | null {
   const names = node?.properties?.className;
@@ -297,6 +503,34 @@ function isWikilink(part: ReactNode): boolean {
   );
 }
 
+/** An inline `#tag`, as the observation grammar reads one. */
+const INLINE_TAG = /(^|\s)#([A-Za-z][A-Za-z0-9_-]*)/g;
+
+/**
+ * A string with its inline `#tags` drawn as accent chips, the way the
+ * mockup shows an observation's tags. Text without a tag comes back as it was.
+ */
+function withTagChips(text: string, keyBase: string): ReactNode[] {
+  const out: ReactNode[] = [];
+  let last = 0;
+  for (const match of text.matchAll(INLINE_TAG)) {
+    const lead = match[1] ?? "";
+    const start = match.index + lead.length;
+    out.push(text.slice(last, start));
+    out.push(
+      <Chip variant="accent" key={`${keyBase}:${String(start)}`}>
+        #{match[2]}
+      </Chip>,
+    );
+    last = match.index + match[0].length;
+  }
+  if (last === 0) {
+    return [text];
+  }
+  out.push(text.slice(last));
+  return out;
+}
+
 /** A marked line: the mark as a chip, then the rest of the line as written. */
 function chipped(mark: string, rest: string, parts: ReactNode[]): ReactNode {
   return [
@@ -304,8 +538,14 @@ function chipped(mark: string, rest: string, parts: ReactNode[]): ReactNode {
       {mark}
     </Chip>,
     " ",
-    rest,
-    ...parts.slice(1),
+    ...withTagChips(rest, "rest"),
+    ...parts
+      .slice(1)
+      .map((part, index) =>
+        typeof part === "string"
+          ? withTagChips(part, `p${String(index)}`)
+          : part,
+      ),
   ];
 }
 
@@ -371,14 +611,16 @@ const components: Components = {
   ),
   li: ({ children }) => <li className="my-1">{structuredBullet(children)}</li>,
   span: ({ children, className, node }) =>
-    // Two sources make spans in this tree, both plugin-generated rather than
-    // raw HTML an engram could write: the wikilink rewrite's own markers, and
+    // Three sources make spans in this tree, all plugin-generated rather than
+    // raw HTML an engram could write: the wikilink rewrite's own markers,
     // rehype-highlight's per-token spans inside a fenced code block (the
-    // `.hljs-string` etc. classes `index.css`'s syntax palette styles). The
-    // wikilink case gets its own fixed look; everything else has to keep
-    // whatever class it arrived with; passing an incoming `className` through
-    // unconditionally, rather than dropping it, is what makes a code fence
-    // render in color instead of the page's plain text color.
+    // `.hljs-string` etc. classes `index.css`'s syntax palette styles), and
+    // the source-span stamp. The wikilink case gets its own fixed look;
+    // everything else has to keep whatever class it arrived with; passing an
+    // incoming `className` through unconditionally, rather than dropping it,
+    // is what makes a code fence render in color instead of the page's plain
+    // text color. A stamp keeps its offset, and a span without one renders
+    // exactly as before, because an undefined attribute is never written.
     wikilinkKind(node) === "unresolved" ? (
       <span
         title="not resolved"
@@ -387,7 +629,9 @@ const components: Components = {
         {children}
       </span>
     ) : (
-      <span className={className}>{children}</span>
+      <span className={className} data-src={sourceStamp(node)}>
+        {children}
+      </span>
     ),
   blockquote: ({ children }) => (
     <blockquote className="my-3 border-l-2 border-slate-300 pl-4 text-slate-600 dark:border-slate-700 dark:text-slate-300">
@@ -462,12 +706,11 @@ function preFor(
           aria-label="Diagram"
           className="breakout my-4 rounded border border-slate-200 p-3 dark:border-slate-800"
         >
-          <Suspense fallback={<DiagramSource source={source} />}>
-            <MermaidDiagram
-              source={source}
-              {...(documentName === undefined ? {} : { name: documentName })}
-            />
-          </Suspense>
+          <MermaidDiagram
+            fallback={<DiagramSource source={source} />}
+            source={source}
+            {...(documentName === undefined ? {} : { name: documentName })}
+          />
         </figure>
       );
     }
@@ -480,25 +723,36 @@ function preFor(
 }
 
 /**
- * The files-route URL a target names, or null when it names no file of this
- * domain - which includes every case where the caller has no domain to resolve
- * against.
+ * The URL a target's bytes are read at, or null when it names no stored file
+ * - which includes every case where the caller has no resolver to ask.
  *
  * The single place the reading view turns a written target into an address,
- * asked by the image and the anchor alike, and it asks {@link assetPath} the
- * same question the rail asks so the two can never disagree about a file.
+ * asked by the image and the anchor alike, and it asks the resolver the same
+ * question the rail asks (for an engram, `assetPath`) so the two can never
+ * disagree about a file.
  */
-function assetHref(domain: string | undefined, target: string): string | null {
-  if (domain === undefined) {
+function assetHref(
+  assets: AssetResolver | undefined,
+  target: string,
+): string | null {
+  if (assets === undefined) {
     return null;
   }
-  const path = assetPath(target);
-  return path === null ? null : attachmentUrl(domain, path);
+  const path = assets.resolve(target);
+  return path === null ? null : assets.url(path);
+}
+
+/** Why the resolver will not have this target fetched, or null. */
+function refusalOf(
+  assets: AssetResolver | undefined,
+  target: string,
+): string | null {
+  return assets === undefined ? null : assets.refused(target);
 }
 
 /** The classes every link in a document wears, wherever it points. */
 const LINK_CLASSES =
-  "text-sky-700 underline underline-offset-2 hover:no-underline dark:text-sky-400";
+  "text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline";
 
 /**
  * One link, drawn by where it points.
@@ -512,8 +766,15 @@ const LINK_CLASSES =
  * downloads is the server's disposition to decide, not this anchor's.
  * Everything else is what it was written as.
  *
+ * Before any of that but the wikilink, the resolver may refuse a target: a
+ * file this document must not read from (a reflection pointing at an engram
+ * attachment). Then the words stay and the address goes, with the reason on
+ * hover, so nothing is fetched and nothing navigates.
+ *
  * react-markdown's own URL transform has already dropped the protocols a link
- * may not carry (`javascript:` among them). What is left to decide is where it
+ * may not carry (`javascript:` among them). The one exception is a refused
+ * `crystalline://` target, which can arrive verbatim and is never put in an
+ * href. What is left to decide is where it
  * opens: a link out of the app leaves this tab alone and gets no handle on it,
  * while an anchor or an in-app path navigates in place.
  */
@@ -521,14 +782,14 @@ function MarkdownAnchor({
   children,
   href,
   node,
-  domain,
+  assets,
 }: {
   children?: ReactNode;
   /** Undefined is spelled out: react-markdown hands a link with no target on. */
   href?: string | undefined;
   node?: unknown;
-  /** The domain a relative `assets/` target resolves against, when known. */
-  domain?: string;
+  /** What a relative target resolves against, when known. */
+  assets?: AssetResolver;
 }) {
   if (wikilinkKind(node) === "resolved" && typeof href === "string") {
     return (
@@ -537,11 +798,15 @@ function MarkdownAnchor({
       </Link>
     );
   }
+  const refusal = refusalOf(assets, href ?? "");
+  if (refusal !== null) {
+    return <span title={refusal}>{children}</span>;
+  }
   // One question decides it, and the rail asks the same one: does this target
   // name a file of this domain? A `./` prefix is stripped, the fragment is
   // dropped - the files route never sees one - and an address that is somebody
   // else's, or a path the core would refuse, answers null.
-  const file = assetHref(domain, href ?? "");
+  const file = assetHref(assets, href ?? "");
   if (file !== null) {
     return (
       <a href={file} target="_blank" rel="noreferrer" className={LINK_CLASSES}>
@@ -557,6 +822,11 @@ function MarkdownAnchor({
       href={documentHref(href)}
       className={LINK_CLASSES}
       {...(outward ? { target: "_blank", rel: "noreferrer" } : {})}
+      data-print-url={
+        typeof href === "string"
+          ? (printUrl(href, textOf(node as HastNode | undefined)) ?? undefined)
+          : undefined
+      }
     >
       {children}
     </a>
@@ -582,18 +852,23 @@ function MarkdownAnchor({
  * click on the picture, which is what a reader tries first. A `span` and not
  * a `figure`, because the wrapper stands where the image stood and an image
  * lives inside a paragraph, where only phrasing content may go.
+ *
+ * A target the resolver refuses is not drawn at all, so its bytes are never
+ * asked for: the alt text stands where the picture would, with the reason
+ * under it.
  */
 function MarkdownImage({
   src,
   alt,
-  domain,
+  assets,
 }: {
   src?: string;
   alt?: string;
-  domain?: string;
+  assets?: AssetResolver;
 }) {
   const written = typeof src === "string" ? src : "";
-  const file = assetHref(domain, written);
+  const refusal = refusalOf(assets, written);
+  const file = assetHref(assets, written);
   // The directives are read off the decoded target for the same reason the
   // path is: micromark hands `w=50%` over as `w=50%25`, which is no width at
   // all. Decoding happens once, here and in `assetPath`, never in sequence.
@@ -612,6 +887,22 @@ function MarkdownImage({
     const wrapper = wrapperRef.current;
     setLinked(wrapper !== null && wrapper.closest("a") !== null);
   }, []);
+  if (refusal !== null) {
+    return (
+      <span>
+        {alt}
+        <span className="block text-caption text-slate-500 dark:text-slate-400">
+          {refusal}
+        </span>
+      </span>
+    );
+  }
+  // The URL transform dropped the target (an unknown protocol, say): there is
+  // nothing to fetch, so the alt text stands alone, with no picture and no
+  // full-window button.
+  if (written === "") {
+    return <span>{alt}</span>;
+  }
   // Ours is rebuilt from the decoded path, which re-encodes exactly once;
   // anything else keeps the URL the renderer produced, escapes and all.
   const shown = file ?? written;
@@ -848,31 +1139,101 @@ function heading(
   return function Heading({
     children,
     id,
+    ...rest
   }: {
     children?: ReactNode | undefined;
     id?: string | undefined;
+    [FIRST_TITLE_PROP]?: string | undefined;
+    [FIRST_HEADING_PROP]?: string | undefined;
   }) {
     // Generated rather than derived from the slug: a heading literally called
     // "Auth text" would collide with a `${slug}-text` spelling, and two
     // elements sharing an id is a reference pointing at whichever came first.
     const textId = useId();
-    if (!anchored || id === undefined) {
+    const titleNote = useContext(TitleNoteContext);
+    // The note belongs to the one heading marked first, and is not text of the
+    // document: no stamp, nothing to select (`data-anchor-skip` is what the
+    // quote code passes over).
+    const note =
+      titleNote !== undefined && rest[FIRST_TITLE_PROP] === "true" ? (
+        <p
+          data-anchor-skip=""
+          className="-mt-1 mb-4 text-sm text-ink-3 select-none"
+        >
+          {titleNote}
+        </p>
+      ) : null;
+    // Marked in the page too, so the print sheet can fold a title the
+    // printed title block already carries.
+    const firstTitle = rest[FIRST_TITLE_PROP] === "true" ? "" : undefined;
+    const aside = useContext(HeadingAsideContext);
+    // The control is no part of the heading's words either: unstamped,
+    // unselectable, passed over by the anchoring, and left out of the
+    // heading's name by naming it from the span around its text.
+    const side =
+      aside !== undefined && rest[FIRST_HEADING_PROP] === "true" ? (
+        <span
+          data-anchor-skip=""
+          className="ml-auto shrink-0 self-center text-sm font-normal tracking-normal select-none print:hidden"
+        >
+          {aside.aside}
+        </span>
+      ) : null;
+    if (side !== null) {
       return (
-        <Tag id={id} className={className}>
-          {children}
-        </Tag>
+        <>
+          <Tag
+            id={id}
+            className={`${className} flex items-baseline gap-3`}
+            aria-labelledby={textId}
+            data-first-title={firstTitle}
+          >
+            <span id={textId} className="min-w-0">
+              {children}
+            </span>
+            {anchored && id !== undefined && <SectionLink id={id} />}
+            {side}
+          </Tag>
+          {aside?.after !== undefined && (
+            <div
+              data-anchor-skip=""
+              className="relative h-0 select-none print:hidden"
+            >
+              {aside.after}
+            </div>
+          )}
+          {note}
+        </>
       );
     }
+    if (!anchored || id === undefined) {
+      return (
+        <>
+          <Tag id={id} className={className} data-first-title={firstTitle}>
+            {children}
+          </Tag>
+          {note}
+        </>
+      );
+    }
+    // The link symbol is a real button inside the heading, so without this
+    // the heading's own name would end in "Link to this section" - in the
+    // document outline and in every entry of a screen reader's heading
+    // list. Naming the heading by the span around its text leaves the
+    // button its own name and the tab order untouched.
     return (
-      // The link symbol is a real button inside the heading, so without this
-      // the heading's own name would end in "Link to this section" - in the
-      // document outline and in every entry of a screen reader's heading
-      // list. Naming the heading by the span around its text leaves the
-      // button its own name and the tab order untouched.
-      <Tag id={id} className={className} aria-labelledby={textId}>
-        <span id={textId}>{children}</span>
-        <SectionLink id={id} />
-      </Tag>
+      <>
+        <Tag
+          id={id}
+          className={className}
+          aria-labelledby={textId}
+          data-first-title={firstTitle}
+        >
+          <span id={textId}>{children}</span>
+          <SectionLink id={id} />
+        </Tag>
+        {note}
+      </>
     );
   };
 }
@@ -885,22 +1246,22 @@ function heading(
  * body's own size, weight and spacing. Nothing about them moves here.
  */
 const HEADING_SIZES = [
-  "mt-6 mb-3 text-2xl font-semibold first:mt-0",
-  "mt-6 mb-3 text-xl font-semibold first:mt-0",
-  "mt-5 mb-2 text-lg font-semibold first:mt-0",
+  "mt-6 mb-3 text-display first:mt-0",
+  "mt-[38px] mb-3 text-prose-h2 first:mt-0",
+  "mt-6 mb-2 text-prose-h3 first:mt-0",
   "mt-4 mb-2 font-semibold first:mt-0",
   "",
   "",
 ] as const;
 
 /**
- * The component map for one domain: everything above, plus the three elements
- * that need to know more than the markdown says - which domain a relative
- * `assets/` target belongs to, and which document a picture taken out of the
+ * The component map for one document: everything above, plus the three
+ * elements that need to know more than the markdown says - what a relative
+ * target resolves against, and which document a picture taken out of the
  * full window is named after.
  */
 function componentsFor(
-  domain: string | undefined,
+  assets: AssetResolver | undefined,
   documentName: string | undefined,
   anchored: boolean,
 ): Components {
@@ -917,7 +1278,7 @@ function componentsFor(
       <MarkdownAnchor
         href={href}
         node={node}
-        {...(domain === undefined ? {} : { domain })}
+        {...(assets === undefined ? {} : { assets })}
       >
         {children}
       </MarkdownAnchor>
@@ -926,7 +1287,7 @@ function componentsFor(
       <MarkdownImage
         {...(typeof src === "string" ? { src } : {})}
         {...(typeof alt === "string" ? { alt } : {})}
-        {...(domain === undefined ? {} : { domain })}
+        {...(assets === undefined ? {} : { assets })}
       />
     ),
   };
@@ -946,10 +1307,25 @@ export default function MarkdownBody({
   wikilinks,
   foldTitle,
   domain,
+  assets,
   documentName,
   anchors,
+  sourceSpans,
+  titleNote,
+  headingAside,
 }: {
   source: string;
+  /**
+   * A small control drawn at the right end of the document's first heading
+   * and counted as no part of it (see `HeadingAsideContext`).
+   */
+  headingAside?: HeadingAside;
+  /**
+   * One line of text drawn straight under the document's first level-one
+   * heading and counted as no part of it: unstamped, unselectable, passed
+   * over by the comment anchoring. Absent, nothing is drawn.
+   */
+  titleNote?: string;
   wikilinks?: WikilinkResolver;
   foldTitle?: string;
   /**
@@ -958,6 +1334,11 @@ export default function MarkdownBody({
    * attachment path means nothing without the domain holding it.
    */
   domain?: string;
+  /**
+   * What a relative target resolves against and where its bytes are read.
+   * It wins over {@link domain}, which stands for the domain's engram files.
+   */
+  assets?: AssetResolver;
   /**
    * What this document is called, for the name on a file a reader takes out
    * of it. Absent, a diagram's download is named after the drawing alone.
@@ -970,29 +1351,68 @@ export default function MarkdownBody({
    * the document is drawn exactly as it always was.
    */
   anchors?: MarkdownAnchors;
+  /**
+   * Stamp positioned text with its source offset, for comments on selected
+   * text. Only the reflection page sets it.
+   */
+  sourceSpans?: boolean;
 }) {
   const anchored = anchors !== undefined;
+  // What the parser is handed, and so what every stamped offset counts into.
+  const shown = foldLeadingTitle(source.replace(FRONTMATTER, ""), foldTitle);
   const rootRef = useRef<HTMLDivElement>(null);
   const { hash } = useLocation();
+  // Memoized on its inputs so the component map below is too: a new map
+  // every render would remount every image and close an open full window.
+  const resolver = useMemo(
+    () =>
+      assets ?? (domain === undefined ? undefined : engramAssetHome(domain)),
+    [assets, domain],
+  );
+  // react-markdown drops a `crystalline:` address as an unknown protocol, and
+  // with it the target the resolver would refuse. Keep exactly those, and only
+  // when the address really is `crystalline://`: the refusal test reads a
+  // target by its shape, so `javascript:...//../../assets/x.png` counts as a
+  // refused attachment, and letting it through raw would make the sanitising
+  // boundary depend on how the renderers treat a refusal. Everything else,
+  // such a string included, goes through the default transform.
+  const urlTransform = useMemo(
+    () => (url: string) =>
+      url.startsWith("crystalline://") && resolver?.refused(url) != null
+        ? url
+        : defaultUrlTransform(url),
+    [resolver],
+  );
   const componentMap = useMemo(
-    () => componentsFor(domain, documentName, anchored),
-    [domain, documentName, anchored],
+    () => componentsFor(resolver, documentName, anchored),
+    [resolver, documentName, anchored],
   );
   const rehypePlugins = useMemo<RehypePlugins>(
     () => [
+      // First, so the positions it reads are the parser's own.
+      // Always, so the plugin chain never depends on the note's text: a
+      // changing note re-renders its own line and remounts nothing.
+      markFirstTitle,
+      ...(sourceSpans ? [sourceSpanStamp(shown)] : []),
       // `plainText` keeps the highlighter's hands off a mermaid fence, whose
       // text this file reads back out to draw the diagram from.
       [rehypeHighlight, { plainText: ["mermaid"] }],
+      // After the highlighter, which rebuilds a fence's children.
+      ...(sourceSpans ? [codeSpanStamp(shown)] : []),
       // After the highlighter, so the headings it may have rewritten are
       // already in place, and before the wikilink rewrite, so a heading's id
       // is taken from the text as written rather than from whatever a
       // resolved `[[Target]]` turned into.
       ...(anchored ? [headingIds()] : []),
       // After the highlighter, so what it built is already in place. The
-      // rewrite skips code either way.
+      // rewrite skips code either way. With `sourceSpans` it would rewrite
+      // words inside a stamped span (a resolved target becomes its label),
+      // which no longer reads the source at its offset: the reflection page
+      // passes no resolver, and `selectionAnchor` and `domRange` refuse such
+      // a span rather than map through it (`reflectionQuotes.ts`).
       ...(wikilinks ? [wikilinkRewrite(wikilinks)] : []),
     ],
-    [anchored, wikilinks],
+    [anchored, wikilinks, sourceSpans, shown],
   );
   // Arriving at a section: scroll it into view and point it out for a moment.
   // It runs on the hash rather than on a navigation, which is what makes a
@@ -1044,8 +1464,9 @@ export default function MarkdownBody({
       remarkPlugins={[remarkGfm]}
       rehypePlugins={rehypePlugins}
       components={componentMap}
+      urlTransform={urlTransform}
     >
-      {foldLeadingTitle(source.replace(FRONTMATTER, ""), foldTitle)}
+      {shown}
     </ReactMarkdown>
   );
   return (
@@ -1055,15 +1476,19 @@ export default function MarkdownBody({
     // this renderer would see a single child - this div - and cap the tables
     // and diagrams inside it along with the prose. Hardcoded rather than a
     // prop, because every markdown surface is a reading surface.
-    <div ref={rootRef} className="measured text-[0.95rem]">
-      {anchors ? (
-        <SectionAnchorProvider pageUrl={anchors.pageUrl}>
-          {rendered}
-          <SectionLinkStatus />
-        </SectionAnchorProvider>
-      ) : (
-        rendered
-      )}
+    <div ref={rootRef} className="measured text-body">
+      <TitleNoteContext.Provider value={titleNote}>
+        <HeadingAsideContext.Provider value={headingAside}>
+          {anchors ? (
+            <SectionAnchorProvider pageUrl={anchors.pageUrl}>
+              {rendered}
+              <SectionLinkStatus />
+            </SectionAnchorProvider>
+          ) : (
+            rendered
+          )}
+        </HeadingAsideContext.Provider>
+      </TitleNoteContext.Provider>
     </div>
   );
 }

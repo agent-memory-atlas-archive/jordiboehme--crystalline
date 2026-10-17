@@ -14,7 +14,7 @@
  * the one answer here after which the text is genuinely gone.
  *
  * The count of what blocks the save is on screen whenever anything does, and it
- * says what Save and close will do about it: that answer stays pressable rather
+ * says what Save and leave will do about it: that answer stays pressable rather
  * than being greyed out, because "this is why nothing happened" is worth more
  * than a control that cannot say why it is dead.
  *
@@ -66,14 +66,14 @@ export function ConfirmLeaveDialog({
             be the same text in two places saying two different things.
           */}
           <Dialog.Title className="text-lg font-semibold">
-            Close the editor?
+            Leave the editor?
           </Dialog.Title>
           <Dialog.Description className="mt-1 text-sm text-slate-600 dark:text-slate-300">
             {hardErrors > 0
               ? `${String(hardErrors)} hard ${
                   hardErrors === 1 ? "error blocks" : "errors block"
-                } saving, so Save and close will keep you here with the findings. Discard changes throws this text away.`
-              : "This buffer holds changes the file does not. Save and close writes them; Discard changes throws them away."}
+                } saving, so Save and leave keeps you here with the findings. Discard changes throws them away.`
+              : "Your changes are not saved yet. Save and leave writes them. Discard changes throws them away."}
           </Dialog.Description>
           <div className="mt-4 flex flex-wrap justify-end gap-2">
             <button
@@ -96,7 +96,7 @@ export function ConfirmLeaveDialog({
               onClick={onSaveAndClose}
               className={BUTTON.primary}
             >
-              Save and close
+              Save and leave
             </button>
           </div>
         </Dialog.Content>

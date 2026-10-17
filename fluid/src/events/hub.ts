@@ -92,7 +92,7 @@ export const STREAM_NAME = "crystalline-change-stream";
  */
 const CLOSED = 2;
 
-const EVENT_NAMES = ["engram", "domain", "reset"] as const;
+const EVENT_NAMES = ["engram", "domain", "reflection", "reset"] as const;
 
 export type StreamFactory = (url: string) => EventSource;
 

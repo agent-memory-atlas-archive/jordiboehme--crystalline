@@ -668,6 +668,81 @@ export type IssuedTokenResponse = {
 };
 
 /**
+ * One kept text, without its text.
+ */
+export type KeptTextEntry = {
+    /**
+     * Its size in bytes.
+     */
+    bytes: number;
+    /**
+     * Whether it was kept from the caller's own review draft rather than
+     * from the domain's own text. A draft's kept text is only ever listed
+     * for its owner.
+     */
+    draft: boolean;
+    /**
+     * A short, stable id for the routes below.
+     */
+    id: string;
+    /**
+     * When it was kept.
+     */
+    kept_at: string;
+    /**
+     * `engram` or `reflection`: the kind of room (or page write) it was
+     * kept from; `comment` for a thread comment on the page at `path`.
+     */
+    kind: string;
+    /**
+     * The engram's file path in its domain, or the page's path inside
+     * `reflections/`.
+     */
+    path: string;
+    /**
+     * Who sent the text, by the name shown in threads (the login name for
+     * a person), for a text kept from a write that was refused after its
+     * instance lost the domain's host lock; `null` for a room's text.
+     */
+    sender?: string | null;
+    /**
+     * The account that sent it, the login name the rights match a kept
+     * comment's sender on; `null` when no sender is recorded. A client
+     * compares it with the signed-in account to tell its own comments
+     * apart: the shown name is not proof of who sent it, the account is.
+     */
+    sender_account?: string | null;
+};
+
+/**
+ * What `GET /domains/{domain}/kept/{id}` answers.
+ */
+export type KeptTextResponse = KeptTextEntry & {
+    /**
+     * The domain.
+     */
+    domain: string;
+    /**
+     * The text the room held, as it was kept.
+     */
+    text: string;
+};
+
+/**
+ * What `GET /domains/{domain}/kept` answers.
+ */
+export type KeptTextsResponse = {
+    /**
+     * The domain.
+     */
+    domain: string;
+    /**
+     * The kept texts this caller may handle, oldest first.
+     */
+    kept: Array<KeptTextEntry>;
+};
+
+/**
  * The key the join was opened under.
  */
 export type LeaveBody = {
@@ -1398,6 +1473,34 @@ export type ReflectionAssetsResponse = {
      * (`assets/...`).
      */
     assets: Array<AttachmentView>;
+};
+
+/**
+ * What happened in a domain's Reflection, as the `reflection` event says it.
+ */
+export type ReflectionChangeKind = 'changed' | 'moved' | 'deleted' | 'threads' | 'files' | 'switched';
+
+/**
+ * One change in a domain's Reflection, as a session that may read it hears
+ * it. A path and a kind, never text and never an engram name, so a person
+ * with knowledge `none` may hear it.
+ */
+export type ReflectionChanged = {
+    /**
+     * Who made the change, as a display label; null for a link that
+     * followed, a room save with no single typist, and the machine owner.
+     */
+    actor?: string | null;
+    domain: string;
+    /**
+     * `moved`, and `files` on a move: the path before.
+     */
+    from?: string | null;
+    kind: ReflectionChangeKind;
+    /**
+     * Inside `reflections/`, after the change; empty for `switched`.
+     */
+    path: string;
 };
 
 /**
@@ -2456,7 +2559,7 @@ export type JoinReflectionRoomErrors = {
      */
     404: ProblemDetail;
     /**
-     * The Reflection is not here.
+     * The Reflection is not here, or a move of this page is running.
      */
     409: ProblemDetail;
     /**
@@ -2507,6 +2610,10 @@ export type CollabJoinErrors = {
      * No such engram.
      */
     404: ProblemDetail;
+    /**
+     * On a shared database, another instance hosts this file domain and writes it; the detail names it. Or a move of this engram is running.
+     */
+    409: ProblemDetail;
     /**
      * `overlay` names somebody whose draft a live share-link shows this caller, and this session has not joined it: seeing a draft and editing it are two steps. The detail is the sentence that says how to take the second.
      */
@@ -3232,7 +3339,7 @@ export type ListEngramsError = ListEngramsErrors[keyof ListEngramsErrors];
 
 export type ListEngramsResponses = {
     /**
-     * The engine's page envelope, unchanged. Under `path`, its `total` is the folder's recursive count, not the tree's per-level one.
+     * The engine's page envelope, unchanged. Under `path`, its `total` is the folder's recursive count, not the tree's per-level one. A hit carries its engram's `recorded_at` as written, and none when the engram has no date.
      */
     200: {
         [key: string]: unknown;
@@ -3271,7 +3378,7 @@ export type CreateEngramErrors = {
      */
     404: ProblemDetail;
     /**
-     * That permalink is already taken in this domain.
+     * That permalink is already taken in this domain, or an overwrite lands on an engram only the previous host of a host move has (the detail names the remedy).
      */
     409: ProblemDetail;
     /**
@@ -3340,6 +3447,10 @@ export type DeleteEngramErrors = {
      * No such domain or engram.
      */
     404: ProblemDetail;
+    /**
+     * The engram is one only the previous host of a host move has, whose row a delete here would drop; the detail names the remedy.
+     */
+    409: ProblemDetail;
     /**
      * The `If-Match` token is stale. The body carries the version the server holds now, so a client can decide whether losing it is really what it meant.
      */
@@ -3629,6 +3740,10 @@ export type DeleteAttachmentErrors = {
      */
     404: ProblemDetail;
     /**
+     * The file is one only the previous host of a host move has, whose row a delete here would drop; the detail names the remedy.
+     */
+    409: ProblemDetail;
+    /**
      * A teaching refusal from a domain that reviews changes: a deletion aimed at the folder the team reviewed rather than at a draft, a path where a share-link shows somebody else's draft and this session has not joined it, or a caller with no account of their own. The detail is the sentence that says what to do instead.
      */
     422: ProblemDetail;
@@ -3707,6 +3822,10 @@ export type WriteAttachmentData = {
          * The key of a live join this session opened on a draft share-link (`POST /draft-links/join`). It routes the upload into the draft owner's files overlay rather than the caller's own. A key naming no live join of this account's is refused 403 and nothing is stored.
          */
         'X-Crystalline-Join'?: string | null;
+        /**
+         * `*` to only create: a path that already holds a file is refused with 412 and left as it is. Any other value is 422.
+         */
+        'If-None-Match'?: string | null;
     };
     path: {
         /**
@@ -3740,11 +3859,19 @@ export type WriteAttachmentErrors = {
      */
     404: ProblemDetail;
     /**
+     * The path is a file only the previous host of a host move has; the detail names the remedy.
+     */
+    409: ProblemDetail;
+    /**
+     * `If-None-Match: *` and the path already holds a file; nothing was stored. Pick another name.
+     */
+    412: ProblemDetail;
+    /**
      * The body is over the 10 MiB limit this API accepts, which is also the attachment size ceiling.
      */
     413: ProblemDetail;
     /**
-     * A teaching refusal from a domain that reviews changes: a write into the folder the team reviewed rather than into a draft, a path where a share-link shows somebody else's draft and this session has not joined it, or a caller with no account of their own and so no draft to write into. The detail is the sentence that says what to do instead.
+     * `If-None-Match` carried something other than `*`; or a teaching refusal from a domain that reviews changes: a write into the folder the team reviewed rather than into a draft, a path where a share-link shows somebody else's draft and this session has not joined it, or a caller with no account of their own and so no draft to write into. The detail is the sentence that says what to do instead.
      */
     422: ProblemDetail;
 };
@@ -3826,6 +3953,128 @@ export type GetInboundReferencesResponses = {
 };
 
 export type GetInboundReferencesResponse = GetInboundReferencesResponses[keyof GetInboundReferencesResponses];
+
+export type ListKeptTextsData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/kept';
+};
+
+export type ListKeptTextsErrors = {
+    /**
+     * The anonymous viewer of a domain it reads.
+     */
+    401: ProblemDetail;
+    /**
+     * Neither write access to the engrams nor edit access to the Reflection.
+     */
+    403: ProblemDetail;
+    /**
+     * No such domain, or none this caller may see.
+     */
+    404: ProblemDetail;
+};
+
+export type ListKeptTextsError = ListKeptTextsErrors[keyof ListKeptTextsErrors];
+
+export type ListKeptTextsResponses = {
+    /**
+     * The kept texts this caller may handle.
+     */
+    200: KeptTextsResponse;
+};
+
+export type ListKeptTextsResponse = ListKeptTextsResponses[keyof ListKeptTextsResponses];
+
+export type DeleteKeptTextData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+        /**
+         * The id from the listing.
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/kept/{id}';
+};
+
+export type DeleteKeptTextErrors = {
+    /**
+     * The anonymous viewer of a domain it reads.
+     */
+    401: ProblemDetail;
+    /**
+     * Neither write access to the engrams nor edit access to the Reflection, or this instance is read-only.
+     */
+    403: ProblemDetail;
+    /**
+     * No such domain or kept text for this caller.
+     */
+    404: ProblemDetail;
+};
+
+export type DeleteKeptTextError = DeleteKeptTextErrors[keyof DeleteKeptTextErrors];
+
+export type DeleteKeptTextResponses = {
+    /**
+     * Deleted.
+     */
+    204: void;
+};
+
+export type DeleteKeptTextResponse = DeleteKeptTextResponses[keyof DeleteKeptTextResponses];
+
+export type ReadKeptTextData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+        /**
+         * The id from the listing.
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/kept/{id}';
+};
+
+export type ReadKeptTextErrors = {
+    /**
+     * The anonymous viewer of a domain it reads.
+     */
+    401: ProblemDetail;
+    /**
+     * Neither write access to the engrams nor edit access to the Reflection.
+     */
+    403: ProblemDetail;
+    /**
+     * No such domain or kept text for this caller.
+     */
+    404: ProblemDetail;
+};
+
+export type ReadKeptTextError = ReadKeptTextErrors[keyof ReadKeptTextErrors];
+
+export type ReadKeptTextResponses = {
+    /**
+     * The entry and its text.
+     */
+    200: KeptTextResponse;
+};
+
+export type ReadKeptTextResponse = ReadKeptTextResponses[keyof ReadKeptTextResponses];
 
 export type GetDomainManifestData = {
     body?: never;
@@ -4145,7 +4394,7 @@ export type MoveEngramErrors = {
      */
     404: ProblemDetail;
     /**
-     * The destination already exists in the target domain, another engram there already answers to the new permalink, or the engram is open in the editor and its address would change under it.
+     * The destination already exists in the target domain or is an engram only the previous host of a host move has, another engram there already answers to the new permalink, or the engram is open in the editor and its address would change under it.
      */
     409: ProblemDetail;
     /**
@@ -4166,9 +4415,11 @@ export type MoveEngramResponses = {
      *
      * `to.permalink` is the address the engram answers to after the move, which is not always the one it went in with: a permalink in step with the path follows the file, and `new_permalink` can ask for another.
      *
-     * `links_rewritten` counts the engrams whose references were rewritten, `references_rewritten` the references inside them, and `rewritten` names those engrams by domain and permalink.
+     * `links_rewritten` counts the engrams whose references were rewritten, `references_rewritten` the references inside them, and `rewritten` names those engrams by domain and permalink. An entry with `landed: "live"` went into a page somebody has open in the editor, whose save writes it.
      *
      * `attachment_warnings` lists the attachments the move could not carry, one sentence each and empty when everything travelled; those files stay whole in the source domain.
+     *
+     * `links_failed`, `[{ domain, path, reason }]`, appears only when an engram that links the moved one could not be rewritten after the move; the move itself has landed.
      */
     200: {
         [key: string]: unknown;
@@ -4250,7 +4501,7 @@ export type GetReflectionStatusError = GetReflectionStatusErrors[keyof GetReflec
 
 export type GetReflectionStatusResponses = {
     /**
-     * ReflectionStatus. `state` is `off`, `pending` (then `pending_engrams` lists the engrams still under `reflections/` for a caller with `engrams_visible`, and is empty for anyone else), `homeless`, `on` or `elsewhere` (then `home_url` is set). `member` is true when the caller holds a membership row it may leave.
+     * ReflectionStatus. `state` is `off`, `pending` (then `pending_engrams` lists the engrams still under `reflections/` for a caller with `engrams_visible`, and is empty for anyone else), `homeless`, `on`, `elsewhere` (then `home_url` is set) or `hosted_elsewhere` (another instance on this shared database holds the domain's host lock and serves it; then `host_label` names that instance, or is `null` while a rename pauses a domain whose lock nobody holds, and it is `null` in every other state). `member` is true when the caller holds a membership row it may leave.
      */
     200: {
         [key: string]: unknown;
@@ -4277,7 +4528,7 @@ export type ListReflectionAssetsErrors = {
      */
     404: ProblemDetail;
     /**
-     * The Reflection is not here (off, pending, homeless or elsewhere, then with `home_url`).
+     * The Reflection is not here (off, pending, homeless, elsewhere, then with `home_url`, or served by another instance on this shared database).
      */
     409: ProblemDetail;
 };
@@ -4323,7 +4574,7 @@ export type DeleteReflectionAssetErrors = {
      */
     404: ProblemDetail;
     /**
-     * The Reflection is not here (then possibly `home_url`).
+     * The file is one only the previous host of a host move has, whose row a delete here would drop; or the Reflection is not here (then possibly `home_url`).
      */
     409: ProblemDetail;
     /**
@@ -4390,6 +4641,12 @@ export type WriteReflectionAssetData = {
      * The raw file bytes.
      */
     body: string;
+    headers?: {
+        /**
+         * `*` to only create: a path that already holds a file is refused with 412 and left as it is. Any other value is 422.
+         */
+        'If-None-Match'?: string | null;
+    };
     path: {
         /**
          * The domain.
@@ -4418,15 +4675,19 @@ export type WriteReflectionAssetErrors = {
      */
     404: ProblemDetail;
     /**
-     * The Reflection is not here (then possibly `home_url`).
+     * The path is a file only the previous host of a host move has, or the Reflection is not here (then possibly `home_url`).
      */
     409: ProblemDetail;
+    /**
+     * `If-None-Match: *` and the path already holds a file; nothing was stored. Pick another name.
+     */
+    412: ProblemDetail;
     /**
      * Over the 10 MiB ceiling.
      */
     413: ProblemDetail;
     /**
-     * A path rule or the extension allowlist refused it.
+     * A path rule or the extension allowlist refused it, or `If-None-Match` carried something other than `*`.
      */
     422: ProblemDetail;
 };
@@ -4468,7 +4729,7 @@ export type MoveReflectionErrors = {
      */
     404: ProblemDetail;
     /**
-     * Somebody is editing it, or the Reflection is not here.
+     * Somebody is editing a page that links it (an editor open on the page itself does not refuse: it saves, closes and is told the new path), the new path is taken or is a page only the previous host of a host move has, or the Reflection is not here.
      */
     409: ProblemDetail;
     /**
@@ -4481,7 +4742,7 @@ export type MoveReflectionError = MoveReflectionErrors[keyof MoveReflectionError
 
 export type MoveReflectionResponses = {
     /**
-     * Moved with its threads and baseline; links to it rewritten: `{ from, to, links_rewritten, threads_moved }`. `links_failed`, `[{ path, reason }]`, appears only when a page that links it could not be rewritten after the move.
+     * Moved with its threads and baseline; links to it rewritten: `{ from, to, links_rewritten, threads_moved }`. `links_failed`, `[{ domain, path, reason }]`, appears only when a page that links it could not be rewritten after the move.
      */
     200: {
         [key: string]: unknown;
@@ -4516,7 +4777,7 @@ export type MoveReflectionAssetErrors = {
      */
     404: ProblemDetail;
     /**
-     * The new path already holds a file, a page that links it is open in a co-editing room, or the Reflection is not here (then possibly `home_url`).
+     * The new path already holds a file or is a file only the previous host of a host move has, a page that links it is open in a co-editing room, or the Reflection is not here (then possibly `home_url`).
      */
     409: ProblemDetail;
     /**
@@ -4529,7 +4790,7 @@ export type MoveReflectionAssetError = MoveReflectionAssetErrors[keyof MoveRefle
 
 export type MoveReflectionAssetResponses = {
     /**
-     * Moved: `{ domain, from, to, links_rewritten }`. Two keys appear only when needed: `links_failed`, `[{ path, reason }]` for each page whose link could not be rewritten after the file moved, and `note`, a sentence saying the file moved and its index row did not follow (the next sync brings it up to date).
+     * Moved: `{ domain, from, to, links_rewritten }`. Two keys appear only when needed: `links_failed`, `[{ domain, path, reason }]` for each page whose link could not be rewritten after the file moved, and `note`, a sentence saying the file moved and its index row did not follow (the next sync brings it up to date).
      */
     200: {
         [key: string]: unknown;
@@ -4574,7 +4835,7 @@ export type GetReflectQueueError = GetReflectQueueErrors[keyof GetReflectQueueEr
 
 export type GetReflectQueueResponses = {
     /**
-     * ReflectQueue. `kind` is `feedback` (`what`: `new`, `changed`, `removed`), `update` (`source_changed`, `source_retired`, `source_missing`, `unreflected`, `off_structure`, `pact_changed`) or `review` (`thread`). `sources`, and an `unreflected` item's `folder` and `engrams`, are absent for a caller who cannot read engrams. The MCP `reflect` tool answers the same shape with `scope: { domains, kinds }` in place of `domain` and a `domain` member on each row; its `scope` may carry `unreadable`, the names of the domains whose queue could not be read, and `pending`, the names of the domains whose Reflection waits for engrams to leave `reflections/`. An update item's `what` may also be `asset_missing` (per section, with `assets`), `engram_attachment` (per section, with `targets`) or `asset_unreferenced` (`path` empty, with `asset`).
+     * ReflectQueue. `kind` is `feedback` (`what`: `new`, `changed`, `removed`), `update` (`source_changed`, `source_retired`, `source_missing`, `unreflected`, `off_structure`, `pact_changed`) or `review` (`thread`). `sources`, an `unreflected` item's `folder` and `engrams`, and an `engram_attachment` item's `targets` are absent for a caller who cannot read engrams. The MCP `reflect` tool answers the same shape with `scope: { domains, kinds }` in place of `domain` and a `domain` member on each row; its `scope` may carry `unreadable`, the names of the domains whose queue could not be read, and `pending`, the names of the domains whose Reflection waits for engrams to leave `reflections/`. An update item's `what` may also be `asset_missing` (per section, with `assets`), `engram_attachment` (per section, with `targets`), `asset_unreferenced` (`path` empty, with `asset`) or `host_moved` (`path` empty, one per domain, after the domain moved to this instance on a shared database and this disk lacks files the previous host wrote: `only_elsewhere` is `{ previous_host, engrams, attachments, pages, files }`, counts only, `previous_host` null when unknown).
      */
     200: {
         [key: string]: unknown;
@@ -4677,6 +4938,42 @@ export type SearchReflectionsResponses = {
 };
 
 export type SearchReflectionsResponse = SearchReflectionsResponses[keyof SearchReflectionsResponses];
+
+export type GetReflectionSummaryData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/reflection/summary';
+};
+
+export type GetReflectionSummaryErrors = {
+    /**
+     * No such domain, or none this caller may see (the anonymous viewer included).
+     */
+    404: ProblemDetail;
+    /**
+     * The Reflection is not here (then possibly `home_url`).
+     */
+    409: ProblemDetail;
+};
+
+export type GetReflectionSummaryError = GetReflectionSummaryErrors[keyof GetReflectionSummaryErrors];
+
+export type GetReflectionSummaryResponses = {
+    /**
+     * ReflectionSummary.
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetReflectionSummaryResponse = GetReflectionSummaryResponses[keyof GetReflectionSummaryResponses];
 
 export type ListReflectionThreadsData = {
     body?: never;
@@ -4845,7 +5142,7 @@ export type GetReflectionTreeErrors = {
      */
     404: ProblemDetail;
     /**
-     * The Reflection is off, pending, homeless or lives elsewhere (then the `home_url` member names where).
+     * The Reflection is off, pending, homeless, lives elsewhere (then the `home_url` member names where) or is served by another instance on this shared database (the text names it).
      */
     409: ProblemDetail;
 };
@@ -4935,7 +5232,7 @@ export type GetReflectionErrors = {
      */
     404: ProblemDetail;
     /**
-     * The Reflection is not here (off, pending, homeless or elsewhere, then with `home_url`).
+     * The Reflection is not here (off, pending, homeless, elsewhere, then with `home_url`, or served by another instance on this shared database).
      */
     409: ProblemDetail;
 };
@@ -4983,7 +5280,7 @@ export type SaveReflectionErrors = {
      */
     404: ProblemDetail;
     /**
-     * A stale `expected_checksum` (detail starting "stale edit"), a create over an existing page, or the Reflection is not here (then possibly `home_url`).
+     * A stale `expected_checksum` (detail starting "stale edit"), a create over an existing page, a page only the previous host of a host move has (the detail names the remedy), or the Reflection is not here (then possibly `home_url`).
      */
     409: ProblemDetail;
     /**
@@ -6707,7 +7004,7 @@ export type ListReflectionDomainsData = {
 
 export type ListReflectionDomainsResponses = {
     /**
-     * ReflectionDomains: `{ domains: [{ domain, state, right, engrams_visible, home, home_url, open_threads }] }`. `state` is `on`, `pending`, `homeless` or `elsewhere`; `home` is `here`, `local`, `elsewhere` (then `home_url` is set) or `null` (`pending`, `homeless`); `open_threads` is 0 unless `state` is `on`.
+     * ReflectionDomains: `{ domains: [{ domain, state, right, engrams_visible, home, home_url, host_label, open_threads }] }`. `state` is `on`, `pending`, `homeless`, `elsewhere` or `hosted_elsewhere` (another instance on this shared database holds the domain's host lock and serves it); `home` is `here`, `local`, `elsewhere` (then `home_url` is set) or `null` (`pending`, `homeless`, `hosted_elsewhere`); `host_label` names the serving instance for `hosted_elsewhere` (`null` while a rename pauses a domain nobody holds) and is `null` otherwise; `open_threads` is 0 unless `state` is `on`.
      */
     200: {
         [key: string]: unknown;

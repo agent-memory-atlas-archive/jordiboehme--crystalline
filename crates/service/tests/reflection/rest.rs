@@ -79,6 +79,29 @@ pub async fn serve_opts(opts: Opts) -> Served {
         },
     )
     .await;
+    let mut p = crate::docs::write(
+        "guides/deploying.md",
+        "# Deploying\n\n## Night deploys\n\nDeploys run at night.\n",
+    );
+    p.sources = std::collections::BTreeMap::from([
+        ("_top".to_string(), Vec::new()),
+        (
+            "Night deploys".to_string(),
+            vec!["runbooks/deploy".to_string()],
+        ),
+    ]);
+    if !origin {
+        fx.engine
+            .write_reflection(&p, &crystalline_service::ReflectionCaller::owner())
+            .await
+            .unwrap();
+    }
+    serve_fx(fx, private).await
+}
+
+/// Serve `fx`'s engine with [`serve`]'s accounts: `keeper`, `ann`, `vera`,
+/// `ed` and `nora`, and with `private` the members of a private `eng`.
+pub async fn serve_fx(fx: Fx, private: bool) -> Served {
     let auth = Arc::new(
         AuthStore::open(&fx.tmp.path().join("web-auth.db"))
             .await
@@ -115,23 +138,6 @@ pub async fn serve_opts(opts: Opts) -> Served {
             .await
             .unwrap();
         auth.upsert_domain_member("eng", "ed", MemberLevel::Editor, None, "keeper")
-            .await
-            .unwrap();
-    }
-    let mut p = crate::docs::write(
-        "guides/deploying.md",
-        "# Deploying\n\n## Night deploys\n\nDeploys run at night.\n",
-    );
-    p.sources = std::collections::BTreeMap::from([
-        ("_top".to_string(), Vec::new()),
-        (
-            "Night deploys".to_string(),
-            vec!["runbooks/deploy".to_string()],
-        ),
-    ]);
-    if !origin {
-        fx.engine
-            .write_reflection(&p, &crystalline_service::ReflectionCaller::owner())
             .await
             .unwrap();
     }
@@ -284,6 +290,63 @@ async fn a_contributor_sees_no_sources_and_no_engram_route() {
     let (_, queue) = ann.get("/api/v1/domains/eng/reflection/queue").await;
     assert!(queue["total"].as_u64().unwrap() >= 1);
     assert!(!queue.to_string().contains("runbooks/deploy"), "{queue}");
+}
+
+/// A page embedding an engram attachment makes an `engram_attachment` item
+/// whose `targets` are engram file paths. Only a reader of engrams gets them.
+#[tokio::test]
+async fn a_contributor_gets_no_engram_attachment_targets_in_the_queue() {
+    let fx = fixture_with(
+        &[
+            ("MANIFEST.md", &manifest("reflection: on\n")),
+            ("assets/shot.png", "an engram attachment"),
+            (
+                "reflections/b.md",
+                "# B\n\n## Shot\n<!-- r:aaaa0003 -->\n\n![e](../assets/shot.png)\n",
+            ),
+        ],
+        |_, _| {},
+    )
+    .await;
+    let s = serve_fx(fx, true).await;
+    let queue_path = "/api/v1/domains/eng/reflection/queue";
+    let has_item = |queue: &Value| {
+        queue["queue"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["what"] == "engram_attachment")
+    };
+    // The page's own text (a feedback diff) names the link; the item must not.
+    let no_targets = |queue: &Value| {
+        queue["queue"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r.get("targets").is_none())
+    };
+    // ed reads engrams: the targets stay.
+    let ed = Session::login(s.addr, "ed").await;
+    let (status, queue) = ed.get(queue_path).await;
+    assert_eq!(status, 200, "{queue}");
+    let item = queue["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["what"] == "engram_attachment")
+        .unwrap_or_else(|| panic!("no engram_attachment item: {queue}"));
+    assert_eq!(item["targets"], json!(["../assets/shot.png"]), "{queue}");
+    // ann has knowledge none: the item stays, its targets do not.
+    let ann = Session::login(s.addr, "ann").await;
+    let (status, queue) = ann.get(queue_path).await;
+    assert_eq!(status, 200, "{queue}");
+    assert!(has_item(&queue), "the item is still asked for: {queue}");
+    assert!(no_targets(&queue), "{queue}");
+    // The review route carries the same queue.
+    let (status, review) = ann.get("/api/v1/domains/eng/reflection/review").await;
+    assert_eq!(status, 200, "{review}");
+    assert!(has_item(&review["queue"]), "{review}");
+    assert!(no_targets(&review["queue"]), "{review}");
 }
 
 #[tokio::test]
@@ -817,7 +880,7 @@ const ANONYMOUS_EDIT: &str =
     "anonymous visitors read this Reflection and cannot change it; sign in to edit";
 
 /// A request with no session at all: the anonymous viewer, where it is on.
-async fn anonymous(
+pub async fn anonymous(
     addr: std::net::SocketAddr,
     method: reqwest::Method,
     path: &str,
@@ -865,7 +928,7 @@ fn reflection_requests(domain: &str) -> Vec<(reqwest::Method, String, Option<Val
         .collect();
     assert_eq!(
         ops.len(),
-        17,
+        18,
         "every per-domain reflection operation: {ops:?}"
     );
     ops
@@ -1054,16 +1117,26 @@ async fn an_unknown_thread_action_is_404_and_a_search_needs_words() {
 
 impl Session {
     pub async fn put_bytes(&self, path: &str, bytes: &[u8]) -> (u16, Value) {
+        self.put_bytes_with(path, bytes, &[]).await
+    }
+
+    /// [`Session::put_bytes`] with extra request headers.
+    pub async fn put_bytes_with(
+        &self,
+        path: &str,
+        bytes: &[u8],
+        headers: &[(&str, &str)],
+    ) -> (u16, Value) {
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let resp = client
+        let mut request = client
             .put(format!("http://{}{path}", self.addr))
             .header("cookie", format!("fluid_session={}", self.cookie))
             .header("x-csrf-token", &self.csrf)
-            .header("content-type", "application/octet-stream")
-            .body(bytes.to_vec())
-            .send()
-            .await
-            .unwrap();
+            .header("content-type", "application/octet-stream");
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let resp = request.body(bytes.to_vec()).send().await.unwrap();
         let status = resp.status().as_u16();
         let text = resp.text().await.unwrap();
         (
@@ -1361,6 +1434,46 @@ async fn open_room(
     tokio_tungstenite::connect_async(request).await.unwrap().0
 }
 
+/// The page route answers `live.present` while a room is open over it, and
+/// no `live` member otherwise, for a reader with or without knowledge.
+#[tokio::test]
+async fn the_page_route_answers_live_while_a_room_is_open() {
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    use yrs::updates::encoder::Encode;
+    let s = serve().await;
+    let owner = crystalline_service::ReflectionCaller::owner();
+    s.fx.engine
+        .write_reflection(&crate::docs::write("live.md", "# Live\n\nBody.\n"), &owner)
+        .await
+        .unwrap();
+    let ed = Session::login(s.addr, "ed").await;
+    let ann = Session::login(s.addr, "ann").await;
+    let (status, closed) = ed.get("/api/v1/domains/eng/reflections/live.md").await;
+    assert_eq!(status, 200, "{closed}");
+    assert!(closed.get("live").is_none(), "no room, no member: {closed}");
+
+    let mut room = open_room(s.addr, "/api/v1/collab-reflection/eng/live.md", &ed).await;
+    let mut awareness = yrs::sync::Awareness::new(yrs::Doc::new());
+    awareness.set_local_state_raw("{\"user\":{\"name\":\"Ed\"}}".to_string());
+    let frame = yrs::sync::Message::Awareness(awareness.update().unwrap()).encode_v1();
+    room.send(WsMessage::Binary(frame.into())).await.unwrap();
+
+    for who in [&ed, &ann] {
+        let mut present = Value::Null;
+        for _ in 0..50 {
+            let (status, open) = who.get("/api/v1/domains/eng/reflections/live.md").await;
+            assert_eq!(status, 200, "{open}");
+            present = open["live"]["present"].clone();
+            if present.as_array().is_some_and(|a| !a.is_empty()) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(present, json!(["Ed"]));
+    }
+}
+
 #[tokio::test]
 async fn the_search_route_takes_search_type_and_page_and_answers_the_mcp_shape() {
     let s = serve().await;
@@ -1397,4 +1510,635 @@ async fn the_search_route_takes_search_type_and_page_and_answers_the_mcp_shape()
             .contains("hybrid, text or semantic"),
         "{refused}"
     );
+}
+
+/// The change stream as `cookie`, or as the anonymous viewer.
+async fn events_as(addr: std::net::SocketAddr, cookie: Option<&str>) -> reqwest::Response {
+    let mut req = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .get(format!("http://{addr}/api/v1/events"))
+        .header("accept", "text/event-stream");
+    if let Some(cookie) = cookie {
+        req = req.header("cookie", format!("fluid_session={cookie}"));
+    }
+    req.send().await.unwrap()
+}
+
+/// The `event:` names a stream sends within `within`; heartbeat comments
+/// carry none.
+async fn event_names(resp: &mut reqwest::Response, within: std::time::Duration) -> Vec<String> {
+    let mut body = String::new();
+    let deadline = tokio::time::Instant::now() + within;
+    while let Ok(Ok(Some(chunk))) = tokio::time::timeout_at(deadline, resp.chunk()).await {
+        body.push_str(std::str::from_utf8(&chunk).unwrap());
+    }
+    body.lines()
+        .filter_map(|line| line.strip_prefix("event:"))
+        .map(|name| name.trim().to_string())
+        .collect()
+}
+
+/// An engram edit and a reflection write, both in `eng`.
+async fn one_of_each(s: &Served) {
+    s.fx.engine
+        .edit_engram(&crystalline_service::params::EditParams {
+            identifier: "runbooks/deploy".into(),
+            domain: "eng".into(),
+            operation: "append".into(),
+            content: Some("- [fact] one more line".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    s.fx.engine
+        .write_reflection(
+            &crate::docs::write("guides/other.md", "# Other\n"),
+            &crystalline_service::ReflectionCaller::owner(),
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_contributor_hears_reflection_events_and_no_engram_event() {
+    let s = serve().await;
+    let ann = Session::login(s.addr, "ann").await;
+    s.auth
+        .add_user("out", "out", None, Role::Editor, "pw12345678")
+        .await
+        .unwrap();
+    let out = Session::login(s.addr, "out").await;
+    let mut contributor = events_as(s.addr, Some(&ann.cookie)).await;
+    let mut stranger = events_as(s.addr, Some(&out.cookie)).await;
+    one_of_each(&s).await;
+    let heard = event_names(&mut contributor, std::time::Duration::from_secs(3)).await;
+    assert_eq!(
+        heard,
+        vec!["reflection"],
+        "the page, never the engram: {heard:?}"
+    );
+    let heard = event_names(&mut stranger, std::time::Duration::from_secs(3)).await;
+    assert!(heard.is_empty(), "a stranger hears neither: {heard:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_anonymous_viewer_of_a_public_domain_hears_both() {
+    let s = serve_with(true).await;
+    let mut anonymous = events_as(s.addr, None).await;
+    one_of_each(&s).await;
+    let mut heard = event_names(&mut anonymous, std::time::Duration::from_secs(3)).await;
+    heard.sort();
+    assert_eq!(
+        heard,
+        vec!["engram", "reflection"],
+        "it reads the engrams and the Reflection: {heard:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_contributor_hears_the_switch_go_off() {
+    let s = serve().await;
+    let ann = Session::login(s.addr, "ann").await;
+    let mut contributor = events_as(s.addr, Some(&ann.cookie)).await;
+    s.fx.engine
+        .set_manifest_policies(
+            "eng",
+            &[("reflection".to_string(), "off".to_string())],
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    let heard = event_names(&mut contributor, std::time::Duration::from_secs(3)).await;
+    assert_eq!(
+        heard,
+        vec!["reflection"],
+        "the switch, never the MANIFEST's engram event: {heard:?}"
+    );
+}
+
+/// The domain listing counts each Reflection's open threads from its threads
+/// files alone: twenty listings read no page text and no engram row past
+/// the gate's probe.
+#[tokio::test]
+async fn the_domain_listing_counts_open_threads_without_page_text() {
+    let s = serve().await;
+    let ed = Session::login(s.addr, "ed").await;
+    let mut ids = Vec::new();
+    for text in ["Still?", "Who runs them?", "Since when?"] {
+        let (status, thread) = ed
+            .send(
+                reqwest::Method::POST,
+                "/api/v1/domains/eng/reflection/threads",
+                Some(json!({ "path": "guides/deploying.md", "section": "Night deploys", "text": text })),
+            )
+            .await;
+        assert_eq!(status, 201, "{thread}");
+        ids.push(thread["id"].as_str().unwrap().to_string());
+    }
+    let (status, _) = ed
+        .send(
+            reqwest::Method::POST,
+            &format!("/api/v1/domains/eng/reflection/threads/{}/resolve", ids[0]),
+            Some(json!({ "path": "guides/deploying.md", "outcome": "Yes." })),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let texts = s.fx.engine.reflection_text_loads();
+    let paths = s.fx.engine.recorded_path_loads();
+    for _ in 0..20 {
+        let (status, listing) = ed.get("/api/v1/reflection/domains").await;
+        assert_eq!(status, 200);
+        assert_eq!(listing["domains"][0]["domain"], "eng");
+        assert_eq!(listing["domains"][0]["open_threads"], 2, "{listing}");
+    }
+    assert_eq!(
+        s.fx.engine.reflection_text_loads(),
+        texts,
+        "no page text is read to count threads"
+    );
+    assert_eq!(s.fx.engine.recorded_path_loads(), paths);
+}
+
+/// `If-None-Match: *` makes an upload create-only: the first lands, the
+/// second is 412 with the bytes unchanged, for a contributor and a curator
+/// alike (a contributor is told 412, not the 403 of a refused replace).
+#[tokio::test]
+async fn a_create_only_upload_refuses_an_existing_file_with_412() {
+    let s = serve().await;
+    let (ann, ed) = (
+        Session::login(s.addr, "ann").await,
+        Session::login(s.addr, "ed").await,
+    );
+    const FILE: &str = "/api/v1/domains/eng/reflection/assets/flow.png";
+    let png = crate::assets::PNG;
+    let star = [("if-none-match", "*")];
+    let (status, up) = ann.put_bytes_with(FILE, png, &star).await;
+    assert_eq!(status, 200, "{up}");
+    assert_eq!(up["created"], true, "{up}");
+    for who in [&ann, &ed] {
+        let (status, err) = who.put_bytes_with(FILE, b"other", &star).await;
+        assert_eq!(status, 412, "{err}");
+        assert_eq!(err["status"], 412, "{err}");
+        assert_eq!(
+            err["detail"],
+            format!(
+                "'assets/flow.png' {}",
+                crystalline_service::engine::ASSET_EXISTS
+            ),
+            "{err}"
+        );
+    }
+    // A space around the star is still the star.
+    let (status, err) = ed
+        .put_bytes_with(FILE, b"other", &[("if-none-match", " * ")])
+        .await;
+    assert_eq!(status, 412, "{err}");
+    assert_eq!(
+        std::fs::read(s.fx.root.join("reflections/assets/flow.png")).unwrap(),
+        png,
+        "nothing replaced the first upload"
+    );
+    // Without the header a curator still replaces.
+    let (status, up) = ed.put_bytes(FILE, b"other").await;
+    assert_eq!(status, 200, "{up}");
+    assert_eq!(up["created"], false, "{up}");
+}
+
+/// Only `*` asks to create: any other `If-None-Match` is 422 and stores
+/// nothing.
+#[tokio::test]
+async fn an_if_none_match_other_than_star_is_422() {
+    let s = serve().await;
+    let ed = Session::login(s.addr, "ed").await;
+    const FILE: &str = "/api/v1/domains/eng/reflection/assets/flow.png";
+    for value in ["\"abc\"", "W/*", "*, \"abc\"", "\"*\"", ""] {
+        let (status, err) = ed
+            .put_bytes_with(FILE, crate::assets::PNG, &[("if-none-match", value)])
+            .await;
+        assert_eq!(status, 422, "{value:?}: {err}");
+        assert_eq!(
+            err["detail"], "If-None-Match on an upload takes only *",
+            "{value:?}: {err}"
+        );
+    }
+    assert!(!s.fx.root.join("reflections/assets/flow.png").exists());
+}
+
+/// A page moved over the JSON API while somebody has it open in the editor:
+/// the move is not refused, the open socket is told `closed` with reason
+/// `moved` and the new path, and the socket then closes for good (4404).
+#[tokio::test]
+async fn a_move_over_the_api_tells_the_open_editor_where_the_page_went() {
+    use futures::StreamExt;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    use yrs::updates::decoder::DecoderV1;
+    let s = serve().await;
+    let owner = crystalline_service::ReflectionCaller::owner();
+    s.fx.engine
+        .write_reflection(&crate::docs::write("open.md", "# Open\n\nBody.\n"), &owner)
+        .await
+        .unwrap();
+    let ed = Session::login(s.addr, "ed").await;
+    let mut room = open_room(s.addr, "/api/v1/collab-reflection/eng/open.md", &ed).await;
+    let (status, moved) = ed
+        .send(
+            reqwest::Method::POST,
+            "/api/v1/domains/eng/reflection/move",
+            Some(json!({ "from": "open.md", "to": "guides/open.md" })),
+        )
+        .await;
+    assert_eq!(status, 200, "{moved}");
+    let mut closed = None;
+    let mut code = None;
+    while let Some(frame) = tokio::time::timeout(std::time::Duration::from_secs(10), room.next())
+        .await
+        .expect("the socket hears the close in time")
+    {
+        match frame.unwrap() {
+            WsMessage::Binary(bytes) => {
+                let mut decoder = DecoderV1::from(bytes.as_ref());
+                for message in yrs::sync::MessageReader::new(&mut decoder).flatten() {
+                    if let yrs::sync::Message::Custom(4, payload) = message {
+                        let control: Value = serde_json::from_slice(&payload).unwrap();
+                        if control["kind"] == "closed" {
+                            closed = Some(control);
+                        }
+                    }
+                }
+            }
+            WsMessage::Close(frame) => {
+                code = frame.map(|frame| u16::from(frame.code));
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        closed,
+        Some(json!({ "kind": "closed", "reason": "moved", "path": "guides/open.md" }))
+    );
+    assert_eq!(
+        code,
+        Some(4404),
+        "a close the editor does not reconnect after"
+    );
+    let (status, page) = ed
+        .get("/api/v1/domains/eng/reflections/guides/open.md")
+        .await;
+    assert_eq!(status, 200, "{page}");
+}
+
+/// An engram no page cites is an `unreflected` item that names its folder and
+/// its engrams. Only a reader of engrams is told of it at all.
+#[tokio::test]
+async fn a_contributor_hears_nothing_of_unreflected_engrams_in_the_queue() {
+    let fx = fixture_with(
+        &[
+            ("MANIFEST.md", &manifest("reflection: on\n")),
+            (
+                "notes/loose.md",
+                &engram("Loose", "notes/loose", "- [fact] nobody cites this"),
+            ),
+        ],
+        |_, _| {},
+    )
+    .await;
+    let s = serve_fx(fx, true).await;
+    let queue_path = "/api/v1/domains/eng/reflection/queue";
+    let unreflected = |queue: &Value| {
+        queue["queue"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["what"] == "unreflected")
+            .count()
+    };
+    let no_folder = |queue: &Value| {
+        queue["queue"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r.get("folder").is_none() && r.get("engrams").is_none())
+    };
+    let ed = Session::login(s.addr, "ed").await;
+    let (status, queue) = ed.get(queue_path).await;
+    assert_eq!(status, 200, "{queue}");
+    assert_eq!(unreflected(&queue), 1, "{queue}");
+    assert_eq!(queue["queue"][0]["folder"], "notes", "{queue}");
+    let ann = Session::login(s.addr, "ann").await;
+    let (status, queue) = ann.get(queue_path).await;
+    assert_eq!(status, 200, "{queue}");
+    assert_eq!(unreflected(&queue), 0, "{queue}");
+    assert!(no_folder(&queue), "{queue}");
+    assert!(
+        !queue.to_string().contains("notes/loose"),
+        "no engram name: {queue}"
+    );
+    let (status, review) = ann.get("/api/v1/domains/eng/reflection/review").await;
+    assert_eq!(status, 200, "{review}");
+    assert_eq!(unreflected(&review["queue"]), 0, "{review}");
+    assert!(no_folder(&review["queue"]), "{review}");
+}
+
+/// An editor that opens the old path after the page moved (its first try was
+/// refused while the move ran) is upgraded and told where the page went, the
+/// same `moved` close an open editor got, then the socket closes for good.
+#[tokio::test]
+async fn an_editor_opening_the_old_path_after_a_move_is_told_where_it_went() {
+    use futures::StreamExt;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    use yrs::updates::decoder::DecoderV1;
+    let s = serve().await;
+    let owner = crystalline_service::ReflectionCaller::owner();
+    s.fx.engine
+        .write_reflection(&crate::docs::write("late.md", "# Late\n\nBody.\n"), &owner)
+        .await
+        .unwrap();
+    let ed = Session::login(s.addr, "ed").await;
+    let (status, moved) = ed
+        .send(
+            reqwest::Method::POST,
+            "/api/v1/domains/eng/reflection/move",
+            Some(json!({ "from": "late.md", "to": "guides/late.md" })),
+        )
+        .await;
+    assert_eq!(status, 200, "{moved}");
+    let mut room = open_room(s.addr, "/api/v1/collab-reflection/eng/late.md", &ed).await;
+    let mut closed = None;
+    let mut code = None;
+    while let Some(frame) = tokio::time::timeout(std::time::Duration::from_secs(10), room.next())
+        .await
+        .expect("the socket answers in time")
+    {
+        match frame.unwrap() {
+            WsMessage::Binary(bytes) => {
+                let mut decoder = DecoderV1::from(bytes.as_ref());
+                for message in yrs::sync::MessageReader::new(&mut decoder).flatten() {
+                    if let yrs::sync::Message::Custom(4, payload) = message {
+                        closed = Some(serde_json::from_slice::<Value>(&payload).unwrap());
+                    }
+                }
+            }
+            WsMessage::Close(frame) => {
+                code = frame.map(|frame| u16::from(frame.code));
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        closed,
+        Some(json!({ "kind": "closed", "reason": "moved", "path": "guides/late.md" }))
+    );
+    assert_eq!(code, Some(4404));
+}
+
+/// A page move onto a path that holds a page is refused with 409 before the
+/// open editor is touched: the socket hears no close and stays open.
+#[tokio::test]
+async fn a_move_onto_a_taken_page_is_a_409_and_leaves_the_editor_open() {
+    use futures::StreamExt;
+    let s = serve().await;
+    let owner = crystalline_service::ReflectionCaller::owner();
+    for (path, body) in [
+        ("open.md", "# Open\n\nBody.\n"),
+        ("taken.md", "# Taken\n\nTheirs.\n"),
+    ] {
+        s.fx.engine
+            .write_reflection(&crate::docs::write(path, body), &owner)
+            .await
+            .unwrap();
+    }
+    let ed = Session::login(s.addr, "ed").await;
+    let mut room = open_room(s.addr, "/api/v1/collab-reflection/eng/open.md", &ed).await;
+    let (status, refused) = ed
+        .send(
+            reqwest::Method::POST,
+            "/api/v1/domains/eng/reflection/move",
+            Some(json!({ "from": "open.md", "to": "taken.md" })),
+        )
+        .await;
+    assert_eq!(status, 409, "{refused}");
+    assert!(
+        refused["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("'taken.md' already holds a reflection"),
+        "{refused}"
+    );
+    // Nothing that closes arrives: only the greeting and the sync.
+    let quiet = tokio::time::timeout(std::time::Duration::from_millis(300), async {
+        while let Some(frame) = room.next().await {
+            if let tokio_tungstenite::tungstenite::Message::Close(_) = frame.unwrap() {
+                return true;
+            }
+        }
+        true
+    })
+    .await;
+    assert!(quiet.is_err(), "the socket stays open");
+}
+
+/// What the Reflection home derives from the review, one reader at a time:
+/// the three counts and the open threads by page (path, title, thread ids,
+/// first quotes, who each waits on).
+fn home_from_review(review: &Value) -> Value {
+    let mut pages: std::collections::BTreeMap<String, (Value, Vec<Value>)> =
+        std::collections::BTreeMap::new();
+    let mut count = |side: &str| {
+        let mut n = 0;
+        for group in review[side].as_array().unwrap() {
+            let entry = pages
+                .entry(group["path"].as_str().unwrap().to_string())
+                .or_insert_with(|| (group["title"].clone(), Vec::new()));
+            for t in group["threads"].as_array().unwrap() {
+                n += 1;
+                entry
+                    .1
+                    .push(json!([t["id"], t["anchor"]["quote"], t["waiting_on"]]));
+            }
+        }
+        n
+    };
+    let (agent, people) = (count("waiting_for_the_agent"), count("waiting_for_people"));
+    let mut update_pages: Vec<&str> = review["queue"]["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["kind"] == "update")
+        .filter_map(|row| row["path"].as_str())
+        .filter(|path| !path.is_empty())
+        .collect();
+    update_pages.sort_unstable();
+    update_pages.dedup();
+    json!({
+        "agent": agent,
+        "people": people,
+        "updates": review["queue"]["kinds"]["update"],
+        "update_pages": update_pages.len(),
+        "pages": pages.into_iter().map(|(path, (title, mut threads))| {
+            threads.sort_by_key(|t| t[0].as_str().unwrap().to_string());
+            json!([path, title, threads])
+        }).collect::<Vec<_>>(),
+    })
+}
+
+/// Whether the review's first queue page (50 rows) can hold every update,
+/// so the distinct pages read off it are all of them.
+fn review_queue_fits(summary: &Value) -> bool {
+    summary["updates"].as_u64().unwrap() <= 50
+}
+
+/// The same, read off the summary route.
+fn home_from_summary(summary: &Value) -> Value {
+    let mut pages: Vec<Value> = summary["open_by_page"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| {
+            let mut threads: Vec<Value> = g["threads"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| json!([t["id"], t["quote"], t["waiting_on"]]))
+                .collect();
+            threads.sort_by_key(|t| t[0].as_str().unwrap().to_string());
+            json!([g["path"], g["title"], threads])
+        })
+        .collect();
+    pages.sort_by_key(|p| p[0].as_str().unwrap().to_string());
+    json!({
+        "agent": summary["waiting_for_the_agent"],
+        "people": summary["waiting_for_people"],
+        "updates": summary["updates"],
+        "update_pages": summary["pages_to_update"],
+        "pages": pages,
+    })
+}
+
+/// The home's summary says what the review says, for a reader of engrams and
+/// for a contributor who reads none (who is not counted the unreflected
+/// engram), reads the threads files once, carries no thread entries, and is
+/// refused to who may not read the Reflection.
+#[tokio::test]
+async fn the_reflection_summary_agrees_with_the_review_for_every_reader() {
+    let s = serve().await;
+    std::fs::create_dir_all(s.fx.root.join("notes")).unwrap();
+    std::fs::write(
+        s.fx.root.join("notes/loose.md"),
+        engram("Loose", "notes/loose", "- [fact] nobody cites this"),
+    )
+    .unwrap();
+    s.fx.engine.sync(None).await.unwrap();
+    let mut p = crate::docs::write("ops/second.md", "# Second\n\n## Pager\n\nWho holds it.\n");
+    p.sources = std::collections::BTreeMap::new();
+    s.fx.engine
+        .write_reflection(&p, &crystalline_service::ReflectionCaller::owner())
+        .await
+        .unwrap();
+    let ed = Session::login(s.addr, "ed").await;
+    let ann = Session::login(s.addr, "ann").await;
+    let mut ids = Vec::new();
+    for (who, path, section, quote) in [
+        (
+            &ed,
+            "guides/deploying.md",
+            "Night deploys",
+            Some("at night"),
+        ),
+        (&ann, "guides/deploying.md", "Night deploys", None),
+        (&ann, "ops/second.md", "Pager", Some("Who holds it")),
+    ] {
+        let (status, thread) = who
+            .send(
+                reqwest::Method::POST,
+                "/api/v1/domains/eng/reflection/threads",
+                Some(json!({ "path": path, "section": section, "quote": quote, "text": "Still true?" })),
+            )
+            .await;
+        assert_eq!(status, 201, "{thread}");
+        ids.push(thread["id"].as_str().unwrap().to_string());
+    }
+    // The agent answers the first: it now waits for people.
+    s.fx.engine
+        .discuss(
+            &crystalline_service::params::DiscussParams {
+                domain: "eng".into(),
+                action: Some("answer".into()),
+                path: Some("guides/deploying.md".into()),
+                thread: Some(ids[0].clone()),
+                text: Some("Yes.".into()),
+                ..Default::default()
+            },
+            &crate::docs::agent(),
+        )
+        .await
+        .unwrap();
+
+    let summary_path = "/api/v1/domains/eng/reflection/summary";
+    let (status, ed_summary) = ed.get(summary_path).await;
+    assert_eq!(status, 200, "{ed_summary}");
+    assert_eq!(ed_summary["domain"], "eng");
+    assert_eq!(ed_summary["waiting_for_people"], 1, "{ed_summary}");
+    assert_eq!(ed_summary["waiting_for_the_agent"], 2, "{ed_summary}");
+    let first = &ed_summary["open_by_page"][0];
+    assert_eq!(
+        first["path"], "guides/deploying.md",
+        "oldest page first: {ed_summary}"
+    );
+    assert_eq!(first["title"], "Deploying");
+    assert_eq!(
+        first["threads"][0]["id"],
+        ids[0].as_str(),
+        "oldest thread first"
+    );
+    assert_eq!(first["threads"][0]["quote"], "at night");
+    assert_eq!(first["threads"][0]["waiting_on"], "people");
+    assert_eq!(
+        first["threads"][0]["people"],
+        json!([{ "name": "ed", "agent": false }, { "name": "claude-code", "agent": true }]),
+        "{ed_summary}"
+    );
+    assert!(first["threads"][0].get("entries").is_none(), "no entries");
+
+    for (who, name) in [(&ed, "ed"), (&ann, "ann")] {
+        let (status, review) = who.get("/api/v1/domains/eng/reflection/review").await;
+        assert_eq!(status, 200, "{review}");
+        let before = s.fx.engine.reflection_text_loads();
+        let (status, summary) = who.get(summary_path).await;
+        assert_eq!(status, 200, "{summary}");
+        assert_eq!(
+            s.fx.engine.reflection_text_loads() - before,
+            1,
+            "the threads are read once for {name}"
+        );
+        assert_eq!(
+            home_from_summary(&summary),
+            home_from_review(&review),
+            "{name}: {summary} vs {review}"
+        );
+    }
+    let (_, ann_summary) = ann.get(summary_path).await;
+    assert!(
+        review_queue_fits(&ed_summary),
+        "the review's first page holds every update row: {ed_summary}"
+    );
+    assert_eq!(
+        ed_summary["pages_to_update"], ann_summary["pages_to_update"],
+        "unreflected engrams are on no page"
+    );
+    assert_eq!(
+        ed_summary["updates"].as_u64().unwrap(),
+        ann_summary["updates"].as_u64().unwrap() + 1,
+        "the unreflected engram is counted for a reader of engrams only: {ed_summary} {ann_summary}"
+    );
+    assert!(!ann_summary.to_string().contains("notes"), "{ann_summary}");
+
+    let nora = Session::login(s.addr, "nora").await;
+    let (status, err) = nora.get(summary_path).await;
+    assert_eq!(status, 404, "{err}");
+    let (status, err) = ed.get("/api/v1/domains/nope/reflection/summary").await;
+    assert_eq!(status, 404, "{err}");
 }

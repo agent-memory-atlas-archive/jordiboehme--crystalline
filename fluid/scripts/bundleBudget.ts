@@ -1,5 +1,6 @@
 /**
- * The size check for the `/π` route's lazy chunks (M4 C30).
+ * The size check for the `/π` route's lazy chunks (M4 C30), the main chunk's
+ * gzip guideline and the cap on eager JS ({@link EAGER_JS_CAP_BYTES}).
  *
  * Pure Node module, no DOM: it only reads a Vite manifest object and asks
  * for a gzip size, so it typechecks under `tsconfig.node.json` and is
@@ -64,6 +65,19 @@ export const GAME_BUDGET_BYTES = 1_474_560;
  * build over it warns and still passes, reporting the overrun and its cause.
  */
 export const MAIN_GUIDELINE_BYTES = 178_000;
+
+/**
+ * The cap on eager JS, raw bytes: the entry script plus every module the
+ * built `index.html` preloads, which is what every visitor downloads before
+ * the first screen runs. The design ledger set the rule at 527 kB; the app
+ * had grown past it before the rule was enforced. The cap was first set at
+ * 668,500 B (661,722 B measured on 2026-10-15 plus about 1 percent); search,
+ * the graph, maintenance and three of the domain page's team cards then moved
+ * behind `lazy()`, and this cap is the 621,697 B measured after that plus
+ * about 1 percent. A build over it fails the CI step. Lower it whenever eager
+ * code moves out; raising it is a decision, not a fix.
+ */
+export const EAGER_JS_CAP_BYTES = 628_000;
 
 /**
  * Whether a build without the `/π` route fails the check. The route ships in
@@ -185,6 +199,98 @@ function grouped(n: number): string {
     .replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
+/**
+ * One attribute's value from an HTML start tag, double-quoted, single-quoted
+ * or bare, or undefined when the tag does not carry it. The name must stand
+ * on its own: `data-src=` is not `src=`. Names match case-insensitively, as
+ * HTML reads them.
+ */
+function attribute(tag: string, name: string): string | undefined {
+  const match = new RegExp(
+    `(?<![\\w-])${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\`]+))`,
+    "i",
+  ).exec(tag);
+  return match === null ? undefined : (match[1] ?? match[2] ?? match[3]);
+}
+
+/** A `dist/`-relative path for a URL the page loads. */
+function distPath(url: string): string {
+  return url.replace(/^\.?\//, "");
+}
+
+/**
+ * What a built `index.html` loads up front: its module entry script (the
+ * first `<script type="module" src>`), or null when it has none, and the
+ * `.js` files its `modulepreload` links name. A `rel` is a list of tokens,
+ * so `rel="modulepreload stylesheet"` is a preload too.
+ */
+export function eagerScriptTags(html: string): {
+  entry: string | null;
+  preloads: string[];
+} {
+  let entry: string | null = null;
+  for (const tag of html.match(/<script\b[^>]*>/gi) ?? []) {
+    const src = attribute(tag, "src");
+    if (
+      attribute(tag, "type")?.toLowerCase() === "module" &&
+      src !== undefined
+    ) {
+      entry = distPath(src);
+      break;
+    }
+  }
+  const preloads: string[] = [];
+  for (const tag of html.match(/<link\b[^>]*>/gi) ?? []) {
+    const rel = (attribute(tag, "rel") ?? "").toLowerCase().split(/\s+/);
+    const href = attribute(tag, "href");
+    if (rel.includes("modulepreload") && href !== undefined) {
+      preloads.push(distPath(href));
+    }
+  }
+  return { entry, preloads };
+}
+
+/**
+ * The JS files a built `index.html` loads up front, as paths relative to
+ * `dist/`: the module entry script first, then every `modulepreload` link,
+ * each once, in document order. Only `.js` files count; a stylesheet is not
+ * eager JS.
+ */
+export function eagerScripts(html: string): string[] {
+  const { entry, preloads } = eagerScriptTags(html);
+  const files: string[] = [];
+  for (const file of entry === null ? preloads : [entry, ...preloads]) {
+    if (file.endsWith(".js") && !files.includes(file)) {
+      files.push(file);
+    }
+  }
+  return files;
+}
+
+/** The eager JS of a build: its files and their raw bytes summed. */
+export interface EagerReport {
+  files: string[];
+  bytes: number;
+  /** Whether the page has a module entry script, without which it runs nothing. */
+  hasEntry: boolean;
+}
+
+/**
+ * Measures {@link eagerScripts} with the given raw size function (the real
+ * file size in the CLI, a stub in tests).
+ */
+export function measureEager(
+  html: string,
+  rawSize: (file: string) => number,
+): EagerReport {
+  const files = eagerScripts(html);
+  return {
+    files,
+    bytes: files.reduce((sum, file) => sum + rawSize(file), 0),
+    hasEntry: eagerScriptTags(html).entry !== null,
+  };
+}
+
 /** The measured sizes of a build, and whether they cross the budget or the guideline. */
 export interface BudgetReport {
   routePresent: boolean;
@@ -193,6 +299,8 @@ export interface BudgetReport {
   files: { file: string; bytes: number }[];
   overBudget: boolean;
   overGuideline: boolean;
+  /** The eager JS, when the caller measured it (the CLI always does). */
+  eager?: EagerReport;
 }
 
 /**
@@ -268,6 +376,22 @@ export function reportLines(
     );
   }
 
+  const { eager } = report;
+  if (eager !== undefined) {
+    summary.push(
+      `eager JS: ${eager.bytes} B raw across ${eager.files.length} files, cap ${grouped(EAGER_JS_CAP_BYTES)} B.`,
+    );
+    if (!eager.hasEntry) {
+      annotations.push("::error::index.html has no module entry script");
+      failed = true;
+    } else if (eager.bytes > EAGER_JS_CAP_BYTES) {
+      annotations.push(
+        `::error::the eager JS is ${eager.bytes} B raw, over the ${grouped(EAGER_JS_CAP_BYTES)} B cap`,
+      );
+      failed = true;
+    }
+  }
+
   return { annotations, summary, failed };
 }
 
@@ -304,10 +428,21 @@ export function runBudgetCheck(deps: {
   writeSummary: (lines: string[]) => void;
   cleanup: () => void;
   routeRequired?: boolean;
+  /**
+   * The built `index.html` and a raw size function, for the eager JS check.
+   * The CLI always passes both; without them the check is not run.
+   */
+  eager?: { readIndexHtml: () => string; rawSize: (file: string) => number };
 }): BudgetCheckResult {
   try {
     const manifest = JSON.parse(deps.readManifest()) as Manifest;
-    const report = measure(manifest, deps.gzipSize);
+    const report: BudgetReport = measure(manifest, deps.gzipSize);
+    if (deps.eager !== undefined) {
+      report.eager = measureEager(
+        deps.eager.readIndexHtml(),
+        deps.eager.rawSize,
+      );
+    }
     const lines = reportLines(report, deps.routeRequired ?? ROUTE_REQUIRED);
     deps.writeSummary(lines.summary);
     return {
