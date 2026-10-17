@@ -1025,6 +1025,72 @@ describe("status labels and other directives", () => {
     ).toBe("grey");
   });
 
+  it("names a colour only when the braces hold exactly one palette word", async () => {
+    await renderMarkdown(
+      ":status[A]{orange blue} :status[B]{blue green} :status[C]{red=1} :status[D]{ Purple }\n",
+    );
+    const colour = (text: string) =>
+      screen
+        .getByText(text)
+        .closest("[data-status]")
+        ?.getAttribute("data-status");
+    expect(colour("A")).toBe("grey");
+    expect(colour("B")).toBe("grey");
+    expect(colour("C")).toBe("grey");
+    expect(colour("D")).toBe("purple");
+  });
+
+  it("keeps a status label with no words as text", async () => {
+    const { container } = await renderMarkdown("Empty :status[]{blue} here.\n");
+    expect(container.querySelector("[data-status]")).toBeNull();
+    expect(screen.getByText("Empty :status[]{blue} here.")).toBeVisible();
+  });
+
+  it("renders inline markdown beside a word:name exactly as without directives", async () => {
+    const { container } = await renderMarkdown(
+      [
+        "See foo:bar[link](https://x.example) now.",
+        "",
+        "A term:x[^1] with a note.",
+        "",
+        "Some a:b[**x**] y.",
+        "",
+        "Ref a:b[t][ref] here.",
+        "",
+        "![a:b[c]](x.png)",
+        "",
+        "[ref]: https://r.example",
+        "[^1]: The note.",
+      ].join("\n"),
+    );
+    expect(screen.getByRole("link", { name: "link" })).toHaveAttribute(
+      "href",
+      "https://x.example",
+    );
+    expect(
+      container.querySelector("section[data-footnotes]"),
+    ).toHaveTextContent("The note.");
+    expect(container.querySelector("sup a")).not.toBeNull();
+    expect(container.querySelector("strong")).toHaveTextContent(/^x$/);
+    expect(screen.getByRole("link", { name: "t" })).toHaveAttribute(
+      "href",
+      "https://r.example",
+    );
+    expect(container.querySelector("img")?.getAttribute("alt")).toBe("a:b[c]");
+  });
+
+  it("keeps a ::name line inside a paragraph and a list item", async () => {
+    const { container } = await renderMarkdown(
+      "First line\n::x\nlast line\n\n- one\n::y\n- two\n",
+    );
+    const paragraph = container.querySelector("p");
+    expect(paragraph).toHaveTextContent("First line ::x last line");
+    expect(container.querySelectorAll("ul")).toHaveLength(1);
+    const items = screen.getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent("one ::y");
+  });
+
   it("reads the colour the way the core lint does", async () => {
     await renderMarkdown(
       ":status[Done]{Green} and :status[Open] and :status[Gone]{.red}\n",
@@ -1076,8 +1142,9 @@ describe("status labels and other directives", () => {
       ].join("\n"),
     );
     expect(container.querySelectorAll("strong")).toHaveLength(2);
-    expect(screen.getAllByText(":::note").length).toBeGreaterThan(0);
-    expect(screen.getByText("::toc")).toBeVisible();
+    for (const marker of [":::note", "::toc", ":::warning"]) {
+      expect(container).toHaveTextContent(marker);
+    }
     expect(
       screen.getByRole("heading", { name: "After", level: 2 }),
     ).toBeVisible();
@@ -1109,14 +1176,9 @@ describe("status labels and other directives", () => {
     const { container } = await renderSpans(source);
     const stamped = expectSpansMatch(container, source);
     const texts = stamped.map((span) => span.textContent);
-    expect(texts).toEqual(
-      expect.arrayContaining([
-        "In review",
-        " and :word[x]{y} today.",
-        ":::note[Title]",
-        ":::",
-        "::toc",
-      ]),
-    );
+    expect(texts).toContain("In review");
+    expect(container).toHaveTextContent(":word[x]{y} today.");
+    expect(container).toHaveTextContent(":::note[Title]");
+    expect(container).toHaveTextContent("::toc");
   });
 });

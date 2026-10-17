@@ -46,7 +46,6 @@ import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import type { Components } from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import { Link, useLocation, useNavigate } from "react-router";
-import remarkDirective from "remark-directive";
 import remarkGfm from "remark-gfm";
 
 import {
@@ -70,10 +69,10 @@ import {
 } from "../markdown/callouts";
 import type { CalloutKind, RevealDetail } from "../markdown/callouts";
 import {
-  STATUS_COLOURS,
+  isStatusColour,
   remarkCrystallineDirectives,
+  remarkStatusSyntax,
 } from "../markdown/directives";
-import type { StatusColour } from "../markdown/directives";
 import { colourOf } from "../markdown/swatch";
 import { printUrl } from "../printUrl";
 import { SOURCE_ATTR, spanPieces } from "../reflectionQuotes";
@@ -606,14 +605,6 @@ function structuredBullet(children: ReactNode): ReactNode {
   return children;
 }
 
-/** Whether a span's `data-status` is one the directives plugin writes. */
-function isStatus(value: unknown): value is StatusColour {
-  return (
-    typeof value === "string" &&
-    (STATUS_COLOURS as readonly string[]).includes(value)
-  );
-}
-
 /** The callout a component's props describe, or the element as it came. */
 function calloutOf(
   props: Record<string, unknown>,
@@ -674,7 +665,7 @@ const components: Components = {
     // text color. A stamp keeps its offset, and a span without one renders
     // exactly as before, because an undefined attribute is never written.
     const status = (props as Record<string, unknown>)["data-status"];
-    if (isStatus(status)) {
+    if (isStatusColour(status)) {
       return <StatusLabel colour={status}>{children}</StatusLabel>;
     }
     return wikilinkKind(node) === "unresolved" ? (
@@ -1480,14 +1471,14 @@ export default function MarkdownBody({
     [resolver, documentName, anchored],
   );
   // The markdown extensions, in the order they run: GitHub's tables, task
-  // lists and footnotes first, then the directive syntax and what this
-  // dialect makes of it (status labels, every other directive back to its
-  // text, which is why it reads `shown`), then the callouts, which read the
-  // quotes the parser built.
+  // lists and footnotes first, then the status label syntax (only
+  // `:status[` is a directive) and the transform that names the labels
+  // (which reads `shown` for the brace text), then the callouts, which read
+  // the quotes the parser built.
   const remarkPlugins = useMemo<RemarkPlugins>(
     () => [
       remarkGfm,
-      remarkDirective,
+      remarkStatusSyntax,
       remarkCrystallineDirectives(shown),
       remarkCallouts,
     ],
