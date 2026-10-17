@@ -38,22 +38,6 @@ export default function Callout({
   const label = title === null ? word : `${word}: ${title}`;
   const shown = title ?? word;
   const skip = { [SKIP_ATTR]: "" };
-  if (fold === null) {
-    return (
-      <aside
-        role="note"
-        aria-label={label}
-        data-callout={kind}
-        className="callout my-4 rounded-r-md py-2 pr-3 pl-4"
-      >
-        <div {...skip} className={`${HEAD} my-1`}>
-          <Icon aria-hidden size={16} className={ICON} />
-          <span>{shown}</span>
-        </div>
-        {children}
-      </aside>
-    );
-  }
   return (
     <aside
       role="note"
@@ -61,28 +45,38 @@ export default function Callout({
       data-callout={kind}
       className="callout my-4 rounded-r-md py-2 pr-3 pl-4"
     >
-      <details
-        data-callout={kind}
-        data-fold={fold}
-        className="group"
-        {...(fold === "open" ? { open: true } : {})}
-      >
-        <summary
-          {...skip}
-          className={`${HEAD} my-1 cursor-pointer list-none rounded-sm [&::-webkit-details-marker]:hidden ${FOCUS_RING}`}
-        >
-          <ChevronRight
-            aria-hidden
-            size={16}
-            className={`${ICON} transition-transform group-open:rotate-90 motion-reduce:transition-none`}
-          />
-          {kind === "details" ? null : (
+      {fold === null ? (
+        <>
+          <div {...skip} className={`${HEAD} my-1`}>
             <Icon aria-hidden size={16} className={ICON} />
-          )}
-          <span>{shown}</span>
-        </summary>
-        {children}
-      </details>
+            <span>{shown}</span>
+          </div>
+          {children}
+        </>
+      ) : (
+        <details
+          data-callout={kind}
+          data-fold={fold}
+          className="group"
+          {...(fold === "open" ? { open: true } : {})}
+        >
+          <summary
+            {...skip}
+            className={`${HEAD} my-1 cursor-pointer list-none rounded-sm [&::-webkit-details-marker]:hidden ${FOCUS_RING}`}
+          >
+            <ChevronRight
+              aria-hidden
+              size={16}
+              className={`${ICON} transition-transform group-open:rotate-90 motion-reduce:transition-none`}
+            />
+            {kind === "details" ? null : (
+              <Icon aria-hidden size={16} className={ICON} />
+            )}
+            <span>{shown}</span>
+          </summary>
+          {children}
+        </details>
+      )}
     </aside>
   );
 }

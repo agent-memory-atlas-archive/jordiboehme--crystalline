@@ -5,7 +5,8 @@
  * a document actually holds math and never otherwise. It draws into an
  * element with `katex.render`, so no HTML string is built or injected. A
  * formula KaTeX cannot read stays on screen as the TeX that was written
- * (`throwOnError: false` paints it in the error colour).
+ * (`throwOnError: false` paints it in the error colour), and so does one
+ * the setter throws on for any other reason.
  */
 
 import "katex/dist/katex.min.css";
@@ -26,12 +27,16 @@ export default function MathPart({
     if (element === null) {
       return;
     }
-    katex.render(tex, element, {
-      displayMode: display,
-      throwOnError: false,
-      strict: "ignore",
-      trust: false,
-    });
+    try {
+      katex.render(tex, element, {
+        displayMode: display,
+        throwOnError: false,
+        strict: "ignore",
+        trust: false,
+      });
+    } catch {
+      element.textContent = tex;
+    }
   }, [tex, display]);
   return <span ref={ref} />;
 }

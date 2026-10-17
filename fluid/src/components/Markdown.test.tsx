@@ -17,6 +17,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router";
@@ -936,7 +937,50 @@ describe("callouts", () => {
   it("keeps source spans inside a callout", async () => {
     const source = "> [!NOTE] Heads up\n> Deploys run **at** night.\n";
     const { container } = await renderSpans(source);
-    expect(expectSpansMatch(container, source).length).toBeGreaterThan(0);
+    const stamped = expectSpansMatch(container, source);
+    // The words after the head share its text node, whose start the
+    // transform moves past the head line and the next line's `> `.
+    const deploys = stamped.find((span) =>
+      span.textContent?.startsWith("Deploys run"),
+    );
+    expect(deploys?.getAttribute("data-src")).toBe(
+      String(source.indexOf("Deploys run")),
+    );
+  });
+
+  it("keeps a second line's words out of the title when emphasis spans the break", async () => {
+    await renderMarkdown("> [!NOTE] Heads **up\n> now** please\n");
+    const note = screen.getByRole("note", { name: "Note: Heads" });
+    expect(note.querySelector("p strong")).toHaveTextContent(/^up\s+now$/);
+  });
+
+  it("leaves an escaped marker a plain quote", async () => {
+    const { container } = await renderMarkdown("> \\[!NOTE] Not a callout\n");
+    expect(screen.queryByRole("note")).toBeNull();
+    expect(container.querySelector("blockquote")).toHaveTextContent(
+      "[!NOTE] Not a callout",
+    );
+  });
+
+  it("does not reopen a fold the reader closed when the text changes", async () => {
+    const source = "> [!DETAILS]- Steps\n>\n> ### Restore\n>\n> Run it.\n";
+    const anchors = { pageUrl: "https://kb.example.com/d/eng/e/alpha" };
+    const tree = (text: string) => (
+      <MemoryRouter initialEntries={["/#restore"]}>
+        <ThemeProvider>
+          <Markdown source={text} anchors={anchors} />
+        </ThemeProvider>
+      </MemoryRouter>
+    );
+    const { container, rerender } = render(tree(source));
+    await waitFor(() => {
+      expect(container.querySelector("details")?.open).toBe(true);
+    });
+    const details = container.querySelector("details")!;
+    details.open = false;
+    rerender(tree(source.replace("Run it.", "Run it twice.")));
+    await screen.findByText("Run it twice.");
+    expect(container.querySelector("details")?.open).toBe(false);
   });
 
   it("opens a folded callout when the location points inside it", async () => {
@@ -1000,6 +1044,12 @@ describe("status labels and other directives", () => {
     expect(label.closest("[data-status]")?.getAttribute("data-status")).toBe(
       "blue",
     );
+  });
+
+  it("leaves a label of nothing but spaces as its text", async () => {
+    const { container } = await renderMarkdown("Now :status[ ]{blue} here.\n");
+    expect(container.querySelector("[data-status]")).toBeNull();
+    expect(container).toHaveTextContent("Now :status[ ]{blue} here.");
   });
 
   it("leaves every other colon in prose exactly as typed", async () => {
@@ -1218,6 +1268,39 @@ describe("math", () => {
   });
 });
 
+describe("math edges", () => {
+  it("sets two inline formulas that touch", async () => {
+    const { container } = await renderMarkdown("Both $`x`$$`y`$ here.");
+    await waitFor(() =>
+      expect(container.querySelectorAll(".katex")).toHaveLength(2),
+    );
+    expect(container).not.toHaveTextContent("$");
+  });
+
+  it("reads a dollar after an escaped backslash as a math opener and an escaped dollar as text", async () => {
+    const { container } = await renderMarkdown(
+      "Path \\\\$`x`$ and price \\$`y`$ end.",
+    );
+    await waitFor(() =>
+      expect(container.querySelectorAll(".katex")).toHaveLength(1),
+    );
+    expect(container).toHaveTextContent("price $");
+  });
+
+  it("keeps the TeX on screen when the setter throws", async () => {
+    const katex = (await import("katex")).default;
+    const render = vi.spyOn(katex, "render").mockImplementation(() => {
+      throw new Error("boom");
+    });
+    try {
+      const { container } = await renderMarkdown("Broken $`\\frac{1`$ here.");
+      await waitFor(() => expect(container).toHaveTextContent("\\frac{1"));
+    } finally {
+      render.mockRestore();
+    }
+  });
+});
+
 describe("footnotes and code copy", () => {
   it("styles footnotes at the end with links both ways", async () => {
     const { container } = await renderMarkdown("Claim.[^1]\n\n[^1]: Source.\n");
@@ -1236,6 +1319,28 @@ describe("footnotes and code copy", () => {
       const id = link?.getAttribute("href")?.split("#")[1] ?? "";
       expect(container.querySelector(`[id="${id}"]`)).not.toBeNull();
     }
+  });
+
+  it("keeps a heading the writer called Footnote label a heading", async () => {
+    const { container } = await renderMarkdown(
+      "## Footnote label\n\nClaim.[^1]\n\n[^1]: Source.\n",
+      undefined,
+      undefined,
+      undefined,
+      { pageUrl: "https://kb.example.com/d/eng/e/alpha" },
+    );
+    const own = screen.getByRole("heading", {
+      level: 2,
+      name: "Footnote label",
+    });
+    expect(own).toHaveClass("text-prose-h2");
+    expect(
+      own.querySelector('button[aria-label="Link to this section"]') ??
+        within(own).queryByRole("button", { name: "Link to this section" }),
+    ).not.toBeNull();
+    const label = container.querySelector("section[data-footnotes] h2");
+    expect(label).toHaveTextContent("Footnotes");
+    expect(label).not.toHaveClass("text-prose-h2");
   });
 
   it("keeps footnote ids unique across documents on one page", async () => {
@@ -1321,6 +1426,16 @@ describe("task boxes", () => {
     expect(screen.getByText("skipped")).toBeVisible();
     await userEvent.click(box);
     expect(onTick).not.toHaveBeenCalled();
+  });
+
+  it("names a box by the words a reader sees, without wikilink brackets", async () => {
+    await renderTasks("- [ ] read [[Deploy Guide]] and [[ops:Rollback]]\n", {
+      onTick: vi.fn(),
+      canTick: true,
+    });
+    expect(
+      screen.getByRole("checkbox", { name: "read Deploy Guide and Rollback" }),
+    ).toBeVisible();
   });
 
   it("ticks an open box through onTick with the offset of its bracket", async () => {

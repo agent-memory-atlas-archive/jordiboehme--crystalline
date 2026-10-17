@@ -110,7 +110,9 @@ function plain(node: MdNode): string {
  * and the children that are left once it is gone. A text node the line ends
  * in keeps the words after the break, and its start moves to where they are
  * in `source` (past the break and the next line's `> `), when there is a
- * source to find them in.
+ * source to find them in. An inline node that runs past the break (emphasis
+ * opened on the first line and closed on the next) stays whole in the body,
+ * so no word of the second line becomes part of the title.
  */
 function cutFirstLine(
   children: MdNode[],
@@ -123,7 +125,11 @@ function cutFirstLine(
       return { line, rest: children.slice(i + 1) };
     }
     if (child.type !== "text") {
-      line += plain(child);
+      const words = plain(child);
+      if (LINE_BREAK.test(words)) {
+        return { line, rest: children.slice(i) };
+      }
+      line += words;
       continue;
     }
     const value = child.value ?? "";
@@ -181,6 +187,12 @@ function moved(node: MdNode, left: string, source: string): MdNode {
 function transformQuote(quote: MdNode, source: string): void {
   const first = quote.children?.[0];
   if (first?.type !== "paragraph" || !first.children) {
+    return;
+  }
+  // An escaped marker (`> \[!NOTE]`) is the writer saying "not a callout",
+  // and core's Q007 reads the raw source the same way.
+  const opening = first.children[0]?.position?.start.offset;
+  if (opening !== undefined && source[opening] === "\\") {
     return;
   }
   const { line, rest } = cutFirstLine(first.children, source);

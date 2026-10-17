@@ -73,12 +73,17 @@ import {
   remarkCrystallineDirectives,
   remarkStatusSyntax,
 } from "../markdown/directives";
+import {
+  remarkGithubMath,
+  remarkMath,
+  remarkMathOptions,
+} from "../markdown/math";
 import { SWATCH_CLASSES, colourOf } from "../markdown/swatch";
 import { remarkTaskState } from "../markdown/taskState";
 import { printUrl } from "../printUrl";
 import { SOURCE_ATTR, spanPieces } from "../reflectionQuotes";
 import { isIdLine } from "../reflectionText";
-import { WIKILINK, referenceState } from "../wikilinks";
+import { WIKILINK, parseWikiTarget, referenceState } from "../wikilinks";
 import type { WikilinkResolution, WikilinkResolver } from "../wikilinks";
 import Callout from "./Callout";
 import CopyCode from "./CopyCode";
@@ -86,11 +91,6 @@ import DiagramOverlay from "./DiagramOverlay";
 import DiagramToolbar from "./DiagramToolbar";
 import { imageFileName } from "./downloads";
 import { lazyPart } from "./lazyPart";
-import {
-  remarkGithubMath,
-  remarkMath,
-  remarkMathOptions,
-} from "../markdown/math";
 import { Chip, FOCUS_RING } from "./primitives";
 import StatusLabel from "./StatusLabel";
 import { NotApplicableBox, TaskBox } from "./TaskBox";
@@ -497,15 +497,26 @@ const TASK_LABEL = "data-task-label";
 /** The element {@link taskBoxes} adds where a not-applicable box is drawn. */
 const TASK_NA_BOX = "data-task-box";
 
-/** An item's own words: its text without the lists nested in it. */
+/**
+ * An item's own words: its text without the lists nested in it, and a
+ * wikilink read as its target's words (the rewrite that draws the link runs
+ * later in the chain, so the brackets are still in the text here).
+ */
 function itemWords(node: HastNode): string {
+  return words(node).replace(
+    WIKILINK,
+    (_link, inner: string) => parseWikiTarget(inner).target,
+  );
+}
+
+function words(node: HastNode): string {
   return (node.children ?? [])
     .map((child) =>
       child.type === "element" &&
       (child.tagName === "ul" || child.tagName === "ol")
         ? ""
         : child.type === "element" && child.tagName === "p"
-          ? itemWords(child)
+          ? words(child)
           : textOf(child),
     )
     .join("")
@@ -867,8 +878,10 @@ const components: Components = {
   ),
   // The notes at the end: a hairline above, meta size, the label in the
   // section-label style (see `heading`).
-  section: ({ children, ...props }) =>
-    (props as Record<string, unknown>)["data-footnotes"] === undefined ? (
+  // The converter's notes section is the only `section` a text can hold
+  // (raw HTML stays literal); its hast node says so with `dataFootnotes`.
+  section: ({ children, node }) =>
+    node?.properties["dataFootnotes"] !== true ? (
       <section>{children}</section>
     ) : (
       <section
@@ -1419,10 +1432,12 @@ function heading(
   return function Heading({
     children,
     id,
+    className: given,
     ...rest
   }: {
     children?: ReactNode | undefined;
     id?: string | undefined;
+    className?: string | undefined;
     [FIRST_TITLE_PROP]?: string | undefined;
     [FIRST_HEADING_PROP]?: string | undefined;
   }) {
@@ -1449,8 +1464,11 @@ function heading(
     const firstTitle = rest[FIRST_TITLE_PROP] === "true" ? "" : undefined;
     const aside = useContext(HeadingAsideContext);
     // The notes section's own label, which the converter marks screen-reader
-    // only: shown here in the section-label style, with no link symbol.
-    if (level === 2 && id === "footnote-label") {
+    // only: shown here in the section-label style, with no link symbol. Told
+    // apart by that class, which no heading in the text can carry (raw HTML
+    // stays literal), so a heading the writer called "Footnote label" stays
+    // a heading.
+    if (level === 2 && given?.split(/\s+/).includes("sr-only") === true) {
       return (
         <h2 className="mb-1 text-caption font-semibold tracking-wide text-ink-3 uppercase">
           {children}
@@ -1598,6 +1616,28 @@ function revealIn(root: HTMLElement | null, target: Element | null): void {
   }
 }
 
+/**
+ * Open the folds around the element a location fragment (`#id`) names.
+ * True when that element is in `root`.
+ */
+function revealFragment(root: HTMLElement | null, fragment: string): boolean {
+  if (root === null || fragment.length < 2) {
+    return false;
+  }
+  let id = fragment.slice(1);
+  try {
+    id = decodeURIComponent(id);
+  } catch {
+    // A hash that is not encoded stays as it is.
+  }
+  const target = document.getElementById(id);
+  if (target === null || !root.contains(target)) {
+    return false;
+  }
+  revealIn(root, target);
+  return true;
+}
+
 /** A diagram's source, which is what shows while the renderer is on its way. */
 function DiagramSource({ source }: { source: string }) {
   return (
@@ -1724,11 +1764,18 @@ export default function MarkdownBody({
     () => componentsFor(resolver, documentName, anchored),
     [resolver, documentName, anchored],
   );
-  // The markdown extensions, in the order they run: GitHub's tables, task
-  // lists and footnotes first, then the status label syntax (only
-  // `:status[` is a directive) and the transform that names the labels
-  // (which reads `shown` for the brace text), then the callouts, which read
-  // the quotes the parser built.
+  // The markdown extensions, in the order they run:
+  // 1. GitHub's tables, task lists and footnotes, the base the rest reads.
+  // 2. The status label syntax (only `:status[` is a directive).
+  // 3. The transform that names the labels; it reads `shown` for the brace
+  //    text, so it runs on the tree the syntax just built.
+  // 4. Math (`$$...$$` and the ```math fence), a syntax of its own.
+  // 5. GitHub's inline math (`` $`...`$ ``), which reads the inline code
+  //    nodes the parser built and checks the `$` beside them in the source.
+  // 6. The callouts, which read the quotes the parser built and strip the
+  //    head paragraph's first line.
+  // 7. The task state (`[~]`), last: a callout's first line may hold the
+  //    words a box would be read from, so the head is cut first.
   const remarkPlugins = useMemo<RemarkPlugins>(
     () => [
       remarkGfm,
@@ -1775,23 +1822,22 @@ export default function MarkdownBody({
   // from outside the router), or an element another part of the page asks to
   // show (`REVEAL_EVENT`, from the threads beside a Reflection page). Before
   // the scroll below, which cannot scroll to what a closed fold hides.
+  // The location's fragment opens its fold once: a source change re-runs
+  // this only until the target exists, so a fold the reader closed again
+  // stays closed while the text changes underneath.
+  const revealedHash = useRef<string | null>(null);
+  useEffect(() => {
+    if (revealedHash.current === hash) {
+      return;
+    }
+    if (revealFragment(rootRef.current, hash)) {
+      revealedHash.current = hash;
+    }
+  }, [hash, source]);
   useEffect(() => {
     const root = rootRef.current;
-    const fromHash = (fragment: string) => {
-      if (fragment.length < 2) {
-        return;
-      }
-      let id = fragment.slice(1);
-      try {
-        id = decodeURIComponent(id);
-      } catch {
-        // A hash that is not encoded stays as it is.
-      }
-      revealIn(root, document.getElementById(id));
-    };
-    fromHash(hash);
     const onHash = () => {
-      fromHash(window.location.hash);
+      revealFragment(root, window.location.hash);
     };
     const onReveal = (event: Event) => {
       const detail = (event as CustomEvent<RevealDetail | undefined>).detail;
@@ -1806,7 +1852,7 @@ export default function MarkdownBody({
       window.removeEventListener("hashchange", onHash);
       root?.removeEventListener(REVEAL_EVENT, onReveal);
     };
-  }, [hash, source]);
+  }, []);
   // Arriving at a section: scroll it into view and point it out for a moment.
   // It runs on the hash rather than on a navigation, which is what makes a
   // click on a link symbol behave exactly like opening the URL it copied, and

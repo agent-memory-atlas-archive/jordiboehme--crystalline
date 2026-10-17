@@ -62,6 +62,18 @@ function blockData(value: string): Record<string, unknown> {
 export const remarkMathOptions = { singleDollarTextMath: false } as const;
 export { remarkMath };
 
+/**
+ * Whether the character at `at` is escaped: an odd run of backslashes
+ * stands right before it (`\\$` is an escaped backslash and a dollar).
+ */
+function escaped(source: string, at: number): boolean {
+  let run = 0;
+  while (at - run - 1 >= 0 && source[at - run - 1] === "\\") {
+    run += 1;
+  }
+  return run % 2 === 1;
+}
+
 function walk(node: MdNode, source: string): void {
   const kids = node.children;
   if (!kids) {
@@ -86,7 +98,7 @@ function walk(node: MdNode, source: string): void {
         before.value?.endsWith("$") === true &&
         after.value?.startsWith("$") === true &&
         source[start - 1] === "$" &&
-        source[start - 2] !== "\\" &&
+        !escaped(source, start - 1) &&
         source[end] === "$" &&
         before.position?.end.offset === start &&
         after.position?.start.offset === end

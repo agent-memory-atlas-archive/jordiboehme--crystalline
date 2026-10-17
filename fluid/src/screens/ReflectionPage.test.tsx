@@ -24,6 +24,17 @@ vi.mock("../api/client", async (importOriginal) => {
   return { ...actual, api: vi.fn(), setCsrfToken: vi.fn() };
 });
 const apiMock = vi.mocked(api);
+// A tick whose box is no longer where the page drew it: `refuse` makes the
+// next `tickAt` answer null, the way a page that moved underneath does.
+const tickControl = vi.hoisted(() => ({ refuse: false }));
+vi.mock("../taskTick", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../taskTick")>();
+  return {
+    ...actual,
+    tickAt: (...args: Parameters<typeof actual.tickAt>) =>
+      tickControl.refuse ? null : actual.tickAt(...args),
+  };
+});
 
 const MARKDOWN =
   "---\ntitle: Deploying\nreflection:\n  7f3a9c2e:\n    sources:\n      - engram: runbooks/deploy\n        checksum: ab\n---\n\n# Deploying\n\nShort intro.\n\n## Night deploys\n<!-- r:7f3a9c2e -->\n\nDeploys run at night.\n";
@@ -1375,6 +1386,59 @@ describe("task boxes on a reflection page", () => {
     const box = await secondBox();
     expect(box).toBeDisabled();
     expect(box).toHaveAccessibleDescription("Sign in to change this page");
+  });
+
+  it("says the page changed when the box is not where the page drew it", async () => {
+    serve("edit", true, { [PAGE_PATH]: () => taskDoc() });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const box = await secondBox();
+    tickControl.refuse = true;
+    try {
+      await userEvent.click(box);
+    } finally {
+      tickControl.refuse = false;
+    }
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The page changed. Try again.",
+    );
+    expect(puts()).toEqual([]);
+  });
+
+  it("sends one save for a double click", async () => {
+    let land: (value: unknown) => void = () => undefined;
+    serve("edit", true, {
+      [PAGE_PATH]: (_path, init) =>
+        init?.method === "PUT"
+          ? new Promise((resolve) => {
+              land = resolve;
+            })
+          : taskDoc(),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const box = await secondBox();
+    await userEvent.dblClick(box);
+    await waitFor(() => {
+      expect(puts()).toHaveLength(1);
+    });
+    expect(box).toHaveAccessibleDescription("Saving the last change");
+    land({ checksum: "c2", landed: "file" });
+    await waitFor(() => {
+      expect(reads()).toBeGreaterThanOrEqual(2);
+    });
+    expect(puts()).toHaveLength(1);
+  });
+
+  it("waits for the domain's lock before a box can be ticked", async () => {
+    serve("edit", true, {
+      "/domains/eng/manifest": () => new Promise(() => undefined),
+      [PAGE_PATH]: () => taskDoc(),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const box = await secondBox();
+    expect(box).toBeDisabled();
+    expect(box).toHaveAccessibleDescription(
+      "Checking whether this domain is locked",
+    );
   });
 
   it("disables the box in a read-only domain", async () => {

@@ -46,6 +46,17 @@ import {
   userFixture,
 } from "../test/harness";
 
+// A tick whose box is no longer where the page drew it: `refuse` makes the
+// next `tickAt` answer null, the way an engram that moved underneath does.
+const tickControl = vi.hoisted(() => ({ refuse: false }));
+vi.mock("../taskTick", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../taskTick")>();
+  return {
+    ...actual,
+    tickAt: (...args: Parameters<typeof actual.tickAt>) =>
+      tickControl.refuse ? null : actual.tickAt(...args),
+  };
+});
 vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
   return { ...actual, api: vi.fn(), setCsrfToken: vi.fn() };
@@ -2695,6 +2706,57 @@ describe("task boxes on the engram page", () => {
       expect(reads()).toBeGreaterThanOrEqual(2);
     });
     expect(screen.getByRole("checkbox", { name: "ship it" })).not.toBeChecked();
+  });
+
+  it("says so and reads the engram again when the box is not where the page drew it", async () => {
+    serve({
+      "/domains/eng/engrams/alpha": () => detailResponse({ content: TASKS }),
+    });
+    renderApp("/d/eng/e/alpha");
+    const box = await screen.findByRole("checkbox", { name: "ship it" });
+    await waitFor(() => {
+      expect(box).toBeEnabled();
+    });
+    tickControl.refuse = true;
+    try {
+      await userEvent.click(box);
+    } finally {
+      tickControl.refuse = false;
+    }
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Someone else saved this engram first. Try again.",
+    );
+    await waitFor(() => {
+      expect(reads()).toBeGreaterThanOrEqual(2);
+    });
+    expect(puts()).toEqual([]);
+  });
+
+  it("sends one save for a double click", async () => {
+    const ticked = TASKS.replace("- [ ] ship it", "- [x] ship it");
+    let land: (value: unknown) => void = () => undefined;
+    serve({
+      "/domains/eng/engrams/alpha": (_path, init) =>
+        init?.method === "PUT"
+          ? new Promise((resolve) => {
+              land = resolve;
+            })
+          : detailResponse({ content: TASKS }),
+    });
+    renderApp("/d/eng/e/alpha");
+    const box = await screen.findByRole("checkbox", { name: "ship it" });
+    await waitFor(() => {
+      expect(box).toBeEnabled();
+    });
+    await userEvent.dblClick(box);
+    await waitFor(() => {
+      expect(puts()).toHaveLength(1);
+    });
+    land(detailResponse({ content: ticked, checksum: "c2" }));
+    await waitFor(() => {
+      expect(screen.getByRole("checkbox", { name: "ship it" })).toBeChecked();
+    });
+    expect(puts()).toHaveLength(1);
   });
 
   it("disables the box with the reason in a domain this reader may not change", async () => {

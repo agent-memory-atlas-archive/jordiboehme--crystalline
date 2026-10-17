@@ -69,7 +69,7 @@ import {
 } from "../api/graph";
 import { useAuth } from "../auth/AuthContext";
 import { DomainLockChip } from "../components/DomainLockChip";
-import { useDomainWritable } from "../domainWritable";
+import { CHECKING_LOCK, useDomainWritable } from "../domainWritable";
 import { absoluteUrl } from "../base";
 import { NO_COMMANDS, useRegisterCommands } from "../commands";
 import type { PaletteCommand } from "../commands";
@@ -137,6 +137,11 @@ import { buildWikilinkResolver, innerOf, referenceState } from "../wikilinks";
 
 /** Where the neighborhood section writes down whether it was left open. */
 const GRAPH_SECTION_KEY = "fluid.section.graph";
+/**
+ * What a tick says when the engram moved under it: the editor's own words
+ * for a conflict, which its dialog titles.
+ */
+const TICK_CONFLICT = "Someone else saved this engram first. Try again.";
 
 export default function EngramPage() {
   const params = useParams();
@@ -144,7 +149,7 @@ export default function EngramPage() {
   // A permalink is a path of its own, so it arrives through the splat.
   const permalink = params["*"] ?? "";
   const { capabilities } = useAuth();
-  const { canWrite, domainLocked } = useDomainWritable(domain);
+  const { canWrite, domainLocked, lockKnown } = useDomainWritable(domain);
   const { fullWidth } = useFullWidth();
   // The two panels under the prose, switched from the Explore rows.
   const [graphOpen, toggleGraph] = useRememberedDisclosure(GRAPH_SECTION_KEY);
@@ -305,8 +310,7 @@ export default function EngramPage() {
     },
     onError: (error: Error, { at }) => {
       if (conflictOf(error) !== null) {
-        // The editor's own words for a conflict, which its dialog titles.
-        setTickProblem("Someone else saved this engram first. Try again.");
+        setTickProblem(TICK_CONFLICT);
         void queryClient.invalidateQueries({
           queryKey: engramDetailKey(at.domain, at.permalink),
         });
@@ -323,7 +327,9 @@ export default function EngramPage() {
       }
       const content = tickAt(loaded.content, offset, next);
       if (content === null) {
-        // The box is not where the page drew it: the text moved.
+        // The box is not where the page drew it: the text moved, which
+        // reads to the person as the same conflict a refused save is.
+        setTickProblem(TICK_CONFLICT);
         void queryClient.invalidateQueries({
           queryKey: engramDetailKey(loaded.domain, loaded.permalink),
         });
@@ -337,9 +343,11 @@ export default function EngramPage() {
     ? "Sign in to change this page"
     : !canWrite
       ? "You can read this page but not change it"
-      : tick.isPending
-        ? "Saving the last change"
-        : true;
+      : !lockKnown
+        ? CHECKING_LOCK
+        : tick.isPending
+          ? "Saving the last change"
+          : true;
   /*
    * What this copy holds that the team's copy does not, in the server's own
    * word. The detail payload carries it for a team domain, computed there
@@ -992,7 +1000,7 @@ export default function EngramPage() {
         </div>
         {!fullWidth && (
           <aside className="flex flex-col divide-y divide-hair print:hidden [&>*]:py-4 [&>*:first-child]:pt-0">
-            <PageOutline headings={inRail ? outline : []} />
+            {inRail && <PageOutline headings={outline} />}
             <DetailsPanel
               key={`${engram.domain}/${engram.permalink}`}
               frontmatter={engram.frontmatter}

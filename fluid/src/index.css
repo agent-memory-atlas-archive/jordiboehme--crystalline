@@ -125,12 +125,12 @@
     --callout-important: var(--color-purple-600);
     --callout-warning: var(--color-amber-600);
     --callout-caution: var(--color-red-600);
-    --callout-details: var(--color-slate-500);
+    --callout-details: var(--muted);
     /*
      * The six status label colours (`StatusLabel.tsx`): the ring and a light
      * tint. The words stay ink, so their contrast is the page's own.
      */
-    --status-grey: var(--color-slate-500);
+    --status-grey: var(--muted);
     --status-blue: var(--color-blue-600);
     --status-green: var(--color-green-600);
     --status-yellow: var(--color-yellow-600);
@@ -198,8 +198,8 @@
       --callout-important: var(--color-purple-400);
       --callout-warning: var(--color-amber-400);
       --callout-caution: var(--color-red-400);
-      --callout-details: #8b93a7;
-      --status-grey: #8b93a7;
+      --callout-details: var(--muted);
+      --status-grey: var(--muted);
       --status-blue: var(--color-blue-400);
       --status-green: var(--color-green-400);
       --status-yellow: var(--color-yellow-400);

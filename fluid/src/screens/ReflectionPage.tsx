@@ -84,7 +84,7 @@ import { assetRefsIn } from "../editor/imageFormat";
 import { FOCUS_HEADING, useHeadingFocusRequest } from "../focusHeading";
 import { lazyChunk } from "../lazyChunk";
 import { discardPageDrafts } from "../reflectionPageDrafts";
-import { useDomainWritable } from "../domainWritable";
+import { CHECKING_LOCK, useDomainWritable } from "../domainWritable";
 import { tickAt } from "../taskTick";
 import { printNotes } from "../printNotes";
 import { reflectionFacts } from "../printSheet";
@@ -328,7 +328,7 @@ function PageBody({
    * feedback for the reflect queue (the core leaves it out).
    */
   const { capabilities } = useAuth();
-  const { domainLocked } = useDomainWritable(domain);
+  const { domainLocked, lockKnown } = useDomainWritable(domain);
   const [tickProblem, setTickProblem] = useState<string | null>(null);
   const tick = useMutation({
     mutationFn: ({
@@ -393,9 +393,11 @@ function PageBody({
     ? "Sign in to change this page"
     : !mayEditPage(right, path) || capabilities.readOnly || domainLocked
       ? "You can read this page but not change it"
-      : tick.isPending
-        ? "Saving the last change"
-        : true;
+      : !lockKnown
+        ? CHECKING_LOCK
+        : tick.isPending
+          ? "Saving the last change"
+          : true;
   // The open threads as printed notes, numbered the way the threads column
   // numbers them in the text while the page prints.
   const notes = useMemo(

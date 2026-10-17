@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { STATUS_COLOURS, isStatusColour, statusColour } from "./directives";
+import {
+  STATUS_COLOURS,
+  isStatusColour,
+  remarkStatusSyntax,
+  statusColour,
+} from "./directives";
 
 describe("statusColour", () => {
   it("names the colour when the braces hold exactly one palette word", () => {
@@ -28,5 +33,19 @@ describe("statusColour", () => {
     expect(isStatusColour("red")).toBe(true);
     expect(isStatusColour("Red")).toBe(false);
     expect(isStatusColour(3)).toBe(false);
+  });
+});
+
+describe("remarkStatusSyntax", () => {
+  it("puts the guarded construct in the place of remark-directive's own", () => {
+    const store: { micromarkExtensions?: unknown[] } = {
+      micromarkExtensions: [{ text: {} }],
+    };
+    remarkStatusSyntax.call({ data: () => store });
+    expect(store.micromarkExtensions).toHaveLength(2);
+    const ours = store.micromarkExtensions?.[1] as {
+      text: Record<number, { name?: string }>;
+    };
+    expect(ours.text[58]?.name).toBe("statusDirective");
   });
 });

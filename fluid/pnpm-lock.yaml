@@ -9,7 +9,7 @@ overrides:
   lodash-es@<4.18.0: ^4.18.1
   nanoid@<3.3.18: ^3.3.18
   dompurify@<3.4.16: ^3.4.16
-  katex@<0.18.2: ^0.18.2
+  katex@<0.19.0: ^0.19.0
 
 importers:
 
@@ -2584,11 +2584,6 @@ packages:
   json5@2.2.3:
     resolution: {integrity: sha512-XmOWe7eyHYH14cLdVPoyg+GOH3rYX++KpzrylJwSW98t3Nk+U8XOl8FWKOgwtzdb8lXGf6zYwDUzeHMWfxasyg==}
     engines: {node: '>=6'}
-    hasBin: true
-
-  katex@0.18.11:
-    resolution: {integrity: sha512-yvyz/2VMKqoho/35Hat5w37wIEdWJ5ElVMidTAlWrxr5uW4aBGsEpveTmKh18/zw08v/7lGswCPon4OhqmqrTA==}
-    deprecated: Accidentally published with breaking changes. Use 0.19.0 instead.
     hasBin: true
 
   katex@0.19.0:
@@ -6252,10 +6247,6 @@ snapshots:
 
   json5@2.2.3: {}
 
-  katex@0.18.11:
-    dependencies:
-      commander: 15.0.0
-
   katex@0.19.0:
     dependencies:
       commander: 15.0.0
@@ -6617,7 +6608,7 @@ snapshots:
       dompurify: 3.4.16
       elkjs: 0.9.3
       es-toolkit: 1.52.0
-      katex: 0.18.11
+      katex: 0.19.0
       khroma: 2.1.0
       marked: 16.4.2
       roughjs: 4.6.6
@@ -6716,7 +6707,7 @@ snapshots:
     dependencies:
       '@types/katex': 0.16.8
       devlop: 1.1.0
-      katex: 0.18.11
+      katex: 0.19.0
       micromark-factory-space: 2.0.1
       micromark-util-character: 2.1.1
       micromark-util-symbol: 2.0.1

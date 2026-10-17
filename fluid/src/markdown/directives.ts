@@ -121,16 +121,23 @@ function statusOnly(directiveText: Construct): Construct {
  * container directives) left out. Its mdast conversion is kept as it is.
  */
 export function remarkStatusSyntax(this: unknown): void {
-  (remarkDirective as (this: unknown) => void).call(this);
   const data = (
     this as { data(): { micromarkExtensions?: Extension[] } }
   ).data();
+  const before = data.micromarkExtensions?.length ?? 0;
+  (remarkDirective as (this: unknown) => void).call(this);
   const extensions = data.micromarkExtensions ?? [];
-  const directive = extensions.pop();
-  const text = directive?.text?.[COLON];
-  if (text !== undefined) {
-    extensions.push({ text: { [COLON]: statusOnly(text) } });
+  // Exactly the one syntax extension remark-directive adds, with its text
+  // construct on the colon. Anything else means the dependency changed
+  // shape, and guessing would let every colon construct through again.
+  const added = extensions.slice(before);
+  const text = added[0]?.text?.[COLON];
+  if (added.length !== 1 || text === undefined) {
+    throw new Error(
+      "remark-directive no longer adds one text construct on ':'; check remarkStatusSyntax",
+    );
   }
+  extensions.splice(before, 1, { text: { [COLON]: statusOnly(text) } });
 }
 
 /** The small part of the mdast shape the transform reads and writes. */
@@ -156,6 +163,13 @@ function sliceOf(node: MdNode, source: string): string | null {
   return source.slice(start, end);
 }
 
+/** The plain words of a node and everything inside it. */
+function wordsOf(node: MdNode): string {
+  return typeof node.value === "string"
+    ? node.value
+    : (node.children ?? []).map(wordsOf).join("");
+}
+
 /** The text between a label's closing `{` and `}`, or null for no braces. */
 function bracesOf(slice: string): string | null {
   if (!slice.endsWith("}")) {
@@ -175,8 +189,9 @@ function walk(node: MdNode, source: string): void {
       return child;
     }
     const slice = sliceOf(child, source);
-    // A label with no words, or one the parser could not close, is text.
-    if (slice === null || (child.children ?? []).length === 0) {
+    // A label with no words (or only spaces), or one the parser could not
+    // close, is text.
+    if (slice === null || wordsOf(child).trim() === "") {
       return child.position === undefined
         ? { type: "text", value: slice ?? HEAD }
         : { type: "text", value: slice ?? HEAD, position: child.position };

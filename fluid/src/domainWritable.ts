@@ -18,6 +18,9 @@ import type { ManifestView, PolicyView } from "./api/domain";
 import { DOMAINS_QUERY_KEY, fetchDomains } from "./api/domains";
 import { useAuth } from "./auth/AuthContext";
 
+/** What a one-click write control says while the lock is not read yet. */
+export const CHECKING_LOCK = "Checking whether this domain is locked";
+
 /** Whether these policy rows hold `read_only` on. */
 export function policiesLocked(policies: PolicyView[] | undefined): boolean {
   return (
@@ -35,6 +38,12 @@ export function domainLockedIn(manifest: ManifestView | undefined): boolean {
 export function useDomainWritable(domain: string): {
   canWrite: boolean;
   domainLocked: boolean;
+  /**
+   * Whether the MANIFEST has been read (or failed to read), so
+   * `domainLocked` is an answer rather than "not known yet". A control that
+   * writes on one click waits for it.
+   */
+  lockKnown: boolean;
 } {
   const { capabilities } = useAuth();
   const listing = useQuery({
@@ -53,5 +62,6 @@ export function useDomainWritable(domain: string): {
   return {
     canWrite: capabilities.canWrite && !writeBlocked && !domainLocked,
     domainLocked,
+    lockKnown: domain !== "" && !manifest.isPending,
   };
 }
