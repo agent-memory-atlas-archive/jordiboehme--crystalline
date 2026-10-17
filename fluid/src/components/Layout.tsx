@@ -40,7 +40,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { RefObject } from "react";
+import type { ReactNode, RefObject } from "react";
 import {
   Link,
   NavLink,
@@ -101,8 +101,6 @@ import {
 } from "../paths";
 import { PREFETCH } from "../prefetch";
 import { useWide } from "../useWide";
-import { PageOutline } from "./PageOutline";
-import type { OutlineHeading } from "./PageOutline";
 import { OutlineSlotContext } from "./outlineSlot";
 import { CommandPalette, openPalette } from "./CommandPalette";
 import { CreateDomainDialog } from "./CreateDomainDialog";
@@ -594,12 +592,13 @@ export function Layout() {
     null,
   );
   // The outline a long page hands the phone drawer (see `outlineSlot.ts`).
-  const [outlineHeadings, setOutlineHeadings] = useState<
-    readonly OutlineHeading[]
-  >([]);
+  const [outlineNode, setOutlineNode] = useState<ReactNode>(null);
+  const closeDrawer = useCallback(() => {
+    setNavOpen(false);
+  }, []);
   const outlineSlot = useMemo(
-    () => ({ headings: outlineHeadings, set: setOutlineHeadings }),
-    [outlineHeadings],
+    () => ({ node: outlineNode, set: setOutlineNode, close: closeDrawer }),
+    [outlineNode, closeDrawer],
   );
   const sidebarState = useMemo<SidebarState>(
     () => ({
@@ -1361,7 +1360,7 @@ function DomainSidebar({
   const { capabilities } = useAuth();
   const wide = useWide();
   const sidebar = useSidebarState();
-  const outline = useContext(OutlineSlotContext)?.headings ?? [];
+  const outline = useContext(OutlineSlotContext)?.node ?? null;
   const listing = useQuery({
     queryKey: DOMAINS_QUERY_KEY,
     queryFn: fetchDomains,
@@ -1545,7 +1544,7 @@ function DomainSidebar({
             >
               {/* A long page's outline leads the drawer (spec B1). */}
               <div className="mb-4 border-b border-hair pb-4 empty:hidden">
-                <PageOutline headings={outline} onNavigate={onDismiss} />
+                {outline}
               </div>
               {content}
             </nav>

@@ -301,19 +301,103 @@ describe("the engram page", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("lists the page's sections in the rail once there are three", async () => {
-    const long = `${BODY}\n## Setup\n\ntext\n\n### Install\n\ntext\n\n## Usage\n\ntext\n\n## Limits\n\ntext\n`;
-    serve({
-      "/domains/eng/engrams/alpha": () => detailResponse({ content: long }),
+  describe("the outline of a long page", () => {
+    const LONG = `${BODY}\n## Setup\n\ntext\n\n### Install\n\ntext\n\n## Usage\n\ntext\n\n## Limits\n\ntext\n`;
+    const HREFS = ["#setup", "#install", "#usage", "#limits"];
+
+    /** A window of this many rem: answers min-width queries by it. */
+    function stubWidth(rem: number) {
+      Object.defineProperty(window, "matchMedia", {
+        configurable: true,
+        value: (query: string) => {
+          const min = /min-width:\s*([\d.]+)rem/.exec(query);
+          return {
+            matches: min ? rem >= Number(min[1]) : false,
+            media: query,
+            addEventListener: () => undefined,
+            removeEventListener: () => undefined,
+          };
+        },
+      });
+    }
+    afterEach(() => {
+      Reflect.deleteProperty(window, "matchMedia");
     });
-    renderApp("/d/eng/e/alpha");
-    const nav = await screen.findByRole("navigation", {
-      name: "On this page",
+
+    function hrefs(nav: HTMLElement) {
+      return Array.from(nav.querySelectorAll("a")).map((a) =>
+        a.getAttribute("href"),
+      );
+    }
+
+    it("leads the rail from lg up", async () => {
+      stubWidth(80);
+      serve({
+        "/domains/eng/engrams/alpha": () => detailResponse({ content: LONG }),
+      });
+      renderApp("/d/eng/e/alpha");
+      const nav = await screen.findByRole("navigation", {
+        name: "On this page",
+      });
+      expect(hrefs(nav)).toEqual(HREFS);
+      expect(nav.closest("aside")).not.toBeNull();
     });
-    expect(
-      Array.from(nav.querySelectorAll("a")).map((a) => a.getAttribute("href")),
-    ).toEqual(["#setup", "#install", "#usage", "#limits"]);
-    expect(nav.closest("aside")).not.toBeNull();
+
+    it("is a collapsed disclosure over the body between md and lg", async () => {
+      stubWidth(52);
+      serve({
+        "/domains/eng/engrams/alpha": () => detailResponse({ content: LONG }),
+      });
+      renderApp("/d/eng/e/alpha");
+      const summary = await screen.findByText("On this page", {
+        selector: "summary",
+      });
+      const details = summary.closest("details");
+      expect(details).not.toBeNull();
+      expect(details?.open).toBe(false);
+      expect(details?.nextElementSibling?.tagName).toBe("ARTICLE");
+      expect(
+        document.querySelector("aside nav[aria-label='On this page']"),
+      ).toBeNull();
+      expect(
+        hrefs(
+          within(details as HTMLElement).getByRole("navigation", {
+            name: "On this page",
+            hidden: true,
+          }),
+        ),
+      ).toEqual(HREFS);
+    });
+
+    it("is a disclosure at full width, even on a wide window", async () => {
+      stubWidth(80);
+      localStorage.setItem(LAYOUT_WIDTH_KEY, "full");
+      serve({
+        "/domains/eng/engrams/alpha": () => detailResponse({ content: LONG }),
+      });
+      renderApp("/d/eng/e/alpha");
+      const summary = await screen.findByText("On this page", {
+        selector: "summary",
+      });
+      expect(summary.closest("details")).not.toBeNull();
+      expect(
+        document.querySelector("aside nav[aria-label='On this page']"),
+      ).toBeNull();
+    });
+
+    it("is neither in the page nor the rail below md (the drawer has it)", async () => {
+      stubWidth(30);
+      serve({
+        "/domains/eng/engrams/alpha": () => detailResponse({ content: LONG }),
+      });
+      renderApp("/d/eng/e/alpha");
+      await screen.findByRole("heading", { name: "Alpha", level: 1 });
+      await screen.findByRole("heading", { name: "Setup" });
+      expect(document.querySelector("details")).toBeNull();
+      expect(
+        document.querySelector("aside nav[aria-label='On this page']"),
+      ).toBeNull();
+    });
   });
 
   it("draws no outline for a short page", async () => {

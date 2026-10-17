@@ -8,6 +8,7 @@ import type { ReactElement } from "react";
 import { useState } from "react";
 
 import { useActiveHeading } from "../useActiveHeading";
+import { worthAnOutline } from "../useBodyHeadings";
 import { FOCUS_RING, RAIL_LABEL } from "./primitives";
 
 export interface OutlineHeading {
@@ -16,13 +17,13 @@ export interface OutlineHeading {
   level: 2 | 3;
 }
 
-/** The fewest `##` sections that earn an outline. */
-const MIN_SECTIONS = 3;
-
 export function PageOutline({
   headings,
   onNavigate,
+  label = true,
 }: {
+  /** Draw the "On this page" label; a disclosure supplies its own. */
+  label?: boolean;
   headings: readonly OutlineHeading[];
   /** Called after a link scrolled, for a drawer that should shut. */
   onNavigate?: (() => void) | undefined;
@@ -33,15 +34,17 @@ export function PageOutline({
     id: string;
     at: string | null;
   } | null>(null);
-  if (headings.filter((h) => h.level === 2).length < MIN_SECTIONS) {
+  if (!worthAnOutline(headings)) {
     return null;
   }
   const current = picked !== null && picked.at === active ? picked.id : active;
   return (
-    <nav aria-labelledby="page-outline-label" className="print:hidden">
-      <p id="page-outline-label" className={`mb-2 ${RAIL_LABEL}`}>
-        On this page
-      </p>
+    <nav aria-label="On this page" className="print:hidden">
+      {label && (
+        <p aria-hidden="true" className={`mb-2 ${RAIL_LABEL}`}>
+          On this page
+        </p>
+      )}
       <ol className="flex flex-col gap-0.5">
         {headings.map((heading) => (
           <li key={heading.id}>

@@ -2,74 +2,34 @@
  * Where a page hands its outline to the frame.
  *
  * On a phone the outline does not sit in the page's own rail but at the top
- * of the sidebar drawer, which the frame draws. The page fills this slot, the
- * drawer reads it.
+ * of the sidebar drawer, which the frame draws. The page builds the rendered
+ * outline and fills this slot, so the frame never imports the outline's code;
+ * the drawer shows the node and `close` shuts it after a link.
  */
 
-import type { RefObject } from "react";
-import { createContext, useContext, useEffect, useRef, useState } from "react";
-
-import type { OutlineHeading } from "./PageOutline";
+import type { ReactNode } from "react";
+import { createContext, useContext, useEffect } from "react";
 
 export interface OutlineSlot {
-  headings: readonly OutlineHeading[];
-  set: (headings: readonly OutlineHeading[]) => void;
+  node: ReactNode;
+  set: (node: ReactNode) => void;
+  /** Shut the drawer. */
+  close: () => void;
 }
 
 export const OutlineSlotContext = createContext<OutlineSlot | null>(null);
 
-/** Fill the frame's slot while `headings` is non-null; empty it on the way out. */
-export function useOutlineSlot(headings: readonly OutlineHeading[] | null) {
+/** Fill the frame's slot while `node` is non-null; empty it on the way out. */
+export function useOutlineSlot(node: ReactNode): void {
   const slot = useContext(OutlineSlotContext);
   const set = slot?.set;
   useEffect(() => {
-    if (!set || headings === null) {
+    if (!set || node === null) {
       return;
     }
-    set(headings);
+    set(node);
     return () => {
-      set([]);
+      set(null);
     };
-  }, [set, headings]);
-}
-
-/**
- * The `##` and `###` headings that carry an id inside a rendered body, kept
- * current while the body renders lazily or changes. The footnotes label has
- * no id, so it is not in the list.
- */
-export function useBodyHeadings(
-  root: RefObject<HTMLElement | null>,
-  source: string,
-): OutlineHeading[] {
-  const [headings, setHeadings] = useState<OutlineHeading[]>([]);
-  const last = useRef("");
-  useEffect(() => {
-    const element = root.current;
-    if (!element) {
-      return;
-    }
-    const collect = () => {
-      const found: OutlineHeading[] = [];
-      for (const h of element.querySelectorAll("h2[id], h3[id]")) {
-        found.push({
-          id: h.id,
-          text: (h.textContent ?? "").trim(),
-          level: h.tagName === "H2" ? 2 : 3,
-        });
-      }
-      const signature = JSON.stringify(found);
-      if (signature !== last.current) {
-        last.current = signature;
-        setHeadings(found);
-      }
-    };
-    collect();
-    const observer = new MutationObserver(collect);
-    observer.observe(element, { childList: true, subtree: true });
-    return () => {
-      observer.disconnect();
-    };
-  }, [root, source]);
-  return headings;
+  }, [set, node]);
 }

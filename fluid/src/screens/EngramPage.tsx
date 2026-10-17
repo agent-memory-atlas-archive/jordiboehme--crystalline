@@ -42,7 +42,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, Download, FolderInput, Link2 } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 
 import { discardChanges, refusalSentence } from "../api/admin";
@@ -87,6 +94,7 @@ import {
   CHIP_VARIANTS,
   Chip,
   FOCUS_RING,
+  RAIL_LABEL,
   statusVariant,
 } from "../components/primitives";
 import {
@@ -103,7 +111,9 @@ import { ShareDialog } from "../components/ShareDialog";
 import { PrintRelated } from "../components/PrintRelated";
 import { Loading } from "../components/Loading";
 import { PageOutline } from "../components/PageOutline";
-import { useBodyHeadings, useOutlineSlot } from "../components/outlineSlot";
+import { OutlineSlotContext, useOutlineSlot } from "../components/outlineSlot";
+import { useBodyHeadings, worthAnOutline } from "../useBodyHeadings";
+import { useLarge } from "../useLarge";
 import { useRememberedDisclosure } from "../disclosure";
 import { domainSpellings } from "../domainNames";
 import type { RecentChange } from "../events/recent";
@@ -497,12 +507,24 @@ export default function EngramPage() {
     },
   });
 
-  // The outline of a long page: in the rail from the medium breakpoint up, at
-  // the top of the phone drawer below it.
+  // The outline of a long page. The rail is a column only from `lg` and not
+  // at full width: there it leads the aside. Below `md` it leads the phone
+  // drawer. Between, and at full width, a collapsed disclosure over the body.
   const wide = useWide();
+  const large = useLarge();
+  const closeDrawer = useContext(OutlineSlotContext)?.close;
   const bodyRef = useRef<HTMLElement>(null);
   const outline = useBodyHeadings(bodyRef, detail.data?.content ?? "");
-  useOutlineSlot(wide ? null : outline);
+  const outlineNode = useMemo(
+    () =>
+      worthAnOutline(outline) ? (
+        <PageOutline headings={outline} onNavigate={closeDrawer} />
+      ) : null,
+    [outline, closeDrawer],
+  );
+  useOutlineSlot(wide ? null : outlineNode);
+  const inRail = wide && large && !fullWidth;
+  const inDisclosure = wide && !inRail && outlineNode !== null;
 
   if (isMissing(detail.error)) {
     return <EngramNotFound domain={domain} permalink={permalink} />;
@@ -865,6 +887,18 @@ export default function EngramPage() {
         }`}
       >
         <div className="flex min-w-0 flex-col gap-8">
+          {inDisclosure && (
+            <details className="group print:hidden">
+              <summary
+                className={`cursor-pointer rounded ${RAIL_LABEL} ${FOCUS_RING}`}
+              >
+                On this page
+              </summary>
+              <div className="pt-2">
+                <PageOutline headings={outline} label={false} />
+              </div>
+            </details>
+          )}
           <article ref={bodyRef} aria-labelledby="engram-title">
             {/*
               The heading above is the page's rendering of the title, so the
@@ -958,7 +992,7 @@ export default function EngramPage() {
         </div>
         {!fullWidth && (
           <aside className="flex flex-col divide-y divide-hair print:hidden [&>*]:py-4 [&>*:first-child]:pt-0">
-            {wide && <PageOutline headings={outline} />}
+            <PageOutline headings={inRail ? outline : []} />
             <DetailsPanel
               key={`${engram.domain}/${engram.permalink}`}
               frontmatter={engram.frontmatter}
