@@ -80,6 +80,7 @@ import { isIdLine } from "../reflectionText";
 import { WIKILINK, referenceState } from "../wikilinks";
 import type { WikilinkResolution, WikilinkResolver } from "../wikilinks";
 import Callout from "./Callout";
+import CopyCode from "./CopyCode";
 import DiagramOverlay from "./DiagramOverlay";
 import DiagramToolbar from "./DiagramToolbar";
 import { imageFileName } from "./downloads";
@@ -696,6 +697,25 @@ const components: Components = {
   // `aside` or a `details`, as raw HTML stays text.
   aside: ({ children, ...props }) => calloutOf(props, children, "aside"),
   details: ({ children, ...props }) => calloutOf(props, children, "details"),
+  // The reference mark: a small raised accent link, as `a` already draws it.
+  sup: ({ children }) => (
+    <sup className="text-[0.75em] leading-none [&_a]:no-underline">
+      {children}
+    </sup>
+  ),
+  // The notes at the end: a hairline above, meta size, the label in the
+  // section-label style (see `heading`).
+  section: ({ children, ...props }) =>
+    (props as Record<string, unknown>)["data-footnotes"] === undefined ? (
+      <section>{children}</section>
+    ) : (
+      <section
+        data-footnotes=""
+        className="footnotes mt-10 border-t border-hair pt-3 text-[13px] text-ink-3 [&_ol]:my-1 [&_p]:my-1"
+      >
+        {children}
+      </section>
+    ),
   hr: () => <hr className="my-6 border-slate-200 dark:border-slate-800" />,
   table: ({ children }) => (
     // Wide tables scroll inside themselves rather than widening the page, and
@@ -807,9 +827,12 @@ function preFor(
       );
     }
     return (
-      <pre className="breakout my-4 overflow-x-auto rounded bg-slate-100 p-3 text-sm dark:bg-slate-900">
-        {children}
-      </pre>
+      <div className="group breakout relative my-4">
+        <pre className="overflow-x-auto rounded bg-slate-100 p-3 text-sm dark:bg-slate-900">
+          {children}
+        </pre>
+        <CopyCode text={source.replace(/\n$/, "")} />
+      </div>
     );
   };
 }
@@ -1227,7 +1250,6 @@ function heading(
   anchored: boolean,
 ) {
   const Tag = `h${level}` as const;
-  const className = `group scroll-mt-16 ${sizes}`.trimEnd();
   return function Heading({
     children,
     id,
@@ -1238,6 +1260,7 @@ function heading(
     [FIRST_TITLE_PROP]?: string | undefined;
     [FIRST_HEADING_PROP]?: string | undefined;
   }) {
+    const className = `group scroll-mt-16 ${sizes}`.trimEnd();
     // Generated rather than derived from the slug: a heading literally called
     // "Auth text" would collide with a `${slug}-text` spelling, and two
     // elements sharing an id is a reference pointing at whichever came first.
@@ -1259,6 +1282,18 @@ function heading(
     // printed title block already carries.
     const firstTitle = rest[FIRST_TITLE_PROP] === "true" ? "" : undefined;
     const aside = useContext(HeadingAsideContext);
+    // The notes section's own label, which the converter marks screen-reader
+    // only: shown here in the section-label style, with no link symbol.
+    if (level === 2 && id === "footnote-label") {
+      return (
+        <h2
+          id={id}
+          className="mb-1 text-caption font-semibold tracking-wide text-ink-3 uppercase"
+        >
+          {children}
+        </h2>
+      );
+    }
     // The control is no part of the heading's words either: unstamped,
     // unselectable, passed over by the anchoring, and left out of the
     // heading's name by naming it from the span around its text.

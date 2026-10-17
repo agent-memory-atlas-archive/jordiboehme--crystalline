@@ -1217,3 +1217,39 @@ describe("math", () => {
     expect(container).toHaveTextContent("$a$ stays $b$ text.");
   });
 });
+
+describe("footnotes and code copy", () => {
+  it("styles footnotes at the end with links both ways", async () => {
+    const { container } = await renderMarkdown("Claim.[^1]\n\n[^1]: Source.\n");
+    const ref = container.querySelector("sup a");
+    expect(ref?.getAttribute("href")).toMatch(/#user-content-fn-1$/);
+    const notes = container.querySelector("section[data-footnotes]");
+    expect(notes).toHaveTextContent("Source.");
+    expect(notes).toHaveClass("border-t", "border-hair", "text-[13px]");
+    expect(container.querySelector("sup")).toHaveClass("text-[0.75em]");
+    const label = notes?.querySelector("h2");
+    expect(label).toHaveTextContent("Footnotes");
+    expect(label).not.toHaveClass("text-prose-h2");
+    const back = notes?.querySelector('a[href$="#user-content-fnref-1"]');
+    expect(back?.getAttribute("href")).toMatch(/#user-content-fnref-1$/);
+  });
+
+  it("copies a code block", async () => {
+    const write = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: write },
+    });
+    await renderMarkdown("```sh\ncargo test\n```\n");
+    await userEvent.click(screen.getByRole("button", { name: "Copy code" }));
+    expect(write).toHaveBeenCalledWith("cargo test");
+    expect(await screen.findByText("Copied")).toBeVisible();
+  });
+
+  it("puts no copy button on a diagram or a formula", async () => {
+    await renderMarkdown(
+      "```mermaid\ngraph TD; A-->B\n```\n\n```math\nx^2\n```\n",
+    );
+    expect(screen.queryByRole("button", { name: "Copy code" })).toBeNull();
+  });
+});
