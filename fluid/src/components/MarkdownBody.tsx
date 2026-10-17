@@ -73,7 +73,7 @@ import {
   remarkCrystallineDirectives,
   remarkStatusSyntax,
 } from "../markdown/directives";
-import { colourOf } from "../markdown/swatch";
+import { SWATCH_CLASSES, colourOf } from "../markdown/swatch";
 import { remarkTaskState } from "../markdown/taskState";
 import { printUrl } from "../printUrl";
 import { SOURCE_ATTR, spanPieces } from "../reflectionQuotes";
@@ -942,7 +942,7 @@ const components: Components = {
           data-swatch
           aria-hidden="true"
           style={{ background: colour }}
-          className="mr-1 inline-block size-[0.8em] rounded-sm align-[-0.05em] ring-1 ring-hair"
+          className={SWATCH_CLASSES}
         />
         {chip}
       </>

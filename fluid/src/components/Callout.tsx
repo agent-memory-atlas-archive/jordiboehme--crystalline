@@ -11,39 +11,13 @@
  * selection that starts on it is a selection of the words below it.
  */
 
-import {
-  ChevronRight,
-  Info,
-  Lightbulb,
-  MessageSquareWarning,
-  OctagonAlert,
-  TriangleAlert,
-} from "lucide-react";
-import type { LucideIcon } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import type { ReactNode } from "react";
 
 import type { CalloutKind } from "../markdown/callouts";
 import { SKIP_ATTR } from "../reflectionQuotes";
+import { CALLOUT_ICONS, CALLOUT_WORDS } from "./calloutFace";
 import { FOCUS_RING } from "./primitives";
-
-/** The word each kind is read out and shown as. */
-const CALLOUT_WORDS: Record<CalloutKind, string> = {
-  note: "Note",
-  tip: "Tip",
-  important: "Important",
-  warning: "Warning",
-  caution: "Caution",
-  details: "Details",
-};
-
-const ICONS: Record<CalloutKind, LucideIcon> = {
-  note: Info,
-  tip: Lightbulb,
-  important: MessageSquareWarning,
-  warning: TriangleAlert,
-  caution: OctagonAlert,
-  details: ChevronRight,
-};
 
 const HEAD = "flex items-center gap-1.5 font-semibold text-ink";
 const ICON = "shrink-0 text-(--callout)";
@@ -60,7 +34,7 @@ export default function Callout({
   children?: ReactNode;
 }) {
   const word = CALLOUT_WORDS[kind];
-  const Icon = ICONS[kind];
+  const Icon = CALLOUT_ICONS[kind];
   const label = title === null ? word : `${word}: ${title}`;
   const shown = title ?? word;
   const skip = { [SKIP_ATTR]: "" };

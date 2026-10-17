@@ -4,6 +4,10 @@
  * Anything else in the span (`#define`, `color: #09f`) is code and no more.
  */
 
+/** The swatch's own face, the same on the reading page and in the editor. */
+export const SWATCH_CLASSES =
+  "mr-1 inline-block size-[0.8em] rounded-sm align-[-0.05em] ring-1 ring-hair";
+
 const HEX = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
 
 const ALPHA = String.raw`(?:\s*,\s*(?:0|1|0?\.\d+|\d{1,3}%))?`;

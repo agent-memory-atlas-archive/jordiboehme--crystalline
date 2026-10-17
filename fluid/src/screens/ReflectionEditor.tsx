@@ -79,6 +79,7 @@ import { imagePreviews } from "../editor/imagePreviews";
 import { readScalar } from "../editor/frontmatterFields";
 import type { SaveStateKind } from "../editor/SaveState";
 import { SaveState } from "../editor/SaveState";
+import type { ElementFace } from "../editor/elementContext";
 import { surfaceExtensions } from "../editor/surface";
 import {
   UploadScreenContext,
@@ -606,6 +607,8 @@ function Surface({
   /** Whether the caret is in a table or on an image: the bar's context verbs. */
   const [tableActive, setTableActive] = useState(false);
   const [imageActive, setImageActive] = useState(false);
+  /** The callout or status label the caret is in, for their segments. */
+  const [element, setElement] = useState<ElementFace>(null);
   const extensions = useMemo(
     () => [
       // The shared text is LF space by construction (see EngramEditor).
@@ -628,6 +631,7 @@ function Surface({
         uploads: uploads.extension,
         onTableContext: setTableActive,
         onImageContext: setImageActive,
+        onElementContext: setElement,
       }),
     ],
     [
@@ -1051,6 +1055,8 @@ function Surface({
           view={view}
           tableActive={tableActive}
           imageActive={imageActive}
+          calloutActive={element?.kind === "callout" ? element : null}
+          statusActive={element?.kind === "status" ? element.colour : null}
           onAttach={uploads.attach}
           adapter={adapter}
           disabled={ended}

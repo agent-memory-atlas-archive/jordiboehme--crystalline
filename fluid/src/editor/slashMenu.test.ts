@@ -55,6 +55,7 @@ function open(
           uploads: [],
           onTableContext: () => {},
           onImageContext: () => {},
+          onElementContext: () => {},
         }),
       ],
     }),

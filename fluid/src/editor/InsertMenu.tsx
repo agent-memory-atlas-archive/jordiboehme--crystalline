@@ -28,14 +28,14 @@ const OWN_CONTROLS = new Set(["table", "task"]);
 const LISTED = INSERT_ACTIONS.filter((action) => !OWN_CONTROLS.has(action.id));
 
 /** The menu face of the overhaul: 12px radius, raised, soft shadow. */
-const SURFACE =
+export const SURFACE =
   "z-50 min-w-52 max-w-[calc(100vw-1rem)] rounded-xl border border-hair bg-raised p-1.5 text-[13.5px] shadow-pop";
 
 /** The diagram submenu: the same face, with a ceiling it scrolls under. */
 const TALL_SURFACE = `${SURFACE} max-h-[min(70vh,var(--radix-dropdown-menu-content-available-height))] overflow-y-auto`;
 
 /** One row: 34px, 44 on a phone. */
-const ROW =
+export const ROW =
   "flex h-11 cursor-pointer items-center gap-2.5 rounded-[7px] px-2.5 text-ink-2 outline-none select-none data-[highlighted]:bg-sunken data-[state=open]:bg-sunken md:h-[34px]";
 
 /** A section label: small caps, muted. */
@@ -45,7 +45,7 @@ const LABEL =
 const SEPARATOR = "mx-1 my-1.5 h-px bg-hair";
 
 /** The toolbar button: the word and a plus, the bar's own quiet face. */
-const TRIGGER = `inline-flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-[13px] text-slate-600 hover:bg-slate-100 disabled:opacity-50 data-[state=open]:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 dark:data-[state=open]:bg-slate-800 ${FOCUS_RING}`;
+export const TRIGGER = `inline-flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-[13px] text-slate-600 hover:bg-slate-100 disabled:opacity-50 data-[state=open]:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 dark:data-[state=open]:bg-slate-800 ${FOCUS_RING}`;
 
 function of(group: InsertAction["group"]): InsertAction[] {
   return LISTED.filter((action) => action.group === group);

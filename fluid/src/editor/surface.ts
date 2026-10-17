@@ -13,6 +13,9 @@ import { autocompletion } from "@codemirror/autocomplete";
 import type { Compartment, Extension } from "@codemirror/state";
 
 import type { DocumentAdapter } from "./adapter";
+import type { ElementFace } from "./elementContext";
+import { elementContextListener } from "./elementContext";
+import { elementPreviews } from "./elementPreviews";
 import { fenceMono } from "./fenceMono";
 import { fencePreviews } from "./fencePreviews";
 import { imageContextListener } from "./imageVerbs";
@@ -70,6 +73,12 @@ export interface SurfaceOptions {
    * for the same reason.
    */
   onImageContext: (onImage: boolean) => void;
+  /**
+   * Told when the caret enters or leaves a callout or a status label, or
+   * changes its kind, fold or colour, so the format bar can draw the
+   * segment for it. It travels with the listeners above for their reason.
+   */
+  onElementContext: (face: ElementFace) => void;
 }
 
 /**
@@ -92,6 +101,9 @@ export function previewConfig(
       // place that undoes it.
       [RAW_MONO]
     : [
+        // Before the mark folding, so a callout head, a label or a formula
+        // replaces its whole span over the marks folded inside it.
+        elementPreviews(),
         livePreview(),
         ...adapter.previewLayers,
         fencePreviews(dark),
@@ -128,6 +140,9 @@ export function surfaceExtensions(options: SurfaceOptions): Extension[] {
     // beside it: the menu edits the target's text, which is as much text in
     // Raw mode as it is under the previews.
     imageContextListener(options.onImageContext),
+    // And for the callout and status segments: a callout's kind is text in
+    // Raw mode too.
+    elementContextListener(options.onElementContext),
     // A pasted screenshot and a dropped deck are attachments in Raw mode too,
     // so these sit outside the compartment beside it.
     options.uploads,

@@ -709,6 +709,121 @@ describe("the image-format menu", () => {
   });
 });
 
+describe("the callout and status segments", () => {
+  const COLOURS = ["Grey", "Blue", "Green", "Yellow", "Red", "Purple"];
+  const CALLOUT_DOC = "> [!NOTE]\n> body\n";
+  const STATUS_DOC = "Build :status[Done]{green} today\n";
+
+  /** A buffer with the caret at `at`, and the bar drawn for its element. */
+  function mountOn(
+    doc: string,
+    at: number,
+    props: Partial<Parameters<typeof EditorToolbar>[0]>,
+  ): EditorView {
+    view = new EditorView({
+      state: parsedState(
+        EditorState.create({
+          doc,
+          selection: EditorSelection.single(at),
+          extensions: [...lineSeparatorFor(doc), ...baseExtensions(false)],
+        }),
+      ),
+      parent: document.body,
+    });
+    bar = render(<EditorToolbar view={view} {...props} />, {
+      wrapper: Tooltips,
+    });
+    return view;
+  }
+
+  test("neither is there outside a callout or a label", () => {
+    render(<EditorToolbar view={null} />, { wrapper: Tooltips });
+    expect(screen.queryByRole("button", { name: /callout kind/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Starts open" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Starts closed" })).toBeNull();
+    for (const name of COLOURS) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
+  });
+
+  test("in a callout, the kind and the fold appear, and no colours", () => {
+    render(
+      <EditorToolbar
+        view={null}
+        calloutActive={{ callout: "warning", fold: "closed" }}
+      />,
+      { wrapper: Tooltips },
+    );
+    const kind = screen.getByRole("button", { name: /callout kind/i });
+    // The visible word is part of the name.
+    expect(kind.textContent).toContain("Warning");
+    expect(
+      screen
+        .getByRole("button", { name: "Starts closed" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(
+      screen
+        .getByRole("button", { name: "Starts open" })
+        .getAttribute("aria-pressed"),
+    ).toBe("false");
+    for (const name of COLOURS) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
+    // An addition: the format buttons stay where they were.
+    expect(screen.getByRole("button", { name: "Bold" })).not.toBeNull();
+  });
+
+  test("in a status label, six colours named by their word appear", () => {
+    render(<EditorToolbar view={null} statusActive="green" />, {
+      wrapper: Tooltips,
+    });
+    for (const name of COLOURS) {
+      const button = screen.getByRole("button", { name });
+      expect(button.getAttribute("aria-pressed")).toBe(
+        name === "Green" ? "true" : "false",
+      );
+    }
+    expect(screen.queryByRole("button", { name: /callout kind/i })).toBeNull();
+  });
+
+  test("the kind menu rewrites the kind and hands the caret back", async () => {
+    const user = userEvent.setup();
+    const v = mountOn(CALLOUT_DOC, CALLOUT_DOC.indexOf("body"), {
+      calloutActive: { callout: "note", fold: null },
+    });
+    await user.click(screen.getByRole("button", { name: /callout kind/i }));
+    // Named by its trigger, as Radix names a menu.
+    const menu = await screen.findByRole("menu", { name: /callout kind/i });
+    expect(
+      within(menu)
+        .getByRole("menuitemradio", { name: "Note" })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+    await user.click(within(menu).getByRole("menuitemradio", { name: "Tip" }));
+    expect(docText(v.state)).toBe("> [!TIP]\n> body\n");
+    await waitFor(() => {
+      expect(v.hasFocus).toBe(true);
+    });
+  });
+
+  test("the fold buttons write the sign", async () => {
+    const v = mountOn(CALLOUT_DOC, CALLOUT_DOC.indexOf("body"), {
+      calloutActive: { callout: "note", fold: null },
+    });
+    await press("Starts closed");
+    expect(docText(v.state)).toBe("> [!NOTE]-\n> body\n");
+  });
+
+  test("a colour button rewrites the label's colour", async () => {
+    const v = mountOn(STATUS_DOC, STATUS_DOC.indexOf("Done"), {
+      statusActive: "green",
+    });
+    await press("Purple");
+    expect(docText(v.state)).toBe("Build :status[Done]{purple} today\n");
+  });
+});
+
 describe("a heading change the document asks about first", () => {
   const PAGE =
     "# P\n\n## A\n<!-- r:aaaa0001 -->\n\none\n\n## B\n<!-- r:bbbb0002 -->\n\ntwo\n";

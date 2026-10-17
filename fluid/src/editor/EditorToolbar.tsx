@@ -27,6 +27,8 @@ import type { EditorView } from "@codemirror/view";
 import {
   Bold,
   Brackets,
+  Check,
+  ChevronDown,
   Code,
   Columns3,
   Heading,
@@ -44,13 +46,23 @@ import { AlertDialog, DropdownMenu } from "radix-ui";
 import type { MouseEvent, ReactElement, ReactNode } from "react";
 import { useRef, useState } from "react";
 
+import { CALLOUT_WORDS } from "../components/calloutFace";
 import { ITEM_CLASSES, MENU_CLASSES } from "../components/menu";
-import { BUTTON, IconButton } from "../components/primitives";
+import { BUTTON, FOCUS_RING, IconButton } from "../components/primitives";
+import type { CalloutKind } from "../markdown/callouts";
+import { CALLOUT_KINDS } from "../markdown/callouts";
+import type { StatusColour } from "../markdown/directives";
+import { STATUS_COLOURS } from "../markdown/directives";
 import type { IconComponent } from "../components/primitives";
 import type { DocumentAdapter } from "./adapter";
 import { AttachButton } from "./AttachButton";
+import {
+  setCalloutFold,
+  setCalloutKind,
+  setStatusColour,
+} from "./elementContext";
 import { stepOffIdLines } from "./hiddenIdLines";
-import { InsertMenu } from "./InsertMenu";
+import { InsertMenu, ROW, SURFACE, TRIGGER } from "./InsertMenu";
 import { TableSizePicker } from "./TableSizePicker";
 import type { ImageAlign } from "./imageFormat";
 import {
@@ -153,6 +165,157 @@ function Divider(): ReactElement {
   );
 }
 
+/** The word each palette colour is shown and named as. */
+const COLOUR_WORDS: Record<StatusColour, string> = {
+  grey: "Grey",
+  blue: "Blue",
+  green: "Green",
+  yellow: "Yellow",
+  red: "Red",
+  purple: "Purple",
+};
+
+/** A segmented control's track and its segments, the avatar menu's look. */
+const TRACK = "inline-flex shrink-0 gap-0.5 rounded-[9px] bg-seg p-0.5";
+const SEGMENT = `inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-[7px] px-2 text-[13px] text-muted hover:text-ink disabled:cursor-default disabled:opacity-50 aria-pressed:bg-seg-on aria-pressed:text-ink aria-pressed:shadow-[0_1px_2px_rgb(15_23_42/0.1)] ${FOCUS_RING}`;
+
+/** What the bar knows about the callout the caret is in. */
+export interface CalloutFace {
+  callout: CalloutKind;
+  fold: "open" | "closed" | null;
+}
+
+/**
+ * The callout segment: its kind, as a menu that reads like a select, and
+ * whether it starts open or closed. A callout that does not fold presses
+ * neither; a details callout with no sign is closed, as the page draws it.
+ */
+function CalloutSegment({
+  face,
+  view,
+}: {
+  face: CalloutFace;
+  view: EditorView | null;
+}): ReactElement {
+  const word = CALLOUT_WORDS[face.callout];
+  const fold = face.fold ?? (face.callout === "details" ? "closed" : null);
+  const run = (edit: (v: EditorView) => boolean) => {
+    if (view) {
+      edit(view);
+    }
+  };
+  return (
+    <>
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger asChild>
+          {/* The visible word first, then what it is (label in name). */}
+          <button
+            type="button"
+            className={TRIGGER}
+            disabled={view === null}
+            aria-label={`${word}, callout kind`}
+          >
+            {word}
+            <ChevronDown aria-hidden="true" size={14} strokeWidth={1.75} />
+          </button>
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Portal>
+          <DropdownMenu.Content
+            align="start"
+            sideOffset={6}
+            className={SURFACE}
+            // The bar's discipline: back to the buffer when the menu closes.
+            onCloseAutoFocus={(event) => {
+              event.preventDefault();
+              view?.focus();
+            }}
+          >
+            <DropdownMenu.RadioGroup
+              value={face.callout}
+              onValueChange={(next) => {
+                run((v) => setCalloutKind(v, next as CalloutKind));
+              }}
+            >
+              {CALLOUT_KINDS.map((kind) => (
+                <DropdownMenu.RadioItem key={kind} value={kind} className={ROW}>
+                  <span className="inline-flex w-3.5 shrink-0">
+                    <DropdownMenu.ItemIndicator>
+                      <Check aria-hidden="true" size={14} strokeWidth={2} />
+                    </DropdownMenu.ItemIndicator>
+                  </span>
+                  {CALLOUT_WORDS[kind]}
+                </DropdownMenu.RadioItem>
+              ))}
+            </DropdownMenu.RadioGroup>
+          </DropdownMenu.Content>
+        </DropdownMenu.Portal>
+      </DropdownMenu.Root>
+      <div role="group" aria-label="Callout fold" className={TRACK}>
+        <button
+          type="button"
+          className={SEGMENT}
+          disabled={view === null}
+          aria-pressed={fold === "open"}
+          onClick={() => {
+            run((v) => setCalloutFold(v, "open"));
+          }}
+        >
+          Starts open
+        </button>
+        <button
+          type="button"
+          className={SEGMENT}
+          disabled={view === null}
+          aria-pressed={fold === "closed"}
+          onClick={() => {
+            run((v) => setCalloutFold(v, "closed"));
+          }}
+        >
+          Starts closed
+        </button>
+      </div>
+    </>
+  );
+}
+
+/**
+ * The status segment: the six palette colours, each named by its word with
+ * a dot of its colour beside it, the label's own pressed.
+ */
+function StatusSegment({
+  colour,
+  view,
+}: {
+  colour: StatusColour;
+  view: EditorView | null;
+}): ReactElement {
+  return (
+    <div role="group" aria-label="Status colour" className={TRACK}>
+      {STATUS_COLOURS.map((each) => (
+        <button
+          key={each}
+          type="button"
+          className={SEGMENT}
+          disabled={view === null}
+          aria-pressed={each === colour}
+          onClick={() => {
+            if (view) {
+              setStatusColour(view, each);
+            }
+          }}
+        >
+          <span
+            aria-hidden="true"
+            className="inline-block size-2 shrink-0 rounded-full"
+            style={{ background: `var(--status-${each})` }}
+          />
+          {COLOUR_WORDS[each]}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /**
  * The one question a heading change can ask, in the shape of the other
  * dialogs in the editor (`ConfirmLeaveDialog`): the sentence the adapter
@@ -213,6 +376,8 @@ export function EditorToolbar({
   view: buffer,
   tableActive = false,
   imageActive = false,
+  calloutActive = null,
+  statusActive = null,
   onAttach,
   bare = false,
   trailing,
@@ -229,6 +394,14 @@ export function EditorToolbar({
    * on is one more thing to read past on the way to the verbs that do.
    */
   imageActive?: boolean;
+  /**
+   * The callout the caret is in right now, or null: its kind and fold, for
+   * the segment that changes them. Drawn rather than disabled, like the
+   * table and image segments.
+   */
+  calloutActive?: CalloutFace | null;
+  /** The colour of the status label the caret is in right now, or null. */
+  statusActive?: StatusColour | null;
   /**
    * What to do with the files a person picks, on a surface that can hold
    * attachments. Absent on one that cannot - the MANIFEST - where the button
@@ -603,6 +776,22 @@ export function EditorToolbar({
               disabled={off}
               onClick={act(tablePrettify)}
             />
+          </>
+        )}
+        {calloutActive !== null && (
+          <>
+            {/*
+            The same hairline, in front of what acts on the callout the caret
+            is in: its kind and whether it starts open.
+          */}
+            <Divider />
+            <CalloutSegment face={calloutActive} view={view} />
+          </>
+        )}
+        {statusActive !== null && (
+          <>
+            <Divider />
+            <StatusSegment colour={statusActive} view={view} />
           </>
         )}
         {trailing !== undefined && (

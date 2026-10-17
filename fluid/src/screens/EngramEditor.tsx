@@ -69,6 +69,7 @@ import { FindingsPanel, jumpToLine } from "../editor/FindingsPanel";
 import { FrontmatterForm } from "../editor/FrontmatterForm";
 import { KeptTextNotice } from "../editor/KeptTextNotice";
 import { docText, lineSeparatorFor } from "../editor/setup";
+import type { ElementFace } from "../editor/elementContext";
 import { previewConfig, surfaceExtensions } from "../editor/surface";
 import type { SaveStateKind } from "../editor/SaveState";
 import { SaveState } from "../editor/SaveState";
@@ -221,6 +222,8 @@ interface EngramSurfaceOptions {
   onTableContext: (inTable: boolean) => void;
   /** Told when the caret enters or leaves an image; see `SurfaceOptions`. */
   onImageContext: (onImage: boolean) => void;
+  /** Told what callout or label the caret is in; see `SurfaceOptions`. */
+  onElementContext: (face: ElementFace) => void;
 }
 
 /**
@@ -267,6 +270,7 @@ function engramSurface(options: EngramSurfaceOptions): Extension[] {
       uploads: options.uploads,
       onTableContext: options.onTableContext,
       onImageContext: options.onImageContext,
+      onElementContext: options.onElementContext,
     }),
   ];
 }
@@ -454,6 +458,8 @@ function Surface({
   const [tableActive, setTableActive] = useState(false);
   /** The same, for the caret sitting on an attachment image. */
   const [imageActive, setImageActive] = useState(false);
+  /** The callout or status label the caret is in, for their segments. */
+  const [element, setElement] = useState<ElementFace>(null);
   /**
    * WHICH conflict this tab has the resolution view open on, rather than a
    * bare open flag. The conflict itself is the server's - it stands until
@@ -583,6 +589,7 @@ function Surface({
       uploads: uploads.extension,
       onTableContext: setTableActive,
       onImageContext: setImageActive,
+      onElementContext: setElement,
     });
 
   /**
@@ -868,6 +875,7 @@ function Surface({
         uploads: uploads.extension,
         onTableContext: setTableActive,
         onImageContext: setImageActive,
+        onElementContext: setElement,
       }),
     // Read once: `CmEditor` snapshots the extensions at mount, so a later
     // theme change reaches the buffer through a remount rather than through
@@ -1311,6 +1319,8 @@ function Surface({
             view={view}
             tableActive={tableActive}
             imageActive={imageActive}
+            calloutActive={element?.kind === "callout" ? element : null}
+            statusActive={element?.kind === "status" ? element.colour : null}
             onAttach={uploads.attach}
             adapter={adapter}
             trailing={
