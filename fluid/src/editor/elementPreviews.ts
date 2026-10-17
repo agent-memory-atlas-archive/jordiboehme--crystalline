@@ -48,7 +48,7 @@ import { lazyPart } from "../components/lazyPart";
 import type { CalloutKind } from "../markdown/callouts";
 import type { StatusColour } from "../markdown/directives";
 import { SWATCH_CLASSES, colourOf } from "../markdown/swatch";
-import { calloutOf, statusOf } from "./elementContext";
+import { calloutAt, calloutOf, statusOf } from "./elementContext";
 import { frontmatterRegion } from "./frontmatterRegion";
 import { parseAdvanced } from "./parseProgress";
 import { CODE_CONTEXTS } from "./prose";
@@ -203,24 +203,42 @@ class SwatchWidget extends WidgetType {
   }
 }
 
+/** The observers that re-measure a display formula, by its element. */
+const observers = new WeakMap<HTMLElement, ResizeObserver>();
+
 /** A formula, set by the reading page's lazy part. */
 class MathWidget extends WidgetType {
   readonly tex: string;
   readonly display: boolean;
+  /** The callout a display formula stands in, whose tint it keeps. */
+  readonly callout: CalloutKind | null;
 
-  constructor(tex: string, display: boolean) {
+  constructor(
+    tex: string,
+    display: boolean,
+    callout: CalloutKind | null = null,
+  ) {
     super();
     this.tex = tex;
     this.display = display;
+    this.callout = callout;
   }
 
   override eq(other: MathWidget): boolean {
-    return other.tex === this.tex && other.display === this.display;
+    return (
+      other.tex === this.tex &&
+      other.display === this.display &&
+      other.callout === this.callout
+    );
   }
 
   override toDOM(view: EditorView): HTMLElement {
     const dom = document.createElement(this.display ? "div" : "span");
     dom.className = this.display ? "cm-math-block" : "cm-math-inline";
+    if (this.callout !== null) {
+      dom.classList.add("callout");
+      dom.dataset["callout"] = this.callout;
+    }
     // The source as code until the part arrives, as on the page.
     const fallback = createElement("code", null, this.tex);
     draw(
@@ -232,15 +250,20 @@ class MathWidget extends WidgetType {
       }),
     );
     if (this.display) {
-      // The formula is taller than its fallback: measure again once it lands.
-      requestAnimationFrame(() => {
+      // The formula is taller than its fallback, and KaTeX arrives when it
+      // arrives: the editor measures the block again whenever it changes.
+      const observer = new ResizeObserver(() => {
         view.requestMeasure();
       });
+      observer.observe(dom);
+      observers.set(dom, observer);
     }
     return dom;
   }
 
   override destroy(dom: HTMLElement): void {
+    observers.get(dom)?.disconnect();
+    observers.delete(dom);
     undraw(dom);
   }
 
@@ -286,9 +309,14 @@ function calloutDecorations(
   const outermost = quote.parent?.name === "Document";
   for (let number = first; number <= last; number += 1) {
     const line = doc.line(number);
+    // The first and last lines carry the page's head and foot padding.
+    const edge = [
+      number === first ? "cm-callout-first" : "",
+      number === last ? "cm-callout-last" : "",
+    ].join(" ");
     out.push(
       Decoration.line({
-        class: "callout",
+        class: `callout ${edge}`.trim(),
         attributes: { "data-callout": callout.callout },
       }).range(line.from),
     );
@@ -393,6 +421,21 @@ function buildInline(view: EditorView): Inline {
           }
           return false;
         }
+        if (ref.name === "InlineMath") {
+          const open = node.firstChild;
+          const close = node.lastChild;
+          if (!lineActive && open !== null && close !== null && once(node)) {
+            out.push(
+              Decoration.replace({
+                widget: new MathWidget(
+                  doc.sliceString(open.to, close.from),
+                  false,
+                ),
+              }).range(ref.from, ref.to),
+            );
+          }
+          return false;
+        }
         if (ref.name === "InlineCode") {
           if (lineActive || !once(node)) {
             return false;
@@ -473,8 +516,37 @@ interface Block {
   tex: string;
 }
 
-/** A `math` fence and a `$$` block, each with its formula, outside code. */
-function mathBlocks(state: EditorState): Block[] {
+/** A line's quote marks: how many, and how long the run of them is. */
+const QUOTE_RUN = /^[ \t]*((?:>[ \t]?)*)/;
+
+function quoteDepth(text: string): number {
+  return (QUOTE_RUN.exec(text)?.[1] ?? "").split(">").length - 1;
+}
+
+/** `text` without its first `depth` quote marks (and a space after each). */
+function unquoted(text: string, depth: number): string {
+  let rest = text;
+  for (let mark = 0; mark < depth; mark += 1) {
+    const prefix = /^[ \t]*>[ \t]?/.exec(rest);
+    if (prefix === null) {
+      break;
+    }
+    rest = rest.slice(prefix[0].length);
+  }
+  return rest;
+}
+
+/** A page section's heading, which ends anything a section holds. */
+const SECTION_HEADING = /^##(?:[ \t]|$)/;
+
+/**
+ * A `math` fence and a `$$` block, each with its formula, outside code. Both
+ * may stand in a quote: their lines are read without the quote's marks, and
+ * a `$$` closes only at the depth it opened, inside the same quote. With
+ * `sections`, a section heading ends an open `$$`, because each section of
+ * the page is read on its own.
+ */
+function mathBlocks(state: EditorState, sections: boolean): Block[] {
   const doc = state.doc;
   const blocks: Block[] = [];
   const code: { from: number; to: number }[] = [];
@@ -487,10 +559,20 @@ function mathBlocks(state: EditorState): Block[] {
       if (node.name !== "FencedCode") {
         return false;
       }
-      const text = doc.sliceString(node.from, node.to);
-      const fence = /^```math[ \t]*\n([\s\S]*?)\n?```[ \t]*$/.exec(text);
+      const first = doc.lineAt(node.from);
+      const last = doc.lineAt(node.to);
+      const depth = quoteDepth(first.text);
+      const lines: string[] = [];
+      for (let number = first.number; number <= last.number; number += 1) {
+        lines.push(unquoted(doc.line(number).text, depth));
+      }
+      // A fence that does not start its line (one in a list item) stays
+      // source: its block would have to start mid-line.
+      const fence = /^```math[ \t]*\n([\s\S]*?)\n?```[ \t]*$/.exec(
+        lines.join("\n"),
+      );
       if (fence !== null) {
-        blocks.push({ from: node.from, to: node.to, tex: fence[1] ?? "" });
+        blocks.push({ from: first.from, to: last.to, tex: fence[1] ?? "" });
       }
       return false;
     },
@@ -498,50 +580,78 @@ function mathBlocks(state: EditorState): Block[] {
   const fmEnd = frontmatterRegion(doc)?.to ?? -1;
   const inCode = (pos: number) =>
     pos <= fmEnd || code.some((range) => pos >= range.from && pos <= range.to);
-  let open: number | null = null;
+  let open: { number: number; depth: number } | null = null;
   for (let number = 1; number <= doc.lines; number += 1) {
     const line = doc.line(number);
-    if (line.text.trim() !== "$$" || inCode(line.from)) {
+    if (inCode(line.from)) {
       continue;
     }
-    if (open === null) {
-      open = number;
+    const depth = quoteDepth(line.text);
+    const rest = unquoted(line.text, depth);
+    if (open !== null && depth < open.depth) {
+      // The quote the block opened in has ended.
+      open = null;
+    }
+    if (
+      open !== null &&
+      sections &&
+      depth === 0 &&
+      SECTION_HEADING.test(rest)
+    ) {
+      open = null;
       continue;
     }
-    const first = doc.line(open);
-    // The lines between the two fences; none when they stand together.
-    const tex =
-      number === open + 1 ? "" : doc.sliceString(first.to + 1, line.from - 1);
-    blocks.push({ from: first.from, to: line.to, tex });
+    if (rest.trim() !== "$$") {
+      continue;
+    }
+    if (open === null || depth !== open.depth) {
+      open = { number, depth };
+      continue;
+    }
+    const tex: string[] = [];
+    for (let inner = open.number + 1; inner < number; inner += 1) {
+      tex.push(unquoted(doc.line(inner).text, depth));
+    }
+    blocks.push({
+      from: doc.line(open.number).from,
+      to: line.to,
+      tex: tex.join("\n"),
+    });
     open = null;
   }
   return blocks;
 }
 
-function buildBlocks(state: EditorState): DecorationSet {
+function buildBlocks(state: EditorState, sections: boolean): DecorationSet {
   const touched = (block: Block) =>
     state.selection.ranges.some(
       (range) => range.from <= block.to && range.to >= block.from,
     );
-  const out = mathBlocks(state)
+  const out = mathBlocks(state, sections)
     .filter((block) => block.tex.trim() !== "" && !touched(block))
     .map((block) =>
       Decoration.replace({
-        widget: new MathWidget(block.tex, true),
+        widget: new MathWidget(
+          block.tex,
+          true,
+          calloutAt(state, block.from + 1)?.callout ?? null,
+        ),
         block: true,
       }).range(block.from, block.to),
     );
   return Decoration.set(out.sort((a, b) => a.from - b.from));
 }
 
-const blockPreviews = StateField.define<DecorationSet>({
-  create: (state) => buildBlocks(state),
-  update: (value, tr) =>
-    tr.docChanged || tr.selection !== undefined || parseAdvanced(tr)
-      ? buildBlocks(tr.state)
-      : value,
-  provide: (field) => EditorView.decorations.from(field),
-});
+function blockPreviews(sections: boolean): Extension {
+  return StateField.define<DecorationSet>({
+    create: (state) => buildBlocks(state, sections),
+    update: (value, tr) =>
+      tr.docChanged || tr.selection !== undefined || parseAdvanced(tr)
+        ? buildBlocks(tr.state, sections)
+        : value,
+    provide: (field) => EditorView.decorations.from(field),
+  });
+}
 
 const elementTheme = EditorView.baseTheme({
   ".cm-callout-head": { marginRight: "0.375rem", fontWeight: "600" },
@@ -550,9 +660,20 @@ const elementTheme = EditorView.baseTheme({
     padding: "0.5rem 0.75rem",
     overflowX: "auto",
   },
+  // Inside a callout, in from the rule like the callout's words.
+  ".cm-math-block.callout": { paddingLeft: "1rem" },
 });
 
-/** The whole layer, inside the preview compartment. */
-export function elementPreviews(): Extension {
-  return [inlinePreviews, blockPreviews, elementTheme];
+/**
+ * The whole layer, inside the preview compartment. `sections` for a buffer
+ * whose page is read one level-2 section at a time (a Reflection page).
+ */
+export function elementPreviews(
+  options: { sections?: boolean } = {},
+): Extension {
+  return [
+    inlinePreviews,
+    blockPreviews(options.sections ?? false),
+    elementTheme,
+  ];
 }

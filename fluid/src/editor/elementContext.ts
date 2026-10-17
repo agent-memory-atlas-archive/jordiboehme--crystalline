@@ -174,7 +174,11 @@ export function statusAtCaret(state: EditorState): StatusAt | null {
 
 /** The innermost callout the caret is in, or null. */
 export function calloutAtCaret(state: EditorState): CalloutAt | null {
-  const pos = state.selection.main.head;
+  return calloutAt(state, state.selection.main.head);
+}
+
+/** The innermost callout around `pos`, or null. */
+export function calloutAt(state: EditorState, pos: number): CalloutAt | null {
   const quotes = ancestorsAt(state, pos)
     .filter((node) => node.name === "Blockquote")
     // Innermost first: the one that starts last.

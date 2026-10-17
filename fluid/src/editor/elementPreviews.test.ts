@@ -27,7 +27,11 @@ afterEach(() => {
 });
 
 /** A buffer with both preview layers, in the order the surface mounts them. */
-function editor(doc: string, at: number): EditorView {
+function editor(
+  doc: string,
+  at: number,
+  options: { sections?: boolean } = {},
+): EditorView {
   view = new EditorView({
     state: parsedState(
       EditorState.create({
@@ -36,7 +40,7 @@ function editor(doc: string, at: number): EditorView {
         extensions: [
           ...lineSeparatorFor(doc),
           ...baseExtensions(false),
-          elementPreviews(),
+          elementPreviews(options),
           livePreview(),
         ],
       }),
@@ -211,5 +215,91 @@ describe("inside the React screen that mounts the buffer", () => {
     } finally {
       errors.mockRestore();
     }
+  });
+});
+
+/** The TeX every formula on screen was set from, as KaTeX keeps it. */
+function texOf(v: EditorView): string[] {
+  return [...v.dom.querySelectorAll("annotation")].map(
+    (note) => note.textContent ?? "",
+  );
+}
+
+describe("math, the remaining forms", () => {
+  it("sets double-dollar math on one line as inline math", async () => {
+    const doc = "Area $$x^2$$ here\n\n$$y_1$$\n\nEnd\n";
+    const v = editor(doc, doc.length);
+    await waitFor(() => {
+      expect(v.dom.querySelectorAll(".cm-math-inline .katex")).toHaveLength(2);
+    });
+    expect(v.dom.querySelector(".cm-math-block")).toBeNull();
+    expect(texOf(v)).toEqual(["x^2", "y_1"]);
+  });
+
+  it("sets display math inside a callout without its quote marks", async () => {
+    const doc =
+      "> [!NOTE]\n> Two forms:\n>\n> ```math\n> E = mc^2\n> ```\n>\n> $$\n> a^2 + b^2\n> $$\n\nEnd\n";
+    const v = editor(doc, doc.length);
+    await waitFor(() => {
+      expect(
+        v.dom.querySelectorAll(".cm-math-block .katex-display"),
+      ).toHaveLength(2);
+    });
+    const tex = texOf(v);
+    expect(tex).toEqual(["E = mc^2", "a^2 + b^2"]);
+    for (const each of tex) {
+      expect(each).not.toContain(">");
+    }
+    // Each formula keeps the callout's tint, and starts at a line's start.
+    for (const block of v.dom.querySelectorAll(".cm-math-block")) {
+      expect(block.classList.contains("callout")).toBe(true);
+      expect(block.getAttribute("data-callout")).toBe("note");
+    }
+    expect(v.state.doc.toString()).toBe(doc);
+  });
+
+  it("never pairs dollar fences across a page's sections", () => {
+    const doc = "## A\n\n$$\nx\n\n## B\n\nWords\n\n$$\n\nEnd\n";
+    const page = editor(doc, doc.length, { sections: true });
+    expect(page.dom.querySelector(".cm-math-block")).toBeNull();
+    expect(page.dom.textContent).toContain("B");
+    page.destroy();
+    // In one document the reader pairs them, and so does the preview.
+    const engram = editor(doc, doc.length);
+    expect(engram.dom.querySelector(".cm-math-block")).not.toBeNull();
+  });
+
+  it("measures a display formula again whenever its size changes", () => {
+    const observed: Element[] = [];
+    let disconnected = 0;
+    const original = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      observe(target: Element) {
+        observed.push(target);
+      }
+      unobserve() {}
+      disconnect() {
+        disconnected += 1;
+      }
+    };
+    try {
+      const doc = "$$\nx\n$$\n\nEnd\n";
+      const v = editor(doc, doc.length);
+      expect(observed).toContain(v.dom.querySelector(".cm-math-block"));
+      v.dispatch({ selection: EditorSelection.cursor(2) });
+      expect(disconnected).toBe(1);
+    } finally {
+      globalThis.ResizeObserver = original;
+    }
+  });
+});
+
+describe("a callout's inset", () => {
+  it("marks its first and last lines for the head and foot padding", () => {
+    const v = editor(CALLOUT, CALLOUT.length);
+    const lines = [...v.dom.querySelectorAll(".cm-line.callout")];
+    expect(lines).toHaveLength(2);
+    expect(lines[0]?.classList.contains("cm-callout-first")).toBe(true);
+    expect(lines[1]?.classList.contains("cm-callout-last")).toBe(true);
   });
 });

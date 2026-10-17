@@ -22,11 +22,11 @@ afterEach(() => {
 const DOC =
   "# Head\n\n> [!NOTE]+ Title\n> body\n\nA :status[Done]{green} label\n";
 
-function mount(): EditorView {
+function mount(doc = DOC): EditorView {
   view = new EditorView({
     state: parsedState(
       EditorState.create({
-        doc: DOC,
+        doc,
         selection: EditorSelection.cursor(0),
         extensions: baseExtensions(false),
       }),
@@ -65,5 +65,47 @@ describe("the dialect markers", () => {
     expect(classOf(v, "[!NOTE]+")).toBe(mark);
     expect(classOf(v, ":status[")).toBe(mark);
     expect(classOf(v, "]{green}")).toBe(mark);
+  });
+
+  /** The node names of `doc`'s tree, in order. */
+  function namesOf(doc: string): string[] {
+    const v = mount(doc);
+    const names: string[] = [];
+    syntaxTree(v.state).iterate({
+      enter: (node) => {
+        names.push(node.name);
+      },
+    });
+    v.destroy();
+    view = null;
+    return names;
+  }
+
+  it("take a callout marker only on the first line of a quote", () => {
+    expect(namesOf("> [!NOTE]\n> body\n")).toContain("CalloutMark");
+    // A quote whose first line is blank still opens with it, as on the page.
+    expect(namesOf(">\n> [!NOTE]\n> body\n")).toContain("CalloutMark");
+    for (const doc of [
+      "[!NOTE] at the start of a paragraph\n",
+      "# [!NOTE] in a heading\n",
+      "- [!NOTE] in a list item\n",
+      "| [!NOTE] | b |\n| --- | --- |\n| 1 | 2 |\n",
+      "> words first\n>\n> [!NOTE] later\n",
+    ]) {
+      expect(namesOf(doc)).not.toContain("CalloutMark");
+    }
+    // A link stays a link.
+    const link = namesOf("> [!note](https://example.com)\n");
+    expect(link).not.toContain("CalloutMark");
+    expect(link).toContain("Link");
+  });
+
+  it("read double-dollar math on one line, never in code", () => {
+    const names = namesOf("Area $$x^2$$ here\n\n$$y$$\n");
+    expect(names.filter((name) => name === "InlineMath")).toHaveLength(2);
+    expect(namesOf("Run `$$x$$` here\n")).not.toContain("InlineMath");
+    expect(namesOf("Costs $5 and $6\n")).not.toContain("InlineMath");
+    expect(namesOf("Open $$x\nclose$$\n")).not.toContain("InlineMath");
+    expect(namesOf("$$\na\n$$\n")).not.toContain("InlineMath");
   });
 });

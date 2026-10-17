@@ -103,7 +103,7 @@ export function previewConfig(
     : [
         // Before the mark folding, so a callout head, a label or a formula
         // replaces its whole span over the marks folded inside it.
-        elementPreviews(),
+        elementPreviews({ sections: adapter.kind === "reflection" }),
         livePreview(),
         ...adapter.previewLayers,
         fencePreviews(dark),
