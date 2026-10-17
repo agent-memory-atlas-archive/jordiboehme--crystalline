@@ -94,6 +94,11 @@ function textIn(el: Element, text: string): Text {
 }
 
 describe("a quote through the real renderer", () => {
+  it("anchors around inline math", async () => {
+    await roundTrip("Before $`x^2`$ after.", "Before");
+    await roundTrip("Before $`x^2`$ after.", "after.");
+  });
+
   it("crosses inline code, backticks included", async () => {
     const range = await roundTrip(
       "Run `cargo test` now, then `cargo build`.",

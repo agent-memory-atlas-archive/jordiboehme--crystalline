@@ -1182,3 +1182,38 @@ describe("status labels and other directives", () => {
     expect(container).toHaveTextContent("::toc");
   });
 });
+
+describe("math", () => {
+  it("renders the safe math forms and leaves dollar amounts alone", async () => {
+    const { container } = await renderMarkdown(
+      [
+        "The loss is $`L = -\\sum y`$ here.",
+        "",
+        "$$",
+        "E = mc^2",
+        "$$",
+        "",
+        "```math",
+        "a^2 + b^2",
+        "```",
+        "",
+        "It costs $5 and $10, set $HOME.",
+      ].join("\n"),
+    );
+    await waitFor(() =>
+      expect(container.querySelectorAll(".katex")).toHaveLength(3),
+    );
+    expect(screen.getByText("It costs $5 and $10, set $HOME.")).toBeVisible();
+  });
+
+  it("keeps the words around inline math and never reads a single dollar pair", async () => {
+    const { container } = await renderMarkdown(
+      "Before $`x^2`$ after, and $a$ stays $b$ text.",
+    );
+    await waitFor(() =>
+      expect(container.querySelectorAll(".katex")).toHaveLength(1),
+    );
+    expect(container).toHaveTextContent("Before");
+    expect(container).toHaveTextContent("$a$ stays $b$ text.");
+  });
+});

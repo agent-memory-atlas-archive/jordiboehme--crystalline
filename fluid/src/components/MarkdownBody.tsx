@@ -84,11 +84,17 @@ import DiagramOverlay from "./DiagramOverlay";
 import DiagramToolbar from "./DiagramToolbar";
 import { imageFileName } from "./downloads";
 import { lazyPart } from "./lazyPart";
+import {
+  remarkGithubMath,
+  remarkMath,
+  remarkMathOptions,
+} from "../markdown/math";
 import { Chip, FOCUS_RING } from "./primitives";
 import StatusLabel from "./StatusLabel";
 import { useSaid } from "./useSaid";
 
 const MermaidDiagram = lazyPart(() => import("./MermaidDiagram"));
+const MathPart = lazyPart(() => import("./MathPart"));
 
 /**
  * The renderer's own plugin-list type, taken from its props rather than from
@@ -377,7 +383,7 @@ function codeSpanStamp(source: string) {
 
 /** Stamp one fence's text nodes at their offsets, or leave it as it is. */
 function stampFence(code: HastNode, source: string): void {
-  if (languageOf(code) === "mermaid") {
+  if (languageOf(code) === "mermaid" || languageOf(code) === "math") {
     return;
   }
   const start = code.position?.start?.offset;
@@ -726,6 +732,12 @@ const components: Components = {
     // A fenced block carries a language class or the highlighter's own, and
     // sits inside a `pre` that is already the box. Only the inline kind gets
     // drawn as a chip.
+    if (typeof className === "string" && className.includes("math-inline")) {
+      const tex = textOf(node as HastNode | undefined);
+      return (
+        <MathPart fallback={<code>{tex}</code>} tex={tex} display={false} />
+      );
+    }
     const fenced =
       typeof className === "string" &&
       (className.includes("language-") || className.includes("hljs"));
@@ -769,6 +781,17 @@ function preFor(
   return ({ children, node }) => {
     const fence = (node as HastNode | undefined)?.children?.[0];
     const source = textOf(fence);
+    if (languageOf(fence) === "math" && source.trim() !== "") {
+      return (
+        <div className="breakout my-4 overflow-x-auto">
+          <MathPart
+            fallback={<code>{source}</code>}
+            tex={source}
+            display={true}
+          />
+        </div>
+      );
+    }
     if (languageOf(fence) === "mermaid" && source.trim() !== "") {
       return (
         <figure
@@ -1480,6 +1503,8 @@ export default function MarkdownBody({
       remarkGfm,
       remarkStatusSyntax,
       remarkCrystallineDirectives(shown),
+      [remarkMath, remarkMathOptions],
+      remarkGithubMath,
       remarkCallouts,
     ],
     [shown],
@@ -1493,7 +1518,7 @@ export default function MarkdownBody({
       ...(sourceSpans ? [sourceSpanStamp(shown)] : []),
       // `plainText` keeps the highlighter's hands off a mermaid fence, whose
       // text this file reads back out to draw the diagram from.
-      [rehypeHighlight, { plainText: ["mermaid"] }],
+      [rehypeHighlight, { plainText: ["mermaid", "math"] }],
       // After the highlighter, which rebuilds a fence's children.
       ...(sourceSpans ? [codeSpanStamp(shown)] : []),
       // After the highlighter, so the headings it may have rewritten are
