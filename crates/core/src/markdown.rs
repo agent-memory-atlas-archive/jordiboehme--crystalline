@@ -6,7 +6,7 @@
 
 use serde::Serialize;
 
-use crate::parse::{body_lines, mask_inline_code, split_category};
+use crate::parse::{body_lines, mask_inline_code, parse_relation, split_category};
 use crate::verify::Severity;
 
 /// The colours a status label may name.
@@ -54,8 +54,8 @@ pub fn lint_markdown(text: &str, first_line: usize, engram: bool) -> Vec<Markdow
         let masked = mask_inline_code(bl.text);
         status_findings(&masked, bl.line_no, &mut out);
 
-        let is_quote = quote_body(&masked).is_some();
-        if let Some(rest) = quote_body(&masked) {
+        let quoted = quote_body(&masked);
+        if let Some(rest) = quoted {
             if !prev_quote {
                 in_callout = false;
                 if let Some(word) = callout_marker(rest) {
@@ -82,7 +82,7 @@ pub fn lint_markdown(text: &str, first_line: usize, engram: bool) -> Vec<Markdow
         } else {
             in_callout = false;
         }
-        prev_quote = is_quote;
+        prev_quote = quoted.is_some();
     }
     out
 }
@@ -91,7 +91,11 @@ fn status_findings(masked: &str, line: usize, out: &mut Vec<MarkdownFinding>) {
     let mut rest = masked;
     while let Some(at) = rest.find(":status[") {
         let after = &rest[at + ":status[".len()..];
-        let Some(close) = after.find(']') else { return };
+        let Some(close) = label_end(after) else {
+            // Unclosed here; a later label on the line can still close.
+            rest = after;
+            continue;
+        };
         let tail = &after[close + 1..];
         rest = tail;
         let Some(braced) = tail.strip_prefix('{') else {
@@ -112,6 +116,24 @@ fn status_findings(masked: &str, line: usize, out: &mut Vec<MarkdownFinding>) {
             });
         }
     }
+}
+
+/// The byte index of the `]` that closes a status label, the way the reader
+/// reads it: brackets inside the label nest and `\]` is no close.
+fn label_end(after: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut escaped = false;
+    for (i, c) in after.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '[' => depth += 1,
+            ']' if depth == 0 => return Some(i),
+            ']' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The text after the leading `>` markers of a quote line, or None.
@@ -139,23 +161,14 @@ fn callout_marker(rest: &str) -> Option<&str> {
     .then_some(word)
 }
 
-/// A list item whose content is an observation or relation head.
+/// A list item whose content is an observation or relation head, read with
+/// the parser's own rules.
 fn is_structure(rest: &str) -> bool {
     let Some(content) = ["- ", "* ", "+ "].iter().find_map(|p| rest.strip_prefix(p)) else {
         return false;
     };
     let content = content.trim_start();
-    if split_category(content).is_some() {
-        return true;
-    }
-    let Some(open) = content.find("[[") else {
-        return false;
-    };
-    let before = content[..open].trim();
-    if before.len() >= 2 && before.starts_with('"') && before.ends_with('"') {
-        return true;
-    }
-    !before.is_empty() && !before.contains(char::is_whitespace) && !before.starts_with([':', '['])
+    split_category(content).is_some() || parse_relation(content).is_some()
 }
 
 #[cfg(test)]
@@ -183,6 +196,23 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn a_status_label_closes_on_its_balanced_bracket() {
+        assert_eq!(codes(":status[a [b] c]{orange}\n", false), [("Q006", 1)]);
+        assert_eq!(codes(":status[a \\] b]{orange}\n", false), [("Q006", 1)]);
+        assert!(codes(":status[a [b] c]{green}\n", false).is_empty());
+        // An unclosed label does not hide a later one on the same line.
+        assert_eq!(
+            codes(":status[open [ and :status[Done]{pink}\n", false),
+            [("Q006", 1)]
+        );
+    }
+
+    #[test]
+    fn a_relation_head_without_its_close_is_not_q008() {
+        assert!(codes("> [!NOTE]\n> - relates_to [[X\n", true).is_empty());
     }
 
     #[test]

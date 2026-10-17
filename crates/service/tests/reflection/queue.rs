@@ -235,6 +235,45 @@ async fn a_change_that_only_ticks_task_boxes_is_not_feedback() {
     );
 }
 
+/// The runbook shapes the skill asks for: a checklist inside a callout and
+/// numbered steps with boxes. Ticking either is no more feedback than a tick
+/// in a plain list.
+#[tokio::test]
+async fn ticking_a_box_in_a_callout_or_a_numbered_list_is_not_feedback() {
+    let fx = curated(&[]).await;
+    let steps = "> [!IMPORTANT]\n> - [ ] export the tenant\n\n1. [ ] stop the job\n2. [ ] restore";
+    let page = edit_page(&fx, "Roll back with the script.", steps);
+    let mut curated_page = write("guides/deploying.md", &page);
+    curated_page.sources = BTreeMap::from([(
+        "Rollback".to_string(),
+        vec!["runbooks/rollback".to_string()],
+    )]);
+    fx.engine
+        .write_reflection(&curated_page, &agent())
+        .await
+        .unwrap();
+
+    let ticked = edit_page(
+        &fx,
+        "> - [ ] export the tenant",
+        "> - [x] export the tenant",
+    )
+    .replace("2. [ ] restore", "2. [x] restore");
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &ticked), &person())
+        .await
+        .unwrap();
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert!(
+        !rows(&queue).iter().any(|r| r.0 == "feedback"),
+        "a tick in a callout or a numbered list is not feedback: {queue}"
+    );
+}
+
 #[tokio::test]
 async fn every_update_trigger() {
     let pact = "# Pact\n\n## Structure\n\n- guides/*.md\n";
@@ -1526,5 +1565,181 @@ async fn a_recreated_page_does_not_settle_what_its_baseline_holds() {
             .iter()
             .any(|row| row == &("feedback".into(), "changed".into(), "Rollback".into())),
         "{queue}"
+    );
+}
+
+/// The feedback rows of the queue, by heading.
+async fn feedback_headings(fx: &Fx) -> Vec<String> {
+    let queue = fx
+        .engine
+        .reflect(
+            &ReflectParams {
+                kinds: vec!["feedback".into()],
+                ..Default::default()
+            },
+            &agent(),
+        )
+        .await
+        .unwrap();
+    queue["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["heading"].as_str().unwrap_or("").to_string())
+        .collect()
+}
+
+/// On a page that already has a baseline, a brand-new section the agent's
+/// curated write adds without sources is its own text: it owes no feedback.
+#[tokio::test]
+async fn a_curated_write_settles_a_new_unsourced_section_on_a_page_with_a_baseline() {
+    let fx = curated(&[]).await;
+    let text = edit_page(
+        &fx,
+        "Roll back with the script.\n",
+        "Roll back with the old script.\n\n## Questions\n\nAsk in the channel.\n",
+    );
+    let mut p = write("guides/deploying.md", &text);
+    p.sources = BTreeMap::from([(
+        "Rollback".to_string(),
+        vec!["runbooks/rollback".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    assert!(feedback_headings(&fx).await.is_empty());
+}
+
+/// A person's unreflected section that the agent sends back with its
+/// heading in another case and without its id is held the way every heading
+/// is matched (Unicode case folding), so it is not settled silently.
+#[tokio::test]
+async fn a_persons_section_sent_back_in_another_case_stays_feedback() {
+    let fx = curated(&[]).await;
+    let text = edit_page(
+        &fx,
+        "Roll back with the script.\n",
+        "Roll back with the script.\n\n## Über uns\n\nWe are the ops team.\n",
+    );
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &text), &person())
+        .await
+        .unwrap();
+    let owed = curate_rollback_and_resend(&fx, |t| {
+        let at = t.find("## Über uns").unwrap();
+        let end = t[at..].find("\n\n").unwrap() + at;
+        format!("{}## über uns{}", &t[..at], &t[end..])
+    })
+    .await;
+    assert_eq!(owed, ["über uns"]);
+}
+
+/// A section a person added and then removed again in a plain editor,
+/// before any reflection, keeps its record in the page's bookkeeping (the
+/// editor left the block alone). A stale copy that brings it back with its id
+/// is not the agent's fresh text: it stays feedback.
+#[tokio::test]
+async fn a_stale_copy_of_an_unreflected_section_with_a_record_stays_feedback() {
+    let fx = curated(&[]).await;
+    let added = edit_page(
+        &fx,
+        "Roll back with the script.\n",
+        "Roll back with the script.\n\n## Draft\n\nA person's draft.\n",
+    );
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &added), &person())
+        .await
+        .unwrap();
+    let path = fx.root.join("reflections/guides/deploying.md");
+    let stale = std::fs::read_to_string(&path).unwrap();
+    let draft = stale.find("\n## Draft").unwrap();
+    std::fs::write(&path, format!("{}\n", &stale[..draft])).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let owed = curate_rollback_and_resend(&fx, |_| stale.clone()).await;
+    assert_eq!(owed, ["Draft"]);
+}
+
+/// Sources alone curate the sections as they stand: the page is not
+/// rewritten, the named section's feedback is settled and the rest stays.
+#[tokio::test]
+async fn sources_alone_curate_the_page_as_it_stands() {
+    let fx = curated_with_a_feedback_item().await;
+    let path = fx.root.join("reflections/guides/deploying.md");
+    let before = std::fs::read_to_string(&path).unwrap();
+    let mut p = write("guides/deploying.md", "");
+    p.markdown = None;
+    p.sources = BTreeMap::from([(
+        "Night deploys".to_string(),
+        vec!["runbooks/deploy".to_string()],
+    )]);
+    let receipt = fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    assert_eq!(receipt["curated"], true, "{receipt}");
+    assert!(feedback_headings(&fx).await.is_empty());
+    let after = std::fs::read_to_string(&path).unwrap();
+    let body = |t: &str| t[t.find("# Deploying").unwrap()..].to_string();
+    assert_eq!(
+        body(&after),
+        body(&before),
+        "the page text is not rewritten"
+    );
+
+    let mut missing = write("guides/nowhere.md", "");
+    missing.markdown = None;
+    missing.sources = p.sources.clone();
+    let err = fx
+        .engine
+        .write_reflection(&missing, &agent())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("write it with markdown first"), "{err}");
+}
+
+/// A write that leaves out a section a person changed since the last
+/// reflection says so on its receipt, naming the section.
+#[tokio::test]
+async fn a_write_that_drops_a_persons_unreflected_section_names_it() {
+    let fx = curated(&[]).await;
+    let added = edit_page(
+        &fx,
+        "Roll back with the script.\n",
+        "Roll back with the script.\n\n## Notes\n\nAsk first.\n",
+    );
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &added), &person())
+        .await
+        .unwrap();
+    let path = fx.root.join("reflections/guides/deploying.md");
+    let page = std::fs::read_to_string(&path).unwrap();
+    let notes = page.find("\n## Notes").unwrap();
+    let receipt = fx
+        .engine
+        .write_reflection(
+            &write("guides/deploying.md", &format!("{}\n", &page[..notes])),
+            &agent(),
+        )
+        .await
+        .unwrap();
+    let guidance = receipt["guidance"].as_str().unwrap_or("");
+    assert!(
+        guidance.contains("removed sections a person changed since the last reflection: 'Notes'"),
+        "{receipt}"
+    );
+
+    let clean = fx
+        .engine
+        .write_reflection(
+            &write(
+                "guides/deploying.md",
+                &std::fs::read_to_string(&path).unwrap(),
+            ),
+            &agent(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !clean["guidance"]
+            .as_str()
+            .unwrap_or("")
+            .contains("removed sections"),
+        "{clean}"
     );
 }

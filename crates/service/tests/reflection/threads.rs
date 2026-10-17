@@ -834,3 +834,31 @@ async fn an_off_list_account_comments_and_cannot_answer_feedback() {
         page
     );
 }
+
+/// A heading two sections share does not say which one a thread is on, so a
+/// thread opened by it is refused with the way out, and the same section
+/// opened by its id is not.
+#[tokio::test]
+async fn a_thread_on_a_heading_two_sections_share_is_refused_and_says_to_use_the_id() {
+    let (fx, _vera) = viewer_engine(&[("MANIFEST.md", &manifest("reflection: on\n"))]).await;
+    let page =
+        "# D\n\n## Notes\n<!-- r:aaaa1111 -->\n\nOne.\n\n## Notes\n<!-- r:bbbb2222 -->\n\nTwo.\n";
+    fx.engine
+        .write_reflection(&write("d.md", page), &person())
+        .await
+        .unwrap();
+    let err = fx
+        .engine
+        .discuss(&open("Notes", None, "Which one?"), &person())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("names 2 sections"), "{err}");
+    assert!(err.contains("by the section's id"), "{err}");
+    let opened = fx
+        .engine
+        .discuss(&open("bbbb2222", Some("Two."), "This one."), &person())
+        .await
+        .unwrap();
+    assert_eq!(opened["anchor"]["state"], "found", "{opened}");
+}

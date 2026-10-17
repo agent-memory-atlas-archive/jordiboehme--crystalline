@@ -3076,3 +3076,57 @@ async fn an_edit_with_an_unknown_callout_kind_carries_markdown_findings() {
         .unwrap();
     assert_eq!(receipt["markdown_findings"][0]["code"], "Q007", "{receipt}");
 }
+
+/// The receipt reads a domain's verify overrides the way validate does: a
+/// dialect rule turned off is not named, a re-levelled one carries its new
+/// severity.
+#[tokio::test]
+async fn markdown_findings_follow_the_domains_verify_overrides() {
+    let (tmp, engine) = engine_fixture().await;
+    std::fs::write(
+        tmp.path().join("eng/.crystalline.yaml"),
+        "verify:\n  rules:\n    Q006: off\n    Q007: error\n",
+    )
+    .unwrap();
+    let written = engine
+        .write_engram(&write_params(
+            "eng",
+            "Colours",
+            "Build is :status[Done]{orange} today.",
+        ))
+        .await
+        .unwrap();
+    assert!(written.get("markdown_findings").is_none(), "{written}");
+
+    let edited = engine
+        .edit_engram(&section_edit(
+            "eng",
+            "alpha",
+            "insert_after_section",
+            "# Alpha",
+            "> [!DANGER]\n> Careful.",
+        ))
+        .await
+        .unwrap();
+    let finding = &edited["markdown_findings"][0];
+    assert_eq!(finding["code"], "Q007", "{edited}");
+    assert_eq!(finding["severity"], "error", "{edited}");
+}
+
+/// A MANIFEST is rendered on the domain home, so its receipt names the
+/// dialect findings the way validate does for it.
+#[tokio::test]
+async fn a_manifest_edit_with_an_unknown_callout_kind_carries_markdown_findings() {
+    let (_tmp, engine) = engine_fixture().await;
+    let receipt = engine
+        .edit_engram(&section_edit(
+            "eng",
+            "manifest",
+            "insert_after_section",
+            "## When to Use",
+            "> [!DANGER]\n> Careful.",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(receipt["markdown_findings"][0]["code"], "Q007", "{receipt}");
+}

@@ -232,11 +232,22 @@ impl Engine {
                     EngineError::NotFound(format!("no reflection '{path}' in domain '{domain}'"))
                 })?;
                 let sections = r::split_sections(&page);
-                let section = r::find_section(&sections, key)
-                    .filter(|s| s.id.as_deref() != Some(r::TOP_SECTION) || key == r::TOP_SECTION)
-                    .ok_or_else(|| {
-                        EngineError::Invalid(format!("no section '{key}' in '{path}'"))
-                    })?;
+                let section = match r::resolve_section_key(&sections, key) {
+                    Ok(s) if s.id.as_deref() != Some(r::TOP_SECTION) || key == r::TOP_SECTION => s,
+                    Err(r::SectionKeyMiss::Ambiguous(headings)) => {
+                        return Err(EngineError::Invalid(format!(
+                            "the heading '{key}' names {} sections in '{path}', so the thread \
+                             cannot tell which one it is on: open it by the section's id \
+                             (read_reflection shows each id under its heading)",
+                            headings.len()
+                        )));
+                    }
+                    _ => {
+                        return Err(EngineError::Invalid(format!(
+                            "no section '{key}' in '{path}'"
+                        )));
+                    }
+                };
                 // A heading a plain editor added has no id yet. A comment
                 // never rewrites the page (a reader may open a thread, and a
                 // rewrite would make a person's open editor stale), so the

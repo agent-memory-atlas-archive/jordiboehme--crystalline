@@ -618,7 +618,8 @@ pub struct WriteReflectionParams {
     /// id lines a read returned as they are; Crystalline gives a new ##
     /// heading its id line, never write one yourself. The reflection:
     /// frontmatter key is Crystalline's bookkeeping; never write it (pass
-    /// sources instead). Leave it out when you pass operation.
+    /// sources instead). Leave it out when you pass operation, and when you
+    /// pass sources alone to curate sections as the page stands.
     #[serde(default)]
     pub markdown: Option<String>,
     /// write: change one section instead of the whole page, the way
@@ -642,7 +643,8 @@ pub struct WriteReflectionParams {
     /// write: the engrams each section was built from, by a `##` section's
     /// id or heading text (a heading this write creates included), as
     /// permalinks in this domain. Naming a section here curates it: its
-    /// reflected text moves to what you wrote.
+    /// reflected text moves to what you wrote. Without markdown and
+    /// operation, sources curate the sections as the page stands.
     #[serde(default, deserialize_with = "null_as_default")]
     pub sources: BTreeMap<String, Vec<String>>,
     /// move: the new path inside reflections/; move_asset: the file's new

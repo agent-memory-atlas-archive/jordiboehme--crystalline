@@ -1293,6 +1293,32 @@ fn sources_key_miss(
     })
 }
 
+/// The headings of the sections of `stored` that owed feedback against
+/// `baseline` (new or changed, not the top) and that `written` no longer
+/// holds, by id or, for a section without one, by heading. A write that
+/// leaves such a section out says so on its receipt, so a person's change
+/// never leaves the page without a word.
+fn removed_with_feedback(
+    stored: Option<&str>,
+    baseline: &str,
+    written: &[r::Section],
+) -> Vec<String> {
+    let Some(stored) = stored else {
+        return Vec::new();
+    };
+    r::feedback_changes(stored, baseline)
+        .into_iter()
+        .filter(|c| c.kind != r::ChangeKind::Removed && c.id.as_deref() != Some(r::TOP_SECTION))
+        .filter(|c| match &c.id {
+            Some(id) => !written.iter().any(|s| s.id.as_deref() == Some(id.as_str())),
+            None => !written
+                .iter()
+                .any(|s| s.heading.to_lowercase() == c.heading.to_lowercase()),
+        })
+        .map(|c| c.heading)
+        .collect()
+}
+
 /// Move every thread of a page that is anchored by heading onto the id its
 /// heading carries in `page`, the text just written, so a later rename of
 /// the heading keeps the thread on its section. Runs under the page lock,
@@ -1541,14 +1567,16 @@ impl Engine {
         self.refuse_read_only_domain(&p.domain, &crate::scope::Scope::Unrestricted)
             .await?;
         r::validate_reflection_path(&p.path).map_err(EngineError::Invalid)?;
-        // Rule 7: the whole page, or one section of it.
+        // Rule 7: the whole page, one section of it, or (sources alone) the
+        // stored page as it stands, curated by the sources named.
         let op = match (p.markdown.as_deref(), p.operation.as_deref()) {
             (Some(_), Some(_)) => {
                 return Err(EngineError::Invalid("write takes markdown (the whole reflection) or operation (one section), not both".into()));
             }
-            (None, None) => {
-                return Err(EngineError::Invalid("write needs markdown, the whole reflection, or operation with section and content".into()));
+            (None, None) if p.sources.is_empty() => {
+                return Err(EngineError::Invalid("write needs markdown, the whole reflection, or operation with section and content, or sources alone to curate sections as they stand".into()));
             }
+            (None, None) => None,
             (Some(_), None) => None,
             (None, Some(name)) => Some(crystalline_core::emit::SectionOp::parse(name, p.include_subsections).ok_or_else(|| {
                 EngineError::Invalid(format!("`{name}` is not a section operation; use replace_section, insert_before_section or insert_after_section"))
@@ -1595,7 +1623,16 @@ impl Engine {
                 .await?;
         }
         let (incoming, heading_stripped) = match op {
-            None => (p.markdown.clone().unwrap_or_default(), None),
+            None => match (&p.markdown, current.as_deref()) {
+                (Some(markdown), _) => (markdown.clone(), None),
+                (None, Some(stored)) => (stored.to_string(), None),
+                (None, None) => {
+                    return Err(EngineError::NotFound(format!(
+                        "no reflection '{}' in domain '{}' to curate by sources; write it with markdown first",
+                        p.path, p.domain
+                    )));
+                }
+            },
             Some(op) => {
                 let stored = current.as_deref().ok_or_else(|| {
                     EngineError::NotFound(format!(
@@ -1620,13 +1657,13 @@ impl Engine {
         // written. An embed the stored page already holds (written by hand
         // or in a room) is the reflect queue's to name, so a change to
         // another section is not held up by it.
-        let held = current
+        let stored_embeds = current
             .as_deref()
             .map(|stored| r::engram_attachment_embeds(stored, &p.path))
             .unwrap_or_default();
         if r::engram_attachment_embeds(&incoming, &p.path)
             .iter()
-            .any(|target| !held.contains(target))
+            .any(|target| !stored_embeds.contains(target))
         {
             r::refuse_engram_attachments(&incoming, &p.path).map_err(EngineError::Invalid)?;
         }
@@ -1769,7 +1806,8 @@ impl Engine {
         // change too, and it is not settled here.
         if !advanced.is_empty() && caller.author.agent {
             // A heading with no id yet (typed in a plain editor) is held by
-            // its heading alone.
+            // its heading alone, an id the stored bookkeeping keeps a record
+            // for by its id alone.
             let mut held: Vec<(Option<String>, String)> = stored
                 .as_deref()
                 .map(r::split_sections)
@@ -1777,6 +1815,13 @@ impl Engine {
                 .into_iter()
                 .map(|s| (s.id, s.heading))
                 .collect();
+            if let Some(page) = stored.as_deref() {
+                held.extend(
+                    r::read_provenance(page)
+                        .into_keys()
+                        .map(|id| (Some(id), String::new())),
+                );
+            }
             held.extend(r::parse_baseline(&baseline).into_iter().map(|(id, text)| {
                 let heading = r::split_sections(&text)
                     .into_iter()
@@ -1804,7 +1849,7 @@ impl Engine {
                     !held.iter().any(|(old_id, old_heading)| {
                         old_id.as_deref() == Some(id.as_str())
                             || (!old_heading.is_empty()
-                                && old_heading.eq_ignore_ascii_case(&section.heading))
+                                && old_heading.to_lowercase() == section.heading.to_lowercase())
                     })
                 };
                 if !fresh {
@@ -1818,6 +1863,7 @@ impl Engine {
             }
         }
         let final_text = stamp_reflected(&text, &mut prov, &advanced)?;
+        let removed_with_feedback = removed_with_feedback(stored.as_deref(), &baseline, &sections);
         let threads_abs = access.abs(&r::threads_path(&p.path));
         let mut undo = DiskUndo::default();
         for file in [&abs, &baseline_abs, &threads_abs] {
@@ -1875,6 +1921,10 @@ impl Engine {
         note_markdown_findings(
             &mut receipt,
             crystalline_core::lint_markdown(&final_text, 1, false),
+            self.content_source(&p.domain)
+                .ok()
+                .and_then(|source| domain_verify_config(&source))
+                .as_ref(),
         );
         note_heading_stripped(&mut receipt, heading_stripped);
         if !replaced.is_empty() {
@@ -1892,6 +1942,22 @@ impl Engine {
         }
         if made_up_block {
             add_guidance(&mut receipt, WRITTEN_BLOCK_GUIDANCE);
+        }
+        if !removed_with_feedback.is_empty() {
+            add_guidance(
+                &mut receipt,
+                &format!(
+                    "This write removed sections a person changed since the last reflection: {}. \
+                     Their change left the page with them; if that was not meant, write them \
+                     back (read_reflection first, and pass expected_checksum on a whole-page \
+                     rewrite).",
+                    removed_with_feedback
+                        .iter()
+                        .map(|h| format!("'{h}'"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
         }
         let doc = RoomDoc::Reflection(p.path.clone());
         if let Some(rooms) = self.collab_rooms()

@@ -36,7 +36,8 @@ use crate::yaml::YamlValue;
 /// - 0: every index before the generation was recorded.
 /// - 1: a bullet that wraps onto further lines is one observation or
 ///   relation (0.22).
-/// - 2: task boxes (`[ ]`, `[x]`, `[X]`, `[~]`) and directive-led bullets stopped reading as observations and relations (0.28.0).
+/// - 2: task boxes (`[ ]`, `[x]`, `[X]`, `[~]`) and directive-led bullets
+///   stopped reading as observations and relations (0.28.0).
 pub const PARSE_GENERATION: u32 = 2;
 
 /// An error encountered while parsing an Engram.
@@ -835,7 +836,7 @@ pub(crate) fn is_hashtag(token: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '/')
 }
 
-fn parse_relation(content: &str) -> Option<(String, LinkTarget)> {
+pub(crate) fn parse_relation(content: &str) -> Option<(String, LinkTarget)> {
     let open = content.find("[[")?;
     let after = &content[open + 2..];
     let close = after.find("]]")?;

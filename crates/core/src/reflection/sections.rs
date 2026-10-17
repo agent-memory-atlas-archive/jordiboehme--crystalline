@@ -144,17 +144,11 @@ pub fn split_sections(source: &str) -> Vec<Section> {
     sections
 }
 
-/// A section by id, else by heading (case-insensitive, first match).
+/// A section by id, else by heading, read the way [`resolve_section_key`]
+/// reads a `sources` key: a heading two sections share names neither, so a
+/// thread, an anchor or a queue item never lands on a guess.
 pub fn find_section<'a>(sections: &'a [Section], key: &str) -> Option<&'a Section> {
-    let wanted = key.trim().to_lowercase();
-    sections
-        .iter()
-        .find(|s| s.id.as_deref() == Some(key))
-        .or_else(|| {
-            sections
-                .iter()
-                .find(|s| !s.heading.is_empty() && s.heading.to_lowercase() == wanted)
-        })
+    resolve_section_key(sections, key).ok()
 }
 
 /// Why a `sources` key names no single section.
@@ -526,6 +520,17 @@ mod tests {
         assert!(
             find_section(&sections, "ÄDDED BY HAND").is_none()
                 && find_section(&sections, "ADDED BY HAND").is_some()
+        );
+    }
+
+    #[test]
+    fn a_shared_heading_names_no_section_and_an_id_still_does() {
+        let page = "# D\n\n## Notes\n<!-- r:aaaa1111 -->\n\nOne.\n\n## notes\n<!-- r:bbbb2222 -->\n\nTwo.\n";
+        let sections = split_sections(page);
+        assert!(find_section(&sections, "Notes").is_none());
+        assert_eq!(
+            find_section(&sections, "bbbb2222").map(|s| s.text.contains("Two.")),
+            Some(true)
         );
     }
 

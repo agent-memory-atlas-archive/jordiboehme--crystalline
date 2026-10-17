@@ -153,25 +153,44 @@ fn heading_of(text: &str) -> String {
 
 /// Whether two section texts differ only in task boxes: `[ ]`, `[x]`, `[X]`
 /// and `[~]` at the head of a list item count as one mark. Ticking a box on
-/// the reading page is not something the agent has to weigh.
+/// the reading page is not something the agent has to weigh. An item counts
+/// under a bullet (`-`, `*`, `+`) or an ordered marker (`1.`, `2)`), also
+/// inside a quote or callout (`> - [ ]`, `> > 1. [ ]`); a box inside fenced
+/// code is text like any other, so changing it is a change.
 pub fn same_but_task_boxes(before: &str, after: &str) -> bool {
+    /// The line with its task box read as `[ ]`, or the line as it is.
+    fn unticked(line: &str) -> Option<String> {
+        let quoted = line.len() - line.trim_start_matches([' ', '\t', '>']).len();
+        let (quote, rest) = line.split_at(quoted);
+        let marker_len = if rest.starts_with(['-', '*', '+']) {
+            1
+        } else {
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            let closes = rest[digits..].starts_with(['.', ')']);
+            if (1..=9).contains(&digits) && closes {
+                digits + 1
+            } else {
+                return None;
+            }
+        };
+        let (marker, item) = rest.split_at(marker_len);
+        let item = item.strip_prefix(' ')?;
+        let tail = ["[ ]", "[x]", "[X]", "[~]"]
+            .iter()
+            .find_map(|b| item.strip_prefix(b))?;
+        Some(format!("{quote}{marker} [ ]{tail}"))
+    }
     fn norm(text: &str) -> String {
         let normalized = crate::reflection::normalize_section_text(text);
+        let mut fence = crate::parse::FenceTracker::new();
         normalized
             .lines()
             .map(|line| {
-                let indent = line.len() - line.trim_start().len();
-                let (head, rest) = line.split_at(indent);
-                for marker in ["- ", "* ", "+ "] {
-                    if let Some(item) = rest.strip_prefix(marker)
-                        && let Some(tail) = ["[ ]", "[x]", "[X]", "[~]"]
-                            .iter()
-                            .find_map(|b| item.strip_prefix(b))
-                    {
-                        return format!("{head}{marker}[ ]{tail}");
-                    }
+                let content = line.trim_start_matches([' ', '\t', '>']);
+                if fence.in_fence(content) {
+                    return line.to_string();
                 }
-                line.to_string()
+                unticked(line).unwrap_or_else(|| line.to_string())
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -405,6 +424,38 @@ mod tests {
         let base = advance_baseline("", baseline_text, &["aaaa0001".to_string()]);
         assert!(feedback_changes(ticked, &base).is_empty());
         assert_eq!(feedback_changes(edited, &base).len(), 1);
+    }
+
+    #[test]
+    fn ticking_a_box_inside_a_quote_or_callout_is_not_a_change() {
+        let before = "## Steps\n<!-- r:aaaa0001 -->\n\n> [!IMPORTANT]\n> - [ ] export the tenant\n> > - [ ] nested\n";
+        let after = "## Steps\n<!-- r:aaaa0001 -->\n\n> [!IMPORTANT]\n> - [x] export the tenant\n> > - [~] nested\n";
+        assert!(same_but_task_boxes(before, after));
+        let tight = "## Steps\n<!-- r:aaaa0001 -->\n\n> [!IMPORTANT]\n>- [X] export the tenant\n>> - [~] nested\n";
+        assert!(
+            !same_but_task_boxes(before, tight),
+            "the quote markers stay part of the text"
+        );
+        let reworded = after.replace("export the tenant", "export every tenant");
+        assert!(!same_but_task_boxes(before, &reworded));
+    }
+
+    #[test]
+    fn ticking_a_box_in_an_ordered_list_is_not_a_change() {
+        let before = "## Steps\n<!-- r:aaaa0001 -->\n\n1. [ ] stop the service\n2) [ ] restore\n10. [ ] start\n";
+        let after = "## Steps\n<!-- r:aaaa0001 -->\n\n1. [x] stop the service\n2) [X] restore\n10. [~] start\n";
+        assert!(same_but_task_boxes(before, after));
+        let renumbered = after.replace("2) [X]", "3) [X]");
+        assert!(!same_but_task_boxes(before, &renumbered));
+    }
+
+    #[test]
+    fn a_box_changed_inside_fenced_code_is_a_change() {
+        let before = "## Example\n<!-- r:aaaa0001 -->\n\n```markdown\n- [ ] a task in a sample\n```\n- [ ] a real task\n";
+        let fenced = "## Example\n<!-- r:aaaa0001 -->\n\n```markdown\n- [x] a task in a sample\n```\n- [ ] a real task\n";
+        let ticked = "## Example\n<!-- r:aaaa0001 -->\n\n```markdown\n- [ ] a task in a sample\n```\n- [x] a real task\n";
+        assert!(!same_but_task_boxes(before, fenced));
+        assert!(same_but_task_boxes(before, ticked));
     }
 
     #[test]
