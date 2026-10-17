@@ -34,6 +34,23 @@ pub(crate) fn check(file: &ScannedFile, domain: &Domain, lines: &[BodyLine], sin
     check_duplicate_headings(file, engram, sink);
     check_similar_sections(file, engram, lines, sink);
     check_near_miss_bullets(file, lines, sink);
+    check_markdown(file, engram, sink);
+}
+
+/// Q006, Q007, Q008: the rich Markdown dialect (status colours, callout
+/// kinds, structure hidden inside a callout).
+fn check_markdown(file: &ScannedFile, engram: &Engram, sink: &mut Sink) {
+    let start = super::util::body_line_start(&file.source);
+    for f in crate::markdown::lint_markdown(&engram.body, start, true) {
+        sink.emit(
+            &file.path,
+            Some(f.line),
+            f.code,
+            f.severity,
+            f.message,
+            None,
+        );
+    }
 }
 
 /// Q001: an Engram with no meaningful content beyond its frontmatter is
@@ -284,6 +301,16 @@ mod tests {
         let mut sink = Sink::new(&mut issues, &mut summary, None, false);
         check(&file, &domain, &lines, &mut sink);
         issues
+    }
+
+    #[test]
+    fn the_markdown_dialect_lints_reach_verify() {
+        let body = "# T\n\nShip :status[x]{orange}.\n\n> [!DANGER]\n> body\n\n> [!NOTE]\n> - [fact] hidden\n";
+        let issues = issues_for_type("note", body);
+        let rules: Vec<_> = issues.iter().map(|i| i.rule).collect();
+        for r in ["Q006", "Q007", "Q008"] {
+            assert!(rules.contains(&r), "{r} in {rules:?}");
+        }
     }
 
     /// Q002 applies the same factor the sweep's V105 does, from the same
