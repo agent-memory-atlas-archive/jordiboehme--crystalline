@@ -21,8 +21,9 @@ import { fencePreviews } from "./fencePreviews";
 import { imageContextListener } from "./imageVerbs";
 import { livePreview } from "./preview";
 import { readingTheme } from "./readingTheme";
-import { slashCompletions } from "./slashMenu";
+import { richPaste } from "./richPaste";
 import { RAW_MONO, baseExtensions } from "./setup";
+import { slashCompletions } from "./slashMenu";
 import { tableContextListener } from "./tableVerbs";
 import { formattingKeymap } from "./toolbar";
 
@@ -146,6 +147,10 @@ export function surfaceExtensions(options: SurfaceOptions): Extension[] {
     // A pasted screenshot and a dropped deck are attachments in Raw mode too,
     // so these sit outside the compartment beside it.
     options.uploads,
+    // Rich text from another app arrives as Markdown, in Raw mode too: the
+    // buffer is Markdown either way. It leaves a paste of files to the
+    // uploads above whatever order the two run in.
+    richPaste(),
     // The toolbar's own shortcuts. Outside the preview compartment: Mod-b and
     // Mod-i are typing help like the completions below, and raw mode is
     // still markdown being written. Its `Prec.high` wrapper - not its
