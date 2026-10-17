@@ -15,6 +15,12 @@
  * things to read past. What arrives from the screen is a single boolean; every
  * verb re-derives the table from the live state when it runs, so a click that
  * beats a stale render refuses instead of editing the wrong place.
+ *
+ * Both editors mount this bar, and what differs between their documents comes
+ * in as a document adapter. The bar asks it before a heading change: on a
+ * Reflection page, a section heading that stops being one joins its section
+ * into the one above, and the bar says so in one plain line and waits for the
+ * person to confirm.
  */
 
 import type { EditorView } from "@codemirror/view";
@@ -36,13 +42,14 @@ import {
   WandSparkles,
   Workflow,
 } from "lucide-react";
-import { DropdownMenu } from "radix-ui";
+import { AlertDialog, DropdownMenu } from "radix-ui";
 import type { MouseEvent, ReactElement, ReactNode } from "react";
-import { useId } from "react";
+import { useId, useRef, useState } from "react";
 
 import { ITEM_CLASSES, MENU_CLASSES } from "../components/menu";
-import { IconButton } from "../components/primitives";
+import { BUTTON, IconButton } from "../components/primitives";
 import type { IconComponent } from "../components/primitives";
+import type { DocumentAdapter } from "./adapter";
 import { AttachButton } from "./AttachButton";
 import { TableSizePicker } from "./TableSizePicker";
 import type { ImageAlign } from "./imageFormat";
@@ -71,6 +78,7 @@ import {
   CODE_SKELETON,
   ORDERED_ITEM,
   cycleHeading,
+  headingLevelAfter,
   insertBlock,
   insertMarkdownLink,
   insertWikilink,
@@ -174,13 +182,72 @@ function Divider(): ReactElement {
   );
 }
 
+/**
+ * The one question a heading change can ask, in the shape of the other
+ * dialogs in the editor (`ConfirmLeaveDialog`): the sentence the adapter
+ * answered, the change as the primary answer, Cancel quiet. Escape and the
+ * scrim mean Cancel.
+ */
+function ConfirmHeadingDialog({
+  sentence,
+  onConfirm,
+  onCancel,
+  onClosed,
+}: {
+  sentence: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  /** Where focus goes once the dialog has closed: back to the buffer. */
+  onClosed: () => void;
+}): ReactElement {
+  return (
+    <AlertDialog.Root
+      open
+      onOpenChange={(next) => {
+        if (!next) {
+          onCancel();
+        }
+      }}
+    >
+      <AlertDialog.Portal>
+        <AlertDialog.Overlay className="fixed inset-0 z-50 bg-slate-900/40" />
+        <AlertDialog.Content
+          className="fixed top-1/2 left-1/2 z-50 w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded border border-slate-200 bg-white p-4 shadow-xl dark:border-slate-700 dark:bg-slate-900"
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            onClosed();
+          }}
+        >
+          <AlertDialog.Title className="text-lg font-semibold">
+            Join sections?
+          </AlertDialog.Title>
+          <AlertDialog.Description className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+            {sentence}
+          </AlertDialog.Description>
+          <div className="mt-4 flex flex-wrap justify-end gap-2">
+            <AlertDialog.Cancel className={BUTTON.ghost}>
+              Cancel
+            </AlertDialog.Cancel>
+            <AlertDialog.Action className={BUTTON.primary} onClick={onConfirm}>
+              Join sections
+            </AlertDialog.Action>
+          </div>
+        </AlertDialog.Content>
+      </AlertDialog.Portal>
+    </AlertDialog.Root>
+  );
+}
+
 export function EditorToolbar({
-  view,
+  view: buffer,
   tableActive = false,
   imageActive = false,
   onAttach,
   bare = false,
   trailing,
+  adapter,
+  disabled = false,
+  attachDisabled = false,
 }: {
   view: EditorView | null;
   /** Whether the caret is in a table right now; the screen watches for it. */
@@ -205,8 +272,33 @@ export function EditorToolbar({
   bare?: boolean;
   /** Drawn at the row's right end, past the verbs: the engram editor's Raw. */
   trailing?: ReactNode;
+  /**
+   * What this kind of document adds, asked before a heading change. Absent
+   * on the MANIFEST, whose headings never ask.
+   */
+  adapter?: DocumentAdapter;
+  /** Every verb off: a Reflection room that has ended takes no edit. */
+  disabled?: boolean;
+  /**
+   * Attach alone off: a Reflection room that is away takes typing, which it
+   * merges on its return, but a person should not start an upload the page
+   * cannot take now.
+   */
+  attachDisabled?: boolean;
 }): ReactElement {
+  const view = disabled ? null : buffer;
   const off = view === null;
+  /** The heading change waiting for the person's answer, if any. */
+  const [asking, setAsking] = useState<{
+    level: number;
+    sentence: string;
+  } | null>(null);
+  /**
+   * Set as the heading menu picks a change that asks first, so the menu's
+   * close hands focus to the dialog rather than back to the buffer. A ref,
+   * because the menu closes before the state above has rendered.
+   */
+  const askingNow = useRef(false);
   /** The stem the diagram menu's group headings hang their ids off. */
   const groupId = useId();
   const act = (run: (view: EditorView) => boolean) => () => {
@@ -217,259 +309,303 @@ export function EditorToolbar({
   const keepSelection = (event: MouseEvent) => {
     event.preventDefault();
   };
+  /** The question a heading change on the caret's line asks, or null. */
+  const questionFor = (v: EditorView, level: number): string | null => {
+    const line = v.state.doc.lineAt(v.state.selection.main.head).number;
+    return (
+      adapter?.confirmHeadingChange(
+        v.state,
+        line,
+        headingLevelAfter(v.state, line, level),
+      ) ?? null
+    );
+  };
+  const pickHeading = (v: EditorView, level: number): boolean => {
+    const sentence = questionFor(v, level);
+    if (sentence === null) {
+      return cycleHeading(v, level);
+    }
+    askingNow.current = true;
+    setAsking({ level, sentence });
+    return true;
+  };
+  const answered = () => {
+    askingNow.current = false;
+    setAsking(null);
+  };
+  const joinSections = () => {
+    const level = asking?.level;
+    answered();
+    // Asked again against the live text: in a room the lines may have moved
+    // while the dialog was open, and a line that no longer asks is left as
+    // it is.
+    if (view && level !== undefined && questionFor(view, level) !== null) {
+      cycleHeading(view, level, { joinSections: true });
+    }
+  };
   return (
-    <div
-      role="toolbar"
-      aria-label="Formatting"
-      onMouseDown={keepSelection}
-      className={
-        bare
-          ? "sticky top-14 z-10 flex flex-nowrap items-center gap-0.5 overflow-x-auto border-b border-hair bg-canvas/95 py-1.5 backdrop-blur print:hidden"
-          : "sticky top-14 z-10 flex flex-wrap items-center gap-0.5 rounded-t border-b border-slate-200 bg-white/95 px-1.5 py-1 backdrop-blur print:hidden dark:border-slate-800 dark:bg-slate-950/95"
-      }
-    >
-      <IconButton
-        label="Bold"
-        icon={Bold}
-        disabled={off}
-        onClick={act((v) => toggleInline(v, "**"))}
-      />
-      <IconButton
-        label="Italic"
-        icon={Italic}
-        disabled={off}
-        onClick={act((v) => toggleInline(v, "*"))}
-      />
-      <IconButton
-        label="Strikethrough"
-        icon={Strikethrough}
-        disabled={off}
-        onClick={act((v) => toggleInline(v, "~~"))}
-      />
-      <IconButton
-        label="Inline code"
-        icon={Code}
-        disabled={off}
-        onClick={act((v) => toggleInline(v, "`"))}
-      />
-      <DropdownMenu.Root>
-        <DropdownMenu.Trigger asChild>
-          <IconButton label="Heading" icon={Heading} disabled={off} />
-        </DropdownMenu.Trigger>
-        <DropdownMenu.Portal>
-          <DropdownMenu.Content
-            align="start"
-            sideOffset={6}
-            className={MENU_CLASSES}
-            // Radix hands focus back to the trigger when the menu closes,
-            // which would leave the caret out of the buffer right after a
-            // command put it back there. The buffer is where an author wants
-            // to be either way - having picked a heading, or having changed
-            // their mind and pressed Escape - so this bar always returns them.
-            onCloseAutoFocus={(event) => {
-              event.preventDefault();
-              view?.focus();
-            }}
-          >
-            {HEADING_LEVELS.map((level) => (
-              <DropdownMenu.Item
-                key={level}
-                className={ITEM_CLASSES}
-                onSelect={act((v) => cycleHeading(v, level))}
-              >
-                Heading {level}
-              </DropdownMenu.Item>
-            ))}
-          </DropdownMenu.Content>
-        </DropdownMenu.Portal>
-      </DropdownMenu.Root>
-      <IconButton
-        label="Bulleted list"
-        icon={List}
-        disabled={off}
-        onClick={act((v) => toggleLinePrefix(v, "- "))}
-      />
-      <IconButton
-        label="Numbered list"
-        icon={ListOrdered}
-        disabled={off}
-        onClick={act((v) => toggleLinePrefix(v, "1. ", ORDERED_ITEM))}
-      />
-      <IconButton
-        label="Task list"
-        icon={ListTodo}
-        disabled={off}
-        onClick={act((v) => toggleLinePrefix(v, "- [ ] "))}
-      />
-      <IconButton
-        label="Blockquote"
-        icon={TextQuote}
-        disabled={off}
-        onClick={act((v) => toggleLinePrefix(v, "> "))}
-      />
-      <IconButton
-        label="Wiki link"
-        icon={Brackets}
-        disabled={off}
-        onClick={act(insertWikilink)}
-      />
-      <IconButton
-        label="Link"
-        icon={Link}
-        disabled={off}
-        onClick={act(insertMarkdownLink)}
-      />
-      {/*
+    <>
+      <div
+        role="toolbar"
+        aria-label="Formatting"
+        onMouseDown={keepSelection}
+        className={
+          bare
+            ? "sticky top-14 z-10 flex flex-nowrap items-center gap-0.5 overflow-x-auto border-b border-hair bg-canvas/95 py-1.5 backdrop-blur print:hidden"
+            : "sticky top-14 z-10 flex flex-wrap items-center gap-0.5 rounded-t border-b border-slate-200 bg-white/95 px-1.5 py-1 backdrop-blur print:hidden dark:border-slate-800 dark:bg-slate-950/95"
+        }
+      >
+        <IconButton
+          label="Bold"
+          icon={Bold}
+          disabled={off}
+          onClick={act((v) => toggleInline(v, "**"))}
+        />
+        <IconButton
+          label="Italic"
+          icon={Italic}
+          disabled={off}
+          onClick={act((v) => toggleInline(v, "*"))}
+        />
+        <IconButton
+          label="Strikethrough"
+          icon={Strikethrough}
+          disabled={off}
+          onClick={act((v) => toggleInline(v, "~~"))}
+        />
+        <IconButton
+          label="Inline code"
+          icon={Code}
+          disabled={off}
+          onClick={act((v) => toggleInline(v, "`"))}
+        />
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger asChild>
+            <IconButton label="Heading" icon={Heading} disabled={off} />
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content
+              align="start"
+              sideOffset={6}
+              className={MENU_CLASSES}
+              // Radix hands focus back to the trigger when the menu closes,
+              // which would leave the caret out of the buffer right after a
+              // command put it back there. The buffer is where an author wants
+              // to be either way - having picked a heading, or having changed
+              // their mind and pressed Escape - so this bar always returns them.
+              onCloseAutoFocus={(event) => {
+                event.preventDefault();
+                // A change that asks first hands focus to its dialog instead.
+                if (!askingNow.current) {
+                  view?.focus();
+                }
+              }}
+            >
+              {HEADING_LEVELS.map((level) => (
+                <DropdownMenu.Item
+                  key={level}
+                  className={ITEM_CLASSES}
+                  onSelect={() => {
+                    if (view) {
+                      pickHeading(view, level);
+                    }
+                  }}
+                >
+                  Heading {level}
+                </DropdownMenu.Item>
+              ))}
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
+        <IconButton
+          label="Bulleted list"
+          icon={List}
+          disabled={off}
+          onClick={act((v) => toggleLinePrefix(v, "- "))}
+        />
+        <IconButton
+          label="Numbered list"
+          icon={ListOrdered}
+          disabled={off}
+          onClick={act((v) => toggleLinePrefix(v, "1. ", ORDERED_ITEM))}
+        />
+        <IconButton
+          label="Task list"
+          icon={ListTodo}
+          disabled={off}
+          onClick={act((v) => toggleLinePrefix(v, "- [ ] "))}
+        />
+        <IconButton
+          label="Blockquote"
+          icon={TextQuote}
+          disabled={off}
+          onClick={act((v) => toggleLinePrefix(v, "> "))}
+        />
+        <IconButton
+          label="Wiki link"
+          icon={Brackets}
+          disabled={off}
+          onClick={act(insertWikilink)}
+        />
+        <IconButton
+          label="Link"
+          icon={Link}
+          disabled={off}
+          onClick={act(insertMarkdownLink)}
+        />
+        {/*
         The insert verbs are named buttons of their own, and this hairline
         only says they are a different kind of thing.
       */}
-      <Divider />
-      {/*
+        <Divider />
+        {/*
         An insert verb that asks a question first: how big. Its trigger is
         this bar's own icon button, so the row reads as one kind of thing
         whatever happens after the press.
       */}
-      <TableSizePicker view={view} />
-      {/*
+        <TableSizePicker view={view} />
+        {/*
         The other insert verb that asks first: which diagram. The button that
         used to drop a flowchart now offers all sixteen types, and the first
         item is that same flowchart - so the keyboard route through this menu
         costs one keypress more than the button did and lands the same text.
       */}
-      <DropdownMenu.Root>
-        <DropdownMenu.Trigger asChild>
-          <IconButton label="Insert diagram" icon={Workflow} disabled={off} />
-        </DropdownMenu.Trigger>
-        <DropdownMenu.Portal>
-          <DropdownMenu.Content
-            align="start"
-            sideOffset={6}
-            className={DIAGRAM_MENU_CLASSES}
-            // The heading menu's discipline, for the same reason: Radix hands
-            // focus back to the trigger on close, and this bar always returns
-            // an author to the buffer instead - having picked a diagram, or
-            // having pressed Escape.
-            onCloseAutoFocus={(event) => {
-              event.preventDefault();
-              view?.focus();
-            }}
-          >
-            {MERMAID_STARTER_GROUPS.map((group, index) => (
-              // Radix draws the group and the label as siblings and wires
-              // neither to the other, so the `role="group"` it emits would
-              // announce nothing: the heading has to be named as the group's
-              // label by hand. One id per menu with the group's index on it,
-              // rather than a hook per group, because a list cannot call one.
-              <DropdownMenu.Group
-                key={group.label}
-                aria-labelledby={`${groupId}-${String(index)}`}
-              >
-                <DropdownMenu.Label
-                  id={`${groupId}-${String(index)}`}
-                  className={GROUP_LABEL_CLASSES}
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger asChild>
+            <IconButton label="Insert diagram" icon={Workflow} disabled={off} />
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content
+              align="start"
+              sideOffset={6}
+              className={DIAGRAM_MENU_CLASSES}
+              // The heading menu's discipline, for the same reason: Radix hands
+              // focus back to the trigger on close, and this bar always returns
+              // an author to the buffer instead - having picked a diagram, or
+              // having pressed Escape.
+              onCloseAutoFocus={(event) => {
+                event.preventDefault();
+                view?.focus();
+              }}
+            >
+              {MERMAID_STARTER_GROUPS.map((group, index) => (
+                // Radix draws the group and the label as siblings and wires
+                // neither to the other, so the `role="group"` it emits would
+                // announce nothing: the heading has to be named as the group's
+                // label by hand. One id per menu with the group's index on it,
+                // rather than a hook per group, because a list cannot call one.
+                <DropdownMenu.Group
+                  key={group.label}
+                  aria-labelledby={`${groupId}-${String(index)}`}
                 >
-                  {group.label}
-                </DropdownMenu.Label>
-                {group.starters.map((starter) => (
-                  <DropdownMenu.Item
-                    key={starter.label}
-                    className={ITEM_CLASSES}
-                    onSelect={act((v) => {
-                      // The body and the caret come from one call, so the
-                      // range can never describe lines other than these.
-                      const { lines, select } = mermaidFence(starter);
-                      return insertBlock(v, lines, select);
-                    })}
+                  <DropdownMenu.Label
+                    id={`${groupId}-${String(index)}`}
+                    className={GROUP_LABEL_CLASSES}
                   >
-                    {starter.label}
-                  </DropdownMenu.Item>
-                ))}
-              </DropdownMenu.Group>
-            ))}
-          </DropdownMenu.Content>
-        </DropdownMenu.Portal>
-      </DropdownMenu.Root>
-      <IconButton
-        label="Insert code block"
-        icon={SquareCode}
-        disabled={off}
-        onClick={act((v) => insertBlock(v, CODE_SKELETON))}
-      />
-      {/*
+                    {group.label}
+                  </DropdownMenu.Label>
+                  {group.starters.map((starter) => (
+                    <DropdownMenu.Item
+                      key={starter.label}
+                      className={ITEM_CLASSES}
+                      onSelect={act((v) => {
+                        // The body and the caret come from one call, so the
+                        // range can never describe lines other than these.
+                        const { lines, select } = mermaidFence(starter);
+                        return insertBlock(v, lines, select);
+                      })}
+                    >
+                      {starter.label}
+                    </DropdownMenu.Item>
+                  ))}
+                </DropdownMenu.Group>
+              ))}
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
+        <IconButton
+          label="Insert code block"
+          icon={SquareCode}
+          disabled={off}
+          onClick={act((v) => insertBlock(v, CODE_SKELETON))}
+        />
+        {/*
         The third insert verb that asks first, and the only one whose question
         the browser asks: which file. Paste and drop reach the same flow with
         no button at all, so this is the way in for a file that is neither on
         the clipboard nor draggable onto the buffer.
       */}
-      {onAttach && <AttachButton onAttach={onAttach} disabled={off} />}
-      {imageActive && (
-        <>
-          {/*
+        {onAttach && (
+          <AttachButton onAttach={onAttach} disabled={off || attachDisabled} />
+        )}
+        {imageActive && (
+          <>
+            {/*
             The same hairline, in front of the one menu that acts on the image
             the caret is on rather than on the document at large.
           */}
-          <Divider />
-          <DropdownMenu.Root>
-            <DropdownMenu.Trigger asChild>
-              <IconButton
-                label="Image format"
-                icon={ImageFormatMenuIcon}
-                disabled={off}
-              />
-            </DropdownMenu.Trigger>
-            <DropdownMenu.Portal>
-              <DropdownMenu.Content
-                align="start"
-                sideOffset={6}
-                className={MENU_CLASSES}
-                // The heading menu's discipline, for the same reason: Radix
-                // hands focus back to the trigger on close, and this bar
-                // always returns an author to the buffer instead.
-                onCloseAutoFocus={(event) => {
-                  event.preventDefault();
-                  view?.focus();
-                }}
-              >
-                {PLACEMENTS.map(({ align, label, icon: Icon }) => (
-                  <DropdownMenu.Item
-                    key={align}
-                    className={ITEM_CLASSES}
-                    onSelect={act((v) =>
-                      // Centered is the default, and picking it means "as it
-                      // was": the whole fragment goes, width included.
-                      align === "center"
-                        ? clearImageFormat(v)
-                        : setImageAlign(v, align),
-                    )}
-                  >
-                    <Icon aria-hidden="true" size={16} strokeWidth={1.75} />
-                    {label}
-                  </DropdownMenu.Item>
-                ))}
-                <DropdownMenu.Separator className="my-1 h-px bg-slate-200 dark:bg-slate-700" />
-                {WIDTHS.map(({ width, label, icon: Icon }) => (
-                  <DropdownMenu.Item
-                    key={width}
-                    className={ITEM_CLASSES}
-                    onSelect={act((v) => setImageWidth(v, width))}
-                  >
-                    <Icon aria-hidden="true" size={16} strokeWidth={1.75} />
-                    {label}
-                  </DropdownMenu.Item>
-                ))}
-              </DropdownMenu.Content>
-            </DropdownMenu.Portal>
-          </DropdownMenu.Root>
-        </>
-      )}
-      {tableActive && (
-        <>
-          {/*
+            <Divider />
+            <DropdownMenu.Root>
+              <DropdownMenu.Trigger asChild>
+                <IconButton
+                  label="Image format"
+                  icon={ImageFormatMenuIcon}
+                  disabled={off}
+                />
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.Content
+                  align="start"
+                  sideOffset={6}
+                  className={MENU_CLASSES}
+                  // The heading menu's discipline, for the same reason: Radix
+                  // hands focus back to the trigger on close, and this bar
+                  // always returns an author to the buffer instead.
+                  onCloseAutoFocus={(event) => {
+                    event.preventDefault();
+                    view?.focus();
+                  }}
+                >
+                  {PLACEMENTS.map(({ align, label, icon: Icon }) => (
+                    <DropdownMenu.Item
+                      key={align}
+                      className={ITEM_CLASSES}
+                      onSelect={act((v) =>
+                        // Centered is the default, and picking it means "as it
+                        // was": the whole fragment goes, width included.
+                        align === "center"
+                          ? clearImageFormat(v)
+                          : setImageAlign(v, align),
+                      )}
+                    >
+                      <Icon aria-hidden="true" size={16} strokeWidth={1.75} />
+                      {label}
+                    </DropdownMenu.Item>
+                  ))}
+                  <DropdownMenu.Separator className="my-1 h-px bg-slate-200 dark:bg-slate-700" />
+                  {WIDTHS.map(({ width, label, icon: Icon }) => (
+                    <DropdownMenu.Item
+                      key={width}
+                      className={ITEM_CLASSES}
+                      onSelect={act((v) => setImageWidth(v, width))}
+                    >
+                      <Icon aria-hidden="true" size={16} strokeWidth={1.75} />
+                      {label}
+                    </DropdownMenu.Item>
+                  ))}
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
+          </>
+        )}
+        {tableActive && (
+          <>
+            {/*
             The same hairline again, in front of the verbs that act on the
             table the caret is in rather than on the document at large.
           */}
-          <Divider />
-          {/*
+            <Divider />
+            {/*
             The glyphs are a mnemonic; the labels are the contract. Every one
             of these is a tooltip as well as an accessible name, because a row
             of small squares is not self-explanatory whatever is drawn in it.
@@ -481,84 +617,99 @@ export function EditorToolbar({
             can that could only say "something is destroyed". The axis was the
             half that went missing, and it was the half only the label carried.
           */}
-          <IconButton
-            label="Add row below"
-            icon={Rows3}
-            disabled={off}
-            onClick={act(tableAddRowBelow)}
-          />
-          <IconButton
-            label="Add column after"
-            icon={Columns3}
-            disabled={off}
-            onClick={act(tableAddColumnAfter)}
-          />
-          <IconButton
-            label="Delete row"
-            icon={DeleteRowIcon}
-            disabled={off}
-            onClick={act(tableDeleteRow)}
-          />
-          <IconButton
-            label="Delete column"
-            icon={DeleteColumnIcon}
-            disabled={off}
-            onClick={act(tableDeleteColumn)}
-          />
-          <DropdownMenu.Root>
-            <DropdownMenu.Trigger asChild>
-              <IconButton
-                label="Align column"
-                icon={AlignColumnIcon}
-                disabled={off}
-              />
-            </DropdownMenu.Trigger>
-            <DropdownMenu.Portal>
-              <DropdownMenu.Content
-                align="start"
-                sideOffset={6}
-                className={MENU_CLASSES}
-                // The heading menu's discipline, for the same reason: Radix
-                // hands focus back to the trigger on close, and this bar
-                // always returns an author to the buffer instead - having
-                // picked an alignment, or having pressed Escape.
-                onCloseAutoFocus={(event) => {
-                  event.preventDefault();
-                  view?.focus();
-                }}
-              >
-                {ALIGNMENTS.map(({ align, label, icon: Icon }) => (
-                  <DropdownMenu.Item
-                    key={align}
-                    className={ITEM_CLASSES}
-                    onSelect={act((v) => tableAlignColumn(v, align))}
-                  >
-                    {/*
+            <IconButton
+              label="Add row below"
+              icon={Rows3}
+              disabled={off}
+              onClick={act(tableAddRowBelow)}
+            />
+            <IconButton
+              label="Add column after"
+              icon={Columns3}
+              disabled={off}
+              onClick={act(tableAddColumnAfter)}
+            />
+            <IconButton
+              label="Delete row"
+              icon={DeleteRowIcon}
+              disabled={off}
+              onClick={act(tableDeleteRow)}
+            />
+            <IconButton
+              label="Delete column"
+              icon={DeleteColumnIcon}
+              disabled={off}
+              onClick={act(tableDeleteColumn)}
+            />
+            <DropdownMenu.Root>
+              <DropdownMenu.Trigger asChild>
+                <IconButton
+                  label="Align column"
+                  icon={AlignColumnIcon}
+                  disabled={off}
+                />
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.Content
+                  align="start"
+                  sideOffset={6}
+                  className={MENU_CLASSES}
+                  // The heading menu's discipline, for the same reason: Radix
+                  // hands focus back to the trigger on close, and this bar
+                  // always returns an author to the buffer instead - having
+                  // picked an alignment, or having pressed Escape.
+                  onCloseAutoFocus={(event) => {
+                    event.preventDefault();
+                    view?.focus();
+                  }}
+                >
+                  {ALIGNMENTS.map(({ align, label, icon: Icon }) => (
+                    <DropdownMenu.Item
+                      key={align}
+                      className={ITEM_CLASSES}
+                      onSelect={act((v) => tableAlignColumn(v, align))}
+                    >
+                      {/*
                       Decoration beside the label rather than a second name:
                       the row is called what it was always called, and the
                       glyph is the app's own icon idiom at the size every
                       other one is drawn at.
                     */}
-                    <Icon aria-hidden="true" size={16} strokeWidth={1.75} />
-                    {label}
-                  </DropdownMenu.Item>
-                ))}
-              </DropdownMenu.Content>
-            </DropdownMenu.Portal>
-          </DropdownMenu.Root>
-          <IconButton
-            label="Prettify table"
-            icon={WandSparkles}
-            disabled={off}
-            onClick={act(tablePrettify)}
-          />
-        </>
+                      <Icon aria-hidden="true" size={16} strokeWidth={1.75} />
+                      {label}
+                    </DropdownMenu.Item>
+                  ))}
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
+            <IconButton
+              label="Prettify table"
+              icon={WandSparkles}
+              disabled={off}
+              onClick={act(tablePrettify)}
+            />
+          </>
+        )}
+        {trailing !== undefined && (
+          <div className="ml-auto flex shrink-0 items-center pl-2">
+            {trailing}
+          </div>
+        )}
+      </div>
+      {/*
+        Outside the row: its mousedown guard is for the verbs, and React hands
+        a portal's events to the tree it was rendered in.
+      */}
+      {asking !== null && (
+        <ConfirmHeadingDialog
+          sentence={asking.sentence}
+          onConfirm={joinSections}
+          onCancel={answered}
+          onClosed={() => {
+            view?.focus();
+          }}
+        />
       )}
-      {trailing !== undefined && (
-        <div className="ml-auto flex shrink-0 items-center pl-2">
-          {trailing}
-        </div>
-      )}
-    </div>
+    </>
   );
 }

@@ -23,6 +23,7 @@ import { keymap } from "@codemirror/view";
 
 import { frontmatterHidden } from "./frontmatterFold";
 import { frontmatterRegion } from "./frontmatterRegion";
+import { isIdLineAt, joinSections } from "./hiddenIdLines";
 
 /**
  * Keep a command off a frontmatter block that is currently hidden.
@@ -171,12 +172,36 @@ export function toggleInline(view: EditorView, marker: string): boolean {
 const HEADING = /^(#{1,6})[ \t]+/;
 
 /**
+ * The level line `lineNo` has once Heading `level` is picked on it: `level`,
+ * or 0 when the line already wears that level and the pick takes it off.
+ * What a document adapter is asked about before the change is made.
+ */
+export function headingLevelAfter(
+  state: EditorState,
+  lineNo: number,
+  level: number,
+): number {
+  const worn = HEADING.exec(state.doc.line(lineNo).text)?.[1]?.length ?? 0;
+  return worn === level ? 0 : level;
+}
+
+/**
  * Heading level on the MAIN selection's line only - deliberate scope, not an
  * oversight: a heading is a line property, and cycling it under every cursor
  * of a multi-cursor selection is more surprise than help. The inline
  * wrappers and the wiki link are the multi-range commands.
+ *
+ * `joinSections` is the confirmed form of a change the document adapter
+ * asked about first (`confirmHeadingChange`): a section heading of a
+ * Reflection that stops being one takes its hidden id line with it, in the
+ * same transaction, so one undo puts both back. Without it the id line stays
+ * where it is.
  */
-export function cycleHeading(view: EditorView, level: number): boolean {
+export function cycleHeading(
+  view: EditorView,
+  level: number,
+  options: { joinSections?: boolean } = {},
+): boolean {
   if (!clearOfFoldedFrontmatter(view)) {
     return false;
   }
@@ -189,13 +214,27 @@ export function cycleHeading(view: EditorView, level: number): boolean {
   // is "no heading here", which no `#{1,6}` match can otherwise produce.
   const worn = match?.[1]?.length ?? 0;
   const width = match?.[0]?.length ?? 0;
-  const changes =
+  const changes: { from: number; to?: number; insert: string }[] =
     worn === 0
       ? [{ from: line.from, insert: mark }]
       : worn === level
         ? [{ from: line.from, to: line.from + width, insert: "" }]
         : [{ from: line.from, to: line.from + width, insert: mark }];
-  view.dispatch({ changes, userEvent: "input" });
+  const joining =
+    options.joinSections === true && isIdLineAt(state, line.number + 1);
+  if (joining) {
+    // The id line and the line break in front of it.
+    changes.push({
+      from: line.to,
+      to: state.doc.line(line.number + 1).to,
+      insert: "",
+    });
+  }
+  view.dispatch({
+    changes,
+    userEvent: "input",
+    ...(joining ? { annotations: joinSections.of(true) } : {}),
+  });
   view.focus();
   return true;
 }
@@ -252,6 +291,12 @@ export function toggleLinePrefix(
     const last = state.doc.lineAt(range.to).number;
     for (let number = first; number <= last; number++) {
       const line = state.doc.line(number);
+      // A Reflection's hidden id line, and the section heading above it,
+      // stay as they are: a prefix on either parts the id from its heading,
+      // and the section would vanish into the one above without a word.
+      if (isIdLineAt(state, number) || isIdLineAt(state, number + 1)) {
+        continue;
+      }
       if (!seen.has(line.from)) {
         seen.add(line.from);
         lines.push(line);

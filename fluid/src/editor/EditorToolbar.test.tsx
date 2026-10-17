@@ -15,13 +15,14 @@ import type { Extension } from "@codemirror/state";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { RenderResult } from "@testing-library/react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test } from "vitest";
 
 import { ATTACHMENT_ACCEPT } from "../api/files";
 import { Tooltips } from "../components/primitives";
 import { parsedState } from "../test/parse";
+import { JOIN_SECTIONS, reflectionAdapter } from "./adapter";
 import { AttachButton } from "./AttachButton";
 import { EditorToolbar } from "./EditorToolbar";
 import { frontmatterFold } from "./frontmatterFold";
@@ -680,5 +681,83 @@ describe("the image-format menu", () => {
     await waitFor(() => {
       expect(v.hasFocus).toBe(true);
     });
+  });
+});
+
+describe("a heading change the document asks about first", () => {
+  const PAGE =
+    "# P\n\n## A\n<!-- r:aaaa0001 -->\n\none\n\n## B\n<!-- r:bbbb0002 -->\n\ntwo\n";
+
+  /** A reflection buffer with the caret on `## B` and the bar above it. */
+  function mountPage(): EditorView {
+    const adapter = reflectionAdapter();
+    const at = PAGE.indexOf("## B") + 3;
+    view = new EditorView({
+      state: EditorState.create({
+        doc: PAGE,
+        selection: EditorSelection.single(at),
+        extensions: [
+          EditorState.lineSeparator.of("\n"),
+          ...baseExtensions(false, { history: false }),
+          ...adapter.extensions,
+        ],
+      }),
+      parent: document.body,
+    });
+    render(<EditorToolbar view={view} adapter={adapter} />, {
+      wrapper: Tooltips,
+    });
+    return view;
+  }
+
+  async function pickHeading(level: number): Promise<void> {
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Heading" }));
+    await user.click(
+      await screen.findByRole("menuitem", { name: `Heading ${String(level)}` }),
+    );
+  }
+
+  test("says what joining does and changes nothing until it is confirmed", async () => {
+    const v = mountPage();
+    await pickHeading(3);
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent(JOIN_SECTIONS);
+    expect(docText(v.state)).toBe(PAGE);
+    await waitFor(() => {
+      expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    });
+    await userEvent.click(
+      screen.getByRole("button", { name: "Join sections" }),
+    );
+    expect(docText(v.state)).toBe(
+      "# P\n\n## A\n<!-- r:aaaa0001 -->\n\none\n\n### B\n\ntwo\n",
+    );
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await waitFor(() => {
+      expect(v.hasFocus).toBe(true);
+    });
+  });
+
+  test("Cancel leaves the text as it was and the caret in the buffer", async () => {
+    const v = mountPage();
+    await pickHeading(2);
+    await screen.findByRole("alertdialog");
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(docText(v.state)).toBe(PAGE);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await waitFor(() => {
+      expect(v.hasFocus).toBe(true);
+    });
+  });
+
+  test("a heading change that splits no section goes ahead without a question", async () => {
+    const v = mountPage();
+    act(() => {
+      v.dispatch({ selection: { anchor: PAGE.indexOf("one") } });
+    });
+    await pickHeading(2);
+    expect(docText(v.state)).toContain("\n## one\n");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 });

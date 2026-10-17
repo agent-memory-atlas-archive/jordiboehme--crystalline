@@ -708,6 +708,31 @@ describe("the engram editor", () => {
     );
   });
 
+  it("changes a heading level at once, with no question asked", async () => {
+    // The engram adapter has no sections to join: an id-shaped comment under
+    // a heading is ordinary text here.
+    const content = CONTENT.replace(
+      "A rule.",
+      "A rule.\n\n## Part\n<!-- r:aaaa0001 -->\n",
+    );
+    serveEditor({
+      "/domains/eng/engrams/alpha": () => detailResponse({ content }),
+    });
+    renderApp("/d/eng/edit/alpha");
+    const editor = await openBuffer();
+    const view = mountedView(editor);
+    act(() => {
+      view.dispatch({ selection: { anchor: content.indexOf("## Part") + 3 } });
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Heading" }));
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Heading 3" }),
+    );
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(docText(view.state)).toContain("### Part\n<!-- r:aaaa0001 -->\n");
+  });
+
   it("runs format-bar buttons from the keyboard", async () => {
     serveEditor();
     renderApp("/d/eng/edit/alpha");

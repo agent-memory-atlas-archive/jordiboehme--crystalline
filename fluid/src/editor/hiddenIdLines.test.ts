@@ -15,7 +15,7 @@ import { EditorView, keymap } from "@codemirror/view";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { normalizePastedEndings } from "../collab/pastedEndings";
-import { hiddenIdLines } from "./hiddenIdLines";
+import { hiddenIdLines, isIdLineAt, joinSections } from "./hiddenIdLines";
 import { insertBlock } from "./toolbar";
 
 let view: EditorView | null = null;
@@ -508,5 +508,89 @@ describe("hiddenIdLines keeps an id with its heading", () => {
     expect(v.state.doc.toString()).toBe(
       "## One\nRemote.\n<!-- r:aaaa1111 -->\nFirst.\n",
     );
+  });
+});
+
+describe("joining a section into the one above", () => {
+  const DOC =
+    "# P\n\n## A\n<!-- r:aaaa0001 -->\n\none\n\n## B\n<!-- r:bbbb0002 -->\n\ntwo\n";
+  const B = DOC.indexOf("## B");
+  const B_END = B + "## B".length;
+  const B_ID_END = DOC.indexOf("-->", B_END) + "-->".length;
+  const A_END = DOC.indexOf("## A") + "## A".length;
+  const A_ID_END = DOC.indexOf("-->", A_END) + "-->".length;
+
+  /** `## B` made `### B`, and its id line taken out with the break before it. */
+  const demote = [
+    { from: B, to: B + "## ".length, insert: "### " },
+    { from: B_END, to: B_ID_END, insert: "" },
+  ];
+
+  it("tells an id line from any other line, only where the ids are hidden", () => {
+    const v = mount(DOC);
+    expect(isIdLineAt(v.state, 4)).toBe(true);
+    expect(isIdLineAt(v.state, 3)).toBe(false);
+    expect(isIdLineAt(v.state, 6)).toBe(false);
+    // Out of the document is no id line either.
+    expect(isIdLineAt(v.state, 0)).toBe(false);
+    expect(isIdLineAt(v.state, 99)).toBe(false);
+    const plain = EditorState.create({ doc: DOC });
+    expect(isIdLineAt(plain, 4)).toBe(false);
+  });
+
+  it("lets the demoted heading's id go with the annotation", () => {
+    const v = mount(DOC);
+    v.dispatch({
+      changes: demote,
+      annotations: joinSections.of(true),
+      userEvent: "input",
+    });
+    expect(v.state.doc.toString()).toBe(
+      "# P\n\n## A\n<!-- r:aaaa0001 -->\n\none\n\n### B\n\ntwo\n",
+    );
+  });
+
+  it("puts the id back when the same change comes without the annotation", () => {
+    const v = mount(DOC);
+    v.dispatch({ changes: demote, userEvent: "input" });
+    expect(v.state.doc.toString()).toBe(
+      "# P\n\n## A\n<!-- r:aaaa0001 -->\n\none\n\n### B\n<!-- r:bbbb0002 -->\n\ntwo\n",
+    );
+  });
+
+  it("puts the id back when a heading is taken off without the annotation", () => {
+    const v = mount(DOC);
+    v.dispatch({
+      changes: [
+        { from: B, to: B + "## ".length, insert: "" },
+        { from: B_END, to: B_ID_END, insert: "" },
+      ],
+      userEvent: "input",
+    });
+    expect(v.state.doc.toString()).toBe(
+      "# P\n\n## A\n<!-- r:aaaa0001 -->\n\none\n\nB\n<!-- r:bbbb0002 -->\n\ntwo\n",
+    );
+  });
+
+  it("lets only the demoted heading's id go, never another one in the same change", () => {
+    const v = mount(DOC);
+    v.dispatch({
+      changes: [{ from: A_END, to: A_ID_END, insert: "" }, ...demote],
+      annotations: joinSections.of(true),
+      userEvent: "input",
+    });
+    expect(v.state.doc.toString()).toBe(
+      "# P\n\n## A\n<!-- r:aaaa0001 -->\n\none\n\n### B\n\ntwo\n",
+    );
+  });
+
+  it("still refuses a single-character delete into the id line with the annotation", () => {
+    const v = mount(DOC);
+    v.dispatch({
+      changes: { from: B_ID_END - 1, to: B_ID_END },
+      annotations: joinSections.of(true),
+      userEvent: "delete.backward",
+    });
+    expect(v.state.doc.toString()).toBe(DOC);
   });
 });

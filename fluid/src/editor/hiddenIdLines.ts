@@ -30,6 +30,7 @@ import type {
   TransactionSpec,
 } from "@codemirror/state";
 import {
+  Annotation,
   ChangeSet,
   EditorSelection,
   EditorState,
@@ -61,6 +62,31 @@ const field = StateField.define<DecorationSet>({
     EditorView.atomicRanges.of((view) => view.state.field(f)),
   ],
 });
+
+/**
+ * Whether line `lineNo` (1-based) is a hidden section id line. Only where
+ * these ids are hidden: in an engram, the same comment is ordinary text, so
+ * the block verbs that ask this treat it like any other line there.
+ */
+export function isIdLineAt(state: EditorState, lineNo: number): boolean {
+  if (state.field(field, false) === undefined) {
+    return false;
+  }
+  if (lineNo < 1 || lineNo > state.doc.lines) {
+    return false;
+  }
+  return isIdLine(state.doc.line(lineNo).text);
+}
+
+/**
+ * Marks the one change that may take a section's id away while its heading
+ * stays: a confirmed heading change that joins the section into the one
+ * above (`##` made `###`, a title or plain text). It lets through the id line
+ * of exactly that heading, the one whose mark the same transaction changes
+ * and whose id line it deletes whole. Every other id the transaction reaches
+ * is kept as without it, and a single-character delete is refused as ever.
+ */
+export const joinSections = Annotation.define<boolean>();
 
 /**
  * A new line typed at the end of a heading lands below the heading's id, and
@@ -198,6 +224,9 @@ const keepIdLines = EditorState.transactionFilter.of((tr) => {
  *   the change left it. When the line below already holds an id, the
  *   surviving heading's own id takes that place: the text that is left is
  *   this heading's, and the heading that id belonged to has gone.
+ * - A change that stays on the heading line (its mark made `###` or taken
+ *   off) leaves the heading's line where it was, so the id stays below it
+ *   too. Only a confirmed join (`joinSections`) takes that id away.
  *
  * A heading counts as gone too when the line break before it was deleted,
  * so two selections that end on one line leave one id there, not two. The
@@ -220,6 +249,7 @@ const keepHeadingIds = Prec.high(
       return tr;
     }
     const doc = tr.startState.doc;
+    const joining = tr.annotation(joinSections) === true;
     const changes: { fromA: number; toA: number; inserted: string }[] = [];
     tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
       changes.push({ fromA, toA, inserted: inserted.toString() });
@@ -260,15 +290,30 @@ const keepHeadingIds = Prec.high(
             c.toA > heading.to &&
             c.inserted.startsWith("#"),
         );
+        // A change that stays on the heading line (its mark changed or
+        // taken off) leaves the line where it was: the heading is gone only
+        // when a change runs from its start past its end, or takes the line
+        // break before it.
         const survives =
           renamed ||
           !changes.some(
             (c) =>
-              (c.fromA <= heading.from && c.toA > heading.from) ||
+              (c.fromA <= heading.from && c.toA > heading.to) ||
               (heading.from > 0 &&
                 c.fromA < heading.from &&
                 c.toA >= heading.from),
           );
+        // The confirmed join: this heading's mark changes and its id line
+        // goes whole, as the person agreed to.
+        const joined =
+          joining &&
+          changes.some(
+            (c) => c.fromA === heading.from && c.toA <= heading.to,
+          ) &&
+          changes.some((c) => c.fromA <= id.from && c.toA >= id.to);
+        if (joined) {
+          continue;
+        }
         touched.push({ heading, id, survives, renamed });
       }
     }
