@@ -61,6 +61,8 @@ $$
 
 A formula can also sit in a fence with the language `math`. One formula per block. A single `$` is always a plain dollar sign, so prices like $5 are safe.
 
+GitHub also reads a pair of single dollar signs as math, so a line with two dollar amounts may render as a formula there. Crystalline never does.
+
 When it fits: a formula the reader has to read, not a number in a sentence.
 
 On GitHub: it renders as math.
@@ -86,6 +88,8 @@ Task items are not observations, so `- [x] done` is never read as a category. Do
 A tick alone is not feedback. On a Reflection page, a change that only ticks or unticks boxes does not become a feedback item in the `reflect` queue. A real edit next to a tick does.
 
 When it fits: things people act on and tick off.
+
+On GitHub: `[ ]` and `[x]` render as checkboxes. `[~]` shows as literal text.
 
 ## Footnotes
 
@@ -127,21 +131,25 @@ On GitHub: renders as a diagram.
 
 ## Code blocks
 
-Every code block on the reading page has a Copy button at the top right. It shows on hover and on keyboard focus, and says "Copied" for two seconds.
+Every code block on the reading page has a Copy button at the top right. It shows on hover and on keyboard focus, and says "Copied" for two seconds. On touch screens it always shows.
+
+On GitHub: code blocks look the same, without the button.
 
 ## On this page
 
 A page with three or more `##` sections gets an outline of its `##` and `###` headings. There is no syntax. On a wide screen it sits in the right column and marks the section you are in. On a narrow screen it is a collapsed block above the text, and on a phone it sits in the drawer.
 
+On GitHub: GitHub builds its own outline from the headings.
+
 ## Writing it in Fluid
 
-The editor has one **Insert** menu with Callout (the six kinds), Expand block, Status label, Table, Diagram, Code block, Math, Footnote and Task list. Type `/` at the start of an empty line to open the same list at the caret and filter it as you type. Escape or a space closes it and leaves the `/`.
+The editor has one **Insert** menu with Callout (the six kinds), Expand block, Status label, Table, Diagram, Code block, Math, Footnote and Task list. Type `/` at the start of an empty line to open the same list at the caret and filter it as you type. Escape closes it, and so does a space right after the `/`; a query with no match closes it too. The `/` stays in the text.
 
 While the caret is inside a callout, the toolbar offers the kind and "Starts open" or "Starts closed". Inside a status label it offers the six colours. Away from the active line, callouts, labels, swatches and math show as they do on the reading page.
 
 ## Rich paste
 
-Paste from a wiki, a browser, Word or Google Docs and Fluid turns the HTML into clean Markdown.
+Paste rich text from a wiki, a web page or a word processor and Fluid turns the HTML into clean Markdown.
 
 | From the other app | Becomes |
 | --- | --- |
