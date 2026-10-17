@@ -46,6 +46,7 @@ import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import type { Components } from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import { Link, useLocation, useNavigate } from "react-router";
+import remarkDirective from "remark-directive";
 import remarkGfm from "remark-gfm";
 
 import {
@@ -68,6 +69,12 @@ import {
   remarkCallouts,
 } from "../markdown/callouts";
 import type { CalloutKind, RevealDetail } from "../markdown/callouts";
+import {
+  STATUS_COLOURS,
+  remarkCrystallineDirectives,
+} from "../markdown/directives";
+import type { StatusColour } from "../markdown/directives";
+import { colourOf } from "../markdown/swatch";
 import { printUrl } from "../printUrl";
 import { SOURCE_ATTR, spanPieces } from "../reflectionQuotes";
 import { isIdLine } from "../reflectionText";
@@ -79,6 +86,7 @@ import DiagramToolbar from "./DiagramToolbar";
 import { imageFileName } from "./downloads";
 import { lazyPart } from "./lazyPart";
 import { Chip, FOCUS_RING } from "./primitives";
+import StatusLabel from "./StatusLabel";
 import { useSaid } from "./useSaid";
 
 const MermaidDiagram = lazyPart(() => import("./MermaidDiagram"));
@@ -89,6 +97,7 @@ const MermaidDiagram = lazyPart(() => import("./MermaidDiagram"));
  * package does not declare.
  */
 type RehypePlugins = ComponentProps<typeof ReactMarkdown>["rehypePlugins"];
+type RemarkPlugins = ComponentProps<typeof ReactMarkdown>["remarkPlugins"];
 
 /**
  * The frontmatter block at the top of every engram and every MANIFEST.
@@ -597,6 +606,14 @@ function structuredBullet(children: ReactNode): ReactNode {
   return children;
 }
 
+/** Whether a span's `data-status` is one the directives plugin writes. */
+function isStatus(value: unknown): value is StatusColour {
+  return (
+    typeof value === "string" &&
+    (STATUS_COLOURS as readonly string[]).includes(value)
+  );
+}
+
 /** The callout a component's props describe, or the element as it came. */
 function calloutOf(
   props: Record<string, unknown>,
@@ -644,18 +661,23 @@ const components: Components = {
     <ol className="my-3 list-decimal pl-6 leading-relaxed">{children}</ol>
   ),
   li: ({ children }) => <li className="my-1">{structuredBullet(children)}</li>,
-  span: ({ children, className, node }) =>
-    // Three sources make spans in this tree, all plugin-generated rather than
+  span: ({ children, className, node, ...props }) => {
+    // Four sources make spans in this tree, all plugin-generated rather than
     // raw HTML an engram could write: the wikilink rewrite's own markers,
     // rehype-highlight's per-token spans inside a fenced code block (the
-    // `.hljs-string` etc. classes `index.css`'s syntax palette styles), and
-    // the source-span stamp. The wikilink case gets its own fixed look;
+    // `.hljs-string` etc. classes `index.css`'s syntax palette styles), the
+    // source-span stamp, and a status label from the directives plugin. A
+    // status label and the wikilink case get their own fixed look;
     // everything else has to keep whatever class it arrived with; passing an
     // incoming `className` through unconditionally, rather than dropping it,
     // is what makes a code fence render in color instead of the page's plain
     // text color. A stamp keeps its offset, and a span without one renders
     // exactly as before, because an undefined attribute is never written.
-    wikilinkKind(node) === "unresolved" ? (
+    const status = (props as Record<string, unknown>)["data-status"];
+    if (isStatus(status)) {
+      return <StatusLabel colour={status}>{children}</StatusLabel>;
+    }
+    return wikilinkKind(node) === "unresolved" ? (
       <span
         title="not resolved"
         className="underline decoration-dotted underline-offset-2 opacity-70"
@@ -666,7 +688,8 @@ const components: Components = {
       <span className={className} data-src={sourceStamp(node)}>
         {children}
       </span>
-    ),
+    );
+  },
   blockquote: ({ children }) => (
     <blockquote className="my-3 border-l-2 border-slate-300 pl-4 text-slate-600 dark:border-slate-700 dark:text-slate-300">
       {children}
@@ -708,19 +731,36 @@ const components: Components = {
       {children}
     </td>
   ),
-  code: ({ children, className }) => {
+  code: ({ children, className, node }) => {
     // A fenced block carries a language class or the highlighter's own, and
     // sits inside a `pre` that is already the box. Only the inline kind gets
     // drawn as a chip.
     const fenced =
       typeof className === "string" &&
       (className.includes("language-") || className.includes("hljs"));
-    return fenced ? (
-      <code className={className}>{children}</code>
-    ) : (
+    if (fenced) {
+      return <code className={className}>{children}</code>;
+    }
+    // A colour code alone in the span gets a swatch of that colour before it.
+    // Read from the node, as a stamped span wraps the text in its own span.
+    const colour = colourOf(textOf(node as HastNode | undefined));
+    const chip = (
       <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.9em] dark:bg-slate-800">
         {children}
       </code>
+    );
+    return colour === null ? (
+      chip
+    ) : (
+      <>
+        <span
+          data-swatch
+          aria-hidden="true"
+          style={{ background: colour }}
+          className="mr-1 inline-block size-[0.8em] rounded-sm align-[-0.05em] ring-1 ring-hair"
+        />
+        {chip}
+      </>
     );
   },
 };
@@ -1331,13 +1371,6 @@ function componentsFor(
   };
 }
 
-/**
- * The markdown extensions, in the order they run: GitHub's tables, task
- * lists and footnotes first, then the callouts, which read the quotes the
- * parser built.
- */
-const REMARK_PLUGINS = [remarkGfm, remarkCallouts];
-
 /** Open every folded callout around `target`, innermost first. */
 function revealIn(root: HTMLElement | null, target: Element | null): void {
   if (root === null || target === null || !root.contains(target)) {
@@ -1445,6 +1478,20 @@ export default function MarkdownBody({
   const componentMap = useMemo(
     () => componentsFor(resolver, documentName, anchored),
     [resolver, documentName, anchored],
+  );
+  // The markdown extensions, in the order they run: GitHub's tables, task
+  // lists and footnotes first, then the directive syntax and what this
+  // dialect makes of it (status labels, every other directive back to its
+  // text, which is why it reads `shown`), then the callouts, which read the
+  // quotes the parser built.
+  const remarkPlugins = useMemo<RemarkPlugins>(
+    () => [
+      remarkGfm,
+      remarkDirective,
+      remarkCrystallineDirectives(shown),
+      remarkCallouts,
+    ],
+    [shown],
   );
   const rehypePlugins = useMemo<RehypePlugins>(
     () => [
@@ -1557,7 +1604,7 @@ export default function MarkdownBody({
   }, [anchored, hash, source]);
   const rendered = (
     <ReactMarkdown
-      remarkPlugins={REMARK_PLUGINS}
+      remarkPlugins={remarkPlugins}
       rehypePlugins={rehypePlugins}
       components={componentMap}
       urlTransform={urlTransform}

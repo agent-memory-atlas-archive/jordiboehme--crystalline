@@ -990,3 +990,133 @@ describe("callouts", () => {
     expect(details.open).toBe(true);
   });
 });
+
+describe("status labels and other directives", () => {
+  it("renders a status label as its text in a coloured pill", async () => {
+    await renderMarkdown(
+      "| Item | State |\n| --- | --- |\n| Login | :status[In review]{blue} |\n",
+    );
+    const label = screen.getByText("In review");
+    expect(label.closest("[data-status]")?.getAttribute("data-status")).toBe(
+      "blue",
+    );
+  });
+
+  it("leaves every other colon in prose exactly as typed", async () => {
+    const lines = [
+      "Meet at 10:30, see note:this and https://example.com/a:b.",
+      "A :word[here] and ::leaf and :::box stay text.",
+      ":status without brackets stays text.",
+      ":status[Odd]{orange} falls back to grey.",
+    ];
+    await renderMarkdown(lines.join("\n\n"));
+    expect(screen.getByText(/Meet at 10:30, see note:this/)).toBeVisible();
+    expect(
+      screen.getByText(/A :word\[here\] and ::leaf and :::box stay text\./),
+    ).toBeVisible();
+    expect(
+      screen.getByText(/:status without brackets stays text\./),
+    ).toBeVisible();
+    expect(
+      screen
+        .getByText("Odd")
+        .closest("[data-status]")
+        ?.getAttribute("data-status"),
+    ).toBe("grey");
+  });
+
+  it("reads the colour the way the core lint does", async () => {
+    await renderMarkdown(
+      ":status[Done]{Green} and :status[Open] and :status[Gone]{.red}\n",
+    );
+    const colour = (text: string) =>
+      screen
+        .getByText(text)
+        .closest("[data-status]")
+        ?.getAttribute("data-status");
+    expect(colour("Done")).toBe("green");
+    expect(colour("Open")).toBe("grey");
+    expect(colour("Gone")).toBe("grey");
+  });
+
+  it("keeps a wikilink that names its domain one link", async () => {
+    await renderMarkdown("See [[moon:Crater Base]] now.", (inner) =>
+      inner === "moon:Crater Base"
+        ? { kind: "resolved", href: "/d/moon/e/crater", label: "Crater Base" }
+        : null,
+    );
+    expect(screen.getByRole("link", { name: "Crater Base" })).toBeVisible();
+  });
+
+  it("draws a swatch for a colour code and not for other code", async () => {
+    const { container } = await renderMarkdown(
+      "Brand `#0969DA`, and `rgb(9, 105, 218)`, not `#define`.\n",
+    );
+    expect(container.querySelectorAll("[data-swatch]")).toHaveLength(2);
+  });
+
+  it("draws a swatch for a colour code on a page with source spans", async () => {
+    const { container } = await renderSpans("Brand `#0969DA` here.\n");
+    expect(container.querySelectorAll("[data-swatch]")).toHaveLength(1);
+  });
+
+  it("keeps a line-start container or leaf directive as text around rendered content", async () => {
+    const { container } = await renderMarkdown(
+      [
+        ":::note",
+        "Some **bold** text",
+        ":::",
+        "",
+        "::toc",
+        "",
+        ":::warning",
+        "Never closed **here**",
+        "",
+        "## After",
+      ].join("\n"),
+    );
+    expect(container.querySelectorAll("strong")).toHaveLength(2);
+    expect(screen.getAllByText(":::note").length).toBeGreaterThan(0);
+    expect(screen.getByText("::toc")).toBeVisible();
+    expect(
+      screen.getByRole("heading", { name: "After", level: 2 }),
+    ).toBeVisible();
+  });
+
+  it("keeps a heading inside an unclosed container reachable by its anchor", async () => {
+    await renderMarkdown(
+      ":::warning\nNever closed\n\n## After\n\n- one\n- two\n",
+      undefined,
+      undefined,
+      undefined,
+      { pageUrl: "/d/x" },
+    );
+    const heading = screen.getByRole("heading", { name: /After/, level: 2 });
+    expect(heading.id).toBe("after");
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("stamps directive text and a status label at their source offsets", async () => {
+    const source = [
+      "Login is :status[In review]{blue} and :word[x]{y} today.",
+      "",
+      ":::note[Title]",
+      "Inside **here**",
+      ":::",
+      "",
+      "::toc",
+    ].join("\n");
+    const { container } = await renderSpans(source);
+    const stamped = expectSpansMatch(container, source);
+    const texts = stamped.map((span) => span.textContent);
+    expect(texts).toEqual(
+      expect.arrayContaining([
+        "In review",
+        " and :word[x]{y} today.",
+        ":::note[Title]",
+        ":::",
+        "::toc",
+      ]),
+    );
+  });
+});

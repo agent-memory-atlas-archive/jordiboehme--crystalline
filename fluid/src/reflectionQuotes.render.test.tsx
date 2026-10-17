@@ -170,6 +170,11 @@ describe("a quote through the real renderer", () => {
     await roundTrip(text, "night.\n> Rollbacks");
   });
 
+  it("anchors a quote beside and inside a status label", async () => {
+    await roundTrip("Login is :status[In review]{blue} today.", "Login is");
+    await roundTrip("State :status[In review]{blue} now", "In review");
+  });
+
   it("crosses an indented paragraph continuation", async () => {
     await roundTrip("Opening words\n   then more words.\n", "words\n   then");
   });

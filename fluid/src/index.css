@@ -126,6 +126,16 @@
     --callout-warning: var(--color-amber-600);
     --callout-caution: var(--color-red-600);
     --callout-details: var(--color-slate-500);
+    /*
+     * The six status label colours (`StatusLabel.tsx`): the ring and a light
+     * tint. The words stay ink, so their contrast is the page's own.
+     */
+    --status-grey: var(--color-slate-500);
+    --status-blue: var(--color-blue-600);
+    --status-green: var(--color-green-600);
+    --status-yellow: var(--color-yellow-600);
+    --status-red: var(--color-red-600);
+    --status-purple: var(--color-purple-600);
     /* The mode switch's track and its raised half, and a menu's shadow. */
     --seg: #f1f5f9;
     --seg-on: #ffffff;
@@ -189,6 +199,12 @@
       --callout-warning: var(--color-amber-400);
       --callout-caution: var(--color-red-400);
       --callout-details: #8b93a7;
+      --status-grey: #8b93a7;
+      --status-blue: var(--color-blue-400);
+      --status-green: var(--color-green-400);
+      --status-yellow: var(--color-yellow-400);
+      --status-red: var(--color-red-400);
+      --status-purple: var(--color-purple-400);
       --mark-active: color-mix(
         in srgb,
         var(--color-accent-400) 32%,
@@ -260,6 +276,48 @@
   }
   .callout[data-callout="details"] {
     --callout: var(--callout-details);
+  }
+  /*
+   * A status label (`StatusLabel.tsx`): a pill at cap height, a 1px ring and
+   * a light tint in its colour, the words in ink. The colour arrives as
+   * `data-status`; on paper the tint goes and the ring stays.
+   */
+  .status-label {
+    --status: var(--status-grey);
+    display: inline-block;
+    padding: 0.1em 0.5em;
+    border-radius: 9999px;
+    font-size: 0.8em;
+    font-weight: 500;
+    line-height: 1.25;
+    vertical-align: 0.05em;
+    white-space: nowrap;
+    color: var(--ink);
+    box-shadow: inset 0 0 0 1px
+      color-mix(in srgb, var(--status) 55%, transparent);
+    background: color-mix(in srgb, var(--status) 12%, transparent);
+  }
+  .status-label[data-status="blue"] {
+    --status: var(--status-blue);
+  }
+  .status-label[data-status="green"] {
+    --status: var(--status-green);
+  }
+  .status-label[data-status="yellow"] {
+    --status: var(--status-yellow);
+  }
+  .status-label[data-status="red"] {
+    --status: var(--status-red);
+  }
+  .status-label[data-status="purple"] {
+    --status: var(--status-purple);
+  }
+  @media print {
+    .status-label {
+      background: none;
+      box-shadow: none;
+      border: 1px solid var(--status);
+    }
   }
   /*
    * The two halves of the mode switch in the top bar (ReflectionModeSwitch):
