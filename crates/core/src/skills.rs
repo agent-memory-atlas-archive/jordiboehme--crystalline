@@ -228,11 +228,13 @@ mod tests {
         );
     }
 
-    /// The presentation skill teaches restraint, puts the PACT first and
-    /// carries the syntax sheet, and the two skills an agent writes with
-    /// point to it (a novel skill is found through skill text, AGENTS.md).
+    /// The presentation skill puts the PACT first, names where an element is
+    /// required (the benchmark agent wrote numbered lists and bullets there),
+    /// balances that with restraint and carries the syntax sheet, and the two
+    /// skills an agent writes with point to it (a novel skill is found
+    /// through skill text, AGENTS.md).
     #[test]
-    fn the_presentation_skill_teaches_restraint_the_pact_and_the_dialect() {
+    fn the_presentation_skill_teaches_triggers_restraint_the_pact_and_the_dialect() {
         let p = skill("crystalline-presentation").unwrap().content;
         for needle in [
             "## Presentation",
@@ -243,7 +245,13 @@ mod tests {
             "grey, blue, green, yellow, red, purple",
             "$`",
             "```math",
-            "sequenceDiagram",
+            "a `sequenceDiagram`. Always",
+            "one row per option",
+            "inside the section that describes that action",
+            "Never in the page lead",
+            "Check before you write each section",
+            "Everywhere else prose wins",
+            "expected_checksum",
             "never inside a callout",
             "same section",
             "markdown_findings",

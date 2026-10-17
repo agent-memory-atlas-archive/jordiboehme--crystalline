@@ -1,11 +1,11 @@
 ---
 name: crystalline-presentation
-description: Use when writing or updating a reflection or PACT.md, working reflect feedback, update or review items, or writing an engram that a table, diagram or callout would make easier to find or use - how to present knowledge to people with the right element and with restraint.
+description: Use when writing or updating a reflection or PACT.md, working reflect feedback, update or review items, or writing an engram that a table, diagram or callout would make easier to find or use. Messages between parties need a sequenceDiagram, a process with a branch a flowchart, states a stateDiagram-v2, three or more options compared a table, an irreversible step a caution callout inside its section; everywhere else prose.
 ---
 
 # Crystalline Presentation
 
-A reflection is read by people. Present it the way a good technical writer would: clear prose first, and a diagram, callout, table or status label only where it helps the reader. Engrams are read by agents and people, so the same elements may help there when they make knowledge easier to store, describe or find.
+A reflection is read by people. Present it the way a good technical writer would: clear prose first, and a diagram, callout, table or status label where the content calls for one. Engrams are read by agents and people, so the same elements may help there when they make knowledge easier to store, describe or find.
 
 ## When it applies
 
@@ -15,38 +15,33 @@ A reflection is read by people. Present it the way a good technical writer would
 
 ## The PACT first
 
-Before you write a page, read the domain's `PACT.md` with `read_reflection`. Its `## Presentation` section says which diagrams, callouts and tables help these readers and what to avoid. It narrows or extends the defaults in this skill, and where the two differ, the PACT wins. A PACT that says "no diagrams" means no diagrams, even where this skill would draw one.
+Before you write a page, read the domain's `PACT.md` with `read_reflection`. Its `## Presentation` section says which diagrams, callouts and tables help these readers and what to avoid. It narrows or extends the defaults in this skill, and where the two differ, the PACT wins. A PACT that says "no diagrams" means no diagrams, even where this skill requires one.
 
 When the PACT has no `## Presentation` section, use the defaults below. If you see a pattern the readers would want written down, propose it: write it into `PACT.md` when you may curate, otherwise open a thread with `discuss`.
 
-## The reader rule
+When you rewrite a whole page, pass the `checksum` from `read_reflection` as `expected_checksum`, so a change a person made since your read is refused instead of overwritten.
 
-An element earns its place only when it does a job prose cannot. When in doubt, prose. A page with no diagram and no callout is often the right page. Never add an element to make a page look rich.
+## Where an element is required
 
-## Content shape to element
+These shapes need their element. A numbered list or a paragraph is not enough for them.
 
-Look at the shape of the content, then pick the element that fits it.
+- **Messages or steps between two or more parties in a fixed order** (a client, a server, a third service): a `sequenceDiagram`. Always, even for three steps.
+- **A process with a decision or a branch** ("if the check fails, ..."): a `flowchart`.
+- **States and the moves between them** (draft, active, closed): a `stateDiagram-v2`.
+- **Three or more options compared on the same attributes**: a table, one row per option. Not a bullet list, and not one `##` section per option. When the source gives a verdict, add a verdict column with status labels.
+- **An action that cannot be undone, or a risky one**: a `> [!WARNING]` or `> [!CAUTION]` callout inside the section that describes that action, directly before or after the step. Never in the page lead (the text above the first `##`), and never folded.
 
-| The content is | Use |
-| --- | --- |
-| Steps with branches or decisions | a `flowchart` diagram |
-| Parties that exchange messages over time | a `sequenceDiagram` |
-| A lifecycle, states and the moves between them | a `stateDiagram-v2` |
-| A data model, entities and how they relate | an `erDiagram` |
-| Dates, phases and plans | a `gantt` chart or a `timeline` |
-| Options compared | a table, with status labels for the verdicts |
-| A risk, or a step that cannot be undone | a `> [!WARNING]` or `> [!CAUTION]` callout |
-| A prerequisite the reader must not miss | a `> [!IMPORTANT]` callout |
-| A shortcut or a better way | a `> [!TIP]` callout |
-| Background that helps but is not needed | a `> [!NOTE]` callout |
-| Long reference detail or optional steps | a folded `> [!DETAILS]-` callout |
-| A formula | math |
-| Things people act on and tick off | a task list |
-| Caveats and citations | footnotes |
+## Check before you write each section
 
-A list of attributes (name, owner, port, limit) reads better as a table than as a long bullet list.
+1. Do two or more parties send each other something in order? Draw a `sequenceDiagram`.
+2. Does the process branch on a decision? Draw a `flowchart`.
+3. Do I compare three or more options on the same points? Write a table.
+4. Does this section describe a step that cannot be undone? Put the callout here, at that step.
+5. None of these? Write prose.
 
 ## Restraint
+
+The triggers above are where an element is required. Everywhere else prose wins: an element earns its place only when it does a job prose cannot. When in doubt, prose. A page with no diagram and no callout is often the right page. Never add an element to make a page look rich.
 
 - One or two callouts per page. Never two callouts in a row, and never a callout inside a callout.
 - One diagram per idea. Keep it small, and put a sentence before it that says what it shows.
@@ -54,17 +49,72 @@ A list of attributes (name, owner, port, limit) reads better as a table than as 
 - Never fold a warning or a caution: a risk the reader has to open is a risk the reader misses.
 - Colour is never the only signal. A status label always carries a word ("Blocked", "Done"), not just a colour.
 
+## Other elements
+
+| The content is | Use |
+| --- | --- |
+| A data model, entities and how they relate | an `erDiagram` |
+| Dates, phases and plans | a `gantt` chart or a `timeline` |
+| A prerequisite the reader must not miss | a `> [!IMPORTANT]` callout |
+| A shortcut or a better way | a `> [!TIP]` callout |
+| Background that helps but is not needed | a `> [!NOTE]` callout |
+| Long reference detail or optional steps | a folded `> [!DETAILS]-` callout |
+| A formula | math |
+| Things people act on and tick off | a task list |
+| Caveats and citations | footnotes |
+| A list of attributes (name, owner, port, limit) | a table, not a long bullet list |
+
+## Example
+
+Two engrams:
+
+```markdown
+- [fact] The shop sends the card token to the gateway, and the gateway asks the bank to approve it
+- [fact] The bank answers the gateway, and the gateway sends the shop a receipt
+
+- [risk] A refund cannot be taken back once the bank has sent it
+- [fact] Full refund: everything back, the default. Partial refund: for damaged goods. Store credit: only on request
+```
+
+The sections they become:
+
+````markdown
+## How a card payment works
+
+The shop never talks to the bank. The gateway sits between them:
+
+```mermaid
+sequenceDiagram
+    Shop->>Gateway: Card token
+    Gateway->>Bank: Approve?
+    Bank-->>Gateway: Approved
+    Gateway-->>Shop: Receipt
+```
+
+## Refunds
+
+| Refund | What the customer gets | Verdict |
+| --- | --- | --- |
+| Full refund | Everything back | :status[Default]{green} |
+| Partial refund | Part of the amount | :status[Damaged goods]{yellow} |
+| Store credit | Credit in the shop | :status[On request]{grey} |
+
+> [!CAUTION] A refund cannot be taken back
+> Check the amount first. Once the bank has sent the refund, it is final.
+
+Send the refund from the order page.
+````
+
 ## A professional page
 
 - Start with a lead paragraph: what the page is for and who it is for.
 - Shape the sections around the questions the reader brings, not around the order you learned things in.
-- Use tables instead of long lists of attributes.
 - Use the PACT's terms, and use each term the same way everywhere.
 - Write short plain sentences. Explain a term the first time you use it.
 
 ## Feedback
 
-When a comment says "how does X work?" or "I don't follow", more words are not always the answer. Ask whether a diagram or a table answers it better. A flow that is hard to follow in prose is often easy to follow in a `flowchart` or a `sequenceDiagram`. Then answer the thread in plain words and say what you changed.
+When a comment says "how does X work?" or "I don't follow", more words are not always the answer. A flow that is hard to follow in prose is often easy to follow in a `flowchart` or a `sequenceDiagram`, and a comparison in a table. Then answer the thread in plain words and say what you changed.
 
 ## Engrams
 
@@ -89,24 +139,7 @@ Every element reads sensibly as raw Markdown, and on GitHub too: a callout with 
 
 `:status[...]` is the only directive. Any other `:word`, `::word` or `:::word` is ordinary text, so `10:30` or `note:this` is safe to write.
 
-A callout in raw form:
-
-```markdown
-> [!CAUTION] The purge cannot be undone
-> Export the tenant first. The purge deletes every backup too.
-```
-
 Diagram types that render in light, dark and print: `flowchart`, `sequenceDiagram`, `stateDiagram-v2`, `classDiagram`, `erDiagram`, `gantt`, `pie`, `timeline`, `journey`, `quadrantChart`, `mindmap`, `C4Context`, `requirementDiagram`, `architecture-beta`, `xychart-beta`, `radar-beta` and `gitGraph`. Prefer the first five for technical pages.
-
-````markdown
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant S as Server
-    C->>S: Hello
-    S-->>C: Ready
-```
-````
 
 Mermaid pitfalls:
 
