@@ -4151,7 +4151,7 @@ async fn the_archive_download_is_a_faithful_zip() {
 
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes.as_ref())).unwrap();
     let mut names: Vec<String> = (0..archive.len())
-        .map(|i| archive.by_index(i).unwrap().name().to_string())
+        .map(|i| archive.by_index(i).unwrap().name().unwrap().into_owned())
         .collect();
     names.sort();
     assert_eq!(names, ["MANIFEST.md", "alpha.md"]);
@@ -4466,17 +4466,18 @@ async fn hostile_and_oversized_archives_are_refused() {
     assert_eq!(garbage.status(), 422);
 
     // A LYING header: declared sizes patched tiny while the stream inflates to
-    // 4 MiB. The declared-size gate passes; only actual-byte metering catches
-    // it (zip's readers do not cap output at the declared size).
+    // 4 MiB. The declared-size gate passes. Since zip 9 its reader refuses an
+    // entry that grows past its declared size on its own; our actual-byte
+    // metering stays as the second guard. Either way the archive is refused
+    // before the inflated bytes are kept.
     let resp = post_zip(fx.addr, preview_path, &admin, lying_zip()).await;
     assert_eq!(resp.status(), 422);
     let problem: serde_json::Value = resp.json().await.unwrap();
+    let detail = problem["detail"].as_str().unwrap();
     assert!(
-        problem["detail"]
-            .as_str()
-            .unwrap()
-            .contains("decompresses past"),
-        "the metering guard must be the one that fired: {problem}"
+        detail.contains("decompresses past")
+            || detail.contains("larger than its declared uncompressed size"),
+        "a size guard must be the one that fired: {problem}"
     );
 
     let mut too_many: Vec<(String, String)> = Vec::new();

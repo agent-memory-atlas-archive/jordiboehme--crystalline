@@ -506,7 +506,14 @@ fn read_archive(bytes: &[u8]) -> Result<Vec<Screened>, ApiError> {
                 "an archive entry name is not UTF-8; refusing the archive",
             ));
         }
-        let raw = entry.name().to_string();
+        let raw = entry
+            .name()
+            .map_err(|_| {
+                ApiError::unprocessable(
+                    "an archive entry name cannot be read; refusing the archive",
+                )
+            })?
+            .into_owned();
         // Zip-slip and Windows-hostile shapes: zip's own containment check
         // plus the component rules the remote crate's to_platform_path
         // enforces (no empty/'.'/'..' components, no ':' or '\\' anywhere).

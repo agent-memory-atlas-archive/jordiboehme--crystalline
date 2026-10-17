@@ -170,7 +170,7 @@ getrandom = "0.4.3"
 # Default features drag aes, bzip2, lzma, ppmd, zstd and xz in; the archives
 # this reads and writes are deflate only, and flate2 is already in the graph
 # through crates/remote, so the lean deflate backend is the whole need.
-zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 # The Fluid web bundle, compiled into the binary (crates/service, behind the
 # `fluid-ui` feature). This crate has no default features, and all three named
