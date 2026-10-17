@@ -7,7 +7,7 @@ tags:
 - protocol
 status: stable
 recorded_at: 2026-10-17
-generated: { by: process:crystalline-cli, at: 2026-10-17T11:03:07.488795+00:00 }
+generated: { by: process:crystalline-cli, at: 2026-10-17T11:22:31.995334+00:00 }
 ---
 
 How a client joins the relay.

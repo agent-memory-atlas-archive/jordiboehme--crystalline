@@ -25,7 +25,13 @@ def run_batch(
 ) -> list[dict]:
     def _prepare(item: dict, sandbox: Path) -> dict:
         del item
-        return common.snapshot(sandbox, crystalline_bin)
+        before = common.snapshot(sandbox, crystalline_bin)
+        before["pacts"] = {
+            d.name: (d / "reflections" / "PACT.md").read_text(encoding="utf-8")
+            for d in sorted((sandbox / "domains").iterdir())
+            if (d / "reflections" / "PACT.md").is_file()
+        }
+        return before
 
     def _score(
         item: dict,

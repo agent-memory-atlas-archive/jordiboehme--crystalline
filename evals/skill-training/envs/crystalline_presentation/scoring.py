@@ -32,13 +32,15 @@ Classes, each reading an optional ``expect[<class>]`` object with a
   has a GFM table with at least three body rows.
 - ``restraint``: the restart how-to is covered, its section (when it is
   not shared with other engrams) has no mermaid fence and at most one
-  callout, no page has two callouts in a row and none has more than two.
+  callout, and no page has two callouts in a row.
 - ``pact_override``: a page covers the handshake and no mermaid fence
   stands anywhere under the domain's reflections/ (the PACT said none).
 - ``clean_dialect``: a page was written, the verify run after the session
   has no Q006 or Q007 issue (verify does not scan reflection pages, so the
   pages are also read for unknown callout kinds and status colours), every
-  mermaid fence starts with a starter keyword and no engram gained a Q008.
+  mermaid fence starts with a starter keyword, no engram gained a Q008 and
+  PACT.md is byte-for-byte what it was (the must-not, paired with the
+  did-the-work check that a page was written).
 
 Plus ``answer_any`` / ``answer_all`` final-answer substrings.
 """
@@ -84,6 +86,7 @@ class Evidence:
     sandbox: Path
     issues_before: set[Issue] | None = None
     issues_after: set[Issue] | None = None
+    pacts_before: dict[str, str] | None = None
 
     def pages(self, domain: str) -> dict[str, str]:
         """Every markdown file under the domain's reflections/, keyed by
@@ -91,10 +94,17 @@ class Evidence:
         root = self.sandbox / "domains" / domain / "reflections"
         if not root.is_dir():
             return {}
-        return {
-            p.relative_to(root).as_posix(): p.read_text(encoding="utf-8")
-            for p in sorted(root.rglob("*.md"))
-        }
+        out: dict[str, str] = {}
+        for p in sorted(root.rglob("*.md")):
+            rel = p.relative_to(root)
+            # `.reflected/` holds baseline copies and `*.threads.md` the
+            # discussion threads: neither is a page the agent wrote.
+            if any(part.startswith(".") for part in rel.parts):
+                continue
+            if p.name.endswith(".threads.md"):
+                continue
+            out[rel.as_posix()] = p.read_text(encoding="utf-8")
+        return out
 
 
 # ── markdown helpers ──────────────────────────────────────────────────────
@@ -323,10 +333,6 @@ def score_restraint(ev: Evidence, spec: dict) -> list[Check]:
         not any(consecutive_callouts(t) for t in pages.values()),
         "no page may hold two callouts in a row",
     ))
-    checks.append((
-        all(len(callouts(t)) <= 2 for t in pages.values()),
-        "no page may hold more than two callouts",
-    ))
     return checks
 
 
@@ -369,7 +375,15 @@ def score_clean_dialect(ev: Evidence, spec: dict) -> list[Check]:
         if m.group(1) is not None and m.group(1).strip().lower() not in STATUS_COLOURS
     })
     q8 = sorted(path for path, rule, _ in after - before if rule == "Q008")
-    return [
+    pact_checks: list[Check] = []
+    if ev.pacts_before is not None:
+        now = {d: ev.pages(d).get("PACT.md") for d in ev.pacts_before}
+        changed = sorted(d for d, text in ev.pacts_before.items() if now[d] != text)
+        pact_checks.append((
+            not changed,
+            f"PACT.md is the person's agreement and stays as it is: changed in {changed}",
+        ))
+    return pact_checks + [
         (bool(written), "a reflection page has to be written"),
         (
             not [i for i in after if i[1] in ("Q006", "Q007")],
@@ -434,6 +448,7 @@ def score_item(
     after = common.snapshot(sandbox, crystalline_bin)
     ev = Evidence(
         tool_calls, answer, sandbox,
+        pacts_before=prepared.get("pacts"),
         issues_before=set(prepared["verify_issues"]),
         issues_after=set(after["verify_issues"]),
     )
@@ -458,7 +473,7 @@ _DESCRIPTIONS = {
     "restraint": (
         "An element earns its place only when it does a job prose cannot. "
         "The one-line restart how-to stays plain (no diagram, at most one "
-        "callout), no page holds two callouts in a row and none more than two."
+        "callout), and no page holds two callouts in a row."
     ),
     "pact_override": (
         "The domain's PACT Presentation section says no diagrams, and the "
@@ -469,7 +484,8 @@ _DESCRIPTIONS = {
         "Use only syntax Crystalline knows: a status colour from the six, a "
         "callout kind from the six, a mermaid fence that starts with a "
         "starter keyword, and no observation or relation inside a callout "
-        "of an engram. Fix every markdown_findings entry a receipt reports."
+        "of an engram. Fix every markdown_findings entry a receipt reports. "
+        "PACT.md is not rewritten."
     ),
 }
 

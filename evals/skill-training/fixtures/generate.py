@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1297,9 +1298,12 @@ WORKSPACES: dict[str, dict] = {
     # same engrams and a PACT whose Presentation section says no diagrams,
     # which has to win over the presentation skill's defaults. Each `##`
     # heading carries its hidden id line (lantern's shape), because a page
-    # without one reads as an engram and holds the switch pending.
+    # without one reads as an engram and holds the switch pending. Both PACT
+    # files ship a `.reflected` baseline so the queue holds `unreflected`
+    # items only and no `pact_changed` item invites a rewrite of the PACT.
     "beacon": {
         "options": {
+            "pact_reflected": ["relay", "quiet"],
             "reflection": {
                 "relay": {
                     "PACT.md": "# How we write about the relay\n\n## Audience\n<!-- r:d4e5f6a7 -->\n\n- Operators on their first week.\n\n## Structure\n<!-- r:e5f6a7b8 -->\n\n- guides/*.md\n",
@@ -1474,6 +1478,20 @@ def build_domain_folder(
     verify_domain(domain_dir, label, env, bool(options.get("allow_verify_errors")))
 
 
+def pact_baseline(text: str) -> str:
+    """The `.reflected/PACT.md` the engine keeps for a PACT that has been
+    reflected: the top block, then every `##` section as heading, id line
+    and body, one blank line between (render_baseline in
+    crates/core/src/reflection/baseline.rs). A PACT without it is a
+    `pact_changed` item in every queue."""
+    top, *rest = re.split(r"(?m)^(?=## )", text)
+    out = "<!-- r:_top -->\n" + top.strip("\n") + "\n\n"
+    for block in rest:
+        heading, id_line, body = block.split("\n", 2)
+        out += f"{heading}\n{id_line}\n{body.rstrip(chr(10))}\n\n"
+    return out
+
+
 def build_workspace(name: str, workspace: dict, state_root: Path) -> None:
     ws_dir = WORKSPACES_ROOT / name
     build = state_root / name
@@ -1515,6 +1533,10 @@ def build_workspace(name: str, workspace: dict, state_root: Path) -> None:
             path = domain_dir / "reflections" / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text)
+            if rel == "PACT.md" and domain_name in (options.get("pact_reflected") or ()):
+                base = domain_dir / "reflections" / ".reflected" / "PACT.md"
+                base.parent.mkdir(parents=True, exist_ok=True)
+                base.write_text(pact_baseline(text))
         print(f"  {name}/{domain_name}: Reflection on, {len(pages)} pages")
 
     for tree_name, tree_spec in origins.items():

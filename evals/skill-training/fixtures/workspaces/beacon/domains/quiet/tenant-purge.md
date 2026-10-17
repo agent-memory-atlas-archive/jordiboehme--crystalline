@@ -7,7 +7,7 @@ tags:
 - purge
 status: stable
 recorded_at: 2026-10-17
-generated: { by: process:crystalline-cli, at: 2026-10-17T11:03:07.561498+00:00 }
+generated: { by: process:crystalline-cli, at: 2026-10-17T11:22:32.080341+00:00 }
 ---
 
 Removing a tenant from the relay for good.

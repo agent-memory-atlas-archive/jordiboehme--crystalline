@@ -7,7 +7,7 @@ tags:
 - restart
 status: stable
 recorded_at: 2026-10-17
-generated: { by: process:crystalline-cli, at: 2026-10-17T11:03:07.583795+00:00 }
+generated: { by: process:crystalline-cli, at: 2026-10-17T11:22:32.104665+00:00 }
 ---
 
 How to restart the relay.

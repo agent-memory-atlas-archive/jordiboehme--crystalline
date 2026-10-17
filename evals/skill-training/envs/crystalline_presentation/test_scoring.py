@@ -147,7 +147,7 @@ def test_restraint_fails_on_decorated_howto_or_stacked_callouts(tmp_path):
         ("22222222", "Purge", WARN + "\nA sentence.\n\n" + WARN + "\nAnother.\n\n" + WARN),
         cites=COVER,
     ))
-    assert not ok(s.score_restraint(ev(tmp_path), {}))  # three callouts on a page
+    assert ok(s.score_restraint(ev(tmp_path), {}))  # callouts apart from each other are fine
     put(tmp_path, page(("44444444", "Restart", "Run it.")))
     assert not ok(s.score_restraint(ev(tmp_path), {}))  # the how-to is not covered
 
@@ -212,6 +212,33 @@ def test_clean_dialect_does_not_blame_a_q008_that_was_there_before(tmp_path):
     q8 = {("relay/tenant-purge.md", "Q008", "warning")}
     e = ev(tmp_path, issues_before=q8, issues_after=q8)
     assert ok(s.score_clean_dialect(e, {}))
+
+
+def test_pages_skip_baseline_copies_and_thread_files(tmp_path):
+    put(tmp_path, "# P\n", rel="guides/a.md")
+    put(tmp_path, "# old\n", rel=".reflected/guides/a.md")
+    put(tmp_path, "# threads\n", rel="guides/a.threads.md")
+    assert list(ev(tmp_path).pages("relay")) == ["guides/a.md"]
+
+
+def test_clean_dialect_is_not_met_by_a_thread_or_a_baseline_alone(tmp_path):
+    put(tmp_path, "# PACT\n", rel="PACT.md")
+    put(tmp_path, "# threads\n", rel="guides/a.threads.md")
+    put(tmp_path, "# old\n", rel=".reflected/guides/a.md")
+    e = ev(tmp_path, issues_before=set(), issues_after=set())
+    assert "a reflection page has to be written" in [d for g, d in s.score_clean_dialect(e, {}) if not g]
+
+
+def test_clean_dialect_fails_when_the_pact_was_rewritten(tmp_path):
+    put(tmp_path, page(("11111111", "Joining", "Plain.")))
+    put(tmp_path, "# PACT\n\n## A\n<!-- r:aaaaaaaa -->\n", rel="PACT.md")
+    kw = dict(issues_before=set(), issues_after=set())
+    same = ev(tmp_path, pacts_before={"relay": "# PACT\n\n## A\n<!-- r:aaaaaaaa -->\n"}, **kw)
+    assert ok(s.score_clean_dialect(same, {}))
+    changed = ev(tmp_path, pacts_before={"relay": "# PACT\n\n## A\n<!-- r:aaaaaaaa -->\n\n- x\n"}, **kw)
+    assert not ok(s.score_clean_dialect(changed, {}))
+    gone = ev(tmp_path, pacts_before={"quiet": "# Q\n"}, **kw)
+    assert not ok(s.score_clean_dialect(gone, {}))
 
 
 def test_clean_dialect_needs_a_written_page(tmp_path):
