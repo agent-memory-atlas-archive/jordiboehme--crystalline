@@ -64,6 +64,16 @@ import { useAuth } from "../auth/AuthContext";
 import { plural, relativeTime } from "../format";
 import { REVEAL_EVENT } from "../markdown/callouts";
 import type { RevealDetail } from "../markdown/callouts";
+import type { ConventionalHead } from "../markdown/conventionalComment";
+import {
+  composeComment,
+  formatHead,
+  isBlocking,
+  matchHead,
+  parseConventional,
+  parseHead,
+} from "../markdown/conventionalComment";
+import { LabelChip, LabelIcon, LabelMenu, LabelPill } from "./CommentLabel";
 import { KeptComments } from "./KeptComments";
 import { useSaid } from "./useSaid";
 import { onlyMarkers, placeMarkers, printNotes } from "../printNotes";
@@ -155,6 +165,135 @@ function useForget(): (key: string) => void {
   return (key) => {
     kept?.store.delete(`${kept.page}\n${key}`);
   };
+}
+
+/**
+ * A comment box's label: kept under `keep` like its words (as the head's
+ * text, so no label is forgotten rather than kept), and how typed words
+ * reach the box. The exact head typed or pasted at the very start of the box
+ * becomes the chip while the box has none; once a person takes a chip off,
+ * what they type stays text.
+ */
+function useLabel(
+  keep: string,
+  setWords: (words: string) => void,
+): {
+  head: ConventionalHead | null;
+  setHead: (head: ConventionalHead | null) => void;
+  /** Takes the chip off; a head typed after it stays text. */
+  remove: () => void;
+  /** The box's words changed to `value`. */
+  type: (value: string) => void;
+} {
+  const [raw, setRaw] = useKept(keep, "");
+  const [removed, setRemoved] = useState(false);
+  const head = raw === "" ? null : parseHead(raw);
+  const setHead = (next: ConventionalHead | null) => {
+    setRaw(next === null ? "" : formatHead(next));
+  };
+  return {
+    head,
+    setHead,
+    remove: () => {
+      setRemoved(true);
+      setHead(null);
+    },
+    type: (value) => {
+      const match = head === null && !removed ? matchHead(value) : null;
+      if (match !== null) {
+        setHead(match.head);
+        setWords(value.slice(match.end));
+      } else {
+        setWords(value);
+      }
+    },
+  };
+}
+
+/** The label of a thread's opening comment, or null for a plain one. */
+function openingHead(thread: ThreadView): ConventionalHead | null {
+  const first = thread.entries[0];
+  return first?.kind === "comment" ? parseConventional(first.text) : null;
+}
+
+/**
+ * An entry's words: a labelled comment as its pill and its subject in bold,
+ * then the discussion; anything else as written.
+ */
+function EntryWords({ entry }: { entry: ThreadView["entries"][number] }) {
+  const words =
+    "col-start-2 text-[13.5px] leading-[1.55] whitespace-pre-wrap text-ink-2";
+  const labelled =
+    entry.kind === "comment" ? parseConventional(entry.text) : null;
+  if (labelled === null) {
+    return (
+      <p className={words}>
+        {entry.kind === "resolve"
+          ? `Resolved: ${entry.text}`
+          : entry.kind === "reopen"
+            ? entry.text === ""
+              ? "Reopened"
+              : `Reopened: ${entry.text}`
+            : entry.text}
+      </p>
+    );
+  }
+  return (
+    <div className="col-start-2 flex flex-col gap-1">
+      <p className={words}>
+        <LabelPill head={labelled} />
+        <strong className="font-semibold text-ink">{labelled.subject}</strong>
+      </p>
+      {labelled.discussion.trim() !== "" && (
+        <p className={words}>{labelled.discussion}</p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A quiet switch with its words beside it, as the column's head draws its
+ * filters.
+ */
+function Switch({
+  on,
+  label,
+  words,
+  onChange,
+}: {
+  on: boolean;
+  /** The accessible name. */
+  label: string;
+  /** What is shown. */
+  words: string;
+  onChange: (on: boolean) => void;
+}): ReactElement {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      onClick={() => {
+        onChange(!on);
+      }}
+      className={`inline-flex items-center gap-2 rounded text-[12.5px] whitespace-nowrap text-muted hover:text-ink-3 ${FOCUS_RING}`}
+    >
+      <span
+        aria-hidden
+        className={`relative h-[15px] w-[26px] shrink-0 rounded-full transition-colors motion-reduce:transition-none ${
+          on ? "bg-accent-600 dark:bg-accent-400" : "bg-slate-500 dark:bg-faint"
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 left-0.5 size-[11px] rounded-full bg-white shadow-sm transition-transform motion-reduce:transition-none ${
+            on ? "translate-x-[11px]" : ""
+          }`}
+        />
+      </span>
+      {words}
+    </button>
+  );
 }
 
 /**
@@ -345,6 +484,7 @@ export function ThreadCard({
 }): ReactElement {
   const now = new Date();
   const quote = quoteOf(thread.anchor.quote);
+  const opening = openingHead(thread);
   const waiting =
     thread.status === "open" ? (
       <span className="ml-auto inline-flex items-center gap-1.5 text-xs text-muted">
@@ -365,11 +505,19 @@ export function ThreadCard({
     >
       {quote !== null && (
         <blockquote
-          className={`border-l-2 py-px pl-2.5 text-[13px] leading-normal text-ink-3 ${
+          className={`flex gap-1.5 border-l-2 py-px pl-2.5 text-[13px] leading-normal text-ink-3 ${
             picked ? "border-accent-400" : "border-(--mark-rule)"
           }`}
         >
-          {shownQuote(quote, thread.anchor.occurrence, source)}
+          {/* The opening comment's label, beside the passage it is about. */}
+          {opening !== null && (
+            <span className="mt-[3px]">
+              <LabelIcon head={opening} size={13} alone />
+            </span>
+          )}
+          <span className="min-w-0">
+            {shownQuote(quote, thread.anchor.occurrence, source)}
+          </span>
         </blockquote>
       )}
       {state === "text_changed" && (
@@ -393,15 +541,7 @@ export function ThreadCard({
                 {relativeTime(entry.at, now) ?? ""}
               </span>
             </p>
-            <p className="col-start-2 text-[13.5px] leading-[1.55] whitespace-pre-wrap text-ink-2">
-              {entry.kind === "resolve"
-                ? `Resolved: ${entry.text}`
-                : entry.kind === "reopen"
-                  ? entry.text === ""
-                    ? "Reopened"
-                    : `Reopened: ${entry.text}`
-                  : entry.text}
-            </p>
+            <EntryWords entry={entry} />
           </li>
         ))}
       </ol>
@@ -470,6 +610,7 @@ export function ReflectionThreads({
   const [hovered, setHovered] = useState<string | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
   const [showResolved, setShowResolved] = useState(false);
+  const [blockingOnly, setBlockingOnly] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [store] = useState(() => new Map<string, unknown>());
   const kept = useMemo(
@@ -477,6 +618,7 @@ export function ReflectionThreads({
     [store, domain, path],
   );
   const commentKey = `${kept.page}\n${COMMENT_KEY}`;
+  const commentLabelKey = `${kept.page}\n${COMMENT_LABEL_KEY}`;
   const [said, say] = useSaid(4000);
   // Whether a selection was captured a moment ago, so the Comment button is
   // announced once per selection, not at every change of it.
@@ -856,6 +998,7 @@ export function ReflectionThreads({
       }),
     onSuccess: (thread) => {
       kept.store.delete(commentKey);
+      kept.store.delete(commentLabelKey);
       focusNew.current = thread?.id ?? null;
       say("Comment posted.");
       hadCapture.current = false;
@@ -874,15 +1017,25 @@ export function ReflectionThreads({
     return refresh();
   };
 
+  // The open threads whose opening comment blocks. The filter holds only
+  // while there is one: once the last is resolved, its switch goes and the
+  // list shows everything again rather than nothing.
+  const blocking = open.filter((o) => {
+    const head = openingHead(o.thread);
+    return head !== null && isBlocking(head);
+  });
+  const onlyBlocking = blockingOnly && blocking.length > 0;
   // Open threads, then the resolved ones when asked for; a thread both
   // lists hold for a moment (between a step and the refetch) shows once.
   const openIds = new Set(open.map((o) => o.thread.id));
-  const listed: Listed[] = [
-    ...open.map((o) => list(o.thread)),
-    ...(showResolved ? (resolved.data ?? []) : [])
-      .filter((t) => t.status === "resolved" && !openIds.has(t.id))
-      .map(list),
-  ];
+  const listed: Listed[] = onlyBlocking
+    ? blocking.map((o) => list(o.thread))
+    : [
+        ...open.map((o) => list(o.thread)),
+        ...(showResolved ? (resolved.data ?? []) : [])
+          .filter((t) => t.status === "resolved" && !openIds.has(t.id))
+          .map(list),
+      ];
   const bySection = new Map<string, Listed[]>();
   for (const item of listed) {
     const key = item.state === "section_gone" ? "" : item.thread.anchor.section;
@@ -927,37 +1080,27 @@ export function ReflectionThreads({
               }
         }
       />
-      <div className="flex items-center gap-2.5">
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
         {column ? heading : <Dialog.Title asChild>{heading}</Dialog.Title>}
         {open.length > 0 && (
           <span className="text-xs text-muted">{`${String(open.length)} open`}</span>
         )}
-        <button
-          type="button"
-          role="switch"
-          aria-checked={showResolved}
-          aria-label="Show resolved threads"
-          onClick={() => {
-            setShowResolved(!showResolved);
-          }}
-          className={`ml-auto inline-flex items-center gap-2 rounded text-[12.5px] text-muted hover:text-ink-3 ${FOCUS_RING}`}
-        >
-          <span
-            aria-hidden
-            className={`relative h-[15px] w-[26px] shrink-0 rounded-full transition-colors motion-reduce:transition-none ${
-              showResolved
-                ? "bg-accent-600 dark:bg-accent-400"
-                : "bg-slate-500 dark:bg-faint"
-            }`}
-          >
-            <span
-              className={`absolute top-0.5 left-0.5 size-[11px] rounded-full bg-white shadow-sm transition-transform motion-reduce:transition-none ${
-                showResolved ? "translate-x-[11px]" : ""
-              }`}
+        <span className="ml-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-1.5">
+          {blocking.length > 0 && (
+            <Switch
+              on={onlyBlocking}
+              label="Show blocking threads only"
+              words="Blocking only"
+              onChange={setBlockingOnly}
             />
-          </span>
-          Show resolved
-        </button>
+          )}
+          <Switch
+            on={showResolved}
+            label="Show resolved threads"
+            words="Show resolved"
+            onChange={setShowResolved}
+          />
+        </span>
         {!column && (
           <IconButton
             label="Close the threads"
@@ -1008,6 +1151,7 @@ export function ReflectionThreads({
           error={comment.error}
           onCancel={() => {
             kept.store.delete(commentKey);
+            kept.store.delete(commentLabelKey);
             comment.reset();
             backToComment.current = true;
             setDrafting(null);
@@ -1178,6 +1322,9 @@ export function ReflectionThreads({
 /** Where the comment in progress is kept while the sheet is shut. */
 const COMMENT_KEY = "comment";
 
+/** Where its label is kept. */
+const COMMENT_LABEL_KEY = "comment-label";
+
 function CommentForm({
   anchor,
   source,
@@ -1194,6 +1341,7 @@ function CommentForm({
   onSubmit: (text: string) => void;
 }): ReactElement {
   const [text, setText] = useKept(COMMENT_KEY, "");
+  const label = useLabel(COMMENT_LABEL_KEY, setText);
   const field = useId();
   const box = useRef<HTMLTextAreaElement | null>(null);
   const quote = quoteOf(anchor.quote);
@@ -1206,8 +1354,10 @@ function CommentForm({
       className="flex flex-col gap-2 rounded-[10px] border border-hair p-3 text-sm"
       onSubmit={(event) => {
         event.preventDefault();
+        // With a label, the words' first line is its subject: words are
+        // needed either way.
         if (text.trim() !== "" && !pending) {
-          onSubmit(text.trim());
+          onSubmit(composeComment(label.head, text));
         }
       }}
     >
@@ -1224,13 +1374,14 @@ function CommentForm({
       <label htmlFor={field} className="text-caption">
         Your comment
       </label>
+      <LabelChip head={label.head} onRemove={label.remove} />
       <textarea
         ref={box}
         id={field}
         value={text}
         rows={3}
         onChange={(event) => {
-          setText(event.target.value);
+          label.type(event.target.value);
         }}
         className="rounded border border-hair-strong bg-raised px-2 py-1"
       />
@@ -1240,6 +1391,11 @@ function CommentForm({
         </p>
       )}
       <div className="flex gap-2">
+        <LabelMenu
+          head={label.head}
+          onChange={label.setHead}
+          onClosed={() => box.current?.focus()}
+        />
         <button type="submit" disabled={pending} className={BUTTON.primary}>
           Comment
         </button>
@@ -1258,6 +1414,7 @@ function CommentForm({
 function StepForm({
   keep,
   label,
+  labelled = false,
   button,
   pending,
   error,
@@ -1267,6 +1424,8 @@ function StepForm({
   /** Where the words in progress are kept while the sheet is shut. */
   keep: string;
   label: string;
+  /** Whether the words may carry a conventional comment label (a reply). */
+  labelled?: boolean;
   button: string;
   pending: boolean;
   error: Error | null;
@@ -1275,6 +1434,7 @@ function StepForm({
   onCancel: () => void;
 }): ReactElement {
   const [value, setValue] = useKept(keep, "");
+  const head = useLabel(`${keep}-label`, setValue);
   const id = useId();
   const field = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
@@ -1286,19 +1446,24 @@ function StepForm({
       onSubmit={(event) => {
         event.preventDefault();
         if (value.trim() !== "" && !pending) {
-          onSend(value.trim());
+          onSend(composeComment(labelled ? head.head : null, value));
         }
       }}
     >
       <label htmlFor={id} className="text-caption">
         {label}
       </label>
+      {labelled && <LabelChip head={head.head} onRemove={head.remove} />}
       <input
         ref={field}
         id={id}
         value={value}
         onChange={(event) => {
-          setValue(event.target.value);
+          if (labelled) {
+            head.type(event.target.value);
+          } else {
+            setValue(event.target.value);
+          }
         }}
         className={`min-w-0 ${FIELD}`}
       />
@@ -1308,6 +1473,13 @@ function StepForm({
         </p>
       )}
       <div className="flex gap-2">
+        {labelled && (
+          <LabelMenu
+            head={head.head}
+            onChange={head.setHead}
+            onClosed={() => field.current?.focus()}
+          />
+        )}
         <button type="submit" disabled={pending} className={BUTTON.secondary}>
           {button}
         </button>
@@ -1354,6 +1526,7 @@ function OpenActions({
   }, [form]);
   const close = (step: Step) => {
     forget(`${thread.id}:${step}`);
+    forget(`${thread.id}:${step}-label`);
     backTo.current = step;
     setForm(null);
   };
@@ -1365,6 +1538,7 @@ function OpenActions({
       stepThread(domain, thread.id, "answer", { path, text }),
     onSuccess: () => {
       forget(`${thread.id}:answer`);
+      forget(`${thread.id}:answer-label`);
       forget(`${thread.id}:form`);
       void onAnswered();
     },
@@ -1388,6 +1562,7 @@ function OpenActions({
       <StepForm
         keep={`${thread.id}:answer`}
         label="Your answer"
+        labelled
         button="Answer"
         pending={answer.isPending}
         error={answer.error}

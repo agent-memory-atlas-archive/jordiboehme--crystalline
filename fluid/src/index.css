@@ -136,6 +136,8 @@
     --status-yellow: var(--color-yellow-600);
     --status-red: var(--color-red-600);
     --status-purple: var(--color-purple-600);
+    /* A blocking conventional comment's dot and icon (`CommentLabel.tsx`). */
+    --blocking: var(--color-red-600);
     /* The mode switch's track and its raised half, and a menu's shadow. */
     --seg: #f1f5f9;
     --seg-on: #ffffff;
@@ -205,6 +207,7 @@
       --status-yellow: var(--color-yellow-400);
       --status-red: var(--color-red-400);
       --status-purple: var(--color-purple-400);
+      --blocking: var(--color-red-400);
       --mark-active: color-mix(
         in srgb,
         var(--color-accent-400) 32%,

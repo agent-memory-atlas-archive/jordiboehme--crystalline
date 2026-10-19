@@ -2068,3 +2068,232 @@ describe("threads on paper", () => {
     ).toContain(`@bottom-left { content: "${address}"; }`);
   });
 });
+
+describe("conventional comment labels", () => {
+  /** Open the comment form on a passage. */
+  async function openForm(): Promise<HTMLElement> {
+    await screen.findByText("at");
+    select(textNode("Deploys run "), textNode(" night."), 6);
+    await userEvent.click(screen.getByRole("button", { name: "Comment" }));
+    return screen.getByRole("form", { name: "New comment" });
+  }
+
+  function opener() {
+    const opened = vi.fn((_path: string, _init?: RequestInit) =>
+      thread("t-00000001"),
+    );
+    serve([], {
+      "/domains/eng/reflection/threads": (path, init) => opened(path, init),
+    });
+    return opened;
+  }
+
+  async function send(form: HTMLElement) {
+    await userEvent.click(
+      within(form).getByRole("button", { name: "Comment" }),
+    );
+  }
+
+  function labelled(text: string, overrides: Record<string, unknown> = {}) {
+    return {
+      entries: [
+        {
+          at: "2026-09-30T10:00:00Z",
+          kind: "comment",
+          author: { name: "vera", agent: false },
+          text,
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  it("chooses a label and decorations from the menu and sends the head with the words", async () => {
+    const opened = opener();
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const form = await openForm();
+    await userEvent.click(within(form).getByRole("button", { name: "Label" }));
+    const menu = await screen.findByRole("menu");
+    // No decorations until a label is chosen.
+    expect(
+      within(menu).queryByRole("menuitemcheckbox", { name: /blocking/ }),
+    ).toBeNull();
+    const question = within(menu).getByRole("menuitemradio", {
+      name: /question/,
+    });
+    expect(question).toHaveTextContent("You need an answer.");
+    await userEvent.click(question);
+    expect(question).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(
+      within(menu).getByRole("menuitemcheckbox", { name: /^blocking/ }),
+    );
+    await userEvent.click(
+      within(menu).getByRole("menuitemcheckbox", { name: /^non-blocking/ }),
+    );
+    // Blocking and non-blocking exclude each other.
+    expect(
+      within(menu).getByRole("menuitemcheckbox", { name: /^blocking/ }),
+    ).toHaveAttribute("aria-checked", "false");
+    await userEvent.keyboard("{Escape}");
+    const field = within(form).getByRole("textbox", { name: "Your comment" });
+    await waitFor(() => {
+      expect(field).toHaveFocus();
+    });
+    expect(within(form).getByText("Label:")).toBeInTheDocument();
+    expect(
+      within(form).getByRole("button", { name: "Remove the label" }),
+    ).toBeVisible();
+    await userEvent.type(field, "Is this still true?{Enter}After the move.");
+    expect(field).toHaveValue("Is this still true?\nAfter the move.");
+    await send(form);
+    await waitFor(() => {
+      expect(opened).toHaveBeenCalledTimes(1);
+    });
+    expect(bodyOf(opened.mock.calls[0]?.[1])).toMatchObject({
+      text: "question (non-blocking): Is this still true?\nAfter the move.",
+    });
+  });
+
+  it("turns a typed head at the very start into the chip", async () => {
+    const opened = opener();
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const form = await openForm();
+    const field = within(form).getByRole("textbox", { name: "Your comment" });
+    await userEvent.type(field, "issue (blocking): the window moved");
+    expect(field).toHaveValue("the window moved");
+    expect(within(form).getByText("blocking")).toBeVisible();
+    await send(form);
+    await waitFor(() => {
+      expect(opened).toHaveBeenCalledTimes(1);
+    });
+    expect(bodyOf(opened.mock.calls[0]?.[1])).toMatchObject({
+      text: "issue (blocking): the window moved",
+    });
+  });
+
+  it("turns a pasted conventional comment into the chip and its words", async () => {
+    opener();
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const form = await openForm();
+    const field = within(form).getByRole("textbox", { name: "Your comment" });
+    await userEvent.click(field);
+    await userEvent.paste("suggestion (if-minor): name it\nOr not.");
+    expect(field).toHaveValue("name it\nOr not.");
+    expect(within(form).getByText("if-minor")).toBeVisible();
+  });
+
+  it("leaves a head that does not parse as text, and one typed after the chip is taken off", async () => {
+    const opened = opener();
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const form = await openForm();
+    const field = within(form).getByRole("textbox", { name: "Your comment" });
+    await userEvent.type(field, "bug: it breaks");
+    expect(field).toHaveValue("bug: it breaks");
+    await userEvent.clear(field);
+    await userEvent.type(field, "note: ");
+    expect(field).toHaveValue("");
+    await userEvent.click(
+      within(form).getByRole("button", { name: "Remove the label" }),
+    );
+    expect(within(form).queryByText("Label:")).toBeNull();
+    await userEvent.type(field, "Note: plain words");
+    expect(field).toHaveValue("Note: plain words");
+    await send(form);
+    await waitFor(() => {
+      expect(opened).toHaveBeenCalledTimes(1);
+    });
+    expect(bodyOf(opened.mock.calls[0]?.[1])).toMatchObject({
+      text: "Note: plain words",
+    });
+  });
+
+  it("draws a labelled comment as its pill and bold subject, a plain one as it is", async () => {
+    serve([
+      thread(
+        "t-00000001",
+        labelled("issue (blocking): the window moved\nSee the runbook."),
+      ),
+      thread("t-00000002", labelled("Plain words: here.")),
+    ]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const subject = await screen.findByText("the window moved");
+    expect(subject.tagName).toBe("STRONG");
+    const pill = subject.parentElement?.querySelector("[data-label-pill]");
+    expect(pill).toHaveTextContent("issue");
+    expect(pill).toHaveTextContent("blocking");
+    // Only blocking gets colour.
+    expect(pill?.querySelector("[data-blocking]")).not.toBeNull();
+    expect(screen.getByText("See the runbook.")).toBeVisible();
+    expect((await findOnScreen("Plain words: here.")).tagName).toBe("P");
+    expect(document.querySelectorAll("[data-label-pill]")).toHaveLength(1);
+    // The card shows the opening comment's label icon beside its passage.
+    const [first, second] = screen.getAllByRole("article", {
+      name: "Thread on Night deploys",
+    });
+    expect(first?.querySelector("blockquote svg")).not.toBeNull();
+    expect(second?.querySelector("blockquote svg")).toBeNull();
+  });
+
+  it("filters to blocking threads behind a switch that is there only when one is open", async () => {
+    serve([
+      thread("t-00000001", labelled("issue (blocking): the window moved")),
+      thread("t-00000002", labelled("question: still true?")),
+    ]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const toggle = await screen.findByRole("switch", {
+      name: "Show blocking threads only",
+    });
+    expect(toggle).toHaveTextContent("Blocking only");
+    expect(screen.getByText("still true?")).toBeVisible();
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByText("still true?")).toBeNull();
+    expect(screen.getByText("the window moved")).toBeVisible();
+  });
+
+  it("offers no blocking switch on a page without a blocking thread", async () => {
+    serve([thread("t-00000001", labelled("question: still true?"))]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await screen.findByText("still true?");
+    expect(
+      screen.queryByRole("switch", { name: "Show blocking threads only" }),
+    ).toBeNull();
+  });
+
+  it("gives a reply the label menu and a resolve none", async () => {
+    const answered = vi.fn((_path: string, _init?: RequestInit) =>
+      thread("t-00000001"),
+    );
+    serve([thread("t-00000001")], {
+      "/domains/eng/reflection/threads/t-00000001/answer": (path, init) =>
+        answered(path, init),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const card = await screen.findByRole("article", {
+      name: "Thread on Night deploys",
+    });
+    await userEvent.click(
+      within(card).getByRole("button", { name: "Resolve" }),
+    );
+    expect(within(card).queryByRole("button", { name: "Label" })).toBeNull();
+    await userEvent.click(within(card).getByRole("button", { name: "Cancel" }));
+    await userEvent.click(within(card).getByRole("button", { name: "Answer" }));
+    expect(within(card).getByRole("button", { name: "Label" })).toBeVisible();
+    // A reply starts with no label.
+    expect(within(card).queryByText("Label:")).toBeNull();
+    await userEvent.type(
+      within(card).getByRole("textbox", { name: "Your answer" }),
+      "praise: well spotted",
+    );
+    expect(
+      within(card).getByRole("textbox", { name: "Your answer" }),
+    ).toHaveValue("well spotted");
+    await userEvent.click(within(card).getByRole("button", { name: "Answer" }));
+    await waitFor(() => {
+      expect(answered).toHaveBeenCalledTimes(1);
+    });
+    expect(bodyOf(answered.mock.calls[0]?.[1])).toMatchObject({
+      text: "praise: well spotted",
+    });
+  });
+});

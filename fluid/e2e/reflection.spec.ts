@@ -469,6 +469,13 @@ test.describe.serial("the Reflection journeys", () => {
     const field = page.getByRole("textbox", { name: "Your comment" });
     await expect(field).toBeFocused();
     await page.keyboard.type("Which batch window?");
+    // The Label menu stands left of the send button.
+    await page.keyboard.press("Tab");
+    await expect(
+      page
+        .getByRole("form", { name: "New comment" })
+        .getByRole("button", { name: "Label", exact: true }),
+    ).toBeFocused();
     await page.keyboard.press("Tab");
     const post = page
       .getByRole("form", { name: "New comment" })
@@ -495,6 +502,111 @@ test.describe.serial("the Reflection journeys", () => {
     await added.getByRole("textbox", { name: "Outcome" }).fill("Answered.");
     await added.getByRole("button", { name: "Resolve", exact: true }).click();
     await expect(added).toHaveCount(0);
+  });
+
+  test("a reader labels a comment from the menu or by typing, and filters to blocking threads", async ({
+    page,
+  }) => {
+    // On a phone first: the Label menu opens inside the sheet and fits.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await signIn(page, USER, PASSWORD);
+    await page.goto(WELCOME);
+    const passage = page.getByText(
+      "Deploys run at night, after the batch window.",
+    );
+    await expect(passage).toBeVisible();
+    const selectWords = (words: string) =>
+      passage.evaluate((el, phrase) => {
+        const text = el.firstChild?.firstChild ?? el.firstChild;
+        if (text === null || text === undefined) {
+          throw new Error("no text node");
+        }
+        const start = (text.textContent ?? "").indexOf(phrase);
+        const range = document.createRange();
+        range.setStart(text, start);
+        range.setEnd(text, start + phrase.length);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }, words);
+    await selectWords("after the batch window");
+    await page.getByRole("button", { name: "Show 1 thread" }).click();
+    const sheet = page.getByRole("dialog", { name: "Threads" });
+    await sheet.getByRole("button", { name: "Comment", exact: true }).click();
+    const form = sheet.getByRole("form", { name: "New comment" });
+    await form.getByRole("button", { name: "Label", exact: true }).click();
+    const menu = page.getByRole("menu");
+    await expect(menu).toBeVisible();
+    const box = await menu.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box?.x ?? -1).toBeGreaterThanOrEqual(0);
+    expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
+    await menu.getByRole("menuitemradio", { name: /^question/ }).click();
+    await menu.getByRole("menuitemcheckbox", { name: /^non-blocking/ }).click();
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    const field = form.getByRole("textbox", { name: "Your comment" });
+    await expect(field).toBeFocused();
+    await expect(
+      form.getByRole("button", { name: "Remove the label" }),
+    ).toBeVisible();
+    await field.fill("Which batch window?");
+    await form.getByRole("button", { name: "Comment", exact: true }).click();
+    const asked = sheet
+      .getByRole("article", { name: "Thread on Night deploys" })
+      .filter({ hasText: "Which batch window?" });
+    const pill = asked.locator("[data-label-pill]");
+    await expect(pill).toContainText("question");
+    await expect(pill).toContainText("non-blocking");
+    await page.keyboard.press("Escape");
+    await expect(sheet).toHaveCount(0);
+
+    // Beside the page: the exact head typed at the start becomes the chip.
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const threads = page.getByRole("complementary", { name: "Threads" });
+    await selectWords("Deploys run at night");
+    await threads.getByRole("button", { name: "Comment", exact: true }).click();
+    const typed = page.getByRole("form", { name: "New comment" });
+    const words = typed.getByRole("textbox", { name: "Your comment" });
+    await words.pressSequentially("issue (blocking): The batch moved.");
+    await expect(words).toHaveValue("The batch moved.");
+    await expect(
+      typed.getByRole("button", { name: "Remove the label" }),
+    ).toBeVisible();
+    await typed.getByRole("button", { name: "Comment", exact: true }).click();
+    const blocking = threads
+      .getByRole("article", { name: "Thread on Night deploys" })
+      .filter({ hasText: "The batch moved." });
+    await expect(blocking.locator("[data-label-pill]")).toContainText("issue");
+    await expect(
+      page.getByRole("article", { name: "Thread on Night deploys" }),
+    ).toHaveCount(3);
+
+    // Blocking only: the other threads leave the list until it is off.
+    const only = threads.getByRole("switch", {
+      name: "Show blocking threads only",
+    });
+    await only.click();
+    await expect(
+      page.getByRole("article", { name: "Thread on Night deploys" }),
+    ).toHaveCount(1);
+    await expect(blocking).toBeVisible();
+    await only.click();
+    await expect(
+      page.getByRole("article", { name: "Thread on Night deploys" }),
+    ).toHaveCount(3);
+
+    // Resolved again, so the journeys after this one see one open thread.
+    const asked2 = threads
+      .getByRole("article", { name: "Thread on Night deploys" })
+      .filter({ hasText: "Which batch window?" });
+    for (const added of [blocking, asked2]) {
+      await added.getByRole("button", { name: "Resolve", exact: true }).click();
+      await added.getByRole("textbox", { name: "Outcome" }).fill("Answered.");
+      await added.getByRole("button", { name: "Resolve", exact: true }).click();
+      await expect(added).toHaveCount(0);
+    }
+    await expect(only).toHaveCount(0);
   });
 
   test("the quote highlight paints in light and in dark", async ({ page }) => {
