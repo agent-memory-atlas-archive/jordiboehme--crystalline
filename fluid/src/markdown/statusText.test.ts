@@ -34,5 +34,8 @@ describe("statusPieces", () => {
       { label: "D", braces: null },
       { text: " :status[" },
     ]);
+    expect(statusPieces("a :status[ ]{blue}")).toEqual([
+      { text: "a :status[ ]{blue}" },
+    ]);
   });
 });

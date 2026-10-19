@@ -525,9 +525,8 @@ export function ReflectionThreads({
   }, [drafting]);
 
   // The page's selection as it stands, or null when there is none in the
-  // page. The Comment button reads it again when pressed: the last
-  // selectionchange may run before the browser's final step of a keyboard
-  // selection, which would leave the quote a letter or two short.
+  // page (Tab to the button collapses it). The Comment button reads it again
+  // when pressed, in case the last change of it was not heard.
   const selectionNow = (): SelectionAnchor | null => {
     const root = articleRef.current;
     const selection = window.getSelection();
@@ -577,9 +576,17 @@ export function ReflectionThreads({
       hadCapture.current = next !== null;
       setCaptured(next);
     };
+    // A keyboard or pointer selection is read again when the key or the
+    // button comes up: Chrome can leave the last steps of a fast Shift+Arrow
+    // run without a selectionchange the page hears before focus moves on
+    // (Tab collapses the selection), and the quote would come out short.
     document.addEventListener("selectionchange", read);
+    document.addEventListener("keyup", read);
+    document.addEventListener("pointerup", read);
     return () => {
       document.removeEventListener("selectionchange", read);
+      document.removeEventListener("keyup", read);
+      document.removeEventListener("pointerup", read);
     };
   }, [articleRef, sections, say, column]);
 

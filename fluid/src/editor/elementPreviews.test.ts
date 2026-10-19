@@ -142,6 +142,13 @@ describe("a status label", () => {
     expect(lineText(v, 1)).toBe("Build Done [now] today");
   });
 
+  it("leaves a label of nothing but spaces as text, as the reader does", () => {
+    const doc = "Build :status[ ]{blue} today\n\nEnd\n";
+    const v = editor(doc, doc.length);
+    expect(v.dom.querySelector(".status-label")).toBeNull();
+    expect(lineText(v, 1)).toBe("Build :status[ ]{blue} today");
+  });
+
   it("shows as written on the active line", () => {
     const v = editor(DOC, 2);
     expect(v.dom.querySelector(".status-label")).toBeNull();

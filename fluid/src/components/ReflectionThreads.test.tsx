@@ -234,6 +234,35 @@ async function findOnScreen(text: string): Promise<HTMLElement> {
 }
 
 describe("comments on a reflection", () => {
+  it("quotes what a key left selected even when Tab collapsed it before the press", async () => {
+    serve([]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await screen.findByText("at");
+    select(textNode("Deploys run "), textNode("Deploys run "), 4);
+    const unheard = (event: Event) => {
+      event.stopImmediatePropagation();
+    };
+    window.addEventListener("selectionchange", unheard, true);
+    try {
+      window.getSelection()?.getRangeAt(0).setEnd(textNode("Deploys run "), 7);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      // The key comes up: the page reads the selection then.
+      act(() => {
+        document.dispatchEvent(
+          new KeyboardEvent("keyup", { key: "ArrowRight" }),
+        );
+      });
+      // Tab moves on and the selection collapses outside the page.
+      window.getSelection()?.collapse(document.body, 0);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } finally {
+      window.removeEventListener("selectionchange", unheard, true);
+    }
+    await userEvent.click(screen.getByRole("button", { name: "Comment" }));
+    expect(screen.getByText("Deploys")).toBeVisible();
+    expect(screen.queryByText("Depl")).toBeNull();
+  });
+
   it("quotes the selection as it stands when Comment is pressed", async () => {
     serve([]);
     renderApp("/d/eng/reflection/guides/deploying.md");

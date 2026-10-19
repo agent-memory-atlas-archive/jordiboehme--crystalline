@@ -862,3 +862,27 @@ async fn a_thread_on_a_heading_two_sections_share_is_refused_and_says_to_use_the
         .unwrap();
     assert_eq!(opened["anchor"]["state"], "found", "{opened}");
 }
+
+/// Two sections a plain editor gave one heading have no ids yet: the
+/// refusal says how to get them instead of pointing at ids that are not
+/// there.
+#[tokio::test]
+async fn a_shared_heading_without_ids_says_how_to_get_them() {
+    let (fx, _vera) = viewer_engine(&[("MANIFEST.md", &manifest("reflection: on\n"))]).await;
+    fx.engine
+        .write_reflection(&write("d.md", "# D\n\nIntro.\n"), &person())
+        .await
+        .unwrap();
+    let path = fx.root.join("reflections/d.md");
+    let page = std::fs::read_to_string(&path).unwrap() + "\n## Notes\n\nOne.\n\n## Notes\n\nTwo.\n";
+    std::fs::write(&path, page).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let err = fx
+        .engine
+        .discuss(&open("Notes", None, "Which one?"), &person())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("names 2 sections"), "{err}");
+    assert!(err.contains("gives each heading its id"), "{err}");
+}

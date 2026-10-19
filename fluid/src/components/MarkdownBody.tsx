@@ -1747,7 +1747,7 @@ export default function MarkdownBody({
     return typeof canTick === "string" ? { reason: canTick } : {};
   }, [onTick, canTick, dropped]);
   const rootRef = useRef<HTMLDivElement>(null);
-  const { hash } = useLocation();
+  const { hash, pathname } = useLocation();
   // Memoized on its inputs so the component map below is too: a new map
   // every render would remount every image and close an open full window.
   const resolver = useMemo(
@@ -1838,15 +1838,18 @@ export default function MarkdownBody({
   // The location's fragment opens its fold once: a source change re-runs
   // this only until the target exists, so a fold the reader closed again
   // stays closed while the text changes underneath.
+  // Keyed by the page too: a link to the same fragment on another document
+  // reuses this renderer while the next page loads, and its fold must open.
   const revealedHash = useRef<string | null>(null);
   useEffect(() => {
-    if (revealedHash.current === hash) {
+    const at = `${pathname}${hash}`;
+    if (revealedHash.current === at) {
       return;
     }
     if (revealFragment(rootRef.current, hash)) {
-      revealedHash.current = hash;
+      revealedHash.current = at;
     }
-  }, [hash, source]);
+  }, [hash, pathname, source]);
   useEffect(() => {
     const root = rootRef.current;
     const onHash = () => {

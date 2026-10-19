@@ -88,7 +88,8 @@ export function statusLabelAt(
   }
   const close = labelEnd(text, STATUS_OPEN.length);
   const words = close - STATUS_OPEN.length;
-  if (close === -1 || words === 0) {
+  // A label of nothing but spaces is text, as the reader reads it.
+  if (close === -1 || text.slice(STATUS_OPEN.length, close).trim() === "") {
     return null;
   }
   const braces = /^\{[^}\n]*\}/.exec(text.slice(close + 1));

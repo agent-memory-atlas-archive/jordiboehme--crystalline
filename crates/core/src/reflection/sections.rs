@@ -164,8 +164,8 @@ pub enum SectionKeyMiss {
 /// The one section a `sources` key names: by id, else by heading text
 /// (case-insensitive), else by heading text after a `## ` the writer copied
 /// in. A `#` title or a `###` heading is no section, so `# T` and `### T`
-/// name none. Unlike [`find_section`], a heading two sections share names
-/// neither.
+/// name none. A heading two sections share names neither, and says which
+/// headings share it; [`find_section`] is this lookup without the reason.
 pub fn resolve_section_key<'a>(
     sections: &'a [Section],
     key: &str,

@@ -20,7 +20,7 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, useLocation } from "react-router";
+import { Link, MemoryRouter, useLocation } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 
 import { REVEAL_EVENT } from "../markdown/callouts";
@@ -1014,6 +1014,42 @@ describe("callouts", () => {
     } finally {
       window.history.replaceState(null, "", window.location.pathname);
     }
+  });
+
+  it("opens the fold for the same fragment on the next document", async () => {
+    const pages: Record<string, string> = {
+      "/e/a": "> [!DETAILS]- Steps\n>\n> ### Restore\n>\n> Run A.\n",
+      "/e/b": "> [!DETAILS]- Steps\n>\n> ### Restore\n>\n> Run B.\n",
+    };
+    function Page() {
+      const { pathname } = useLocation();
+      return (
+        <>
+          <Link to="/e/b#restore">Next page</Link>
+          <Markdown
+            source={pages[pathname] ?? ""}
+            anchors={{ pageUrl: `https://kb.example.com/d/eng${pathname}` }}
+          />
+        </>
+      );
+    }
+    const { container } = render(
+      <MemoryRouter initialEntries={["/e/a#restore"]}>
+        <ThemeProvider>
+          <Page />
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(container.querySelector("details")?.open).toBe(true);
+    });
+    // The reader closed it again before following the link.
+    container.querySelector("details")!.open = false;
+    await userEvent.click(screen.getByRole("link", { name: "Next page" }));
+    await screen.findByText("Run B.");
+    await waitFor(() => {
+      expect(container.querySelector("details")?.open).toBe(true);
+    });
   });
 
   it("opens a folded callout when something inside it is revealed", async () => {

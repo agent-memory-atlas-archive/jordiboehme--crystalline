@@ -644,7 +644,9 @@ pub struct WriteReflectionParams {
     /// id or heading text (a heading this write creates included), as
     /// permalinks in this domain. Naming a section here curates it: its
     /// reflected text moves to what you wrote. Without markdown and
-    /// operation, sources curate the sections as the page stands.
+    /// operation, sources curate the sections as the page stands: none of
+    /// its text is rewritten, though a heading without an id line still gets
+    /// one and addresses are spelled with current domain names.
     #[serde(default, deserialize_with = "null_as_default")]
     pub sources: BTreeMap<String, Vec<String>>,
     /// move: the new path inside reflections/; move_asset: the file's new

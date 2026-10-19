@@ -93,7 +93,8 @@ export function statusPieces(text: string): StatusPiece[] {
     }
     const from = head + HEAD.length;
     const close = labelEnd(text, from);
-    if (close === -1 || close === from) {
+    // A label of nothing but spaces is text, as the reader reads it.
+    if (close === -1 || text.slice(from, close).trim() === "") {
       plain += text.slice(at, from);
       at = from;
       continue;

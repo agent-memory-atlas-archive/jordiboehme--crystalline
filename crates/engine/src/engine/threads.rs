@@ -235,10 +235,22 @@ impl Engine {
                 let section = match r::resolve_section_key(&sections, key) {
                     Ok(s) if s.id.as_deref() != Some(r::TOP_SECTION) || key == r::TOP_SECTION => s,
                     Err(r::SectionKeyMiss::Ambiguous(headings)) => {
+                        // Headings typed in a plain editor have no id until
+                        // the page's next write through Crystalline.
+                        let idless = sections
+                            .iter()
+                            .any(|s| s.id.is_none() && headings.contains(&s.heading));
+                        let way = if idless {
+                            "they have no id yet: save or write the page once so Crystalline \
+                             gives each heading its id, then open the thread by the id \
+                             (the write's ids_assigned, or read_reflection under the heading)"
+                        } else {
+                            "open it by the section's id (read_reflection shows each id under \
+                             its heading)"
+                        };
                         return Err(EngineError::Invalid(format!(
                             "the heading '{key}' names {} sections in '{path}', so the thread \
-                             cannot tell which one it is on: open it by the section's id \
-                             (read_reflection shows each id under its heading)",
+                             cannot tell which one it is on: {way}",
                             headings.len()
                         )));
                     }
