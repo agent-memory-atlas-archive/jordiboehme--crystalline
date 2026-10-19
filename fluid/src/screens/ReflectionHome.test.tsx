@@ -298,11 +298,13 @@ describe("the doors into the Reflection", () => {
     await userEvent.click(
       screen.getByRole("link", { name: "See what eng does hold" }),
     );
-    expect(
-      await screen.findByRole("heading", { name: "eng", level: 1 }),
-    ).toBeVisible();
+    // The Reflection's eyebrow first: the engram view draws its own heading
+    // for a moment, until its tree answers 404 and it forwards.
     expect(
       await screen.findByText("Reflection", { selector: "p" }),
+    ).toBeVisible();
+    expect(
+      await screen.findByRole("heading", { name: "eng", level: 1 }),
     ).toBeVisible();
     // A contributor has one mode, so there is nothing to switch between.
     expect(

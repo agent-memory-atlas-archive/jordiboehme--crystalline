@@ -188,6 +188,9 @@ type ListingChange = {
  */
 function useListingState() {
   const [params, setParams] = useSearchParams();
+  const { domain = "" } = useParams();
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
   const path = params.get("path") ?? "";
   const filters: EngramFilters = useMemo(
     () => frontmatterFilters(params),
@@ -216,7 +219,16 @@ function useListingState() {
         updated.set(key, written);
       }
     }
-    setParams(updated);
+    // Always on the engram view's own address: the domain's bare address
+    // sends any query on to it, and a hop through that forward would
+    // remount this page and drop the reader's focus.
+    const engrams = engramsRoute(domain);
+    if (pathname === engrams) {
+      setParams(updated);
+    } else {
+      const query = updated.toString();
+      void navigate(query === "" ? engrams : `${engrams}?${query}`);
+    }
   }
   return { path, filters, browse, filtering, listingOrder, apply };
 }

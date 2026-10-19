@@ -190,7 +190,10 @@ test("an invitation is what makes a private domain visible", async ({
   await expect(homeCard(member)).toBeVisible();
   await expect(badge(homeArticle(member))).toBeVisible();
   await expect(badge(sidebarLink(member))).toBeVisible();
-  await member.goto(`d/${DOMAIN}`);
+  // The engram view's own address: the bare one opens on the Reflection
+  // once it is on, which reflection.spec.ts does to this domain, so the
+  // journey holds whichever file runs first.
+  await member.goto(`d/${DOMAIN}/engrams`);
   await expect(
     member.getByRole("heading", { name: DOMAIN, level: 1 }),
   ).toBeVisible();

@@ -1014,7 +1014,11 @@ export function Layout() {
  */
 function RouteFocus({ target }: { target: RefObject<HTMLElement | null> }) {
   const location = useLocation();
-  const pathname = location.pathname;
+  // A domain's bare address and its engram view's own address are one screen
+  // when the bare address shows the engrams: the first filter or folder
+  // written there moves the address to `/engrams` without a new screen
+  // (0.28.1), and the reader's focus stays on the control they used.
+  const pathname = location.pathname.replace(/^(\/d\/[^/]+)\/engrams$/, "$1");
   const first = useRef(true);
   // A screen reached by an action (a move, a delete) asks to focus its own
   // heading once it has drawn it (`useHeadingFocusRequest`); the frame stays

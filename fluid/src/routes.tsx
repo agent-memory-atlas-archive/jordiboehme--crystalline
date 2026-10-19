@@ -29,7 +29,10 @@ import { Layout } from "./components/Layout";
 import { LazyBoundary } from "./components/LazyBoundary";
 import { Loading } from "./components/Loading";
 import { lazyChunk } from "./lazyChunk";
-import { useReflectionStatus } from "./components/ReflectionModeSwitch";
+import {
+  opensOnReflection,
+  useReflectionStatus,
+} from "./components/ReflectionModeSwitch";
 import { engramsRoute, reflectionRoute } from "./paths";
 import Home from "./screens/Home";
 import NotFound from "./screens/NotFound";
@@ -196,8 +199,14 @@ function ManifestRedirect() {
  * place, which answers a missing domain or a pending Reflection as it always
  * did. While the status loads, the domain's loader stands, so the engram
  * view never flashes before a forward.
+ *
+ * The engram view's own address renders this same component with
+ * `engramsView`, which skips the decision. Both addresses then draw the same
+ * tree (this component, the boundary, DomainHome), so a hop from one to the
+ * other, such as the first filter written on the bare address, keeps the
+ * page mounted with its focus and state.
  */
-function DomainEntry() {
+function DomainEntry({ engramsView = false }: { engramsView?: boolean }) {
   const { domain = "" } = useParams();
   const location = useLocation();
   const status = useReflectionStatus(domain);
@@ -206,7 +215,7 @@ function DomainEntry() {
   // own observer, which asks again after a failure, and the status goes back
   // to pending while it does) must not take the page away and put it back.
   const [stayed, setStayed] = useState<string | null>(null);
-  if (location.search !== "") {
+  if (!engramsView && location.search !== "") {
     return (
       <Navigate
         to={`${engramsRoute(domain)}${location.search}${location.hash}`}
@@ -215,11 +224,11 @@ function DomainEntry() {
       />
     );
   }
-  if (stayed !== domain) {
+  if (!engramsView && stayed !== domain) {
     if (status.isPending) {
       return DOMAIN_FALLBACK;
     }
-    if (status.data?.state === "on" && status.data.right !== "none") {
+    if (status.data !== undefined && opensOnReflection(status.data)) {
       return (
         <Navigate to={`${reflectionRoute(domain)}${location.hash}`} replace />
       );
@@ -375,15 +384,12 @@ export function AppRoutes() {
           {/*
             The engram view: the domain's MANIFEST, folders and engrams. The
             bare domain address above opens on the Reflection when it is on,
-            so a link that means the engrams comes here.
+            so a link that means the engrams comes here. The same element
+            type as the route above, so a hop between the two keeps the page.
           */}
           <Route
             path="/d/:domain/engrams"
-            element={
-              <LazyBoundary fallback={DOMAIN_FALLBACK}>
-                <DomainHome />
-              </LazyBoundary>
-            }
+            element={<DomainEntry engramsView />}
           />
           <Route
             path="/d/:domain/settings"

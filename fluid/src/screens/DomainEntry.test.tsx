@@ -5,9 +5,12 @@
  * engrams`, which is what the switch and every engram-view link point at.
  */
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { focusManager } from "@tanstack/react-query";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { InitialEntry } from "react-router";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../App";
 import { ApiProblem, api } from "../api/client";
@@ -90,13 +93,16 @@ function serve(routes: Record<string, Answer> = {}) {
 function LocationProbe() {
   const location = useLocation();
   return (
-    <div data-testid="probe">
+    <div
+      data-testid="probe"
+      data-state={JSON.stringify(location.state ?? null)}
+    >
       {`${location.pathname}${location.search}${location.hash}`}
     </div>
   );
 }
 
-function open(entry: string) {
+function open(entry: InitialEntry) {
   render(
     <MemoryRouter initialEntries={[entry]}>
       <App />
@@ -122,9 +128,26 @@ async function expectEngramView(): Promise<void> {
   ).toBeInTheDocument();
 }
 
+/** How many times the status was read. */
+function statusReads(): number {
+  return apiMock.mock.calls.filter(
+    (call) => call[0] === "/domains/eng/reflection",
+  ).length;
+}
+
+const realMatchMedia = Object.getOwnPropertyDescriptor(window, "matchMedia");
+
 beforeEach(() => {
   apiMock.mockReset();
   localStorage.clear();
+});
+
+afterEach(() => {
+  if (realMatchMedia === undefined) {
+    Reflect.deleteProperty(window, "matchMedia");
+  } else {
+    Object.defineProperty(window, "matchMedia", realMatchMedia);
+  }
 });
 
 describe("opening a domain", () => {
@@ -174,6 +197,131 @@ describe("opening a domain", () => {
     expect(screen.getByTestId("probe").textContent).toBe("/d/eng");
   });
 
+  it.each([
+    [404, "not found"],
+    [500, "server error"],
+  ])(
+    "stays on the engrams when the status read answers %i",
+    async (code, title) => {
+      serve({
+        "/domains/eng/reflection": () => {
+          throw new ApiProblem(code, title, "no");
+        },
+      });
+      open("/d/eng");
+      // A 500 is tried once more before the screen hears about it.
+      const main = await screen.findByRole("main");
+      expect(
+        await within(main).findByRole(
+          "heading",
+          { level: 1, name: "eng" },
+          { timeout: 5000 },
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("probe").textContent).toBe("/d/eng");
+    },
+  );
+
+  it("keeps the engrams once shown, when a later read says the Reflection is on", async () => {
+    let state = "off";
+    serve({ "/domains/eng/reflection": () => status(state)() });
+    open("/d/eng");
+    await expectEngramView();
+    const before = statusReads();
+    state = "on";
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+    await waitFor(() => {
+      expect(statusReads()).toBeGreaterThan(before);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByTestId("probe").textContent).toBe("/d/eng");
+    expect(
+      within(screen.getByRole("main")).getByRole("heading", {
+        level: 1,
+        name: "eng",
+      }),
+    ).toBeInTheDocument();
+    act(() => {
+      focusManager.setFocused(undefined);
+    });
+  });
+
+  it("marks Engrams current on the domain's address when it stays there", async () => {
+    serve({ "/domains/eng/reflection": status("elsewhere") });
+    open("/d/eng");
+    await expectEngramView();
+    const modes = await screen.findByRole("navigation", {
+      name: "Domain view",
+    });
+    expect(
+      within(modes).getByRole("link", { name: "Engrams" }),
+    ).toHaveAttribute("aria-current", "page");
+  });
+
+  it("marks no half current on the domain's address before it has decided", async () => {
+    // A phone: the switch has a row of its own, drawn from the listing
+    // before the status answers.
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: (query: string) => ({
+        matches: false,
+        media: query,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      }),
+    });
+    serve({
+      "/reflection/domains": () => ({
+        domains: [
+          {
+            domain: "eng",
+            state: "on",
+            right: "curate",
+            engrams_visible: true,
+            home: "here",
+            home_url: null,
+            open_threads: 0,
+          },
+        ],
+      }),
+      "/domains/eng/reflection": () => new Promise(() => undefined),
+    });
+    open("/d/eng");
+    const modes = await screen.findByRole("navigation", {
+      name: "Domain view",
+    });
+    for (const name of ["Reflection", "Engrams"]) {
+      expect(within(modes).getByRole("link", { name })).not.toHaveAttribute(
+        "aria-current",
+      );
+    }
+  });
+
+  it("writes a filter on the engram view's own address, keeping the page and its focus", async () => {
+    serve({
+      "/domains/eng/reflection": status("off"),
+      "/vocabulary": () => ({
+        domain: "eng",
+        tags: [{ name: "eng", engrams: 3, observations: 5 }],
+        categories: [],
+        relation_types: [],
+      }),
+    });
+    open("/d/eng");
+    await expectEngramView();
+    const main = screen.getByRole("main");
+    await userEvent.click(within(main).getByRole("button", { name: "Filter" }));
+    const chip = await within(main).findByRole("button", { name: /#eng/ });
+    await userEvent.click(chip);
+    await expectAt("/d/eng/engrams?tags=eng");
+    // The same page: the control the reader used is still there, focused.
+    expect(chip.isConnected).toBe(true);
+    expect(chip).toHaveFocus();
+  });
+
   it("shows the domain loader, not the engrams, while the status loads", async () => {
     serve({
       "/domains/eng/reflection": () => new Promise(() => undefined),
@@ -200,6 +348,20 @@ describe("opening a domain", () => {
     serve({ "/domains/eng/reflection": status("on") });
     open("/d/eng?path=notes#top");
     await expectAt("/d/eng/engrams?path=notes#top");
+  });
+
+  it("carries the navigation state along with the query", async () => {
+    serve({ "/domains/eng/reflection": status("on") });
+    open({
+      pathname: "/d/eng",
+      search: "?path=notes",
+      state: { discarded: "alpha.md" },
+    });
+    await expectAt("/d/eng/engrams?path=notes");
+    expect(screen.getByTestId("probe")).toHaveAttribute(
+      "data-state",
+      JSON.stringify({ discarded: "alpha.md" }),
+    );
   });
 });
 

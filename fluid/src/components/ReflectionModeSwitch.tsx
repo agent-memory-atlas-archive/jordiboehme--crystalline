@@ -66,6 +66,18 @@ export function HomeElsewhere({ url }: { url: string | null }): ReactElement {
   );
 }
 
+/**
+ * Whether `/d/<domain>` opens on the Reflection for this answer: in effect
+ * here and readable by the caller. The one rule the domain's address
+ * (`DomainEntry` in routes.tsx) and the switch both read.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function opensOnReflection(
+  s: Pick<ReflectionStatus, "state" | "right">,
+): boolean {
+  return s.state === "on" && s.right !== "none";
+}
+
 /** The four fields that decide the switch, on the status and the listing. */
 type SwitchFacts = Pick<
   ReflectionStatus,
@@ -128,13 +140,21 @@ export function ReflectionModeSwitch({
   }
   // The look lives in index.css (`.mode-half`), keyed on aria-current.
   const half = `mode-half ${fill ? "h-8 flex-1" : ""} ${FOCUS_RING}`;
-  const here = (name: "engrams" | "reflection", ...at: string[]) =>
-    current === name ? (at.includes(pathname) ? "page" : "true") : undefined;
   const reflection = reflectionRoute(domain);
   const engrams = engramsRoute(domain);
-  // The domain's own address shows the engram view in place whenever it does
-  // not open on the Reflection (`DomainEntry`), so it is that page too.
+  // The domain's own address shows the engram view in place once its status
+  // says it does not open on the Reflection (`DomainEntry`), so it is that
+  // page too. Until then it is neither: no half is current before a forward.
   const opened = domainRoute(domain);
+  const undecided =
+    pathname === opened &&
+    (status.data === undefined || opensOnReflection(status.data));
+  const here = (name: "engrams" | "reflection", ...at: string[]) =>
+    undecided || current !== name
+      ? undefined
+      : at.includes(pathname)
+        ? "page"
+        : "true";
   return (
     <nav
       aria-label="Domain view"
