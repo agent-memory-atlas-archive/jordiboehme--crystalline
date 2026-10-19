@@ -1672,6 +1672,9 @@ impl Engine {
                 // The backup state moved with the folder; a backup still
                 // pending goes along under the new name.
                 self.backup_marks.rename(old, new);
+                // So does what the last walk saw of its Reflection: the
+                // renamed domain's next walk is no first walk.
+                self.rename_reflection_walk(old, new);
             }
             RenameStep::OverlaysDir => {
                 move_state_dir(

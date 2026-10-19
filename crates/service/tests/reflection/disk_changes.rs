@@ -328,3 +328,70 @@ async fn the_echo_of_a_write_into_a_crlf_threads_file_is_dropped() {
         .unwrap();
     assert_eq!(heard(&mut rx), Vec::new(), "the echo is dropped");
 }
+
+/// What changed on disk while the daemon was down (the documented restore
+/// is a copy with the daemon stopped) is heard by a tab that is already
+/// listening when the first walk after the start runs: one event for the
+/// whole Reflection, since nothing tells the changed pages, files and
+/// threads apart from the rest.
+#[tokio::test]
+async fn the_first_walk_after_a_restart_says_the_reflection_changed() {
+    use std::sync::Arc;
+
+    use crystalline_core::config::GlobalConfig;
+    use crystalline_index::{Store, TursoStore};
+    use crystalline_service::Engine;
+    use tokio::sync::Mutex;
+
+    let store: Arc<Mutex<dyn Store>> =
+        Arc::new(Mutex::new(TursoStore::open_in_memory().await.unwrap()));
+    let fx = crate::fixture::instance_on(
+        store.clone(),
+        "one",
+        &[
+            ("MANIFEST.md", &manifest("reflection: on\n")),
+            ("reflections/d.md", &page("D")),
+        ],
+    )
+    .await;
+    let Fx { tmp, engine, root } = fx;
+    drop(engine);
+
+    // Down: a page edited, a file added and a comment written by hand.
+    let down = Fx {
+        tmp,
+        engine: Arc::new(Engine::new(
+            store.clone(),
+            GlobalConfig::default(),
+            None,
+            None,
+        )),
+        root,
+    };
+    put(&down, "d.md", &page("D, restored"));
+    put(&down, "assets/p.png", "png");
+    put(&down, "d.threads.md", THREADS);
+    let Fx { tmp, root, .. } = down;
+
+    // Up again: the HTTP surface is ready before the first walk, so a tab
+    // listens already.
+    let base = tmp.path().to_path_buf();
+    let config_path = base.join("config.yaml");
+    let cfg: GlobalConfig = crystalline_core::config::load_yaml(&config_path).unwrap();
+    let engine = Arc::new(
+        Engine::new(store, cfg, None, Some(config_path))
+            .with_state_dir(base.join("state"))
+            .with_origins_dir(base.join("origins"))
+            .with_instance_id("one".to_string()),
+    );
+    let mut rx = engine.changes().subscribe();
+    engine.sync(None).await.unwrap();
+    // The start also announces `switched` as this instance takes the host
+    // lock again; the walk's own word is the `changed` one.
+    let events = heard(&mut rx);
+    assert!(
+        events.contains(&(K::Changed, String::new(), None)),
+        "{events:?}"
+    );
+    let _keep = (tmp, root);
+}
