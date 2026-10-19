@@ -517,8 +517,17 @@
    * anything marked .breakout (tables, diagrams, the graph) keeps the full
    * column. Applied to the container of a rendered document.
    */
-  .measured > :not(.breakout) {
+  .measured > :not(.breakout, [data-keep]),
+  .measured > [data-keep] > :not(.breakout) {
     max-width: var(--measure, 720px);
+  }
+
+  /*
+   * A heading and the block after it (`keepWithNext`): one block on paper
+   * that may not break, no box at all on screen.
+   */
+  [data-keep] {
+    display: contents;
   }
 
   /*
@@ -535,7 +544,8 @@
    * would mean two prints of one engram coming out at two measures.
    */
   @media screen {
-    main[data-width="full"] .measured > :not(.breakout) {
+    main[data-width="full"] .measured > :not(.breakout, [data-keep]),
+    main[data-width="full"] .measured > [data-keep] > :not(.breakout) {
       max-width: none;
     }
   }
@@ -697,19 +707,27 @@
   }
 
   /*
-   * A heading stays with what follows it. `break-after: avoid` is honoured
-   * by Chrome alone; the heading's box is stretched over the next lines by an
-   * empty block that takes its own height back, and a box that may not
-   * break moves to the next page whole, in WebKit too.
+   * What belongs together stays together. `break-after: avoid` on a heading
+   * is honoured by Chrome alone, so a heading and the block after it share
+   * one wrapper (`keepWithNext`), a plain block that may not break, which
+   * WebKit honours too; a block taller than about half a page is left out of
+   * it. A whole section is never kept together: a long one would leave half
+   * empty pages. `page-break-inside` is the older spelling WebKit still
+   * reads.
    */
-  h1::after,
-  h2::after,
-  h3::after,
-  h4::after {
-    content: "";
+  [data-keep] {
     display: block;
-    height: 5em;
-    margin-bottom: -5em;
+  }
+  [data-keep],
+  .print-title,
+  .measured li,
+  .measured tr,
+  .measured table[data-short] {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .measured thead {
+    display: table-header-group;
   }
 
   /* The chrome stays on screen. */
@@ -753,7 +771,6 @@
     break-inside: avoid;
   }
   pre,
-  table,
   figure,
   img,
   svg,
@@ -762,6 +779,7 @@
   .print-note,
   .print-related li {
     break-inside: avoid;
+    page-break-inside: avoid;
   }
 
   /* Code wraps instead of running off the page. */
@@ -812,6 +830,7 @@
   }
   [data-callout] {
     break-inside: avoid;
+    page-break-inside: avoid;
     background: none;
   }
 

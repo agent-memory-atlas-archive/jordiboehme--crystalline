@@ -64,3 +64,82 @@ for (const width of [1440, 390]) {
     }
   });
 }
+
+/** A4 paper less the page margins, in CSS pixels: what Safari lays out in. */
+const A4_COLUMN = 794;
+
+test("on A4 paper nothing is wider than the column and a heading keeps its next block", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: A4_COLUMN, height: 1123 });
+  await signIn(page);
+  for (const screen of SCREENS) {
+    await page.emulateMedia({ media: "screen" });
+    await page.goto(screen.path);
+    const article = page.locator("main article").first();
+    await expect(article, screen.name).toBeVisible();
+    await page.waitForLoadState("networkidle");
+    await page.emulateMedia({ media: "print" });
+    const wider = await article.evaluate((root) => {
+      const box = root.getBoundingClientRect();
+      return Array.from(root.querySelectorAll("*"))
+        .filter((element) => {
+          const rect = element.getBoundingClientRect();
+          return (
+            rect.width > 0 &&
+            (rect.right > box.right + 1 || rect.left < box.left - 1)
+          );
+        })
+        .map((element) => element.tagName.toLowerCase());
+    });
+    expect(wider, `${screen.name}: wider than the column`).toEqual([]);
+    const kept = await article.evaluate((root) =>
+      Array.from(root.querySelectorAll(".measured > [data-keep]")).map(
+        (wrapper) => {
+          const style = getComputedStyle(wrapper);
+          return {
+            first: wrapper.firstElementChild?.tagName.toLowerCase() ?? "",
+            display: style.display,
+            breakInside: style.breakInside,
+            pageBreakInside: style.pageBreakInside,
+          };
+        },
+      ),
+    );
+    // A heading prints at its own height, its words at its top: the flex
+    // heading of a sourced Reflection section included.
+    const headings = await article.evaluate((root) =>
+      Array.from(root.querySelectorAll(".measured h2")).map((heading) => {
+        const box = heading.getBoundingClientRect();
+        const label = heading.getAttribute("aria-labelledby");
+        const words =
+          (label === null ? null : document.getElementById(label)) ??
+          heading.firstElementChild ??
+          heading;
+        const line = parseFloat(getComputedStyle(heading).lineHeight);
+        return {
+          drop: words.getBoundingClientRect().top - box.top,
+          height: box.height,
+          line: Number.isNaN(line) ? 40 : line,
+        };
+      }),
+    );
+    for (const heading of headings) {
+      expect(heading.drop, `${screen.name}: heading words drop`).toBeLessThan(
+        6,
+      );
+      expect(heading.height).toBeLessThan(heading.line * 2);
+    }
+    // The engram's only heading is its title, which the page folds away;
+    // the Reflection page's "Night deploys" keeps its paragraph.
+    if (screen.name === "a Reflection page") {
+      expect(kept.length, `${screen.name}: kept headings`).toBeGreaterThan(0);
+    }
+    for (const wrapper of kept) {
+      expect(wrapper.first).toMatch(/^h[1-6]$/);
+      expect(wrapper.display).toBe("block");
+      expect(wrapper.breakInside).toBe("avoid");
+      expect(wrapper.pageBreakInside).toBe("avoid");
+    }
+  }
+});

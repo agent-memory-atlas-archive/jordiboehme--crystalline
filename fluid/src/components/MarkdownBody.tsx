@@ -79,6 +79,7 @@ import {
   remarkMathOptions,
 } from "../markdown/math";
 import { SWATCH_CLASSES, colourOf } from "../markdown/swatch";
+import { keepWithNext } from "../markdown/keepWithNext";
 import { remarkTaskState } from "../markdown/taskState";
 import { printUrl } from "../printUrl";
 import { SOURCE_ATTR, spanPieces } from "../reflectionQuotes";
@@ -892,11 +893,19 @@ const components: Components = {
       </section>
     ),
   hr: () => <hr className="my-6 border-slate-200 dark:border-slate-800" />,
-  table: ({ children }) => (
+  table: ({ children, node }) => (
     // Wide tables scroll inside themselves rather than widening the page, and
     // keep the full column rather than the reading measure.
     <div className="breakout my-4 overflow-x-auto">
-      <table className="w-full border-collapse text-sm">{children}</table>
+      <table
+        // Short enough to keep on one page in print (`keepWithNext`).
+        data-short={
+          node?.properties["dataShort"] === undefined ? undefined : ""
+        }
+        className="w-full border-collapse text-sm"
+      >
+        {children}
+      </table>
     </div>
   ),
   // The colons in a table's delimiter row are the only way markdown can say
@@ -1554,10 +1563,10 @@ function heading(
  * body's own size, weight and spacing. Nothing about them moves here.
  */
 const HEADING_SIZES = [
-  "mt-6 mb-3 text-display first:mt-0",
-  "mt-[38px] mb-3 text-prose-h2 first:mt-0",
-  "mt-6 mb-2 text-prose-h3 first:mt-0",
-  "mt-4 mb-2 font-semibold first:mt-0",
+  "mt-6 mb-3 text-display [.measured>&:first-child]:mt-0 [.measured>[data-keep]:first-child>&:first-child]:mt-0",
+  "mt-[38px] mb-3 text-prose-h2 [.measured>&:first-child]:mt-0 [.measured>[data-keep]:first-child>&:first-child]:mt-0",
+  "mt-6 mb-2 text-prose-h3 [.measured>&:first-child]:mt-0 [.measured>[data-keep]:first-child>&:first-child]:mt-0",
+  "mt-4 mb-2 font-semibold [.measured>&:first-child]:mt-0 [.measured>[data-keep]:first-child>&:first-child]:mt-0",
   "",
   "",
 ] as const;
@@ -1814,6 +1823,10 @@ export default function MarkdownBody({
       // passes no resolver, and `selectionAnchor` and `domRange` refuse such
       // a span rather than map through it (`reflectionQuotes.ts`).
       ...(wikilinks ? [wikilinkRewrite(wikilinks)] : []),
+      // Last: a heading and the block after it in one wrapper that may not
+      // break on paper and draws no box on screen. After everything that
+      // reads a heading or its neighbours.
+      keepWithNext,
     ],
     [anchored, wikilinks, sourceSpans, shown],
   );

@@ -36,7 +36,9 @@ describe("design tokens", () => {
   });
 
   test("the measure helper caps prose and exempts breakouts", () => {
-    expect(css).toContain(".measured > :not(.breakout)");
+    expect(css).toContain(".measured > :not(.breakout, [data-keep])");
+    // A heading kept with its next block keeps the measure inside.
+    expect(css).toContain(".measured > [data-keep] > :not(.breakout)");
   });
 });
 
