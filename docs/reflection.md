@@ -57,6 +57,14 @@ The frontmatter block `reflection:` is Crystalline's own. For each section it re
 
 An agent can write a whole page or one section. `write_reflection` takes the same three section operations `edit_engram` takes: `replace_section`, `insert_before_section` and `insert_after_section`, with the section named by its heading. The section keeps its id. With `sources` and no text at all, the write curates the named sections as the page stands and rewrites none of its text. Crystalline still does its usual upkeep on that write: a heading without an id line gets one, a `crystalline://` address is spelled with the domain's current name, and the `reflection:` block records the sources. A write that leaves out a section a person changed since the last reflection still lands, and its receipt names that section. A heading that two sections share does not name either of them: a thread on it is opened by the section id. A `crystalline://` address in a page is spelled with the domain's current name on every write, as in an engram, and renaming a domain also respells its Reflection pages.
 
+### Sources from other domains
+
+A page can also be built from engrams of other domains. So one page can sum up several domains. In `sources`, name an engram of this domain by its permalink and an engram of another domain by its address, for example `crystalline://scotty/team/scotty-team`. An address of the page's own domain is the same as the permalink. Never write sources into the page as HTML comments or text: only `sources` lets the queue notice a change.
+
+The writer needs the right to read engrams in the other domain. A domain the writer cannot see, a domain this instance does not have and a domain of a connected server are refused with the same words as a domain that does not exist. So a private domain never shows. The `reflection:` block stores the other domain by its name, and renaming a domain also renames it in the sources of every page.
+
+The queue notices when an engram of another domain changes, is retired or is gone, with the same items as for the page's own domain. When the other domain is not on this instance, or it is a domain of a connected server, its sources are `unavailable`. They are never `missing`, and a write keeps them. Citing an engram of another domain does not count as covering it for that domain's own Reflection.
+
 ## Threads
 
 A thread is a discussion about one passage. It is anchored on a section and, if you like, on an exact quoted passage in it. A thread can be opened, answered, resolved with a short outcome and reopened. The threads of a page are stored in `<name>.threads.md` beside the page. The history of a thread is only ever added to: a resolved thread does not change, and a reopen is a new entry.
@@ -97,6 +105,7 @@ Access has two axes. They are set side by side: per account for every shared dom
 - A member of a private domain at knowledge `none` needs a Reflection level; without one the membership grants nothing and is refused.
 - An account whose write list leaves a domain out at most reads and comments there, whatever its levels say. The list never grants access.
 - An anonymous visitor reads a public domain's Reflection and never comments.
+- A source of another domain is shown only to a reader who may read engrams in that domain. Anyone else sees a count, for example "2 sources in a domain you cannot open", with no name and no state. The `reflection:` block they get leaves those sources out, and a write by them keeps those sources as they were. An agent that may not open the domain gets the queue item with the words "a source in a domain you cannot open has changed", so it asks a person instead of updating blind. Taking feedback into the engrams of another domain needs the right to write there. Without it, the agent answers in a thread or settles the item as kept.
 - A version before 0.26.0 does not know the knowledge level `none` and reads it as `viewer`. So before you go back to an older version, give those accounts and members a level that is right for the older version.
 
 The commands:
@@ -120,6 +129,7 @@ crystalline domain members eng add ada --level none --reflection reader
 | update | `source_changed` | An engram a section was built from changed. |
 | update | `source_retired` | An engram a section was built from was retired. |
 | update | `source_missing` | An engram a section was built from is gone. |
+| update | `source_unavailable` | Sources of a page in a domain that cannot be checked here: the domain is not on this instance, or it is a domain of a connected server. One item per page and domain. Keep these sources. |
 | update | `unreflected` | An engram no section covers yet. |
 | update | `off_structure` | A page fits none of the pact's `## Structure` globs. |
 | update | `pact_changed` | The pact changed since the pages were last brought in line with it. |

@@ -641,8 +641,10 @@ pub struct WriteReflectionParams {
     #[serde(default)]
     pub include_subsections: bool,
     /// write: the engrams each section was built from, by a `##` section's
-    /// id or heading text (a heading this write creates included), as
-    /// permalinks in this domain. Naming a section here curates it: its
+    /// id or heading text (a heading this write creates included): a
+    /// permalink for an engram in this domain, a
+    /// `crystalline://<domain>/<permalink>` address for one in another
+    /// domain you can read. Naming a section here curates it: its
     /// reflected text moves to what you wrote. Without markdown and
     /// operation, sources curate the sections as the page stands: none of
     /// its text is rewritten, though a heading without an id line still gets

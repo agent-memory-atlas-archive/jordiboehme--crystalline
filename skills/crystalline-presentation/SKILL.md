@@ -21,6 +21,8 @@ When the PACT has no `## Presentation` section, use the defaults below. If you s
 
 When you rewrite a whole page, pass the `checksum` from `read_reflection` as `expected_checksum`, so a change a person made since your read is refused instead of overwritten.
 
+Record the engrams each section was built from with `sources` on `write_reflection`, as permalinks in this domain or `crystalline://<domain>/<permalink>` addresses for another domain; never write them into the page as HTML comments or text.
+
 ## Where an element is required
 
 These shapes need their element. A numbered list or a paragraph is not enough for them.
