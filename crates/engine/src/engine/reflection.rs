@@ -1736,14 +1736,7 @@ impl Engine {
             current.as_deref().and_then(r::block_as_written).as_ref() != Some(&block)
                 && shown_block.as_ref() != Some(&block)
         });
-        // The stored sources of domains that cannot be checked here: a
-        // write keeps them, as it keeps those the writer may not see.
-        let mut unchecked: BTreeSet<String> = BTreeSet::new();
-        for name in &stored_foreign {
-            if !self.source_domain_checkable(name).await {
-                unchecked.insert(name.clone());
-            }
-        }
+
         // An id is per page, so one only another page carries was copied or
         // made up: it is replaced too. Asked only for ids this page, its
         // baseline and its records never had, so a page sent back as it was
@@ -1837,18 +1830,15 @@ impl Engine {
             }
             let record = prov.entry(id.clone()).or_default();
             // A write never drops what the writer could not see: the
-            // section's sources in a domain hidden from them, or in one
-            // that cannot be checked here, stay as they were.
+            // section's sources in a domain hidden from them stay as they
+            // were. A source the writer sees is theirs to keep or leave out,
+            // one whose domain cannot be checked here included: leaving it
+            // out is how a source of a domain that is gone for good goes.
             refs.extend(
                 record
                     .sources
                     .iter()
-                    .filter(|src| {
-                        src.domain.as_ref().is_some_and(|domain| {
-                            unchecked.contains(domain)
-                                || sight.as_ref().is_some_and(|sight| !sight.sees(src))
-                        })
-                    })
+                    .filter(|src| sight.as_ref().is_some_and(|sight| !sight.sees(src)))
                     .cloned(),
             );
             record.sources = refs;

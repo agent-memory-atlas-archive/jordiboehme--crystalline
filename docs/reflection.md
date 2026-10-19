@@ -61,9 +61,9 @@ An agent can write a whole page or one section. `write_reflection` takes the sam
 
 A page can also be built from engrams of other domains. So one page can sum up several domains. In `sources`, name an engram of this domain by its permalink and an engram of another domain by its address, for example `crystalline://scotty/team/scotty-team`. An address of the page's own domain is the same as the permalink. Never write sources into the page as HTML comments or text: only `sources` lets the queue notice a change.
 
-The writer needs the right to read engrams in the other domain. A domain the writer cannot see, a domain this instance does not have and a domain of a connected server are refused with the same words as a domain that does not exist. So a private domain never shows. The `reflection:` block stores the other domain by its name, and renaming a domain also renames it in the sources of every page.
+The writer needs the right to read engrams in the other domain. A domain the writer cannot see, a domain this instance does not have and a domain of a connected server are refused with the same words as a domain that does not exist. So a private domain never shows. The `reflection:` block stores the other domain by its name. Rename a domain with `crystalline domain rename`: it also renames the domain in the sources of every page, and a rename with `--local` keeps the old names as aliases, so the sources still resolve. A name changed only by editing `domain_name` in the MANIFEST is not followed. The sources that use the old name then read as `unavailable`.
 
-The queue notices when an engram of another domain changes, is retired or is gone, with the same items as for the page's own domain. When the other domain is not on this instance, or it is a domain of a connected server, its sources are `unavailable`. They are never `missing`, and a write keeps them. Citing an engram of another domain does not count as covering it for that domain's own Reflection.
+The queue notices when an engram of another domain changes, is retired or is gone, with the same items as for the page's own domain. When the other domain is not on this instance, or it is a domain of a connected server, its sources are `unavailable`. They are never `missing`, so no agent drops them by mistake. A write that sets a section's sources keeps every source the writer may not see. A writer who sees an unavailable source may leave it out of the section's sources, and that drops it: this is how a source of a domain that is gone for good goes. Citing an engram of another domain does not count as covering it for that domain's own Reflection.
 
 ## Threads
 
@@ -129,7 +129,7 @@ crystalline domain members eng add ada --level none --reflection reader
 | update | `source_changed` | An engram a section was built from changed. |
 | update | `source_retired` | An engram a section was built from was retired. |
 | update | `source_missing` | An engram a section was built from is gone. |
-| update | `source_unavailable` | Sources of a page in a domain that cannot be checked here: the domain is not on this instance, or it is a domain of a connected server. One item per page and domain. Keep these sources. |
+| update | `source_unavailable` | Sources of a page in a domain that cannot be checked here: the domain is not on this instance, or it is a domain of a connected server. One item per page and domain. Keep them while the domain may come back, or leave one out of its section's sources to drop it. |
 | update | `unreflected` | An engram no section covers yet. |
 | update | `off_structure` | A page fits none of the pact's `## Structure` globs. |
 | update | `pact_changed` | The pact changed since the pages were last brought in line with it. |
@@ -195,7 +195,7 @@ The home backs the whole `reflections/` folder up to the branch `crystalline/ref
 - At once after an agent's write, a comment, a settle, a move or a delete, and when a co-editing session closes.
 - After one minute without a new edit, for a person's edits in a co-editing session or a change on disk.
 
-The branch starts empty and never carries an engram. "Share changes" never offers a file under `reflections/`. A change marked while the daemon restarts is committed with the next one. A failed backup is tried again later, with a growing wait up to one hour.
+The branch starts empty and never carries an engram. It keeps each page as it is on disk, so it also holds the names of other domains a page cites as sources, and the team's repository shows them. "Share changes" never offers a file under `reflections/`. A change marked while the daemon restarts is committed with the next one. A failed backup is tried again later, with a growing wait up to one hour.
 
 To move the home to a new `service.public_url` or to another server, copy the `reflections/` folder there first (the restore steps below work for that too). Then switch Reflection off and on again at the new home, in one go. That fills in `reflection_home` again. Do not share changes between the two steps: while the switch is off, "share changes" offers the files in `reflections/` as engram changes. Share the MANIFEST change at once after the switch-on. Until the old home pulls it, both instances act as the home and back up to the same branch. The old home stops when it pulls the change.
 

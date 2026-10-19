@@ -1660,3 +1660,117 @@ async fn a_domain_rename_rewrites_the_domain_of_sources_it_names() {
     assert_eq!(source["domain"], "platform", "{doc}");
     assert_eq!(source["state"], "current", "{doc}");
 }
+
+/// A rename of this machine's name only keeps every former name as an
+/// alias, so a stored source domain still resolves and reads current.
+#[tokio::test]
+async fn a_local_rename_keeps_the_sources_of_the_renamed_domain_current() {
+    let fx = with_ops(
+        "",
+        "",
+        &[(
+            "runbook.md",
+            &engram("Runbook", "runbook", "- [fact] page the on-call"),
+        )],
+    )
+    .await;
+    let mut p = write("a.md", "# A\n\nFor people.\n\n## On call\n\nPage them.\n");
+    p.sources = BTreeMap::from([(
+        "On call".to_string(),
+        vec!["crystalline://ops/runbook".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    fx.engine
+        .rename_domain(
+            "ops",
+            "platform",
+            true,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    let doc = fx
+        .engine
+        .read_reflection("eng", "a.md", &agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        doc["sections"][0]["sources"][0]["state"], "current",
+        "{doc}"
+    );
+}
+
+/// A canonical name changed by editing the MANIFEST, outside a rename,
+/// leaves the stored name resolving nowhere: its sources read unavailable,
+/// never missing, and stay on the page.
+#[tokio::test]
+async fn a_canonical_name_edited_in_the_manifest_leaves_sources_unavailable() {
+    let fx = with_ops(
+        "",
+        "",
+        &[(
+            "runbook.md",
+            &engram("Runbook", "runbook", "- [fact] page the on-call"),
+        )],
+    )
+    .await;
+    let rename_in_manifest = |from: &str, to: &str| crystalline_service::params::EditParams {
+        identifier: "manifest".to_string(),
+        domain: "ops".to_string(),
+        operation: "find_replace".to_string(),
+        find_text: Some(format!("domain_name: {from}\n")),
+        content: Some(format!("domain_name: {to}\n")),
+        expected_replacements: Some(1),
+        ..Default::default()
+    };
+    fx.engine
+        .edit_engram(&rename_in_manifest("ops", "ops-team"))
+        .await
+        .unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let mut p = write("a.md", "# A\n\nFor people.\n\n## On call\n\nPage them.\n");
+    p.sources = BTreeMap::from([(
+        "On call".to_string(),
+        vec!["crystalline://ops/runbook".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    assert!(
+        file(&fx, "a.md").contains("domain: ops-team"),
+        "the canonical name: {}",
+        file(&fx, "a.md")
+    );
+    fx.engine
+        .edit_engram(&rename_in_manifest("ops-team", "ops-crew"))
+        .await
+        .unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let doc = fx
+        .engine
+        .read_reflection("eng", "a.md", &agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        doc["sections"][0]["sources"][0]["state"], "unavailable",
+        "{doc}"
+    );
+    let queue = fx
+        .engine
+        .reflect(
+            &crystalline_service::params::ReflectParams {
+                domains: vec!["eng".into()],
+                ..Default::default()
+            },
+            &agent(),
+        )
+        .await
+        .unwrap();
+    let whats: Vec<&str> = queue["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["what"].as_str().unwrap())
+        .collect();
+    assert!(whats.contains(&"source_unavailable"), "{queue}");
+    assert!(!whats.contains(&"source_missing"), "{queue}");
+    assert!(file(&fx, "a.md").contains("domain: ops-team"), "kept");
+}

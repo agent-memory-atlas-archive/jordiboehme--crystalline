@@ -2016,7 +2016,8 @@ async fn a_source_in_another_domain_changes_retires_and_goes() {
 /// Sources in a domain this instance does not have are `unavailable`,
 /// never `missing`: one item per page and domain says they cannot be
 /// checked here, a reader who may not open such a name gets the plain
-/// words, and a write keeps them.
+/// words, a write by such a reader keeps them and a writer who sees the
+/// address may leave one out.
 #[tokio::test]
 async fn sources_in_a_domain_not_here_are_unavailable_never_missing() {
     let fx = cross_curated().await;
@@ -2047,7 +2048,7 @@ async fn sources_in_a_domain_not_here_are_unavailable_never_missing() {
     assert_eq!(items[0]["count"], 3);
     assert_eq!(
         items[0]["note"],
-        "sources in elsewhere cannot be checked here"
+        "sources in elsewhere cannot be checked here; keep them while the domain may come back, or drop one by writing its section's sources without it"
     );
     assert_eq!(items[0]["path"], "overview.md");
 
@@ -2088,14 +2089,36 @@ async fn sources_in_a_domain_not_here_are_unavailable_never_missing() {
         "a source in a domain you cannot open cannot be checked here"
     );
 
-    // A write that names the section's sources keeps the unavailable one.
-    let mut p = crystalline_service::params::WriteReflectionParams {
-        domain: "eng".into(),
-        path: "overview.md".into(),
-        ..Default::default()
+    // A writer who is not shown the name keeps it: a sources write by the
+    // account leaves the section's unavailable source as it was.
+    let sources_of = |section: &str| {
+        let mut p = crystalline_service::params::WriteReflectionParams {
+            domain: "eng".into(),
+            path: "overview.md".into(),
+            ..Default::default()
+        };
+        p.sources = BTreeMap::from([(section.to_string(), vec!["runbooks/deploy".to_string()])]);
+        p
     };
-    p.sources = BTreeMap::from([("Team".to_string(), vec!["runbooks/deploy".to_string()])]);
-    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    fx.engine
+        .write_reflection(&sources_of("Team"), &ed)
+        .await
+        .unwrap();
     let text = std::fs::read_to_string(&abs).unwrap();
     assert_eq!(text.matches("domain: elsewhere").count(), 3, "{text}");
+
+    // A writer who sees the address drops it by leaving it out: how a
+    // source of a domain that is gone for good goes.
+    fx.engine
+        .write_reflection(&sources_of("Team"), &agent())
+        .await
+        .unwrap();
+    let text = std::fs::read_to_string(&abs).unwrap();
+    assert_eq!(text.matches("domain: elsewhere").count(), 2, "{text}");
+    let queue = fx.engine.reflect(&eng_only(), &agent()).await.unwrap();
+    assert_eq!(
+        items_of(&queue, "source_unavailable")[0]["count"],
+        2,
+        "{queue}"
+    );
 }

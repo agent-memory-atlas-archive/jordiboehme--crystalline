@@ -28,9 +28,11 @@ pub(crate) fn hidden_source_note(what: &str) -> &'static str {
 }
 
 /// What a `source_unavailable` item says to a caller who may open the
-/// domain.
+/// domain, with how to clear it.
 pub(crate) fn unavailable_note(domain: &str) -> String {
-    format!("sources in {domain} cannot be checked here")
+    format!(
+        "sources in {domain} cannot be checked here; keep them while the domain may come back, or drop one by writing its section's sources without it"
+    )
 }
 
 /// The facts a set of sources is held against: the page's own domain's,
@@ -159,13 +161,6 @@ impl Engine {
         let local = table.resolve(name)?;
         (self.knows_domain(local) && !self.shadowed_domains().contains(local))
             .then(|| local.to_string())
-    }
-
-    /// Whether the stored source domain `name` can be checked here (see
-    /// [`Engine::checkable_domain`]). Takes no lock.
-    pub(crate) async fn source_domain_checkable(&self, name: &str) -> bool {
-        let table = self.name_table_now().await;
-        self.checkable_domain(&table, name).is_some()
     }
 
     /// The entries of a write's `sources`, each resolved: a bare permalink
