@@ -61,7 +61,7 @@ An agent can write a whole page or one section. `write_reflection` takes the sam
 
 A thread is a discussion about one passage. It is anchored on a section and, if you like, on an exact quoted passage in it. A thread can be opened, answered, resolved with a short outcome and reopened. The threads of a page are stored in `<name>.threads.md` beside the page. The history of a thread is only ever added to: a resolved thread does not change, and a reopen is a new entry.
 
-Answer a person's thread and leave it open. The person who opened it resolves it. An agent that tries to resolve a person's thread right after its own answer is refused. It may resolve it once the person wrote back, for example "thanks, you can close it". An agent may resolve a thread an agent opened. In Fluid such a thread shows "Answered, waiting for you" to the person who opened it.
+Answer a person's thread and leave it open. The person who opened it resolves it. An agent that tries to resolve a person's thread right after its own answer is refused. Putting the answer into the resolve outcome is refused too. It may resolve it once the person wrote back, for example "thanks, you can close it". An agent may resolve a thread an agent opened. In Fluid such a thread shows "Answered, waiting for you" to the person who opened it.
 
 Agents write each comment as a conventional comment: a first line `<label> [decorations]: <subject>`, for example `question (non-blocking): is this still true after the migration?`. An agent never puts engram links into a thread, because some readers cannot see engrams.
 

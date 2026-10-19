@@ -3,8 +3,9 @@
  * a Reflection section's `<!-- r:... -->` id line), never text for a reader.
  * Fluid draws raw HTML as the text it was written as (there is no
  * `rehype-raw`), so a comment would show on the page. These helpers take the
- * comments out of what is drawn; the source keeps them, and the editor shows
- * them as written.
+ * comments out of what is drawn; the source keeps them. The editor's live
+ * preview hides them off the lines being edited, and shows them as written
+ * on those lines (`editor/preview.ts`).
  *
  * Only the raw nodes the parser built are touched: a comment written inside a
  * code span or a fenced block is code text, not a raw node, and stays. Any
@@ -16,6 +17,16 @@
  * them so). A `<!--` that never closes is not matched and stays text.
  */
 const COMMENT = /<!--(?:-?>|[\s\S]*?-->)/g;
+
+/** Where each whole comment in `text` starts and ends. */
+export function htmlCommentRanges(
+  text: string,
+): { from: number; to: number }[] {
+  return Array.from(text.matchAll(COMMENT), (m) => ({
+    from: m.index,
+    to: m.index + m[0].length,
+  }));
+}
 
 /** `value` without its comments; what is left of the raw HTML stays as is. */
 export function withoutHtmlComments(value: string): string {

@@ -1,7 +1,8 @@
 /**
  * The live-preview decoration layer: a read-model over the buffer, never a
  * write-model. Syntax markers (heading #s, emphasis stars, backticks, link
- * brackets and targets) fold away except on the lines a selection touches, so
+ * brackets and targets) and HTML comments, which the reading page never
+ * draws, fold away except on the lines a selection touches, so
  * prose reads as prose while the line being edited shows exactly what is
  * written. Nothing here rewrites the document: a decoration is a view over the
  * bytes, and the bytes come back out of the buffer exactly as they went in.
@@ -29,6 +30,8 @@ import {
 } from "@codemirror/view";
 import type { SyntaxNodeRef } from "@lezer/common";
 
+import { htmlCommentRanges } from "../markdown/htmlComments";
+import { isIdLine } from "../reflectionText";
 import { frontmatterRegion } from "./frontmatterRegion";
 import { parseAdvanced } from "./parseProgress";
 
@@ -193,6 +196,39 @@ function buildDecorations(view: EditorView): DecorationSet {
   // The frontmatter block ends here; -1 when there is none, which no node
   // start can fall at or below.
   const frontmatterEnd = frontmatterRegion(doc)?.to ?? -1;
+  /*
+   * An HTML comment is a note for whoever edits the file, and the reading
+   * page never draws it (`htmlComments.ts`): off the lines a selection
+   * touches it folds away the same way, line by line, since a replacement
+   * may not cross a line break. Text after the comment on its line stays,
+   * as on the page. A Reflection section's id line is left to
+   * `hiddenIdLines`. A comment in code is no comment node and never comes
+   * here.
+   */
+  const hideComments = (from: number, to: number) => {
+    for (const comment of htmlCommentRanges(doc.sliceString(from, to))) {
+      const start = from + comment.from;
+      const end = from + comment.to;
+      const first = doc.lineAt(start).number;
+      const last = doc.lineAt(end).number;
+      for (let number = first; number <= last; number += 1) {
+        const line = doc.line(number);
+        const pieceFrom = Math.max(start, line.from);
+        const pieceTo = Math.min(end, line.to);
+        const key = `comment:${pieceFrom}:${pieceTo}`;
+        if (
+          pieceFrom >= pieceTo ||
+          active.has(number) ||
+          isIdLine(line.text) ||
+          placed.has(key)
+        ) {
+          continue;
+        }
+        placed.add(key);
+        decorations.push(Decoration.replace({}).range(pieceFrom, pieceTo));
+      }
+    }
+  };
 
   for (const { from, to } of view.visibleRanges) {
     syntaxTree(view.state).iterate({
@@ -204,6 +240,10 @@ function buildDecorations(view: EditorView): DecorationSet {
           // by the same test, but the document node starts here too and its
           // later children must still be reached.
           return;
+        }
+        if (node.name === "Comment" || node.name === "CommentBlock") {
+          hideComments(node.from, node.to);
+          return false;
         }
         if (active.has(doc.lineAt(node.from).number)) {
           return;

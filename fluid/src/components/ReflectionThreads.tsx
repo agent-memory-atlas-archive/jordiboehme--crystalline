@@ -406,9 +406,10 @@ function headingOf(
   sections: readonly SectionText[],
 ): string | null {
   const section = sectionOf(thread.anchor.section, sections);
+  // A comment in the heading is a note for whoever edits it.
   return section === undefined || section.id === TOP_SECTION
     ? null
-    : section.heading;
+    : withoutHtmlComments(section.heading).trim();
 }
 
 /**
