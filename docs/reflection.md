@@ -8,7 +8,7 @@ A Reflection is a domain's documents for people. They live in the folder `reflec
 
 Engrams stay the agent's knowledge. The Reflection is where people and agents meet. Both edit the pages, and both comment on them in threads. The agent brings what changed in the engrams into the pages, and it reads what people changed in the pages and decides what to learn from it.
 
-A reflection is not an engram. It needs no frontmatter, `search_engrams` never returns it, and with the switch on the engram tools (`write_engram`, `edit_engram`, `move_engram`, `delete_engram`) refuse paths under `reflections/`. Four tools work on it instead: `reflect`, `read_reflection`, `write_reflection` and `discuss`. The Fluid pages for the Reflection follow in 0.27.0. Until then people reach it through their agent, the files on disk and the JSON API.
+A reflection is not an engram. It needs no frontmatter, `search_engrams` never returns it, and with the switch on the engram tools (`write_engram`, `edit_engram`, `move_engram`, `delete_engram`) refuse paths under `reflections/`. Four tools work on it instead: `reflect`, `read_reflection`, `write_reflection` and `discuss`. People read, edit and discuss the pages in Fluid, under the Reflection half of a domain's switch. Agents use the tools, and the files on disk and the JSON API work too.
 
 ## Switch it on
 

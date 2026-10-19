@@ -190,8 +190,8 @@ function ManifestRedirect() {
  * somebody saved goes on to `/d/<domain>/engrams` with its query, fragment
  * and state, before the status is asked. Otherwise the Reflection status
  * decides: in effect here (`on`) and readable, the domain opens on its
- * Reflection. A contributor, who cannot read engrams, goes there too, since
- * it is their only view. Every other answer (off, pending, elsewhere, hosted
+ * Reflection, with the fragment kept. A contributor, who cannot read
+ * engrams, goes there too, since it is their only view. Every other answer (off, pending, elsewhere, hosted
  * elsewhere, homeless, no right, a failed read) shows the engram view in
  * place, which answers a missing domain or a pending Reflection as it always
  * did. While the status loads, the domain's loader stands, so the engram
@@ -220,7 +220,9 @@ function DomainEntry() {
       return DOMAIN_FALLBACK;
     }
     if (status.data?.state === "on" && status.data.right !== "none") {
-      return <Navigate to={reflectionRoute(domain)} replace />;
+      return (
+        <Navigate to={`${reflectionRoute(domain)}${location.hash}`} replace />
+      );
     }
     setStayed(domain);
   }

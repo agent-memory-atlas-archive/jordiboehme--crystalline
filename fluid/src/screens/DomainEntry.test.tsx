@@ -134,6 +134,12 @@ describe("opening a domain", () => {
     await expectAt("/d/eng/reflection");
   });
 
+  it("keeps the hash when it forwards to the Reflection", async () => {
+    serve({ "/domains/eng/reflection": status("on") });
+    open("/d/eng#pact");
+    await expectAt("/d/eng/reflection#pact");
+  });
+
   it("forwards a reader who cannot read engrams to the Reflection", async () => {
     serve({ "/domains/eng/reflection": status("on", "read", false) });
     open("/d/eng");
