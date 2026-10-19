@@ -683,7 +683,7 @@ describe("the sidebar inside a domain", () => {
     // because that page is what is open. The domain's name is not repeated:
     // the bar's switcher names it.
     const row = await within(nav).findByRole("link", { name: "Overview" });
-    expect(row).toHaveAttribute("href", "/d/eng");
+    expect(row).toHaveAttribute("href", "/d/eng/engrams");
     expect(row).toHaveAttribute("aria-current", "page");
     expect(within(nav).queryByRole("link", { name: "eng" })).toBeNull();
     expect(
@@ -831,7 +831,7 @@ describe("the sidebar inside a domain", () => {
     // nested in a button is an accessibility violation and a guess about
     // which of the two a click meant.
     const name = await within(nav).findByRole("link", { name: "notes" });
-    expect(name).toHaveAttribute("href", "/d/eng?path=notes");
+    expect(name).toHaveAttribute("href", "/d/eng/engrams?path=notes");
     const toggle = within(nav).getByRole("button", { name: "Expand notes" });
     expect(toggle.contains(name)).toBe(false);
     expect(name.contains(toggle)).toBe(false);
@@ -909,7 +909,7 @@ describe("the sidebar inside a domain", () => {
     const whole = await within(nav).findByRole("link", {
       name: "Browse all engrams in this domain",
     });
-    expect(whole).toHaveAttribute("href", "/d/eng");
+    expect(whole).toHaveAttribute("href", "/d/eng/engrams");
 
     await userEvent.click(
       await within(nav).findByRole("button", { name: "Expand notes" }),
@@ -922,7 +922,7 @@ describe("the sidebar inside a domain", () => {
     const all = await within(nav).findByRole("link", {
       name: "Browse all of notes",
     });
-    expect(all).toHaveAttribute("href", "/d/eng?path=notes");
+    expect(all).toHaveAttribute("href", "/d/eng/engrams?path=notes");
     expect(within(nav).queryByText(/620/)).toBeNull();
   });
 

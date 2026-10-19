@@ -1600,7 +1600,7 @@ describe("the domain screen", () => {
     });
     expect(within(heading).getByRole("link", { name: "eng" })).toHaveAttribute(
       "href",
-      "/d/eng",
+      "/d/eng/engrams",
     );
     expect(within(heading).queryByRole("link", { name: "notes" })).toBeNull();
     // All of them: the list pages towards the envelope's six hundred and the
@@ -1697,7 +1697,7 @@ describe("the domain screen", () => {
     });
     expect(
       within(heading).getByRole("link", { name: "notes" }),
-    ).toHaveAttribute("href", "/d/eng?path=notes");
+    ).toHaveAttribute("href", "/d/eng/engrams?path=notes");
     expect(within(heading).queryByRole("link", { name: "deep" })).toBeNull();
     expect(
       await within(body).findByText("0 engrams in this folder"),
@@ -3089,8 +3089,10 @@ describe("a domain's old address", () => {
 
     await screen.findByRole("heading", { level: 1, name: "eng-knowledge" });
     await waitFor(() => {
+      // A query on the domain's address means the engram view, which has
+      // its own address since 0.28.1; the rename redirect keeps that tail.
       expect(screen.getByTestId("probe")).toHaveTextContent(
-        "/d/eng-knowledge?tab=activity#section-2",
+        "/d/eng-knowledge/engrams?tab=activity#section-2",
       );
     });
   });

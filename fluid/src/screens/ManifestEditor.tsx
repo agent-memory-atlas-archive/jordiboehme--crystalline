@@ -52,7 +52,7 @@ import { formattingKeymap } from "../editor/toolbar";
 import { useCloseFlow, useExitRequest } from "../editor/useCloseFlow";
 import { saveKeymap, useEditorSession } from "../editor/useEditorSession";
 import { useFullWidth } from "../layoutWidth";
-import { WHOLE_MANIFEST, domainRoute } from "../paths";
+import { WHOLE_MANIFEST, engramsRoute } from "../paths";
 import { useTheme } from "../theme/context";
 import NotFound from "./NotFound";
 
@@ -255,7 +255,8 @@ function EditorSurface({
    */
   const exit = useExitRequest();
   const leave = () => {
-    void navigate(domainRoute(domain));
+    // The engram view, where the MANIFEST is read.
+    void navigate(engramsRoute(domain));
   };
 
   // The shared shell: buffer, checksum, dirty state, the dry-run gate,

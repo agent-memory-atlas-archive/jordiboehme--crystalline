@@ -43,6 +43,20 @@ describe("the launch path (M4 C1)", () => {
           "?path=My%20Notes",
           { kind: "deck", domain: "eng", folder: "My Notes", section: 0 },
         ],
+        ["/d/eng/engrams", "", { kind: "bridge", domain: "eng" }],
+        ["/d/eng/reflection", "", { kind: "bridge", domain: "eng" }],
+        ["/d/eng/reflection", "?q=x", { kind: "bridge", domain: "eng" }],
+        ["/d/eng/reflection/review", "", { kind: "bridge", domain: "eng" }],
+        [
+          "/d/eng/reflection/guides/welcome.md",
+          "",
+          { kind: "bridge", domain: "eng" },
+        ],
+        [
+          "/d/eng/engrams",
+          "?path=My%20Notes",
+          { kind: "deck", domain: "eng", folder: "My Notes", section: 0 },
+        ],
         [
           "/d/eng/e/notes/deep/gamma",
           "",

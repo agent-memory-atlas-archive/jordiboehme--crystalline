@@ -13,8 +13,8 @@ describe("crumbsOf", () => {
     );
     expect(crumbs).toEqual([
       { label: "playground", href: null, printOnly: true },
-      { label: "notes", href: "/d/playground?path=notes" },
-      { label: "deep", href: "/d/playground?path=notes%2Fdeep" },
+      { label: "notes", href: "/d/playground/engrams?path=notes" },
+      { label: "deep", href: "/d/playground/engrams?path=notes%2Fdeep" },
       { label: "Deep Gamma Note", href: null },
     ]);
   });

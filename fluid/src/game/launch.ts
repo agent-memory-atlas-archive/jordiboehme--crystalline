@@ -28,19 +28,31 @@
 /** The prefix every game route sits under, percent-encoded as `history` holds it. */
 export const GAME_PREFIX = "/%CF%80";
 
+/** A Reflection address, with the domain's own address as its first group. */
+const reflectionBridge = /^(\/d\/[^/]+)\/reflection(?:\/.*)?$/;
+
 /**
  * The game path a Fluid location launches into (M4 C1): the prefix, the
  * path, the search.
  *
  * The app's root is the bare prefix, never the prefix with a trailing
- * slash, which is the form `gameRouteOf` writes for the airlock. Every other
+ * slash, which is the form `gameRouteOf` writes for the airlock. Fluid's
+ * engram view (`/d/<domain>/engrams`, since 0.28.1) is the domain's own
+ * address to the station, a bridge, or a deck with its `?path=`. So is its
+ * Reflection (`/d/<domain>/reflection` and every page under it), where a
+ * domain opens since 0.28.1: the station has no room for a page, so it
+ * lands on the domain's bridge, its query left behind. Every other
  * path is appended as it is, so a deck's `?path=` survives and a page the
  * station has no place for lands in the airlock.
  */
 export function gamePathOf(pathname: string, search: string): string {
   return pathname === "/" && search === ""
     ? GAME_PREFIX
-    : GAME_PREFIX + pathname + search;
+    : reflectionBridge.test(pathname)
+      ? GAME_PREFIX + pathname.replace(reflectionBridge, "$1")
+      : GAME_PREFIX +
+        pathname.replace(/^(\/d\/[^/]+)\/engrams$/, "$1") +
+        search;
 }
 
 /** The context the last launch primed, lent to the mixer until the next prime. */

@@ -8,11 +8,11 @@ A Reflection is a domain's documents for people. They live in the folder `reflec
 
 Engrams stay the agent's knowledge. The Reflection is where people and agents meet. Both edit the pages, and both comment on them in threads. The agent brings what changed in the engrams into the pages, and it reads what people changed in the pages and decides what to learn from it.
 
-A reflection is not an engram. It needs no frontmatter, `search_engrams` never returns it, and with the switch on the engram tools (`write_engram`, `edit_engram`, `move_engram`, `delete_engram`) refuse paths under `reflections/`. Four tools work on it instead: `reflect`, `read_reflection`, `write_reflection` and `discuss`. The Fluid pages for the Reflection follow in 0.27.0. Until then people reach it through their agent, the files on disk and the JSON API.
+A reflection is not an engram. It needs no frontmatter, `search_engrams` never returns it, and with the switch on the engram tools (`write_engram`, `edit_engram`, `move_engram`, `delete_engram`) refuse paths under `reflections/`. Four tools work on it instead: `reflect`, `read_reflection`, `write_reflection` and `discuss`. People read, edit and discuss the pages in Fluid, under the Reflection half of a domain's switch. Agents use the tools, and the files on disk and the JSON API work too.
 
 ## Switch it on
 
-Set the MANIFEST key `reflection: on`. Do it in the domain policies card in Fluid, with `PATCH /api/v1/domains/{domain}/manifest`, or ask your agent (the `configure` tool with `domain`). Switching it on writes a first `reflections/PACT.md` with the four headings to fill in. Switching it off again is always allowed, and the files stay where they are.
+Set the MANIFEST key `reflection: on`. Do it in the domain policies card in Fluid, with `PATCH /api/v1/domains/{domain}/manifest`, or ask your agent (the `configure` tool with `domain`). Switching it on writes a first `reflections/PACT.md` with the four headings to fill in. Switching it off again is always allowed, and the files stay where they are. In Fluid the domain then opens on its Reflection. The Engrams half of the switch at the top shows the engrams.
 
 On a domain connected to GitHub, switching it off has one more effect. The folder `reflections/` is then ordinary engram content, so "share changes" offers its pages, their threads and `PACT.md`. Threads can hold comments from people who may not see engrams. So do not share changes while the switch is off. Once these files are in the team's copy, switching on again is refused until the team's copy no longer holds them. The answer to the switch-off says this too.
 

@@ -1,5 +1,5 @@
 /**
- * The two ways of looking at a domain, Engrams and Reflection, and the one
+ * The two ways of looking at a domain, Reflection and Engrams, and the one
  * notice that stands in for them when the Reflection lives on another
  * instance.
  *
@@ -27,7 +27,7 @@ import {
   reflectionStatusKey,
 } from "../api/reflectionDomains";
 import { isWebAddress } from "../format";
-import { domainRoute, reflectionRoute } from "../paths";
+import { domainRoute, engramsRoute, reflectionRoute } from "../paths";
 import { FOCUS_RING } from "./primitives";
 
 const LINK =
@@ -66,6 +66,30 @@ export function HomeElsewhere({ url }: { url: string | null }): ReactElement {
   );
 }
 
+/**
+ * Whether `/d/<domain>` opens on the Reflection for this answer: in effect
+ * here and readable by the caller. The one rule the domain's address
+ * (`DomainEntry` in routes.tsx) and the switch both read.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function opensOnReflection(
+  s: Pick<ReflectionStatus, "state" | "right">,
+): boolean {
+  return s.state === "on" && s.right !== "none";
+}
+
+/**
+ * Where the domain's bare address put down its decision to stay on the
+ * engrams (`DomainEntry` in routes.tsx), for the switch to read: `true`
+ * while a page on `/d/<domain>` shows the engrams, absent otherwise. The
+ * decision sticks for the page, so the switch reads it rather than the
+ * latest status, which may have changed since.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function domainStayKey(domain: string): readonly unknown[] {
+  return ["domain-stay", domain];
+}
+
 /** The four fields that decide the switch, on the status and the listing. */
 type SwitchFacts = Pick<
   ReflectionStatus,
@@ -90,12 +114,13 @@ export function switchHome(s: SwitchFacts): false | null | string {
 }
 
 /**
- * The mode switch in the top bar: "Engrams | Reflection" as a segmented
+ * The mode switch in the top bar: "Reflection | Engrams" as a segmented
  * control, the selected half a raised pill, `aria-current` and bold weight so
- * the pill is never the only cue (spec 4.1, 4.2, 6).
+ * the pill is never the only cue (spec 4.1, 4.2, 6). Reflection comes first
+ * since 0.28.1, when a domain started to open on it.
  *
  * `aria-current` is "page" only on the link whose address is on screen (the
- * domain page, the Reflection home) and "true" on the mode an engram page, an
+ * engram view, the Reflection home) and "true" on the mode an engram page, an
  * editor or a Reflection page belongs to: the reader is in that mode, not on
  * that page.
  *
@@ -120,6 +145,12 @@ export function ReflectionModeSwitch({
 }): ReactElement | null {
   const status = useReflectionStatus(domain);
   const { pathname } = useLocation();
+  // Read from the cache only: `DomainEntry` writes it, nothing fetches it.
+  const stayed = useQuery({
+    queryKey: domainStayKey(domain),
+    queryFn: () => false,
+    enabled: false,
+  });
   const facts = status.data ?? listed;
   const away = facts === undefined ? false : switchHome(facts);
   if (away === false) {
@@ -127,21 +158,25 @@ export function ReflectionModeSwitch({
   }
   // The look lives in index.css (`.mode-half`), keyed on aria-current.
   const half = `mode-half ${fill ? "h-8 flex-1" : ""} ${FOCUS_RING}`;
-  const here = (name: "engrams" | "reflection", to: string) =>
-    current === name ? (pathname === to ? "page" : "true") : undefined;
   const reflection = reflectionRoute(domain);
+  const engrams = engramsRoute(domain);
+  // The domain's own address shows the engram view in place once
+  // `DomainEntry` decided to stay there, so it is that page too. Until then
+  // it is neither: no half is current before a forward. The decision is the
+  // page's own and sticks, so a later status read does not change the mark.
+  const opened = domainRoute(domain);
+  const undecided = pathname === opened && stayed.data !== true;
+  const here = (name: "engrams" | "reflection", ...at: string[]) =>
+    undecided || current !== name
+      ? undefined
+      : at.includes(pathname)
+        ? "page"
+        : "true";
   return (
     <nav
       aria-label="Domain view"
       className={`${fill ? "flex" : "ml-1.5 inline-flex"} shrink-0 gap-0.5 rounded-[9px] bg-seg p-[3px]`}
     >
-      <Link
-        to={domainRoute(domain)}
-        aria-current={here("engrams", domainRoute(domain))}
-        className={half}
-      >
-        Engrams
-      </Link>
       {away === null ? (
         <Link
           to={reflection}
@@ -161,6 +196,13 @@ export function ReflectionModeSwitch({
           <ExternalLink aria-hidden="true" size={12} strokeWidth={1.75} />
         </a>
       )}
+      <Link
+        to={engrams}
+        aria-current={here("engrams", engrams, opened)}
+        className={half}
+      >
+        Engrams
+      </Link>
     </nav>
   );
 }

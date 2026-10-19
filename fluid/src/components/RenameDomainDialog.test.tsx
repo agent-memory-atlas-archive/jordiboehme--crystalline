@@ -112,6 +112,56 @@ beforeEach(() => {
 });
 
 describe("the rename dialog", () => {
+  it("lands on the engram view even when the domain opens on its Reflection", async () => {
+    // The report is drawn by the engram view alone; the domain's own address
+    // would forward to the Reflection and leave it waiting (0.28.1).
+    const on = (domain: string) => () => ({
+      domain,
+      state: "on",
+      home: "local",
+      home_url: null,
+      right: "curate",
+      engrams_visible: true,
+      pending_engrams: [],
+    });
+    serveAs("admin", {
+      "/domains/eng/reflection": on("eng"),
+      "/domains/engineering/reflection": on("engineering"),
+      "/domains/eng/rename": (_path, init) => {
+        if (init?.method !== "POST") {
+          throw new ApiProblem(404, "not found", "no stub for GET");
+        }
+        return {
+          domain: "engineering",
+          previous: "eng",
+          local_only: false,
+          manifest_written: true,
+          manifest_draft: false,
+          rewritten: [],
+          left_behind: [],
+          aliases: ["eng"],
+          shadows: [],
+        };
+      },
+      ...domainFixtures("engineering"),
+    });
+    renderApp("/d/eng/engrams");
+
+    const dialog = await openDialog();
+    await userEvent.type(
+      within(dialog).getByLabelText("New name"),
+      "engineering",
+    );
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Rename" }),
+    );
+
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "engineering" }),
+    ).toBeVisible();
+    expect(await screen.findByText("Renamed from eng.")).toBeVisible();
+  });
+
   it("submits the new name with local_only false when the checkbox is left alone", async () => {
     const renamed = vi.fn(() => ({
       domain: "engineering",

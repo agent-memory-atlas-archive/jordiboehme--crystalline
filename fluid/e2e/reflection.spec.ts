@@ -107,12 +107,25 @@ function at(page: Page, path: string): Promise<void> {
 test.describe.serial("the Reflection journeys", () => {
   test("the owner switches modes and reads a page", async ({ page }) => {
     await signIn(page, USER, PASSWORD);
+    // The domain opens on its Reflection, which comes first in the switch;
+    // the engrams are one click away and have their own address.
     await page.goto(`d/${DOMAIN}`);
+    await at(page, HOME);
     const modes = page.getByRole("navigation", { name: "Domain view" });
-    await expect(
-      modes.getByRole("link", { name: "Engrams", exact: true }),
-    ).toHaveAttribute("aria-current", "page");
-    await modes.getByRole("link", { name: "Reflection", exact: true }).click();
+    const reflectionMode = modes.getByRole("link", {
+      name: "Reflection",
+      exact: true,
+    });
+    const engramsMode = modes.getByRole("link", {
+      name: "Engrams",
+      exact: true,
+    });
+    await expect(reflectionMode).toHaveAttribute("aria-current", "page");
+    await expect(modes.getByRole("link")).toHaveText(["Reflection", "Engrams"]);
+    await engramsMode.click();
+    await at(page, `d/${DOMAIN}/engrams`);
+    await expect(engramsMode).toHaveAttribute("aria-current", "page");
+    await reflectionMode.click();
     await tree(page).getByRole("button", { name: "Expand guides" }).click();
     await tree(page).getByRole("link", { name: "Welcome" }).click();
     await expect(

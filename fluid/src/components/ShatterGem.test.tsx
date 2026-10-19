@@ -199,8 +199,8 @@ describe("the C64 screen's launch (M4 C1 to C4)", () => {
     // origin is the new page, not the one remembered from before.
     fireEvent.keyDown(focused(), { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    await go("/d/eng?path=My%20Notes");
-    expect(location).toBe("/d/eng?path=My%20Notes");
+    await go("/d/eng/engrams?path=My%20Notes");
+    expect(location).toBe("/d/eng/engrams?path=My%20Notes");
     dialog = await openScreen();
     fireEvent.click(
       within(dialog).getByRole("link", { name: 'LOAD"GAME",8,1' }),
@@ -217,7 +217,7 @@ describe("the C64 screen's launch (M4 C1 to C4)", () => {
     await openScreen();
     fireEvent.keyDown(focused(), { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    await go("/d/eng?path=My%20Notes");
+    await go("/d/eng/engrams?path=My%20Notes");
     const home = await screen.findByRole("link", { name: "Fluid" });
     const gem = home.firstElementChild;
     if (!(gem instanceof HTMLElement))
