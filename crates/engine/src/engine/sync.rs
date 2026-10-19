@@ -276,8 +276,8 @@ impl Engine {
             // The files are in; the drafts no file describes come back from the
             // journal. A no-op on every sync but the first one after a rebuild.
             self.restore_overlays_quietly(name).await;
-            self.announce_report(name, &report, None);
-            if report.reflections_changed > 0 {
+            let threads_heard = self.announce_report(name, &report, None);
+            if report.reflections_changed > 0 || threads_heard {
                 // A plain editor changed the Reflection: an edit, settled
                 // after a minute without another one.
                 self.mark_reflection_dirty(name, crate::reflection_backup::BackupCause::Edit);
@@ -561,12 +561,15 @@ impl Engine {
         if manifest_touched {
             self.refresh_names().await;
         }
-        if report.reflections_changed > 0 {
+        // Announced first: a threads file the engine just wrote comes back
+        // here as an echo the bus drops, and that echo asks for no backup.
+        let threads_heard = self.announce_report(name, &report, actor);
+        if report.reflections_changed > 0 || threads_heard {
             // A file dropped into the Reflection by hand, found by the
-            // watcher: an edit, as in the full sync.
+            // watcher: an edit, as in the full sync. A threads file counts
+            // too: it has no row, but the backup commits it.
             self.mark_reflection_dirty(name, crate::reflection_backup::BackupCause::Edit);
         }
-        self.announce_report(name, &report, actor);
         Ok((report, true))
     }
 

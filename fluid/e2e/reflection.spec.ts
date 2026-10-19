@@ -24,7 +24,7 @@
  * e2e/reflection.spec.ts`).
  */
 
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
@@ -909,6 +909,27 @@ test.describe.serial("the Reflection journeys", () => {
       page.getByRole("img", { name: "Old harbor diagram" }),
     ).toHaveCount(0);
     await expect(page.locator('img[src*="old-harbor"]')).toHaveCount(0);
+  });
+
+  test("a comment written to the threads file on disk shows on the open page", async ({
+    page,
+  }) => {
+    // `run-smoke.sh` exports where the daemon's copy of the fixture lives.
+    const root = process.env.FLUID_E2E_REFLECTION_ROOT;
+    test.skip(!root, "run through run-smoke.sh, which names the domain root");
+    await signIn(page, USER, PASSWORD);
+    await page.goto(`${HOME}/guides/diagram.md`);
+    const card = page.getByRole("article", { name: "Thread on Old diagram" });
+    await expect(card).toContainText("It is on the welcome page now.");
+    // Another process appends to the file, as an agent outside the daemon
+    // or a pull would. No reload: the change stream brings it.
+    appendFileSync(
+      `${root}/reflections/guides/diagram.threads.md`,
+      "- 2026-10-19T09:00:00Z, comment by scribe (agent): The legend moved under the picture.\n",
+    );
+    await expect(card).toContainText("The legend moved under the picture.", {
+      timeout: 10_000,
+    });
   });
 
   test("the domain policies card turns a Reflection on", async ({ page }) => {

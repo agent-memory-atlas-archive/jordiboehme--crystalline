@@ -327,13 +327,16 @@ pub enum ReflectionChangeKind {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
 pub struct ReflectionChanged {
     pub domain: String,
-    /// Inside `reflections/`, after the change; empty for `switched`.
+    /// Inside `reflections/`, after the change; empty for `switched`, and
+    /// for `changed` when a sync found many paths at once (the whole
+    /// Reflection, then).
     pub path: String,
     pub kind: ReflectionChangeKind,
     /// `moved`, and `files` on a move: the path before.
     pub from: Option<String>,
     /// Who made the change, as a display label; null for a link that
-    /// followed, a room save with no single typist, and the machine owner.
+    /// followed, a room save with no single typist, the machine owner and a
+    /// change found on disk.
     pub actor: Option<String>,
 }
 
@@ -525,6 +528,7 @@ mod tests {
                 kind: bus::ReflectionChangeKind::Moved,
                 from: None,
                 actor: None,
+                checksum: None,
                 audience: None,
             }]),
             published::<super::ReflectionChanged>()

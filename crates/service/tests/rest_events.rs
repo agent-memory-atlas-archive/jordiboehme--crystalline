@@ -247,6 +247,12 @@ async fn read_until(
                     frame.data.push_str(rest.trim());
                 }
             }
+            // The opening comment every stream starts with is no frame any
+            // case below waits for; `the_first_bytes_arrive_at_once...`
+            // reads it on its own.
+            if frame.event == "comment" && frame.data == "open" {
+                continue;
+            }
             frames.push(frame);
         }
     }
@@ -312,6 +318,23 @@ async fn the_stream_carries_an_engram_frame_with_an_id_and_the_right_headers() {
     assert_eq!(data["kind"], "modified");
     assert!(data["checksum"].is_string());
     assert!(data.get("event").is_none(), "the tag rides the event line");
+}
+
+/// The stream opens with a comment of its own, written with the headers:
+/// a proxy or a dev server that holds the headers back until the first
+/// body bytes would otherwise open the stream only at the first ping, up to
+/// fifteen seconds after the tab connected.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_first_bytes_arrive_at_once_without_waiting_for_the_ping() {
+    let fx = serve(false, false).await;
+    let cookie = login(fx.addr, "ada", "adapw").await;
+    let mut resp = open(fx.addr, Some(&cookie), None).await;
+    let first = tokio::time::timeout(Duration::from_secs(2), resp.chunk())
+        .await
+        .expect("the first bytes come before the heartbeat")
+        .unwrap()
+        .expect("a chunk");
+    assert_eq!(std::str::from_utf8(&first).unwrap(), ": open\n\n");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

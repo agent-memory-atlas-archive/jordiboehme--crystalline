@@ -143,6 +143,34 @@ pub struct PathChange {
     pub checksum: Option<String>,
 }
 
+/// What happened to one path of a domain's Reflection, as the engine
+/// announces it: the kinds of the `reflection` event a sync can find on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReflectionPathKind {
+    /// A page or the pact was written.
+    Changed,
+    /// A page or the pact went.
+    Deleted,
+    /// The threads file beside a page was written or removed.
+    Threads,
+    /// A file under `reflections/assets/` was written or removed.
+    Files,
+}
+
+/// One path of a domain's Reflection a sync found changed on disk. Never
+/// serialized, like [`PathChange`]: it is for the change bus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReflectionPathChange {
+    /// Inside `reflections/`: the page for `Changed`, `Deleted` and
+    /// `Threads`, `assets/...` for `Files`.
+    pub path: String,
+    pub kind: ReflectionPathKind,
+    /// The lowercase hex SHA-256 of the file as it was read (the threads
+    /// file for `Threads`), so the bus can tell the watcher's echo of an
+    /// engine write from a new change. Absent when the file is gone.
+    pub checksum: Option<String>,
+}
+
 /// The outcome of a sync over one domain.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SyncReport {
@@ -196,6 +224,12 @@ pub struct SyncReport {
     /// both sides: the wire shape of a report is its counts.
     #[serde(skip)]
     pub changes: Vec<PathChange>,
+    /// Every path of the Reflection this pass found changed: the pages, the
+    /// pact and the files it wrote or deleted rows for, and the threads
+    /// files a targeted pass was pointed at. Skipped by serde like
+    /// `changes`.
+    #[serde(skip)]
+    pub reflection_changes: Vec<ReflectionPathChange>,
     /// Files the walk skipped or the scan or the apply could not read: what
     /// `failed` lists for want of the bytes, plus the walk entries that could
     /// not even be stat'd (a file that read but did not parse is not counted).
@@ -244,6 +278,16 @@ struct FileCandidate {
 enum FileRow {
     Asset(AttachmentRow),
     Reflection(ReflectionRow),
+}
+
+impl FileRow {
+    /// The checksum of the bytes the row was built from.
+    fn sha256(&self) -> &str {
+        match self {
+            FileRow::Asset(row) => &row.sha256,
+            FileRow::Reflection(row) => &row.sha256,
+        }
+    }
 }
 
 /// The file tables the reconcile writes, as one closed set: the asset
@@ -350,6 +394,18 @@ impl FileRows {
         match self {
             FileRows::Assets(table) => store.delete_asset(table, domain, path).await,
             FileRows::Reflections => store.delete_reflection(domain, path).await,
+        }
+    }
+
+    /// The kind a written (or, with `deleted`, a removed) row of this table
+    /// is announced as on the change bus; `None` for the engram attachments,
+    /// whose changes are no Reflection's.
+    fn announced_as(self, deleted: bool) -> Option<ReflectionPathKind> {
+        match (self, deleted) {
+            (FileRows::Assets(AssetTable::Engram), _) => None,
+            (FileRows::Assets(AssetTable::Reflection), _) => Some(ReflectionPathKind::Files),
+            (FileRows::Reflections, false) => Some(ReflectionPathKind::Changed),
+            (FileRows::Reflections, true) => Some(ReflectionPathKind::Deleted),
         }
     }
 
@@ -1134,6 +1190,7 @@ pub async fn scan_paths(
     let mut reflection_deletes: Vec<String> = Vec::new();
     let mut reflection_assets: Vec<FileCandidate> = Vec::new();
     let mut reflection_asset_deletes: Vec<String> = Vec::new();
+    let mut threads: Vec<ReflectionPathChange> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for rel in paths {
         // The same path can arrive twice in one debounce batch; classify it once.
@@ -1177,6 +1234,32 @@ pub async fn scan_paths(
                         }
                     }
                     Err(e) => unreadable.push((rel.clone(), e.to_string())),
+                }
+                continue;
+            }
+            // A threads file is no row, but the page it belongs to changed
+            // for whoever reads it: named by the page, with the checksum of
+            // what is on disk now. Threads that went with their page are that
+            // page's deletion, which the page's own path reports.
+            if let ReflectionFile::Threads { of } = file {
+                match std::fs::read(&abs) {
+                    Ok(bytes) => threads.push(ReflectionPathChange {
+                        path: of.clone(),
+                        kind: ReflectionPathKind::Threads,
+                        checksum: Some(sha256_hex(&bytes)),
+                    }),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        let page = abs.with_file_name(of.rsplit('/').next().unwrap_or(of.as_str()));
+                        if page.exists() {
+                            threads.push(ReflectionPathChange {
+                                path: of.clone(),
+                                kind: ReflectionPathKind::Threads,
+                                checksum: None,
+                            });
+                        }
+                    }
+                    // A directory or a denied read: nothing to say about it.
+                    Err(_) => {}
                 }
                 continue;
             }
@@ -1303,6 +1386,7 @@ pub async fn scan_paths(
     scan.reflection_assets = reflection_assets;
     scan.reflection_asset_deletes = reflection_asset_deletes;
     scan.reflection = reflection;
+    scan.report.reflection_changes = threads;
     scan
 }
 
@@ -1593,6 +1677,7 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         Completeness::of(assets_complete, keep_unseen),
         &chunk_params,
         false,
+        false,
         &mut report,
     )
     .await
@@ -1613,6 +1698,7 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         Completeness::of(reflections_complete, keep_unseen),
         &chunk_params,
         ends_rebuild,
+        reflection == ReflectionMode::Effective,
         &mut report,
     )
     .await
@@ -1639,6 +1725,7 @@ pub async fn apply_scan_with_slab<S: Store + ?Sized>(
         Completeness::of(reflections_complete, keep_unseen),
         &chunk_params,
         false,
+        reflection == ReflectionMode::Effective,
         &mut report,
     )
     .await
@@ -2135,6 +2222,10 @@ pub async fn resolve_forward_refs<S: Store + ?Sized>(
 /// unless it keeps them for an unresolved host move and only counts them; a
 /// targeted pass deletes only the paths it was asked about and looked for in
 /// vain, so a one-file watcher event never touches another row.
+///
+/// With `announce`, each row of the Reflection's tables it writes or deletes
+/// is named in `report.reflection_changes` for the change bus, except on a
+/// complete walk that fills an empty table (the Reflection just came on).
 #[allow(clippy::too_many_arguments)]
 async fn reconcile_rows<S: Store + ?Sized>(
     store: &S,
@@ -2145,6 +2236,7 @@ async fn reconcile_rows<S: Store + ?Sized>(
     completeness: Completeness,
     chunk_params: &ChunkParams,
     force: bool,
+    announce: bool,
     report: &mut SyncReport,
 ) -> Result<Reconciled> {
     let complete = completeness != Completeness::Partial;
@@ -2152,6 +2244,12 @@ async fn reconcile_rows<S: Store + ?Sized>(
         return Ok(Reconciled::default());
     }
     let existing = rows.stamps(store, domain).await?;
+    // A complete walk that fills an empty table is the Reflection coming on
+    // (or a first index), not a change of its pages: the `switched` event,
+    // or nobody, says so. The rows a walk clears because the Reflection is
+    // not in effect are not named either; the caller passes `announce`
+    // false for them.
+    let announce = announce && !(complete && existing.is_empty());
     let mut seen: HashSet<String> = HashSet::new();
     let mut changed = 0;
     for candidate in found {
@@ -2176,6 +2274,13 @@ async fn reconcile_rows<S: Store + ?Sized>(
             Ok(Some(row)) => {
                 rows.upsert(store, domain, &row, chunk_params).await?;
                 changed += 1;
+                if announce && let Some(kind) = rows.announced_as(false) {
+                    report.reflection_changes.push(ReflectionPathChange {
+                        path: candidate.rel.clone(),
+                        kind,
+                        checksum: Some(row.sha256().to_string()),
+                    });
+                }
             }
             Ok(None) => {}
             // The file vanished between the scan and here; its removal has its
@@ -2202,6 +2307,13 @@ async fn reconcile_rows<S: Store + ?Sized>(
     for path in gone {
         if rows.delete(store, domain, &path).await? {
             changed += 1;
+            if announce && let Some(kind) = rows.announced_as(true) {
+                report.reflection_changes.push(ReflectionPathChange {
+                    path,
+                    kind,
+                    checksum: None,
+                });
+            }
         }
     }
     Ok(Reconciled { changed, unseen: 0 })

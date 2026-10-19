@@ -50,7 +50,7 @@ const REFLECTION_KINDS: ReadonlySet<string> = new Set([
 /** One reflection changed (core Task 21): a path and a kind, never text. */
 export interface ReflectionChange {
   domain: string;
-  /** Inside `reflections/`, after the change (`assets/...` for `files`); empty for `switched`. */
+  /** Inside `reflections/`, after the change (`assets/...` for `files`); empty for `switched` and for a `changed` that covers many pages at once. */
   path: string;
   /** A kind this client does not know reads as `changed`: it still refreshes. */
   kind: ReflectionChangeKind;

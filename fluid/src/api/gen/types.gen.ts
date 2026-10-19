@@ -1488,7 +1488,8 @@ export type ReflectionChangeKind = 'changed' | 'moved' | 'deleted' | 'threads' |
 export type ReflectionChanged = {
     /**
      * Who made the change, as a display label; null for a link that
-     * followed, a room save with no single typist, and the machine owner.
+     * followed, a room save with no single typist, the machine owner and a
+     * change found on disk.
      */
     actor?: string | null;
     domain: string;
@@ -1498,7 +1499,9 @@ export type ReflectionChanged = {
     from?: string | null;
     kind: ReflectionChangeKind;
     /**
-     * Inside `reflections/`, after the change; empty for `switched`.
+     * Inside `reflections/`, after the change; empty for `switched`, and
+     * for `changed` when a sync found many paths at once (the whole
+     * Reflection, then).
      */
     path: string;
 };

@@ -42,7 +42,7 @@ use axum::http::header::{CACHE_CONTROL, HeaderName, HeaderValue};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use futures::stream;
+use futures::{StreamExt, stream};
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::watch;
@@ -181,12 +181,17 @@ pub async fn stream_events(
     let mut subscriber = Subscriber::new(state, headers, &identity, screen, receiver, slot);
     subscriber.backlog = backlog.into();
     subscriber.reset_pending = reset_pending;
-    let events = stream::unfold(subscriber, |mut subscriber| async move {
+    // A comment first, written with the headers: a proxy or a dev server
+    // that holds the headers until the first body bytes would otherwise open
+    // the stream only at the first heartbeat. It carries no id, so a
+    // reconnect's `Last-Event-ID` is untouched by it.
+    let opened = stream::once(async { Ok::<Event, Infallible>(Event::default().comment("open")) });
+    let events = opened.chain(stream::unfold(subscriber, |mut subscriber| async move {
         subscriber
             .next()
             .await
             .map(|event| (Ok::<Event, Infallible>(event), subscriber))
-    });
+    }));
     let mut response = Sse::new(events)
         .keep_alive(KeepAlive::new().interval(HEARTBEAT).text("ping"))
         .into_response();
@@ -958,6 +963,7 @@ mod tests {
             kind: crate::changes::ReflectionChangeKind::Changed,
             from: None,
             actor: None,
+            checksum: None,
             audience: None,
         })
     }

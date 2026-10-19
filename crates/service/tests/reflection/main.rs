@@ -8,6 +8,7 @@ mod support;
 mod assets;
 mod assets_mcp;
 mod backup;
+mod disk_changes;
 mod docs;
 mod fixture;
 mod guards;

@@ -13104,7 +13104,7 @@
               "string",
               "null"
             ],
-            "description": "Who made the change, as a display label; null for a link that\nfollowed, a room save with no single typist, and the machine owner."
+            "description": "Who made the change, as a display label; null for a link that\nfollowed, a room save with no single typist, the machine owner and a\nchange found on disk."
           },
           "domain": {
             "type": "string"
@@ -13121,7 +13121,7 @@
           },
           "path": {
             "type": "string",
-            "description": "Inside `reflections/`, after the change; empty for `switched`."
+            "description": "Inside `reflections/`, after the change; empty for `switched`, and\nfor `changed` when a sync found many paths at once (the whole\nReflection, then)."
           }
         }
       },

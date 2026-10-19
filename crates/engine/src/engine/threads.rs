@@ -336,7 +336,8 @@ impl Engine {
         undo.record(&threads_abs)?;
         undo.record(&doc_abs)?;
         let existing = read_opt(&threads_abs)?.unwrap_or_default();
-        write_file(&threads_abs, &th::open_thread(&existing, &thread))?;
+        let threads_file = th::open_thread(&existing, &thread);
+        write_file(&threads_abs, &threads_file)?;
         let mut document = document;
         // The thread and the page commit behind the host-lock fence: a host
         // that lost the lock since its gate keeps the comment in the kept
@@ -374,13 +375,7 @@ impl Engine {
         match target {
             ThreadTarget::Reflection { path } => {
                 self.mark_reflection_dirty(domain, BackupCause::Settled);
-                self.announce_reflection(
-                    domain,
-                    path,
-                    ReflectionChangeKind::Threads,
-                    None,
-                    change_label(&caller.scope),
-                );
+                self.announce_threads(domain, path, &threads_file, change_label(&caller.scope));
             }
         }
         Ok(match target {
@@ -471,13 +466,7 @@ impl Engine {
         match target {
             ThreadTarget::Reflection { path } => {
                 self.mark_reflection_dirty(domain, BackupCause::Settled);
-                self.announce_reflection(
-                    domain,
-                    path,
-                    ReflectionChangeKind::Threads,
-                    None,
-                    change_label(&caller.scope),
-                );
+                self.announce_threads(domain, path, &updated, change_label(&caller.scope));
             }
         }
         Ok(match target {

@@ -2001,6 +2001,28 @@ impl Engine {
             kind,
             from: from.map(str::to_string),
             actor,
+            checksum: None,
+            audience: None,
+        }));
+    }
+
+    /// Announce that the threads of the page at `path` changed, with the
+    /// checksum of the threads file as this write left it: the watcher finds
+    /// the same file a moment later, and the bus drops that echo by it.
+    pub(crate) fn announce_threads(
+        &self,
+        domain: &str,
+        path: &str,
+        threads: &str,
+        actor: Option<String>,
+    ) {
+        self.announce(Change::Reflection(ReflectionChanged {
+            domain: domain.to_string(),
+            path: path.to_string(),
+            kind: ReflectionChangeKind::Threads,
+            from: None,
+            actor,
+            checksum: Some(super::sha256_hex(threads.as_bytes())),
             audience: None,
         }));
     }

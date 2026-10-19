@@ -4307,7 +4307,7 @@ impl Engine {
     /// released (a verb's own per-path write lock may still be held; the
     /// bus takes only its own short mutex), at every place a change lands in
     /// the store and nowhere else.
-    pub(crate) fn announce(&self, change: Change) {
+    pub(crate) fn announce(&self, change: Change) -> Option<crate::changes::EventId> {
         // The rows the Reflection gate remembers go stale first, before any
         // subscriber hears of the change (R83). A draft is no base row.
         match &change {
@@ -4317,17 +4317,33 @@ impl Engine {
             Change::Domain(changed) => self.bump_reflection_generation(&changed.domain),
             Change::Engram(_) | Change::Reflection(_) => {}
         }
-        if let Some(id) = self.changes.announce(change) {
+        let id = self.changes.announce(change);
+        if let Some(id) = id {
             tracing::trace!(%id, "announced a change");
         }
+        id
     }
 
     /// Announce what a sync report says it moved: each path as an `engram`
-    /// event at or below `COLLAPSE_THRESHOLD`, one `domain` event above it.
-    /// A generated listing is dropped before it is counted, so a
-    /// regeneration by `refresh_index_files` that the watcher then sees
-    /// announces nothing.
-    pub(crate) fn announce_report(&self, name: &str, report: &SyncReport, actor: Option<&str>) {
+    /// event at or below `COLLAPSE_THRESHOLD`, one `domain` event above it,
+    /// and the Reflection's paths the same way on their own count (see
+    /// [`Engine::announce_reflection_report`]). A generated listing is
+    /// dropped before it is counted, so a regeneration by
+    /// `refresh_index_files` that the watcher then sees announces nothing.
+    /// Answers whether a `threads` event went out, i.e. a threads file
+    /// changed that was not the echo of an engine write.
+    pub(crate) fn announce_report(
+        &self,
+        name: &str,
+        report: &SyncReport,
+        actor: Option<&str>,
+    ) -> bool {
+        self.announce_engram_report(name, report, actor);
+        self.announce_reflection_report(name, report, actor)
+    }
+
+    /// The `engram` half of [`Engine::announce_report`].
+    fn announce_engram_report(&self, name: &str, report: &SyncReport, actor: Option<&str>) {
         // A generated listing's row is a row too, though no event names it.
         if !report.changes.is_empty() {
             self.bump_reflection_generation(name);
@@ -4368,6 +4384,59 @@ impl Engine {
                 audience: None,
             }));
         }
+    }
+
+    /// The `reflection` half of [`Engine::announce_report`]: what a sync
+    /// found changed in the Reflection on disk (a plain editor, another
+    /// process, a pull), one event per path and kind, or one `changed` event
+    /// with an empty path above `COLLAPSE_THRESHOLD`. The events go out as
+    /// the engine's own do, so the route lets through exactly the sessions
+    /// that may read this Reflection. A threads file the engine just wrote
+    /// comes back here through the watcher with the checksum the engine
+    /// announced, and the bus drops it.
+    fn announce_reflection_report(
+        &self,
+        name: &str,
+        report: &SyncReport,
+        actor: Option<&str>,
+    ) -> bool {
+        let mut seen = HashSet::new();
+        let changes: Vec<&crystalline_index::ReflectionPathChange> = report
+            .reflection_changes
+            .iter()
+            .filter(|change| seen.insert((change.path.as_str(), change.kind)))
+            .collect();
+        if changes.is_empty() {
+            return false;
+        }
+        let threads = changes
+            .iter()
+            .any(|change| change.kind == crystalline_index::ReflectionPathKind::Threads);
+        if changes.len() > crate::changes::COLLAPSE_THRESHOLD {
+            self.announce_reflection(
+                name,
+                "",
+                ReflectionChangeKind::Changed,
+                None,
+                actor.map(str::to_string),
+            );
+            return threads;
+        }
+        let mut threads_heard = false;
+        for change in changes {
+            let threads_change = change.kind == crystalline_index::ReflectionPathKind::Threads;
+            let heard = self.announce(Change::Reflection(crate::changes::ReflectionChanged {
+                domain: name.to_string(),
+                path: change.path.clone(),
+                kind: change.kind.into(),
+                from: None,
+                actor: actor.map(str::to_string),
+                checksum: change.checksum.clone(),
+                audience: None,
+            }));
+            threads_heard |= threads_change && heard.is_some();
+        }
+        threads_heard
     }
 
     /// Announce a batch of changes one verb made in one domain, through the
