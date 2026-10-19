@@ -497,6 +497,30 @@ test.describe.serial("the Reflection journeys", () => {
     await expect(added).toHaveCount(0);
   });
 
+  test("the quote highlight paints in light and in dark", async ({ page }) => {
+    await signIn(page, USER, PASSWORD);
+    for (const scheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme: scheme });
+      await page.goto(WELCOME);
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => CSS.highlights.get("reflection-quote")?.size ?? 0,
+          ),
+        )
+        .toBeGreaterThan(0);
+      // What the stylesheet paints for `::highlight(reflection-quote)`: the
+      // passage with the quotes registered differs from the same passage
+      // with them taken away.
+      const passage = page.getByText(
+        "Deploys run at night, after the batch window.",
+      );
+      const painted = await passage.screenshot();
+      await page.evaluate(() => CSS.highlights.delete("reflection-quote"));
+      expect(painted.equals(await passage.screenshot())).toBe(false);
+    }
+  });
+
   test("at 1100 wide the threads are a sheet too, beside the sidebar", async ({
     page,
   }) => {
