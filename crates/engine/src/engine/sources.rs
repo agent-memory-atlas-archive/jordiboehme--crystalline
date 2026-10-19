@@ -36,6 +36,11 @@ pub(crate) struct SourceFacts {
     /// The page's own domain, by permalink.
     pub own: HashMap<String, EngramFact>,
     foreign: HashMap<String, Option<HashMap<String, EngramFact>>>,
+    /// The page's domain by its local name.
+    own_domain: String,
+    /// Each stored domain name by the local name this instance registers it
+    /// under, for every name that resolves here.
+    local: HashMap<String, String>,
 }
 
 impl SourceFacts {
@@ -45,6 +50,18 @@ impl SourceFacts {
             None => self.own.get(&src.engram),
             Some(domain) => self.foreign.get(domain)?.as_ref()?.get(&src.engram),
         }
+    }
+
+    /// The name a reader reaches `src`'s domain by on this instance, when it
+    /// is not the page's own domain: the local name the stored (canonical)
+    /// name resolves to, or the stored name when it resolves to nothing
+    /// here. `None` for a source of the page's own domain. What every
+    /// answer shows and links by, since routes and every domain verb take
+    /// the local name; the canonical one stays in the stored record.
+    pub(crate) fn shown_domain<'a>(&'a self, src: &'a r::SourceRef) -> Option<&'a str> {
+        let stored = src.domain.as_deref()?;
+        let shown = self.local.get(stored).map_or(stored, String::as_str);
+        (shown != self.own_domain).then_some(shown)
     }
 
     /// Whether `src` is in a domain that cannot be checked here.
@@ -217,6 +234,7 @@ impl Engine {
     /// is recorded as such.
     pub(crate) async fn source_facts<'a>(
         &self,
+        own_domain: &str,
         own_id: DomainId,
         own: Option<HashMap<String, EngramFact>>,
         sources: impl Iterator<Item = &'a r::SourceRef>,
@@ -244,9 +262,13 @@ impl Engine {
             }
         };
         let mut foreign = HashMap::new();
+        let mut local = HashMap::new();
         if !foreign_wanted.is_empty() {
             let table = self.name_table_now().await;
             for (name, permalinks) in foreign_wanted {
+                if let Some(resolved) = table.resolve(&name) {
+                    local.insert(name.clone(), resolved.to_string());
+                }
                 let id = match self.checkable_domain(&table, &name) {
                     Some(local) => self.store.lock().await.domain_id(&local).await?,
                     None => None,
@@ -261,6 +283,11 @@ impl Engine {
                 foreign.insert(name, facts);
             }
         }
-        Ok(SourceFacts { own, foreign })
+        Ok(SourceFacts {
+            own,
+            foreign,
+            own_domain: own_domain.to_string(),
+            local,
+        })
     }
 }

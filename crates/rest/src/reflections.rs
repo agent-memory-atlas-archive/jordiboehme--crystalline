@@ -337,7 +337,8 @@ pub async fn tree(
                            `engrams_visible`. A source's `state` is `current`, \
                            `changed`, `retired`, `missing` or `unavailable` \
                            (its domain cannot be checked here); a source of \
-                           another domain than the page's carries `domain`. \
+                           another domain than the page's carries `domain`, \
+                           the local name it is reached by here. \
                            `sections[].hidden_sources` counts the sources in a \
                            domain the caller may not open, which are never \
                            named; absent when there are none. `threads` holds \
@@ -992,8 +993,8 @@ pub struct QueueQuery {
                            unknown) or `source_unavailable` (one per page and \
                            domain that cannot be checked here, `section` null, \
                            with `source_domain`, `count`, `sections` and \
-                           `note`). A source in `sources` may carry `domain` \
-                           when it is another domain than the page's. Sources \
+                           `note`). A source in `sources` may carry `domain`, \
+                           the local name of another domain than the page's. Sources \
                            in a domain the caller may not open are never named: \
                            the item carries `hidden_sources`, their count, and \
                            `note`, one plain sentence whatever their state; \

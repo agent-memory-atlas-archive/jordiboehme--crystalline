@@ -1774,3 +1774,108 @@ async fn a_canonical_name_edited_in_the_manifest_leaves_sources_unavailable() {
     assert!(!whats.contains(&"source_missing"), "{queue}");
     assert!(file(&fx, "a.md").contains("domain: ops-team"), "kept");
 }
+
+/// A page whose frontmatter cannot be rewritten key by key keeps its
+/// stored source domain through a rename, and the report lists it with
+/// why, instead of passing it over in silence.
+#[tokio::test]
+async fn a_rename_lists_a_page_whose_sources_it_cannot_rewrite() {
+    use crystalline_core::reflection as r;
+    let fx = with_ops(
+        "",
+        "",
+        &[(
+            "runbook.md",
+            &engram("Runbook", "runbook", "- [fact] page the on-call"),
+        )],
+    )
+    .await;
+    let mut p = write("a.md", "# A\n\nFor people.\n\n## On call\n\nPage them.\n");
+    p.sources = BTreeMap::from([(
+        "On call".to_string(),
+        vec!["crystalline://ops/runbook".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let text = file(&fx, "a.md");
+    let (id, record) = r::read_provenance(&text)
+        .into_iter()
+        .find(|(_, rec)| !rec.sources.is_empty())
+        .unwrap();
+    let body = crystalline_core::frontmatter::split_frontmatter(&text)
+        .unwrap()
+        .body
+        .to_string();
+    let flow = format!(
+        "---\n{{reflection: {{{id}: {{sources: [{{domain: ops, engram: runbook, checksum: {}}}]}}}}}}\n---\n{body}",
+        record.sources[0].checksum
+    );
+    std::fs::write(fx.root.join("reflections/a.md"), &flow).unwrap();
+    fx.engine.sync(None).await.unwrap();
+
+    let report = rename_ops(&fx).await;
+
+    assert!(file(&fx, "a.md").contains("domain: ops"), "left as it was");
+    let left = report["left_behind"].as_array().unwrap();
+    assert!(
+        left.iter().any(|row| row["domain"] == "eng"
+            && row["path"] == "reflections/a.md"
+            && row["reason"]
+                .as_str()
+                .is_some_and(|why| why.contains("cannot be rewritten key by key"))),
+        "{report}"
+    );
+}
+
+/// A domain rename by an account that cannot see the citing page's domain
+/// still rewrites the stored source domain there, and names nothing of
+/// that domain in its report.
+#[tokio::test]
+async fn a_rename_rewrites_sources_in_a_domain_hidden_from_the_renamer() {
+    use crystalline_service::rest::{AuthStore, Role};
+    use std::sync::Arc;
+    let fx = with_ops(
+        "",
+        "",
+        &[(
+            "runbook.md",
+            &engram("Runbook", "runbook", "- [fact] page the on-call"),
+        )],
+    )
+    .await;
+    let mut p = write("a.md", "# A\n\nFor people.\n\n## On call\n\nPage them.\n");
+    p.sources = BTreeMap::from([(
+        "On call".to_string(),
+        vec!["crystalline://ops/runbook".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let auth = Arc::new(
+        AuthStore::open(&fx.tmp.path().join("web-auth.db"))
+            .await
+            .unwrap(),
+    );
+    for name in ["keeper", "olga"] {
+        auth.add_user(name, name, None, Role::Editor, "pw12345678")
+            .await
+            .unwrap();
+    }
+    auth.set_domain_visibility("eng", true, "keeper")
+        .await
+        .unwrap();
+    auth.set_domain_visibility("ops", true, "olga")
+        .await
+        .unwrap();
+    fx.engine
+        .set_domain_access(Arc::new(crystalline_service::DomainAccess::new(auth)));
+    let olga = crystalline_service::Scope::User {
+        account: "olga".into(),
+        admin: false,
+    };
+    let report = fx
+        .engine
+        .rename_domain("ops", "platform", false, &olga)
+        .await
+        .unwrap();
+    assert!(!report.to_string().contains("\"eng\""), "{report}");
+    let text = file(&fx, "a.md");
+    assert!(text.contains("domain: platform"), "{text}");
+}

@@ -267,3 +267,192 @@ async fn a_source_another_domain_lacks_is_refused_by_its_address() {
         assert!(!exists(&fx, "b.md"), "{source}");
     }
 }
+
+/// A domain whose MANIFEST names it differently from its local name: the
+/// record stores the canonical name, and every answer names the domain by
+/// the local name a reader reaches it by, so a link into it lands on the
+/// engram.
+#[tokio::test]
+async fn a_source_is_shown_by_the_local_name_its_domain_is_reached_by() {
+    let fx = crossing().await;
+    fx.engine
+        .edit_engram(&crystalline_service::params::EditParams {
+            identifier: "manifest".to_string(),
+            domain: "scotty".to_string(),
+            operation: "find_replace".to_string(),
+            find_text: Some("domain_name: scotty\n".to_string()),
+            content: Some("domain_name: crew\n".to_string()),
+            expected_replacements: Some(1),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let mut p = write(
+        "overview.md",
+        "# Overview\n\nFor people.\n\n## Team\n\nFive.\n",
+    );
+    p.sources = BTreeMap::from([(
+        "Team".to_string(),
+        vec!["crystalline://crew/team/scotty-team".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let stored = std::fs::read_to_string(fx.root.join("reflections/overview.md")).unwrap();
+    assert!(
+        stored.contains("domain: crew"),
+        "the canonical name is stored: {stored}"
+    );
+    let doc = fx
+        .engine
+        .read_reflection("eng", "overview.md", &agent())
+        .await
+        .unwrap();
+    let source = &sources_by_heading(&doc, "Team")[0];
+    assert_eq!(source["domain"], "scotty", "{doc}");
+    // The link a reader follows: the engram by the name shown.
+    let engram = fx
+        .engine
+        .read_engram(
+            &crystalline_service::params::ReadParams {
+                identifier: source["permalink"].as_str().unwrap().to_string(),
+                domain: Some(source["domain"].as_str().unwrap().to_string()),
+                ..Default::default()
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(engram["title"], "Scotty team", "{engram}");
+}
+
+/// What carries a page beyond its readers. The admin's domain archive holds
+/// the page as stored, the other domain's name included (the docs say so).
+/// A search hit and the change events carry no frontmatter, so no source
+/// and no other domain's name.
+#[tokio::test]
+async fn the_archive_keeps_the_names_and_search_and_events_carry_none() {
+    let fx = crossing().await;
+    let mut rx = fx.engine.changes().subscribe();
+    let mut p = write(
+        "overview.md",
+        "# Overview\n\nFor people.\n\n## Team\n\nFive people on call.\n",
+    );
+    p.sources = BTreeMap::from([("Team".to_string(), vec![TEAM.to_string()])]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+
+    let files = fx.engine.domain_files("eng").await.unwrap();
+    let page = files
+        .iter()
+        .find(|(path, _)| path == "reflections/overview.md")
+        .expect("the archive carries the page");
+    assert!(
+        String::from_utf8_lossy(&page.1).contains("domain: scotty"),
+        "as stored"
+    );
+
+    for query in ["scotty", "team/scotty-team", "people"] {
+        let hits = fx
+            .engine
+            .search_reflection(
+                "eng",
+                &crystalline_service::engine::ReflectionSearch {
+                    query,
+                    search_type: Some("text"),
+                    limit: 10,
+                    page: 1,
+                },
+                &agent(),
+            )
+            .await
+            .unwrap();
+        // The answer repeats the query; the hits are what the index holds.
+        let text = hits["hits"].to_string();
+        assert!(!text.contains("scotty"), "{query}: {hits}");
+        assert!(!text.contains("reflection:"), "{query}: {hits}");
+        if query == "people" {
+            assert!(hits["total"].as_u64().unwrap() > 0, "{hits}");
+        }
+    }
+
+    let mut seen = 0;
+    while let Ok(envelope) = rx.try_recv() {
+        let text = format!("{envelope:?}");
+        assert!(!text.contains("scotty"), "{text}");
+        seen += 1;
+    }
+    assert!(seen > 0, "the write was announced");
+}
+
+/// On a shared database another instance may register a domain this one
+/// does not: its rows are in the index, but the Reflection's host checks
+/// sources by its own registrations, so they read unavailable, never
+/// missing or current.
+#[tokio::test]
+async fn a_domain_only_another_instance_registers_is_unavailable_here() {
+    use std::sync::Arc;
+    let store: Arc<tokio::sync::Mutex<dyn crystalline_index::Store>> =
+        Arc::new(tokio::sync::Mutex::new(
+            crystalline_index::TursoStore::open_in_memory()
+                .await
+                .unwrap(),
+        ));
+    // The other instance registers scotty and indexes it into the store.
+    let team = crate::fixture::engram("Scotty team", "team/scotty-team", "- [fact] five");
+    let other = crate::fixture::fixture_on(
+        store.clone(),
+        &[],
+        |cfg, base| {
+            let root = base.join("scotty");
+            std::fs::create_dir_all(root.join("team")).unwrap();
+            std::fs::write(
+                root.join("MANIFEST.md"),
+                crystalline_core::manifest_template("scotty", "2026-01-01"),
+            )
+            .unwrap();
+            std::fs::write(root.join("team/scotty-team.md"), &team).unwrap();
+            cfg.domains.insert(
+                "scotty".into(),
+                crystalline_core::config::DomainEntry::file(root),
+            );
+        },
+        None,
+        None,
+        None,
+    )
+    .await;
+    // This instance serves eng's Reflection and registers no scotty. Its
+    // page names a scotty source by hand, with the indexed checksum.
+    let host = crate::fixture::fixture_on(
+        store.clone(),
+        &[("MANIFEST.md", &crate::fixture::manifest("reflection: on\n"))],
+        |_, _| {},
+        None,
+        None,
+        None,
+    )
+    .await;
+    let checksum = crystalline_core::provision::receipt::sha256_hex(
+        std::fs::read(other.tmp.path().join("scotty/team/scotty-team.md"))
+            .unwrap()
+            .as_slice(),
+    );
+    std::fs::create_dir_all(host.root.join("reflections")).unwrap();
+    std::fs::write(
+        host.root.join("reflections/overview.md"),
+        format!(
+            "---\nreflection:\n  aaaa1111:\n    sources:\n    - domain: scotty\n      engram: team/scotty-team\n      checksum: {checksum}\n---\n\n# Overview\n\n## Team\n<!-- r:aaaa1111 -->\n\nFive.\n"
+        ),
+    )
+    .unwrap();
+    host.engine.sync(None).await.unwrap();
+    let doc = host
+        .engine
+        .read_reflection("eng", "overview.md", &agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        sources_by_heading(&doc, "Team")[0]["state"],
+        "unavailable",
+        "{doc}"
+    );
+}

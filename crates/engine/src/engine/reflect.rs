@@ -221,7 +221,7 @@ impl Engine {
         let sees = |src: &r::SourceRef| sight.as_ref().is_none_or(|sight| sight.sees(src));
         let own = self.engram_facts(access.domain_id, domain).await?;
         let facts = self
-            .source_facts(access.domain_id, Some(own), foreign.into_iter())
+            .source_facts(domain, access.domain_id, Some(own), foreign.into_iter())
             .await?;
         let open_thread = |id: &str| {
             threads

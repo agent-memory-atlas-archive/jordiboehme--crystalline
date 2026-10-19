@@ -1090,11 +1090,12 @@ pub(crate) fn source_state(src: &r::SourceRef, facts: &SourceFacts) -> (&'static
 }
 
 /// A source as the answers show it; `domain` only for a source of another
-/// domain than the page's.
+/// domain than the page's, by the local name a reader reaches it by here
+/// ([`SourceFacts::shown_domain`]).
 pub(crate) fn source_view(src: &r::SourceRef, facts: &SourceFacts) -> Value {
     let (state, title) = source_state(src, facts);
     let mut view = json!({ "permalink": src.engram, "title": title, "state": state });
-    if let Some(domain) = &src.domain {
+    if let Some(domain) = facts.shown_domain(src) {
         view["domain"] = json!(domain);
     }
     view
@@ -1597,7 +1598,7 @@ impl Engine {
             .await?;
         let wanted: Vec<r::SourceRef> = named.values().map(|n| n.source_ref("")).collect();
         let facts = self
-            .source_facts(access.domain_id, None, wanted.iter())
+            .source_facts(&p.domain, access.domain_id, None, wanted.iter())
             .await?;
         let abs = access.abs(&p.path);
         let baseline_abs = access.abs(&r::baseline_path(&p.path));
@@ -1834,13 +1835,13 @@ impl Engine {
             // were. A source the writer sees is theirs to keep or leave out,
             // one whose domain cannot be checked here included: leaving it
             // out is how a source of a domain that is gone for good goes.
-            refs.extend(
-                record
-                    .sources
-                    .iter()
-                    .filter(|src| sight.as_ref().is_some_and(|sight| !sight.sees(src)))
-                    .cloned(),
-            );
+            // Each kept source goes back to its stored place, so a writer
+            // who cannot see it does not move it on every write.
+            for (at, src) in record.sources.iter().enumerate() {
+                if sight.as_ref().is_some_and(|sight| !sight.sees(src)) {
+                    refs.insert(at.min(refs.len()), src.clone());
+                }
+            }
             record.sources = refs;
             record.reflected = Some(r::section_hash(&section.text));
             record.changed_by.clear();
@@ -2449,6 +2450,7 @@ impl Engine {
         let sees = |src: &r::SourceRef| sight.as_ref().is_none_or(|sight| sight.sees(src));
         let facts = if access.engrams_visible {
             self.source_facts(
+                domain,
                 access.domain_id,
                 None,
                 prov.values()
@@ -3099,7 +3101,12 @@ impl Engine {
         };
         let sees = |src: &r::SourceRef| sight.as_ref().is_none_or(|sight| sight.sees(src));
         let facts = self
-            .source_facts(access.domain_id, None, cited.iter().filter(|src| sees(src)))
+            .source_facts(
+                domain,
+                access.domain_id,
+                None,
+                cited.iter().filter(|src| sees(src)),
+            )
             .await?;
         let known: BTreeSet<String> = sections
             .iter()

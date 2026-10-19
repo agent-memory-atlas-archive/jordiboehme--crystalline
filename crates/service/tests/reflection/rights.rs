@@ -554,8 +554,8 @@ async fn a_write_never_drops_a_source_the_writer_cannot_see() {
         .unwrap();
     let after = stored_team(&fx);
     assert_eq!(after.len(), 2, "{after:?}");
-    assert_eq!(after[0].engram, "runbooks/deploy");
-    assert_eq!(after[1], before[0], "kept as it was");
+    assert_eq!(after[0], before[0], "kept as it was, in its place");
+    assert_eq!(after[1].engram, "runbooks/deploy");
 
     // The page sent back as it was read: the block it read had no scotty.
     let doc = fx
@@ -779,4 +779,74 @@ async fn a_hidden_source_looks_the_same_in_every_state() {
     assert_eq!(changed, retired);
     assert_eq!(changed, missing);
     assert_eq!(changed, unregistered);
+}
+
+/// An engram a hidden domain lacks is refused in the same bytes as one it
+/// holds: the writer learns nothing of what the domain keeps.
+#[tokio::test]
+async fn a_missing_engram_in_a_hidden_domain_is_refused_as_the_domain() {
+    let (fx, ann, _) = crossing_rights().await;
+    let refusal = |source: &str| {
+        let mut p = crate::docs::write("b.md", "# B\n\nFor people.\n\n## Only\n\nText.\n");
+        p.sources =
+            std::collections::BTreeMap::from([("Only".to_string(), vec![source.to_string()])]);
+        p
+    };
+    let held = fx
+        .engine
+        .write_reflection(
+            &refusal("crystalline://scotty/team/scotty-team"),
+            &agent_as(&ann),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    let lacking = fx
+        .engine
+        .write_reflection(
+            &refusal("crystalline://scotty/team/nobody"),
+            &agent_as(&ann),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(held.contains("domain 'scotty' not registered"), "{held}");
+    assert_eq!(held, lacking);
+}
+
+/// A feedback item on a section built from a hidden source counts it and
+/// names nothing of it.
+#[tokio::test]
+async fn a_feedback_item_counts_a_hidden_source() {
+    let (fx, ann, _) = crossing_rights().await;
+    let doc = fx
+        .engine
+        .read_reflection("eng", "overview.md", &ReflectionCaller::owner())
+        .await
+        .unwrap();
+    let edited = doc["markdown"]
+        .as_str()
+        .unwrap()
+        .replace("Five people.", "Five people, said a person.");
+    fx.engine
+        .write_reflection(
+            &crate::docs::write("overview.md", &edited),
+            &crate::docs::person(),
+        )
+        .await
+        .unwrap();
+    let params = crystalline_service::params::ReflectParams {
+        domains: vec!["eng".into()],
+        ..Default::default()
+    };
+    let queue = fx.engine.reflect(&params, &agent_as(&ann)).await.unwrap();
+    assert!(!queue.to_string().contains("scotty"), "{queue}");
+    let item = queue["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "feedback" && i["heading"] == "Team")
+        .unwrap_or_else(|| panic!("{queue}"));
+    assert_eq!(item["sources"], serde_json::json!([]), "{item}");
+    assert_eq!(item["hidden_sources"], 1, "{item}");
 }

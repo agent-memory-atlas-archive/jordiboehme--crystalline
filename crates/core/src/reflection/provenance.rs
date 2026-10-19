@@ -69,6 +69,18 @@ pub fn parse_source_name(name: &str) -> Result<SourceName, String> {
     })
 }
 
+/// How many sources of `source` store a domain `named` accepts. Beside
+/// [`respell_source_domains`], it tells a page whose sources could not be
+/// rewritten (a frontmatter that cannot be cut key by key) from one that
+/// has none to rewrite.
+pub fn source_domains_named(source: &str, named: &dyn Fn(&str) -> bool) -> usize {
+    read_provenance(source)
+        .values()
+        .flat_map(|record| record.sources.iter())
+        .filter(|src| src.domain.as_deref().is_some_and(named))
+        .count()
+}
+
 /// `source` with the stored `domain` of every source that `rename` answers
 /// a new name for written with that name, and how many were. The text is
 /// returned as it was when nothing changes, so a page without such a source
@@ -396,6 +408,13 @@ mod tests {
             respell_source_domains(plain, &rename),
             (plain.to_string(), 0)
         );
+        let named = |d: &str| d == "scotty";
+        assert_eq!(source_domains_named(page, &named), 1);
+        // A flow-style frontmatter reads, but cannot be rewritten: the
+        // count tells it from a page with nothing to rewrite.
+        let flow = "---\n{title: T, reflection: {aaaa1111: {sources: [{domain: scotty, engram: team/x, checksum: b}]}}}\n---\n\n# T\n";
+        assert_eq!(respell_source_domains(flow, &rename), (flow.to_string(), 0));
+        assert_eq!(source_domains_named(flow, &named), 1);
     }
 
     #[test]

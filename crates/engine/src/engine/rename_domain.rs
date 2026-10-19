@@ -1278,8 +1278,10 @@ impl Engine {
             // as a sync would, a one-shot command included, which gives the
             // lock back when the step is done. A domain another live
             // instance holds stops the step, so it runs again; one hidden
-            // from the caller is passed over instead, never named, and its
-            // sources read as unavailable until a rename reaches them.
+            // from the caller is passed over instead, never named. Nothing
+            // comes back for it: the old name is no alias after a full
+            // rename and the step counts as done, so those sources read as
+            // unavailable until a writer who sees them drops or re-adds them.
             let needs_writes = rows.iter().any(|row| rewrite(&row.content).1 > 0);
             if needs_writes && !self.instance_id.is_empty() {
                 let claim = {
@@ -1299,6 +1301,14 @@ impl Engine {
                         );
                         continue;
                     }
+                    // The caller cannot act on a domain it cannot see.
+                    Err(e) if !visible => {
+                        tracing::warn!(
+                            domain = domain.as_str(),
+                            "the rename to '{new}' left the sources of this domain's Reflection: its host lock could not be claimed: {e}"
+                        );
+                        continue;
+                    }
                     Ok(HostClaim::HeldByOther(host)) => {
                         self.release_taken_hosts().await;
                         return Err(EngineError::Conflict(host_refusal(&domain, &host)));
@@ -1311,6 +1321,27 @@ impl Engine {
             }
             for row in rows {
                 let path = crystalline_core::reflection::domain_rel(&row.path);
+                // A source naming an old spelling in a frontmatter that cannot
+                // be rewritten key by key is never passed over in silence.
+                let named = crystalline_core::reflection::source_domains_named(
+                    &row.content,
+                    &|domain: &str| spellings.iter().any(|s| s == domain),
+                );
+                if named > 0 && sources(&row.content).1 == 0 {
+                    tracing::warn!(
+                        domain = domain.as_str(),
+                        path = row.path.as_str(),
+                        "the rename to '{new}' could not rewrite the sources of this reflection"
+                    );
+                    if visible {
+                        outcome.left_behind.push(LeftBehind {
+                            domain: domain.clone(),
+                            path: path.clone(),
+                            references: named,
+                            reason: Some(SOURCES_NOT_REWRITTEN.to_string()),
+                        });
+                    }
+                }
                 if visible && !writable {
                     let references = respell_old(&row.content, spellings, new, BodyGate::Split).1;
                     if references > 0 {
@@ -2061,6 +2092,9 @@ fn caller_scope(caller: Option<&RenameCaller>) -> crate::scope::Scope {
         None => crate::scope::Scope::Unrestricted,
     }
 }
+
+/// Why a page's stored source domains did not follow a rename.
+const SOURCES_NOT_REWRITTEN: &str = "its frontmatter cannot be rewritten key by key, so the domain its sources name was left as it was; write the frontmatter as plain `key: value` lines, then rename again or write the sources again";
 
 /// `text` with every link domain and `crystalline://` domain that is one of
 /// `spellings` respelled as `new`, and how many were, over the body `gate`
