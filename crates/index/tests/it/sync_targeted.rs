@@ -736,17 +736,23 @@ async fn reflection_changes_on_disk_are_named(store: &dyn Store) {
     let seeded = sync_domain_with(store, "d", root, &params()).await.unwrap();
     assert_eq!(
         seeded.reflection_changes,
-        Vec::new(),
-        "a walk that fills an empty table is the Reflection coming on, no page's change"
+        vec![change(
+            "a.md",
+            ReflectionPathKind::Changed,
+            Some(sha(PAGE_ONE))
+        )],
+        "the walk names the page it indexed; the engine decides whether that is the switch"
     );
     let walk = seeded
         .reflection_walk
         .expect("a complete walk says what it saw");
     assert!(walk.effective);
-    assert!(
-        walk.newest.is_some_and(|newest| newest <= walk.started + 1),
-        "{walk:?}"
+    assert_eq!(
+        walk.threads.into_iter().collect::<Vec<_>>(),
+        vec![("a.md".to_string(), sha("# Threads\n"))],
+        "every threads file by its page, with its checksum"
     );
+    assert_eq!(walk.pages.into_iter().collect::<Vec<_>>(), vec!["a.md"]);
 
     let threads = "# Threads\n\n## t1\n\nA comment from outside.\n";
     write(root, "reflections/a.threads.md", threads);
@@ -839,3 +845,42 @@ parity!(
     reflection_changes_found_on_disk_are_named_for_the_bus,
     reflection_changes_on_disk_are_named
 );
+
+/// A targeted pass reads a threads path only when it is a regular file, as
+/// the walk does: a link is not followed and a pipe is never opened (the
+/// read would block the pass).
+#[cfg(unix)]
+#[tokio::test]
+async fn a_threads_path_that_is_a_link_or_a_pipe_is_not_read() {
+    let store = TursoStore::open_in_memory().await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", MANIFEST_ON);
+    write(root, "reflections/a.md", PAGE_ONE);
+    write(root, "reflections/b.md", PAGE_ONE);
+    write(root, "outside.txt", "# Threads\n");
+    sync_domain_with(&store, "d", root, &params())
+        .await
+        .unwrap();
+    std::os::unix::fs::symlink(
+        root.join("outside.txt"),
+        root.join("reflections/a.threads.md"),
+    )
+    .unwrap();
+    let made = std::process::Command::new("mkfifo")
+        .arg(root.join("reflections/b.threads.md"))
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let report = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        target(
+            &store,
+            root,
+            &["reflections/a.threads.md", "reflections/b.threads.md"],
+        ),
+    )
+    .await
+    .expect("the pass does not block on the pipe");
+    assert_eq!(report.reflection_changes, Vec::new());
+}

@@ -1114,11 +1114,13 @@ pub struct Engine {
     // before a due backup loses the mark, and the next change marks it again
     // and commits both (the backup diffs the whole folder).
     backup_marks: crate::reflection_backup::BackupMarks,
-    /// When the last complete walk of each domain with its Reflection in
-    /// effect began, in Unix seconds: what the next complete walk compares
-    /// the newest entry under `reflections/` with
-    /// ([`Engine::walk_changed_reflection`]).
-    reflection_walks: std::sync::Mutex<HashMap<String, i64>>,
+    /// The threads files of each domain whose Reflection was in effect at
+    /// its last complete walk, by page, with the checksum last seen or
+    /// written: what the next complete walk compares its own with
+    /// ([`Engine::walk_threads_changes`]). Threads have no stamp, so this
+    /// is how a full walk tells a changed threads file from one the engine
+    /// wrote itself.
+    reflection_walks: std::sync::Mutex<HashMap<String, BTreeMap<String, String>>>,
     // Overrides where per-domain origin state (the base snapshot, conflict
     // records, `state.json`) is read and written, for tests: `None` means the
     // real `crystalline_core::config::origin_state_dir`, a real machine path
@@ -4406,24 +4408,28 @@ impl Engine {
         report: &SyncReport,
         actor: Option<&str>,
     ) -> bool {
-        // A complete walk cannot say which threads files changed (they have
-        // no stamp), so when anything under `reflections/` is newer than the
-        // previous walk it says the whole Reflection changed, once, in place
-        // of the paths it can name. Fluid refetches the whole Reflection for
-        // an empty path either way.
-        if self.walk_changed_reflection(name, report) {
-            self.announce_reflection(
-                name,
-                "",
-                ReflectionChangeKind::Changed,
-                None,
-                actor.map(str::to_string),
-            );
-            return true;
+        let mut found: Vec<crystalline_index::ReflectionPathChange> =
+            report.reflection_changes.clone();
+        match &report.reflection_walk {
+            // A complete walk: the threads files whose checksum moved since
+            // the last walk or engine write, or nothing at all for the first
+            // walk in effect (after a start, or the switch coming on, which
+            // `switched` says).
+            Some(walk) => match self.walk_threads_changes(name, walk) {
+                Some(threads) => found.extend(threads),
+                None => return false,
+            },
+            // A targeted pass: what it read is what the next walk compares.
+            None => {
+                for change in &found {
+                    if change.kind == crystalline_index::ReflectionPathKind::Threads {
+                        self.remember_threads(name, &change.path, change.checksum.as_deref());
+                    }
+                }
+            }
         }
         let mut seen = HashSet::new();
-        let changes: Vec<&crystalline_index::ReflectionPathChange> = report
-            .reflection_changes
+        let changes: Vec<&crystalline_index::ReflectionPathChange> = found
             .iter()
             .filter(|change| seen.insert((change.path.as_str(), change.kind)))
             .collect();
@@ -4460,26 +4466,72 @@ impl Engine {
         threads_heard
     }
 
-    /// Whether the complete walk behind `report` may have changed anything
-    /// under `reflections/` since the previous complete walk of `name`: an
-    /// entry there is at least as new as the second that walk began in. The
-    /// first walk in effect after a start or after the switch came on says
-    /// no (nobody has a page open yet, or `switched` said it). A targeted
-    /// pass carries no walk and says no.
-    fn walk_changed_reflection(&self, name: &str, report: &SyncReport) -> bool {
-        let Some(walk) = report.reflection_walk else {
-            return false;
-        };
+    /// The threads changes a complete walk of `name` found against what the
+    /// engine remembers: a threads file whose checksum differs or is new,
+    /// and one that is gone while its page stays. `None` when the walk had
+    /// the Reflection off (the domain is forgotten) or is the first in
+    /// effect since a start or the switch came on (nothing to compare with;
+    /// the walk's per-path changes are not announced either). Entries of
+    /// domains no longer registered are dropped on the way, so a removed or
+    /// renamed domain leaves nothing behind.
+    fn walk_threads_changes(
+        &self,
+        name: &str,
+        walk: &crystalline_index::ReflectionWalk,
+    ) -> Option<Vec<crystalline_index::ReflectionPathChange>> {
+        use crystalline_index::{ReflectionPathChange, ReflectionPathKind};
+        let registered = self.registered_domain_entries();
         let mut walks = self
             .reflection_walks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        walks.retain(|domain, _| registered.contains_key(domain));
         if !walk.effective {
             walks.remove(name);
-            return false;
+            return None;
         }
-        let previous = walks.insert(name.to_string(), walk.started);
-        previous.is_some_and(|before| walk.newest.is_some_and(|newest| newest >= before))
+        let before = walks.insert(name.to_string(), walk.threads.clone())?;
+        let mut changes: Vec<ReflectionPathChange> = walk
+            .threads
+            .iter()
+            .filter(|(page, sum)| before.get(*page) != Some(*sum))
+            .map(|(page, sum)| ReflectionPathChange {
+                path: page.clone(),
+                kind: ReflectionPathKind::Threads,
+                checksum: Some(sum.clone()),
+            })
+            .collect();
+        changes.extend(
+            before
+                .keys()
+                .filter(|page| !walk.threads.contains_key(*page) && walk.pages.contains(*page))
+                .map(|page| ReflectionPathChange {
+                    path: page.clone(),
+                    kind: ReflectionPathKind::Threads,
+                    checksum: None,
+                }),
+        );
+        Some(changes)
+    }
+
+    /// Note the checksum of the threads file of `page` as written or read
+    /// now (`None`: it is gone), so the next complete walk compares with it.
+    /// Nothing is noted for a domain no walk in effect has seen yet.
+    pub(crate) fn remember_threads(&self, domain: &str, page: &str, checksum: Option<&str>) {
+        let mut walks = self
+            .reflection_walks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(threads) = walks.get_mut(domain) {
+            match checksum {
+                Some(sum) => {
+                    threads.insert(page.to_string(), sum.to_string());
+                }
+                None => {
+                    threads.remove(page);
+                }
+            }
+        }
     }
 
     /// Announce a batch of changes one verb made in one domain, through the

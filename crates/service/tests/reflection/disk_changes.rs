@@ -179,16 +179,12 @@ async fn the_watchers_echo_of_an_engine_page_or_file_write_is_not_announced() {
 }
 
 /// A full walk (the watcher's fallback after a folder event or a queue
-/// overflow, a manual sync) cannot tell which threads files changed, since
-/// they have no stamp. When anything under `reflections/` is newer than the
-/// previous walk it says the whole Reflection changed, once; when nothing
-/// there moved since, it says nothing.
+/// overflow, a manual sync) compares every threads file's checksum with
+/// what the last walk saw and the engine wrote: a threads file changed on
+/// disk is named by its page; nothing moved, nothing said.
 #[tokio::test]
-async fn a_full_walk_after_a_change_on_disk_says_the_whole_reflection_changed() {
+async fn a_full_walk_names_a_threads_file_changed_on_disk() {
     let fx = reflecting().await;
-    // Past the second the fixture's own walk started in.
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-    fx.engine.sync(Some("eng")).await.unwrap();
     let mut rx = fx.engine.changes().subscribe();
     fx.engine.sync(Some("eng")).await.unwrap();
     assert_eq!(
@@ -199,7 +195,17 @@ async fn a_full_walk_after_a_change_on_disk_says_the_whole_reflection_changed() 
 
     put(&fx, "d.threads.md", THREADS);
     fx.engine.sync(Some("eng")).await.unwrap();
-    assert_eq!(heard(&mut rx), vec![(K::Changed, String::new(), None)]);
+    assert_eq!(heard(&mut rx), vec![(K::Threads, "d.md".to_string(), None)]);
+    fx.engine.sync(Some("eng")).await.unwrap();
+    assert_eq!(heard(&mut rx), Vec::new(), "said once");
+
+    std::fs::remove_file(fx.root.join("reflections/d.threads.md")).unwrap();
+    fx.engine.sync(Some("eng")).await.unwrap();
+    assert_eq!(
+        heard(&mut rx),
+        vec![(K::Threads, "d.md".to_string(), None)],
+        "threads removed beside a page that stays"
+    );
 }
 
 /// The first file dropped into an empty `reflections/assets/` (a folder
@@ -210,5 +216,115 @@ async fn the_first_file_into_an_empty_assets_folder_is_heard_on_a_full_walk() {
     let mut rx = fx.engine.changes().subscribe();
     put(&fx, "assets/p.png", "png");
     fx.engine.sync(Some("eng")).await.unwrap();
-    assert_eq!(heard(&mut rx), vec![(K::Changed, String::new(), None)]);
+    assert_eq!(
+        heard(&mut rx),
+        vec![(K::Files, "assets/p.png".to_string(), None)]
+    );
+}
+
+/// What the engine wrote itself (a comment, a page, a file) is no change
+/// for the next full walk, however the files' times moved.
+#[tokio::test]
+async fn a_full_walk_after_the_engines_own_writes_says_nothing() {
+    let fx = reflecting().await;
+    fx.engine
+        .discuss(
+            &DiscussParams {
+                domain: "eng".into(),
+                action: Some("open".into()),
+                path: Some("d.md".into()),
+                section: Some("aaaa1111".into()),
+                text: Some("Still true?".into()),
+                ..Default::default()
+            },
+            &person(),
+        )
+        .await
+        .unwrap();
+    fx.engine
+        .write_reflection(&write("guides/new.md", &page("New")), &person())
+        .await
+        .unwrap();
+    fx.engine
+        .reflection_asset_write("eng", "assets/p.png", b"png".to_vec(), &person())
+        .await
+        .unwrap();
+    let mut rx = fx.engine.changes().subscribe();
+    fx.engine.sync(Some("eng")).await.unwrap();
+    assert_eq!(heard(&mut rx), Vec::new());
+}
+
+/// Content decides, not file times: a threads file restored with an old
+/// time is heard, and one with a time in the future is heard once, not on
+/// every walk after it.
+#[tokio::test]
+async fn a_full_walk_goes_by_content_whatever_the_file_times_say() {
+    use std::time::{Duration, SystemTime};
+    let fx = reflecting().await;
+    let mut rx = fx.engine.changes().subscribe();
+    let file = fx.root.join("reflections/d.threads.md");
+
+    put(&fx, "d.threads.md", THREADS);
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000))
+        .unwrap();
+    fx.engine.sync(Some("eng")).await.unwrap();
+    assert_eq!(
+        heard(&mut rx),
+        vec![(K::Threads, "d.md".to_string(), None)],
+        "an old time hides nothing"
+    );
+
+    put(
+        &fx,
+        "d.threads.md",
+        &THREADS.replace("another process", "a share"),
+    );
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(SystemTime::now() + Duration::from_secs(86_400))
+        .unwrap();
+    fx.engine.sync(Some("eng")).await.unwrap();
+    assert_eq!(heard(&mut rx), vec![(K::Threads, "d.md".to_string(), None)]);
+    fx.engine.sync(Some("eng")).await.unwrap();
+    assert_eq!(
+        heard(&mut rx),
+        Vec::new(),
+        "a time in the future does not make every walk speak"
+    );
+}
+
+/// A threads file with Windows line endings is written back with LF; the
+/// echo the watcher finds carries the checksum the engine announced.
+#[tokio::test]
+async fn the_echo_of_a_write_into_a_crlf_threads_file_is_dropped() {
+    let fx = reflecting().await;
+    put(&fx, "d.threads.md", &THREADS.replace('\n', "\r\n"));
+    fx.engine.sync(Some("eng")).await.unwrap();
+    let mut rx = fx.engine.changes().subscribe();
+    fx.engine
+        .discuss(
+            &DiscussParams {
+                domain: "eng".into(),
+                action: Some("answer".into()),
+                path: Some("d.md".into()),
+                thread: Some("t-0000aaaa".into()),
+                text: Some("An answer spliced into the file.".into()),
+                ..Default::default()
+            },
+            &person(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(heard(&mut rx), vec![(K::Threads, "d.md".to_string(), None)]);
+    fx.engine
+        .sync_paths("eng", vec!["reflections/d.threads.md".into()])
+        .await
+        .unwrap();
+    assert_eq!(heard(&mut rx), Vec::new(), "the echo is dropped");
 }

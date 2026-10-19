@@ -397,12 +397,14 @@ impl ChangeBus {
             {
                 ring.recent_reflections.pop_front();
             }
-            if ring.recent_reflections.iter().any(|(seen, _)| {
+            // Only the latest event of this path and kind counts: a file that
+            // went A, B and back to A inside the window is a change again.
+            let latest = ring.recent_reflections.iter().rev().find(|(seen, _)| {
                 seen.domain == reflection.domain
                     && seen.path == reflection.path
                     && seen.kind == reflection.kind
-                    && seen.checksum == reflection.checksum
-            }) {
+            });
+            if latest.is_some_and(|(seen, _)| seen.checksum == reflection.checksum) {
                 return None;
             }
             if ring.recent_reflections.len() == RING_CAPACITY {
@@ -802,6 +804,23 @@ mod tests {
         assert!(bus.announce(reflection("a.md", Threads, None)).is_some());
         assert!(bus.announce(reflection("a.md", Threads, None)).is_some());
         assert_eq!(bus.ring_len(), 6);
+        // A, B and back to A: the last one is new content again.
+        assert!(
+            bus.announce(reflection("c.md", Threads, Some("A")))
+                .is_some()
+        );
+        assert!(
+            bus.announce(reflection("c.md", Threads, Some("B")))
+                .is_some()
+        );
+        assert!(
+            bus.announce(reflection("c.md", Threads, Some("A")))
+                .is_some()
+        );
+        assert!(
+            bus.announce(reflection("c.md", Threads, Some("A")))
+                .is_none()
+        );
         let data = reflection("a.md", Threads, Some("1")).data().unwrap();
         assert!(!data.contains("checksum"), "{data}");
     }

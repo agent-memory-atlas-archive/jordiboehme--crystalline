@@ -81,7 +81,7 @@
 //! the prefilter keeps re-selecting a diverged path until an uncontended pass
 //! applies it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
@@ -171,22 +171,23 @@ pub struct ReflectionPathChange {
     pub checksum: Option<String>,
 }
 
-/// What a complete walk saw of the Reflection, for the change bus.
-/// A threads file has no stamp, so a walk cannot say which ones changed;
-/// it can say when it started and how new the newest entry under
-/// `reflections/` is, and the engine compares that with its previous walk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a complete walk saw of the Reflection, for the change bus. A
+/// threads file has no row and no stamp, so the walk reads every one and
+/// hands over its checksum; the engine compares them with what it saw and
+/// wrote before. Content, not times: a file restored with an old time or a
+/// share whose clock runs ahead or behind changes nothing here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReflectionWalk {
-    /// When the walk began, in Unix seconds.
-    pub started: i64,
-    /// The newest modification time, in Unix seconds, of every file and
-    /// folder under `reflections/` the walk entered (hidden ones left out),
-    /// or `None` when there is none.
-    pub newest: Option<i64>,
     /// Whether the Reflection was in effect for this walk. A walk with it
     /// off tells the engine that the next walk in effect is the switch
     /// coming on, which the `switched` event already says.
     pub effective: bool,
+    /// The page each threads file belongs to (inside `reflections/`), with
+    /// the lowercase hex SHA-256 of the file's bytes.
+    pub threads: BTreeMap<String, String>,
+    /// Every page and the pact the walk found, so a threads file that went
+    /// with its page is told from one removed beside a page that stays.
+    pub pages: BTreeSet<String>,
 }
 
 /// The outcome of a sync over one domain.
@@ -977,11 +978,6 @@ pub async fn scan_domain(
     force: bool,
 ) -> Result<DomainScan> {
     let started = Instant::now();
-    let walk_started = std::time::SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let mut reflection_newest: Option<i64> = None;
 
     // What every path of this domain is: the MANIFEST's in-root artifact
     // folders are pruned with the hidden ones (none when the MANIFEST is
@@ -990,6 +986,10 @@ pub async fn scan_domain(
     // effect, `reflections/` is routed to its own rows.
     let reflection = reflection_mode(root, stamps.keys());
     let layout = DomainLayout::at(root, reflection);
+    let mut walk = ReflectionWalk {
+        effective: reflection == ReflectionMode::Effective,
+        ..ReflectionWalk::default()
+    };
 
     // Walk the folder, skipping dot-directories, dot-files and non-markdown.
     let mut current: HashMap<String, Scanned> = HashMap::new();
@@ -1036,22 +1036,11 @@ pub async fn scan_domain(
                 continue;
             }
         };
-        let rel = slash_rel(root, entry.path());
-        // Every file and folder the walk enters under the Reflection's
-        // folder (a hidden one is never entered): the newest of them tells
-        // the engine whether anything there may have changed since its last
-        // walk, threads files included.
-        if reflection == ReflectionMode::Effective
-            && crystalline_core::reflection::is_under_reflections(&rel)
-            && let Ok(meta) = entry.metadata()
-        {
-            let mtime = file_mtime(&meta);
-            reflection_newest = Some(reflection_newest.map_or(mtime, |n| n.max(mtime)));
-        }
         if !entry.file_type().is_file() {
             continue;
         }
         let fname = entry.file_name().to_string_lossy();
+        let rel = slash_rel(root, entry.path());
         match layout.classify(&rel) {
             // The `assets/` folder is reserved for attachments: nothing under
             // it is ever an engram, whatever its extension, so the branch
@@ -1105,6 +1094,7 @@ pub async fn scan_domain(
                     unread_reflections = true;
                     continue;
                 };
+                walk.pages.insert(inner_rel(&rel));
                 reflections.push(FileCandidate {
                     rel: inner_rel(&rel),
                     abs: entry.path().to_path_buf(),
@@ -1133,13 +1123,23 @@ pub async fn scan_domain(
                     reflection_assets.push(candidate);
                 }
             }
-            // Threads and the baseline are files, never rows; a temp or stray
-            // file is nobody's.
-            PathClass::Reflection(
-                ReflectionFile::Threads { .. }
-                | ReflectionFile::Baseline { .. }
-                | ReflectionFile::Other,
-            ) => {}
+            // Threads are files, never rows: read for their checksum, which
+            // is all the engine needs to tell what changed. The walk yields
+            // regular files only (it never follows a link), so this read
+            // cannot block on a pipe.
+            PathClass::Reflection(ReflectionFile::Threads { of }) => {
+                match std::fs::read(entry.path()) {
+                    Ok(bytes) => {
+                        walk.threads.insert(of, sha256_hex(&bytes));
+                    }
+                    Err(_) => {
+                        unread += 1;
+                        unread_reflections = true;
+                    }
+                }
+            }
+            // The baseline is no row; a temp or stray file is nobody's.
+            PathClass::Reflection(ReflectionFile::Baseline { .. } | ReflectionFile::Other) => {}
         }
     }
 
@@ -1176,11 +1176,7 @@ pub async fn scan_domain(
     scan.reflections_complete = !unread_reflections;
     scan.reflection = reflection;
     scan.report.unread += unread;
-    scan.report.reflection_walk = Some(ReflectionWalk {
-        started: walk_started,
-        newest: reflection_newest,
-        effective: reflection == ReflectionMode::Effective,
-    });
+    scan.report.reflection_walk = Some(walk);
     Ok(scan)
 }
 
@@ -1285,7 +1281,14 @@ pub async fn scan_paths(
             // what is on disk now. Threads that went with their page are that
             // page's deletion, which the page's own path reports.
             if let ReflectionFile::Threads { of } = file {
-                match std::fs::read(&abs) {
+                // A regular file only, as the walk reads: a link is not
+                // followed and a pipe is never opened.
+                let read = match std::fs::symlink_metadata(&abs) {
+                    Ok(meta) if meta.is_file() => std::fs::read(&abs),
+                    Ok(_) => continue,
+                    Err(e) => Err(e),
+                };
+                match read {
                     Ok(bytes) => threads.push(ReflectionPathChange {
                         path: of.clone(),
                         kind: ReflectionPathKind::Threads,
@@ -2267,8 +2270,10 @@ pub async fn resolve_forward_refs<S: Store + ?Sized>(
 /// vain, so a one-file watcher event never touches another row.
 ///
 /// With `announce`, each row of the Reflection's tables it writes or deletes
-/// is named in `report.reflection_changes` for the change bus, except on a
-/// complete walk that fills an empty table (the Reflection just came on).
+/// is named in `report.reflection_changes` for the change bus. The caller
+/// passes it false for the rows a walk clears because the Reflection is not
+/// in effect; the engine decides whether a walk that fills the table is the
+/// switch coming on.
 #[allow(clippy::too_many_arguments)]
 async fn reconcile_rows<S: Store + ?Sized>(
     store: &S,
@@ -2287,12 +2292,6 @@ async fn reconcile_rows<S: Store + ?Sized>(
         return Ok(Reconciled::default());
     }
     let existing = rows.stamps(store, domain).await?;
-    // A complete walk that fills an empty table is the Reflection coming on
-    // (or a first index), not a change of its pages: the `switched` event,
-    // or nobody, says so. The rows a walk clears because the Reflection is
-    // not in effect are not named either; the caller passes `announce`
-    // false for them.
-    let announce = announce && !(complete && existing.is_empty());
     let mut seen: HashSet<String> = HashSet::new();
     let mut changed = 0;
     for candidate in found {

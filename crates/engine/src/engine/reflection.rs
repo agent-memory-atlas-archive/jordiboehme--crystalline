@@ -2060,8 +2060,10 @@ impl Engine {
     }
 
     /// Announce that the threads of the page at `path` changed, with the
-    /// checksum of the threads file as this write left it: the watcher finds
-    /// the same file a moment later, and the bus drops that echo by it.
+    /// checksum of the threads file as this write left it on disk (the
+    /// write normalizes line endings to LF): the watcher finds the same
+    /// file a moment later, and the bus drops that echo by it; the next
+    /// complete walk compares with it too.
     pub(crate) fn announce_threads(
         &self,
         domain: &str,
@@ -2069,13 +2071,15 @@ impl Engine {
         threads: &str,
         actor: Option<String>,
     ) {
+        let checksum = super::sha256_hex(crystalline_core::to_lf(threads).as_bytes());
+        self.remember_threads(domain, path, Some(&checksum));
         self.announce(Change::Reflection(ReflectionChanged {
             domain: domain.to_string(),
             path: path.to_string(),
             kind: ReflectionChangeKind::Threads,
             from: None,
             actor,
-            checksum: Some(super::sha256_hex(threads.as_bytes())),
+            checksum: Some(checksum),
             audience: None,
         }));
     }
