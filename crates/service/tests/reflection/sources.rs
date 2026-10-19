@@ -456,3 +456,90 @@ async fn a_domain_only_another_instance_registers_is_unavailable_here() {
         "{doc}"
     );
 }
+
+/// A source in a domain that resolves here but cannot be checked (here a
+/// connected server serves the local `scotty` in its place) is named in
+/// the queue by the same local name the read view shows, not by the
+/// canonical name the page stores.
+#[tokio::test]
+async fn an_unavailable_source_is_named_in_the_queue_as_on_the_page() {
+    use std::sync::Arc;
+    let fx = crossing().await;
+    fx.engine
+        .edit_engram(&crystalline_service::params::EditParams {
+            identifier: "manifest".to_string(),
+            domain: "scotty".to_string(),
+            operation: "find_replace".to_string(),
+            find_text: Some("domain_name: scotty\n".to_string()),
+            content: Some("domain_name: crew\n".to_string()),
+            expected_replacements: Some(1),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let mut p = write(
+        "overview.md",
+        "# Overview\n\nFor people.\n\n## Team\n\nFive.\n",
+    );
+    p.sources = BTreeMap::from([(
+        "Team".to_string(),
+        vec!["crystalline://crew/team/scotty-team".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+
+    let remote = fx.tmp.path().join("remote");
+    crystalline_remote::update_sources(&remote, |file| {
+        file.upsert(crystalline_remote::SourceRecord {
+            url: "http://127.0.0.1:9".to_string(),
+            name: "acme".to_string(),
+            account: "ada".to_string(),
+            kind: crystalline_remote::CredentialKind::Token,
+            token_endpoint: None,
+            revocation_endpoint: None,
+            connected_at: chrono::Utc::now(),
+            mounts: vec![crystalline_remote::MountRecord {
+                remote: "scotty".to_string(),
+                local: "scotty".to_string(),
+            }],
+            domains: None,
+            from_env: false,
+        });
+        Ok(())
+    })
+    .unwrap();
+    fx.engine
+        .set_sources(Arc::new(crystalline_remote::SourceSet::load(
+            remote,
+            fx.engine.local_domains(),
+            |_| None,
+        )));
+
+    let doc = fx
+        .engine
+        .read_reflection("eng", "overview.md", &agent())
+        .await
+        .unwrap();
+    let source = &sources_by_heading(&doc, "Team")[0];
+    assert_eq!(source["state"], "unavailable", "{doc}");
+    let shown = source["domain"].as_str().unwrap().to_string();
+    let queue = fx
+        .engine
+        .reflect(
+            &crystalline_service::params::ReflectParams {
+                domains: vec!["eng".into()],
+                ..Default::default()
+            },
+            &agent(),
+        )
+        .await
+        .unwrap();
+    let item = queue["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["what"] == "source_unavailable")
+        .unwrap_or_else(|| panic!("{queue}"));
+    assert_eq!(item["source_domain"], shown.as_str(), "{queue}");
+    assert!(item["note"].as_str().unwrap().contains(&shown), "{queue}");
+}

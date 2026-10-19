@@ -378,7 +378,10 @@ impl Engine {
                         "retired" => ("source_retired", engram_age()),
                         "changed" => ("source_changed", engram_age()),
                         "unavailable" => {
-                            if let Some(domain) = src.domain.as_deref() {
+                            // By the name the read view shows (the local
+                            // one), the stored name when nothing resolves.
+                            if let Some(domain) = facts.shown_domain(src).or(src.domain.as_deref())
+                            {
                                 let entry = unavailable.entry(domain).or_default();
                                 entry.0 += 1;
                                 if !entry.1.iter().any(|s| s == id) {
