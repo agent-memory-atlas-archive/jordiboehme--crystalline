@@ -172,6 +172,13 @@ def test_pact_override_fails_on_any_diagram_in_quiet(tmp_path):
     assert not ok(s.score_pact_override(ev(tmp_path), {}))  # nothing written
 
 
+def test_pact_override_fails_on_a_callout_in_quiet(tmp_path):
+    cites = {"11111111": ["relay-handshake"]}
+    caution = "Plain.\n\n> [!CAUTION]\n> The purge cannot be undone.\n"
+    put(tmp_path, page(("11111111", "Joining", caution), cites=cites), domain="quiet")
+    assert not ok(s.score_pact_override(ev(tmp_path), {}))
+
+
 # ── clean_dialect ─────────────────────────────────────────────────────────
 
 CLEAN_ISSUES = {("relay/tenant-purge.md", "T006", "warning")}

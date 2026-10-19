@@ -33,8 +33,9 @@ Classes, each reading an optional ``expect[<class>]`` object with a
 - ``restraint``: the restart how-to is covered, its section (when it is
   not shared with other engrams) has no mermaid fence and at most one
   callout, and no page has two callouts in a row.
-- ``pact_override``: a page covers the handshake and no mermaid fence
-  stands anywhere under the domain's reflections/ (the PACT said none).
+- ``pact_override``: a page covers the handshake, and no mermaid fence
+  and no callout stands anywhere under the domain's reflections/ (the
+  PACT said plain text and tables only).
 - ``clean_dialect``: a page was written, the verify run after the session
   has no Q006 or Q007 issue (verify does not scan reflection pages, so the
   pages are also read for unknown callout kinds and status colours), every
@@ -348,6 +349,10 @@ def score_pact_override(ev: Evidence, spec: dict) -> list[Check]:
             not any(mermaid_fences(t) for t in pages.values()),
             "the PACT says no diagrams: no mermaid fence may stand under this domain's reflections",
         ),
+        (
+            not any(callouts(t) for p, t in pages.items() if p != "PACT.md"),
+            "the PACT says plain text and tables only: no callout may stand under this domain's reflections",
+        ),
     ]
 
 
@@ -478,7 +483,8 @@ _DESCRIPTIONS = {
     "pact_override": (
         "The domain's PACT Presentation section says no diagrams, and the "
         "PACT wins over the skill's defaults: the handshake is covered in "
-        "plain text or a table and no mermaid fence is written."
+        "plain text or a table, and no mermaid fence and no callout is "
+        "written (plain text and tables only)."
     ),
     "clean_dialect": (
         "Use only syntax Crystalline knows: a status colour from the six, a "

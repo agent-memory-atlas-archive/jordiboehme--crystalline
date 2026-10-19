@@ -41,7 +41,7 @@ On GitHub: a plain quote with the marker as its first line.
 The rollout is :status[In review]{blue}.
 ```
 
-A small coloured label in a sentence or a table cell. The colour is exactly one of grey, blue, green, yellow, red and purple, in any letter case. Without `{...}` the label is grey. Any other colour renders grey too, and lint Q006 names the palette. A label with no text stays plain text. The label always carries a word, because colour alone is not a signal.
+A small coloured label in a sentence or a table cell. The colour is exactly one of grey, blue, green, yellow, red and purple, in any letter case. Without `{...}` the label is grey. Any other colour renders grey too, and lint Q006 names the palette. A label with no text stays plain text. A label ends at its matching `]`, so `:status[a [b] c]` is one label. The label always carries a word, because colour alone is not a signal.
 
 `:status[...]` is the only directive. Everything else that starts with a colon, such as `10:30` or `note:this`, is ordinary text.
 
@@ -85,7 +85,7 @@ On the reading page, anyone who may edit the page ticks a box. The click changes
 
 Task items are not observations, so `- [x] done` is never read as a category. Do not use them to record facts.
 
-A tick alone is not feedback. On a Reflection page, a change that only ticks or unticks boxes does not become a feedback item in the `reflect` queue. A real edit next to a tick does.
+A tick alone is not feedback. On a Reflection page, a change that only ticks or unticks boxes does not become a feedback item in the `reflect` queue. That holds for boxes in numbered lists and inside a callout or quote too. A real edit next to a tick does, and so does a changed box inside a code block, which is text.
 
 When it fits: things people act on and tick off.
 
@@ -113,7 +113,7 @@ The brand blue is `#0969DA`.
 
 Inline code that holds exactly one colour code and nothing else gets a small square of that colour before it. These forms work: `#0969DA`, `rgb(9, 105, 218)` and `hsl(212, 92%, 45%)`.
 
-On GitHub: plain inline code, with a swatch for the same forms.
+On GitHub: plain inline code (GitHub draws swatches only in issues, pull requests and discussions).
 
 ## Diagrams
 
@@ -137,15 +137,15 @@ On GitHub: code blocks look the same, without the button.
 
 ## On this page
 
-A page with three or more `##` sections gets an outline of its `##` and `###` headings. There is no syntax. On a wide screen it sits in the right column and marks the section you are in. On a narrow screen it is a collapsed block above the text, and on a phone it sits in the drawer.
+A page with three or more `##` sections gets an outline of its `##` and `###` headings. There is no syntax. On a wide screen it sits in the right column and marks the section you are in. On a narrow screen it is a collapsed block above the text, and on a phone it sits in the drawer. On a Reflection page the outline lists the `##` sections only and sits in the threads column, or in the threads sheet on a narrow screen.
 
 On GitHub: GitHub builds its own outline from the headings.
 
 ## Writing it in Fluid
 
-The editor has one **Insert** menu with Callout (the six kinds), Expand block, Status label, Table, Diagram, Code block, Math, Footnote and Task list. Type `/` at the start of an empty line to open the same list at the caret and filter it as you type. Escape closes it, and so does a space right after the `/`; a query with no match closes it too. The `/` stays in the text.
+The editor has one **Insert** menu with Callout (five kinds), Expand block, Status label, Diagram, Code block, Math and Footnote; Table and Task list have their own buttons. Type `/` at the start of an empty line to open every element at the caret, the table and the task list included, and filter it as you type. It does not open inside a quote or an HTML comment. Escape closes it, and so does a space right after the `/`; a query with no match closes it too. The `/` stays in the text.
 
-While the caret is inside a callout, the toolbar offers the kind and "Starts open" or "Starts closed". Inside a status label it offers the six colours. Away from the active line, callouts, labels, swatches and math show as they do on the reading page.
+While the caret is inside a callout, the toolbar offers the kind and "Starts open", "Starts closed" or "Does not fold". An expand block always folds, so it has no "Does not fold", and when it becomes another kind it keeps its `-` so it stays closed. Inside a status label it offers the six colours. Away from the active line, callouts, labels, swatches and math show as they do on the reading page.
 
 ## Rich paste
 
