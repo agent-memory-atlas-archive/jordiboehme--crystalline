@@ -630,9 +630,13 @@ describe("the reflection page", () => {
     expect(
       within(list).getByRole("link", { name: "Deploy runbook" }),
     ).toHaveAttribute("href", "/d/eng/e/runbooks/deploy");
-    const foreign = within(list).getByRole("link", { name: "Scotty team" });
-    expect(foreign).toHaveAttribute("href", "/d/scotty/e/team/scotty-team");
-    const row = foreign.closest("li") as HTMLElement;
+    // Its domain cannot be checked here: named, not linked.
+    expect(
+      within(list).queryByRole("link", { name: /Scotty team/ }),
+    ).toBeNull();
+    const row = within(list)
+      .getByText("Scotty team")
+      .closest("li") as HTMLElement;
     expect(row).toHaveTextContent("Scotty team in domain scotty");
     expect(within(row).getByText("not checked here")).toBeVisible();
   });

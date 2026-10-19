@@ -33,7 +33,10 @@ export interface SourceView {
   permalink: string;
   title: string;
   state: SourceState;
-  /** The source's domain when it is not the page's; null for the page's own. */
+  /**
+   * The source's domain when it is not the page's, by the local name this
+   * instance routes it by; null for the page's own.
+   */
   domain: string | null;
 }
 

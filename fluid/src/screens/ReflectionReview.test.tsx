@@ -455,8 +455,11 @@ describe("the review screen", () => {
     });
     renderApp("/d/eng/reflection/review");
     const queue = await screen.findByRole("region", { name: "Reflect queue" });
+    // The link's name carries the domain, so two titles in two domains differ.
     expect(
-      await within(queue).findByRole("link", { name: "Scotty team" }),
+      await within(queue).findByRole("link", {
+        name: "Scotty team in domain scotty",
+      }),
     ).toHaveAttribute("href", "/d/scotty/e/team/scotty-team");
     expect(
       within(queue).getByText("1 source in a domain you cannot open"),

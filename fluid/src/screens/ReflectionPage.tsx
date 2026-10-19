@@ -129,6 +129,10 @@ const LINK =
  * "3 sections · Built from 2 engrams · 3 open threads", from what the page
  * already holds. The engram part is left out for a reader without engram
  * rights (the server sends no sources then) and every zero part is left out.
+ * It counts the distinct engrams the reader is shown: sources in a domain
+ * the reader may not open arrive as a count per section, which cannot say
+ * whether two sections name the same engram, so they are left out here and
+ * counted on each section's own source button instead.
  */
 // eslint-disable-next-line react-refresh/only-export-components
 export function reflectionMetaLine(
