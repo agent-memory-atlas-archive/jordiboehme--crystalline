@@ -5,6 +5,9 @@ reflection:
     sources:
       - engram: notes/smoke-source
         checksum: "0000"
+      - domain: fluid-smoke
+        engram: tide-tables
+        checksum: "0000"
 ---
 
 # Welcome

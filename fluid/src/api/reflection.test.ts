@@ -103,6 +103,43 @@ describe("readers", () => {
     expect(tree.nodes[0]).toMatchObject({ kind: "folder", path: "guides" });
   });
 
+  it("reads a source of another domain and a count of hidden ones", () => {
+    const doc = readDoc({
+      domain: "eng",
+      path: "a.md",
+      title: "A",
+      markdown: "# A\n",
+      checksum: "abc",
+      sections: [
+        {
+          id: "7f3a9c2e",
+          heading: "Team",
+          line: 3,
+          changed: false,
+          sources: [
+            {
+              permalink: "team/x",
+              title: "X",
+              state: "unavailable",
+              domain: "scotty",
+            },
+          ],
+          hidden_sources: 2,
+        },
+      ],
+      threads: [],
+    });
+    expect(doc.sections[0]?.sources).toEqual([
+      {
+        permalink: "team/x",
+        title: "X",
+        state: "unavailable",
+        domain: "scotty",
+      },
+    ]);
+    expect(doc.sections[0]?.hiddenSources).toBe(2);
+  });
+
   it("keeps absent sources absent, never empty", () => {
     const doc = readDoc({
       domain: "eng",
@@ -134,6 +171,7 @@ describe("readers", () => {
         permalink: "runbooks/deploy",
         title: "Deploy runbook",
         state: "changed",
+        domain: null,
       },
     ]);
     expect(doc.threads[0]?.waitingOn).toBe("agent");

@@ -41,6 +41,8 @@ const DOMAIN = process.env.FLUID_E2E_REFLECTION_DOMAIN ?? "smoke-pages";
  * done with it by then, and nothing after this file reads it.
  */
 const OFF_DOMAIN = process.env.FLUID_E2E_PRIVATE_DOMAIN ?? "smoke-vault";
+/** The engram domain the welcome page cites a source from (its fixture names it). */
+const ENGRAM_DOMAIN = process.env.FLUID_E2E_DOMAIN ?? "fluid-smoke";
 // `run-smoke.sh` exports it; empty unless the daemon serves under a prefix.
 const BASE_PATH = process.env.FLUID_E2E_BASE_PATH ?? "";
 
@@ -121,6 +123,15 @@ test.describe.serial("the Reflection journeys", () => {
       .getByRole("button", { name: /^\d+ sources? for Night deploys$/ })
       .click();
     await expect(page.getByText("missing", { exact: true })).toBeVisible();
+    // A source of another domain links into that domain and names it.
+    const foreign = page.getByRole("link", { name: "Tide Tables" });
+    await expect(foreign).toHaveAttribute(
+      "href",
+      new RegExp(`/d/${ENGRAM_DOMAIN}/e/tide-tables$`),
+    );
+    await expect(foreign.locator("xpath=..")).toContainText(
+      `Tide Tables in domain ${ENGRAM_DOMAIN}`,
+    );
   });
 
   test("a curator writes the pact in the live editor", async ({ page }) => {
@@ -234,6 +245,7 @@ test.describe.serial("the Reflection journeys", () => {
       page.getByRole("button", { name: /^\d+ sources? for / }),
     ).toHaveCount(0);
     expect(await page.content()).not.toContain("notes/smoke-source");
+    expect(await page.content()).not.toContain("tide-tables");
     // Select "Deploys run at night" the way a drag would leave it. The
     // paragraph's first child is the stamped span, whose first child is the
     // text node.

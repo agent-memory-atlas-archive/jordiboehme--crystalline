@@ -27,11 +27,14 @@ import { reflectionTargetOf, relativeTo } from "../reflectionAssets";
 
 export { reflectionKey };
 
-export type SourceState = "current" | "changed" | "retired" | "missing";
+export type SourceState =
+  "current" | "changed" | "retired" | "missing" | "unavailable";
 export interface SourceView {
   permalink: string;
   title: string;
   state: SourceState;
+  /** The source's domain when it is not the page's; null for the page's own. */
+  domain: string | null;
 }
 
 export type TreeNode =
@@ -58,6 +61,8 @@ export interface SectionView {
   changed: boolean;
   /** Null when the server left the field out: the caller reads no engrams. */
   sources: SourceView[] | null;
+  /** Sources in a domain the reader may not open: a count, never named. */
+  hiddenSources: number;
 }
 
 export type AnchorState = "found" | "text_changed" | "section_gone";
@@ -107,6 +112,10 @@ export interface QueueItem {
   /** Id lines are left in by the engine; strip them before showing. */
   diff: string | null;
   sources: SourceView[] | null;
+  /** Sources in a domain the reader may not open: a count, never named. */
+  hiddenSources: number;
+  /** `source_unavailable`: the domain that cannot be checked here. */
+  sourceDomain: string | null;
   folder: string | null;
   engrams: string[];
   count: number | null;
@@ -208,9 +217,13 @@ function readSource(value: unknown): SourceView | null {
     permalink,
     title: asString(record?.title) ?? permalink,
     state:
-      state === "changed" || state === "retired" || state === "missing"
+      state === "changed" ||
+      state === "retired" ||
+      state === "missing" ||
+      state === "unavailable"
         ? state
         : "current",
+    domain: asString(record?.domain),
   };
 }
 
@@ -347,6 +360,7 @@ export function readDoc(payload: unknown): ReflectionDoc {
           line,
           changed: s?.changed === true,
           sources: readSources(s?.sources),
+          hiddenSources: asNumber(s?.hidden_sources) ?? 0,
         },
       ];
     }),
@@ -390,6 +404,8 @@ function readItem(value: unknown): QueueItem | null {
     changedBy: asStrings(r?.changed_by),
     diff: asString(r?.diff),
     sources: readSources(r?.sources),
+    hiddenSources: asNumber(r?.hidden_sources) ?? 0,
+    sourceDomain: asString(r?.source_domain),
     folder: asString(r?.folder),
     engrams: asStrings(r?.engrams),
     count: asNumber(r?.count),

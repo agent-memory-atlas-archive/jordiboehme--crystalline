@@ -413,6 +413,60 @@ describe("the review screen", () => {
     });
   });
 
+  it("links a source of another domain into its domain and counts the ones the reader cannot open", async () => {
+    serve({
+      ...REVIEW,
+      queue: {
+        ...REVIEW.queue,
+        queue: [
+          {
+            n: 1,
+            kind: "update",
+            what: "source_changed",
+            path: "guides/deploying.md",
+            section: "7f3a9c2e",
+            heading: "Night deploys",
+            age_secs: 3600,
+            sources: [
+              {
+                permalink: "team/scotty-team",
+                title: "Scotty team",
+                state: "changed",
+                domain: "scotty",
+              },
+            ],
+            hidden_sources: 1,
+            note: "a source in a domain you cannot open has changed",
+          },
+          {
+            n: 2,
+            kind: "update",
+            what: "source_unavailable",
+            path: "guides/deploying.md",
+            section: null,
+            heading: "",
+            age_secs: 3600,
+            source_domain: "elsewhere",
+            count: 2,
+            note: "sources in elsewhere cannot be checked here",
+          },
+        ],
+      },
+    });
+    renderApp("/d/eng/reflection/review");
+    const queue = await screen.findByRole("region", { name: "Reflect queue" });
+    expect(
+      await within(queue).findByRole("link", { name: "Scotty team" }),
+    ).toHaveAttribute("href", "/d/scotty/e/team/scotty-team");
+    expect(
+      within(queue).getByText("1 source in a domain you cannot open"),
+    ).toBeVisible();
+    expect(within(queue).getByText("Sources not checked here")).toBeVisible();
+    expect(
+      within(queue).getByText("2 sources in elsewhere cannot be checked here."),
+    ).toBeVisible();
+  });
+
   it("draws no source engram links or titles for a reader who cannot see engrams", async () => {
     serve(REVIEW, { engrams_visible: false });
     renderApp("/d/eng/reflection/review");

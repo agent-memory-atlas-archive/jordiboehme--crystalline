@@ -589,6 +589,84 @@ describe("the reflection page", () => {
     ).toBeNull();
   });
 
+  it("links a source of another domain into that domain, with a quiet domain marker", async () => {
+    serve("curate", true, {
+      "/domains/eng/reflections/guides/deploying.md": () =>
+        doc({
+          sections: [
+            {
+              id: "7f3a9c2e",
+              heading: "Night deploys",
+              line: 14,
+              changed: false,
+              sources: [
+                {
+                  permalink: "runbooks/deploy",
+                  title: "Deploy runbook",
+                  state: "current",
+                },
+                {
+                  permalink: "team/scotty-team",
+                  title: "Scotty team",
+                  state: "unavailable",
+                  domain: "scotty",
+                },
+              ],
+            },
+          ],
+        }),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const control = await screen.findByRole("button", {
+      name: "2 sources for Night deploys",
+    });
+    expect(control).toHaveAccessibleDescription(
+      "A source cannot be checked here.",
+    );
+    await userEvent.click(control);
+    const list = document.getElementById(
+      control.getAttribute("aria-controls") as string,
+    ) as HTMLElement;
+    expect(
+      within(list).getByRole("link", { name: "Deploy runbook" }),
+    ).toHaveAttribute("href", "/d/eng/e/runbooks/deploy");
+    const foreign = within(list).getByRole("link", { name: "Scotty team" });
+    expect(foreign).toHaveAttribute("href", "/d/scotty/e/team/scotty-team");
+    const row = foreign.closest("li") as HTMLElement;
+    expect(row).toHaveTextContent("Scotty team in domain scotty");
+    expect(within(row).getByText("not checked here")).toBeVisible();
+  });
+
+  it("shows sources in a domain the reader cannot open as a count, never by name", async () => {
+    serve("curate", true, {
+      "/domains/eng/reflections/guides/deploying.md": () =>
+        doc({
+          sections: [
+            {
+              id: "7f3a9c2e",
+              heading: "Night deploys",
+              line: 14,
+              changed: false,
+              sources: [],
+              hidden_sources: 2,
+            },
+          ],
+        }),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const control = await screen.findByRole("button", {
+      name: "2 sources for Night deploys",
+    });
+    await userEvent.click(control);
+    const list = document.getElementById(
+      control.getAttribute("aria-controls") as string,
+    ) as HTMLElement;
+    expect(
+      within(list).getByText("2 sources in a domain you cannot open"),
+    ).toBeVisible();
+    expect(within(list).queryByRole("link")).toBeNull();
+  });
+
   it("points the toggle at a list that exists while closed", async () => {
     serve("curate", true);
     renderApp("/d/eng/reflection/guides/deploying.md");

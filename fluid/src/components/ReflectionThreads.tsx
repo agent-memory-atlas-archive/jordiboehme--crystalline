@@ -639,6 +639,8 @@ export function sourceChip(state: SourceState): ReactElement | null {
       return <Chip variant="retired">retired</Chip>;
     case "missing":
       return <Chip variant="danger">missing</Chip>;
+    case "unavailable":
+      return <Chip variant="retired">not checked here</Chip>;
   }
 }
 

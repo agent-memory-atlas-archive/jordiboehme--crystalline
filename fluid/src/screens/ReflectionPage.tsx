@@ -58,7 +58,8 @@ import { Markdown } from "../components/Markdown";
 import type { HeadingAside } from "../components/MarkdownBody";
 import { useReflectionStatus } from "../components/ReflectionModeSwitch";
 import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
-import { ReflectionThreads, sourceChip } from "../components/ReflectionThreads";
+import { ReflectionThreads } from "../components/ReflectionThreads";
+import { SourceRow } from "../components/SourceRow";
 import {
   ActionItem,
   ActionSeparator,
@@ -75,7 +76,6 @@ import { PrintNotes } from "../components/PrintNotes";
 import { Loading } from "../components/Loading";
 import { absoluteUrl } from "../base";
 import {
-  engramRoute,
   reflectionEditRoute,
   reflectionPageRoute,
   reflectionRoute,
@@ -89,6 +89,7 @@ import { tickAt } from "../taskTick";
 import { printNotes } from "../printNotes";
 import { reflectionFacts } from "../printSheet";
 import { SECTION_ATTR } from "../reflectionQuotes";
+import { hiddenSourcesText, sourceKey } from "../reflectionSources";
 import type { SectionText } from "../reflectionText";
 import {
   TOP_SECTION,
@@ -136,7 +137,9 @@ export function reflectionMetaLine(
   }
   if (engramsVisible) {
     const sources = new Set(
-      page.sections.flatMap((s) => (s.sources ?? []).map((x) => x.permalink)),
+      page.sections.flatMap((s) =>
+        (s.sources ?? []).map((x) => `${x.domain ?? ""}/${x.permalink}`),
+      ),
     );
     if (sources.size > 0) {
       parts.push(`Built from ${plural(sources.size, "engram", "engrams")}`);
@@ -739,7 +742,8 @@ function PageSection({
     engramsVisible && view?.sources !== null && view?.sources !== undefined
       ? view.sources
       : [];
-  const aside = useSources(domain, section.heading, sources);
+  const hidden = engramsVisible ? (view?.hiddenSources ?? 0) : 0;
+  const aside = useSources(domain, section.heading, sources, hidden);
   const onSectionTick = useCallback(
     (offset: number, next: "[ ]" | "[x]") => {
       onTick(index, offset, next);
@@ -785,15 +789,19 @@ function PageSection({
 /**
  * The engrams a section was built from, as a small count at the right end of
  * its heading: "1 source", with an amber dot when one of them changed since
- * (or was retired or is missing). The count is a button named "1 source for
- * <heading>"; the list it opens is laid over the text below the heading,
- * outside it, and shuts on Escape, a press elsewhere or focus leaving it.
- * Null for a section with no sources: nothing is drawn.
+ * (or was retired or is missing, or its domain cannot be checked here). The
+ * count is a button named "1 source for <heading>"; the list it opens is laid
+ * over the text below the heading, outside it, and shuts on Escape, a press
+ * elsewhere or focus leaving it. A source of another domain links into that
+ * domain; `hidden` sources, in a domain the reader may not open, are counted
+ * and said in one line, never named. Null for a section with no sources:
+ * nothing is drawn.
  */
 function useSources(
   domain: string,
   heading: string,
   sources: SourceView[],
+  hidden: number,
 ): HeadingAside | null {
   const [open, setOpen] = useState(false);
   const panel = useId();
@@ -801,8 +809,11 @@ function useSources(
   const button = useRef<HTMLButtonElement | null>(null);
   const list = useRef<HTMLUListElement | null>(null);
   const changed = sources.some((source) => source.state === "changed");
+  const gone = sources.some(
+    (source) => source.state === "retired" || source.state === "missing",
+  );
   const stale = sources.some((source) => source.state !== "current");
-  const count = plural(sources.length, "source", "sources");
+  const count = plural(sources.length + hidden, "source", "sources");
   useEffect(() => {
     if (!open) {
       return;
@@ -827,7 +838,7 @@ function useSources(
       button.current?.focus();
     }
   };
-  if (sources.length === 0) {
+  if (sources.length + hidden === 0) {
     return null;
   }
   return {
@@ -858,7 +869,11 @@ function useSources(
         </button>
         {stale && (
           <span id={note} hidden>
-            {changed ? "A source changed." : "A source is retired or missing."}
+            {changed
+              ? "A source changed."
+              : gone
+                ? "A source is retired or missing."
+                : "A source cannot be checked here."}
           </span>
         )}
       </>
@@ -872,16 +887,18 @@ function useSources(
         className="absolute top-0 right-0 z-30 flex w-max max-w-[min(22rem,calc(100vw-2rem))] flex-col gap-1 rounded-lg border border-hair bg-raised p-2 text-sm text-ink shadow-pop"
       >
         {sources.map((source) => (
-          <li
-            key={source.permalink}
+          <SourceRow
+            key={sourceKey(domain, source)}
+            pageDomain={domain}
+            source={source}
             className="flex items-center gap-2 px-1 py-0.5"
-          >
-            <Link to={engramRoute(domain, source.permalink)} className={LINK}>
-              {source.title}
-            </Link>
-            {sourceChip(source.state)}
-          </li>
+          />
         ))}
+        {hidden > 0 && (
+          <li className="px-1 py-0.5 text-muted">
+            {hiddenSourcesText(hidden)}
+          </li>
+        )}
       </ul>
     ),
   };

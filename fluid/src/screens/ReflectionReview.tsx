@@ -31,13 +31,19 @@ import {
 import { useAuth } from "../auth/AuthContext";
 import { useReflectionStatus } from "../components/ReflectionModeSwitch";
 import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
-import { ThreadCard, sourceChip } from "../components/ReflectionThreads";
+import { ThreadCard } from "../components/ReflectionThreads";
+import { SourceRow } from "../components/SourceRow";
 import { ReviewDiff } from "../components/ReviewDiff";
 import { Loading } from "../components/Loading";
 import { Chip, RAIL_LABEL } from "../components/primitives";
 import { plural } from "../format";
-import { engramRoute, reflectionPageRoute } from "../paths";
+import { reflectionPageRoute } from "../paths";
 import { ageText } from "../reflectionText";
+import {
+  hiddenSourcesText,
+  sourceKey,
+  unavailableSourcesText,
+} from "../reflectionSources";
 
 const LINK =
   "text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline";
@@ -50,6 +56,7 @@ const WHAT_LABEL: Record<string, string> = {
   source_changed: "A source changed",
   source_retired: "A source was retired",
   source_missing: "A source is gone",
+  source_unavailable: "Sources not checked here",
   off_structure: "Outside the pact's structure",
   asset_missing: "Missing file",
   engram_attachment: "Links to an engram file",
@@ -381,17 +388,30 @@ function QueueRow({
           }
         />
       )}
+      {engramsVisible &&
+        item.what === "source_unavailable" &&
+        item.sourceDomain !== null &&
+        item.count !== null && (
+          <p className="mt-1">
+            {unavailableSourcesText(item.count, item.sourceDomain)}
+          </p>
+        )}
       {engramsVisible && item.sources !== null && item.sources.length > 0 && (
         <ul className="mt-1 flex flex-col gap-1">
           {item.sources.map((source) => (
-            <li key={source.permalink} className="flex items-center gap-2">
-              <Link to={engramRoute(domain, source.permalink)} className={LINK}>
-                {source.title}
-              </Link>
-              {sourceChip(source.state)}
-            </li>
+            <SourceRow
+              key={sourceKey(domain, source)}
+              pageDomain={domain}
+              source={source}
+              className="flex items-center gap-2"
+            />
           ))}
         </ul>
+      )}
+      {engramsVisible && item.hiddenSources > 0 && (
+        <p className="text-caption mt-1 text-muted">
+          {hiddenSourcesText(item.hiddenSources)}
+        </p>
       )}
     </li>
   );
