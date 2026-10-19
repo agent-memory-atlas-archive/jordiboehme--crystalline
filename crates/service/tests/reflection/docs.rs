@@ -1617,3 +1617,46 @@ async fn a_pages_own_id_a_blank_line_down_is_seated_back() {
     assert!(written.get("guidance").is_none(), "{written}");
     assert_eq!(file(&fx, "a.md"), read, "seated back, nothing else moved");
 }
+
+/// A domain rename rewrites the stored domain of every source of the
+/// renamed domain, also on a page whose text never names it, so a rename
+/// never turns those sources into ones that cannot be checked. The
+/// rewrite owes no feedback.
+#[tokio::test]
+async fn a_domain_rename_rewrites_the_domain_of_sources_it_names() {
+    use crystalline_core::reflection as r;
+    let fx = with_ops(
+        "",
+        "",
+        &[(
+            "runbook.md",
+            &engram("Runbook", "runbook", "- [fact] page the on-call"),
+        )],
+    )
+    .await;
+    let mut p = write("a.md", "# A\n\nFor people.\n\n## On call\n\nPage them.\n");
+    p.sources = BTreeMap::from([(
+        "On call".to_string(),
+        vec!["crystalline://ops/runbook".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    assert!(file(&fx, "a.md").contains("domain: ops"));
+
+    rename_ops(&fx).await;
+
+    let text = file(&fx, "a.md");
+    assert!(text.contains("domain: platform"), "{text}");
+    assert!(!text.contains("domain: ops"), "{text}");
+    assert!(
+        r::feedback_changes(&text, &file(&fx, ".reflected/a.md")).is_empty(),
+        "the rename owes no feedback"
+    );
+    let doc = fx
+        .engine
+        .read_reflection("eng", "a.md", &agent())
+        .await
+        .unwrap();
+    let source = &doc["sections"][0]["sources"][0];
+    assert_eq!(source["domain"], "platform", "{doc}");
+    assert_eq!(source["state"], "current", "{doc}");
+}
