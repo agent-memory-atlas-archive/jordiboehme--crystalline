@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
+import { createLogger } from "vite";
 import { defineConfig } from "vitest/config";
 
 import { chunkFileName } from "./scripts/bundleBudget.ts";
@@ -31,8 +32,27 @@ const { version } = JSON.parse(
 const DEV_API_TARGET =
   process.env.CRYSTALLINE_API_TARGET ?? "http://127.0.0.1:7411";
 
+/**
+ * Vite's logger, less one line that is no error: a collab socket the browser
+ * closed (a page that navigated or was deleted) while the daemon still had a
+ * frame on the way. The proxy then writes to an ended socket (`EPIPE`) and
+ * logs "ws proxy error" with a stack, though nothing was lost: the room is
+ * gone on both ends. Every other message, and every other proxy error, is
+ * logged as before.
+ */
+const logger = createLogger();
+const logError = logger.error.bind(logger);
+logger.error = (message, options) => {
+  const code = (options?.error as NodeJS.ErrnoException | undefined)?.code;
+  if (message.includes("ws proxy error") && code === "EPIPE") {
+    return;
+  }
+  logError(message, options);
+};
+
 // https://vite.dev/config/
 export default defineConfig({
+  customLogger: logger,
   // Relative asset urls: the server names the base in `<base href>`, so one
   // build serves at the root and under any path.
   base: "./",

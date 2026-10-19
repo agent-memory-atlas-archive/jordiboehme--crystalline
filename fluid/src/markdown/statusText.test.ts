@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { labelPlainWords, statusLabelWords } from "./statusText";
+import { labelPlainWords, statusLabelWords, statusPieces } from "./statusText";
 
 describe("statusLabelWords", () => {
   it("keeps a label's words and drops its syntax", () => {
@@ -22,5 +22,17 @@ describe("labelPlainWords", () => {
     expect(labelPlainWords("**Done** in `v2` [see](https://x.test) \\*")).toBe(
       "Done in v2 see *",
     );
+  });
+});
+
+describe("statusPieces", () => {
+  it("cuts text into words and labels", () => {
+    expect(statusPieces("a :status[B]{red} c :status[D] :status[")).toEqual([
+      { text: "a " },
+      { label: "B", braces: "red" },
+      { text: " c " },
+      { label: "D", braces: null },
+      { text: " :status[" },
+    ]);
   });
 });

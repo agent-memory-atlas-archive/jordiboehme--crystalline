@@ -71,3 +71,51 @@ export function labelPlainWords(label: string): string {
     (_mark, escaped?: string, link?: string) => escaped ?? link ?? "",
   );
 }
+
+/** A piece of text: plain words, or a status label's words and braces. */
+export type StatusPiece =
+  { text: string } | { label: string; braces: string | null };
+
+/**
+ * `text` cut into plain words and status labels, read the way
+ * {@link statusLabelWords} reads them. For a preview that draws labels as
+ * pills without parsing Markdown.
+ */
+export function statusPieces(text: string): StatusPiece[] {
+  const out: StatusPiece[] = [];
+  let at = 0;
+  let plain = "";
+  for (;;) {
+    const head = text.indexOf(HEAD, at);
+    if (head === -1) {
+      plain += text.slice(at);
+      break;
+    }
+    const from = head + HEAD.length;
+    const close = labelEnd(text, from);
+    if (close === -1 || close === from) {
+      plain += text.slice(at, from);
+      at = from;
+      continue;
+    }
+    plain += text.slice(at, head);
+    if (plain !== "") {
+      out.push({ text: plain });
+      plain = "";
+    }
+    at = close + 1;
+    let braces: string | null = null;
+    if (text[at] === "{") {
+      const brace = text.indexOf("}", at);
+      if (brace !== -1) {
+        braces = text.slice(at + 1, brace);
+        at = brace + 1;
+      }
+    }
+    out.push({ label: text.slice(from, close), braces });
+  }
+  if (plain !== "") {
+    out.push({ text: plain });
+  }
+  return out;
+}

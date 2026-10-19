@@ -234,6 +234,28 @@ async function findOnScreen(text: string): Promise<HTMLElement> {
 }
 
 describe("comments on a reflection", () => {
+  it("quotes the selection as it stands when Comment is pressed", async () => {
+    serve([]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await screen.findByText("at");
+    select(textNode("Deploys run "), textNode("Deploys run "), 4);
+    // The browser's last step of a keyboard selection, with no
+    // selectionchange the page has read yet.
+    const unheard = (event: Event) => {
+      event.stopImmediatePropagation();
+    };
+    window.addEventListener("selectionchange", unheard, true);
+    try {
+      window.getSelection()?.getRangeAt(0).setEnd(textNode("Deploys run "), 7);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } finally {
+      window.removeEventListener("selectionchange", unheard, true);
+    }
+    await userEvent.click(screen.getByRole("button", { name: "Comment" }));
+    expect(screen.getByText("Deploys")).toBeVisible();
+    expect(screen.queryByText("Depl")).toBeNull();
+  });
+
   it("anchors a comment on the selected passage, source markers included", async () => {
     const opened = vi.fn((_path: string, _init?: RequestInit) =>
       thread("t-00000001"),

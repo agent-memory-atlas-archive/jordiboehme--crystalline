@@ -1001,8 +1001,13 @@ export default function EngramPage() {
         {!fullWidth && (
           <aside className="flex flex-col divide-y divide-hair print:hidden [&>*]:py-4 [&>*:first-child]:pt-0">
             {inRail && <PageOutline headings={outline} />}
+            {/*
+              Keyed by the engram so a new page starts each panel fresh, and
+              each key named for its panel: two siblings under one key make
+              React keep the stale one beside the new one on every change.
+            */}
             <DetailsPanel
-              key={`${engram.domain}/${engram.permalink}`}
+              key={`details:${engram.domain}/${engram.permalink}`}
               frontmatter={engram.frontmatter}
               address={engram.url}
               domain={engram.domain}
@@ -1012,7 +1017,7 @@ export default function EngramPage() {
               canDelete={canWrite}
             />
             <LinkedFrom
-              key={`${engram.domain}/${engram.permalink}`}
+              key={`linked:${engram.domain}/${engram.permalink}`}
               domain={engram.domain}
               permalink={engram.permalink}
               inboundCount={engram.inboundCount}

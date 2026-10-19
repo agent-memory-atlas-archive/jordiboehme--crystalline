@@ -524,6 +524,22 @@ export function ReflectionThreads({
     }
   }, [drafting]);
 
+  // The page's selection as it stands, or null when there is none in the
+  // page. The Comment button reads it again when pressed: the last
+  // selectionchange may run before the browser's final step of a keyboard
+  // selection, which would leave the quote a letter or two short.
+  const selectionNow = (): SelectionAnchor | null => {
+    const root = articleRef.current;
+    const selection = window.getSelection();
+    if (root === null || selection === null || selection.rangeCount === 0) {
+      return null;
+    }
+    const range = selection.getRangeAt(0);
+    return range.collapsed || !root.contains(range.commonAncestorContainer)
+      ? null
+      : selectionAnchor(root, range, sections);
+  };
+
   // What is selected on the page. A collapse on the page clears it, and so
   // does text selected elsewhere; a caret or a field outside the page
   // changes nothing.
@@ -964,7 +980,7 @@ export function ReflectionThreads({
             }}
             onClick={() => {
               comment.reset();
-              setDrafting(captured);
+              setDrafting(selectionNow() ?? captured);
             }}
             className={`flex items-center gap-2.5 rounded-[10px] border border-accent-300 bg-accent-50 px-3 py-2.5 text-left text-[13px] font-medium text-accent-800 hover:bg-accent-100 dark:border-accent-700 dark:bg-accent-400/10 dark:text-accent-200 dark:hover:bg-accent-400/20 ${FOCUS_RING}`}
           >

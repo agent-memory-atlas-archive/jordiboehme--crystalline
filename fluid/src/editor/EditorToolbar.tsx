@@ -508,13 +508,18 @@ export function EditorToolbar({
   };
   return (
     <>
+      {/*
+        On the reading column the bar is one row that scrolls on a phone and
+        wraps from md up, so a context segment (a callout's kind and fold, a
+        label's colours) stands in view where the caret asks for it.
+      */}
       <div
         role="toolbar"
         aria-label="Formatting"
         onMouseDown={keepSelection}
         className={
           bare
-            ? "sticky top-14 z-10 flex flex-nowrap items-center gap-0.5 overflow-x-auto border-b border-hair bg-canvas/95 py-1.5 backdrop-blur print:hidden"
+            ? "sticky top-14 z-10 flex flex-nowrap items-center gap-0.5 overflow-x-auto border-b border-hair bg-canvas/95 py-1.5 backdrop-blur md:flex-wrap md:overflow-x-visible print:hidden"
             : "sticky top-14 z-10 flex flex-wrap items-center gap-0.5 rounded-t border-b border-slate-200 bg-white/95 px-1.5 py-1 backdrop-blur print:hidden dark:border-slate-800 dark:bg-slate-950/95"
         }
       >

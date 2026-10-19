@@ -2635,6 +2635,26 @@ describe("the printed engram", () => {
   });
 });
 
+describe("the aside beside the body", () => {
+  it("draws each panel once: no two siblings share a key", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      serve();
+      renderApp("/d/eng/e/alpha");
+      await screen.findByRole("heading", { name: "Alpha", level: 1 });
+      await waitFor(() => {
+        expect(screen.getAllByText("Linked from")).toHaveLength(1);
+      });
+      const twins = errors.mock.calls.filter((call) =>
+        String(call[0]).includes("same key"),
+      );
+      expect(twins).toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+});
+
 describe("task boxes on the engram page", () => {
   const TASKS = `${BODY}\n- [ ] ship it\n- [x] write it\n`;
 
