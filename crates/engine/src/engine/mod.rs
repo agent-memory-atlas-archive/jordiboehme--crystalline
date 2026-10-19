@@ -7069,6 +7069,7 @@ mod rename_domain;
 mod review_mode;
 mod schemas;
 mod search;
+mod sources;
 mod sync;
 mod threads;
 mod transfer;

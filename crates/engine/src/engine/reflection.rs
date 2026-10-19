@@ -8,6 +8,7 @@ use crystalline_core::reflection::{ReflectionHome, ReflectionState};
 use crystalline_core::relink::BodyGate;
 
 use super::fence::{DiskUndo, KeepText, OnRefusal, RowOp};
+use super::sources::SourceFacts;
 use super::*;
 use crate::changes::ReflectionChanged;
 use crate::collab::session::{MovedTo, RoomDoc};
@@ -1070,14 +1071,15 @@ pub(crate) fn without_provenance(text: &str) -> String {
 
 /// A source's state and its engram's title: `current`, `changed` (the
 /// engram's checksum moved), `retired` (its status is in the retirement
-/// set) or `missing` (no such engram any more). The one place a source's
-/// state is decided: the read answers it and the reflect queue
-/// reads it.
-pub(crate) fn source_state(
-    src: &r::SourceRef,
-    facts: &HashMap<String, EngramFact>,
-) -> (&'static str, String) {
-    match facts.get(&src.engram) {
+/// set), `missing` (no such engram any more) or `unavailable` (its domain
+/// cannot be checked here: never read as missing, so nobody drops a source
+/// because a domain is offline). The one place a source's state is decided:
+/// the read answers it and the reflect queue reads it.
+pub(crate) fn source_state(src: &r::SourceRef, facts: &SourceFacts) -> (&'static str, String) {
+    if facts.unavailable(src) {
+        return ("unavailable", String::new());
+    }
+    match facts.fact(src) {
         None => ("missing", String::new()),
         Some(f) if crystalline_index::is_retired_status(&f.status.to_lowercase()) => {
             ("retired", f.title.clone())
@@ -1087,10 +1089,15 @@ pub(crate) fn source_state(
     }
 }
 
-/// A source as the answers show it.
-pub(crate) fn source_view(src: &r::SourceRef, facts: &HashMap<String, EngramFact>) -> Value {
+/// A source as the answers show it; `domain` only for a source of another
+/// domain than the page's.
+pub(crate) fn source_view(src: &r::SourceRef, facts: &SourceFacts) -> Value {
     let (state, title) = source_state(src, facts);
-    json!({ "permalink": src.engram, "title": title, "state": state })
+    let mut view = json!({ "permalink": src.engram, "title": title, "state": state });
+    if let Some(domain) = &src.domain {
+        view["domain"] = json!(domain);
+    }
+    view
 }
 
 /// Who a reflection write records as having changed a section.
@@ -1582,11 +1589,15 @@ impl Engine {
                 EngineError::Invalid(format!("`{name}` is not a section operation; use replace_section, insert_before_section or insert_after_section"))
             })?),
         };
+        // Each source by permalink (this domain) or address (any domain),
+        // resolved in the writer's scope, and their facts read one seek
+        // each before the page lock.
+        let named = self
+            .resolve_source_names(&p.domain, &caller.scope, p.sources.values().flatten())
+            .await?;
+        let wanted: Vec<r::SourceRef> = named.values().map(|n| n.source_ref("")).collect();
         let facts = self
-            .cited_facts(
-                access.domain_id,
-                p.sources.values().flatten().cloned().collect(),
-            )
+            .source_facts(access.domain_id, None, wanted.iter())
             .await?;
         let abs = access.abs(&p.path);
         let baseline_abs = access.abs(&r::baseline_path(&p.path));
@@ -1702,9 +1713,37 @@ impl Engine {
         // A room save does not come here: it keeps a pasted section's id and
         // takes no stray id line out, which is cosmetic, since Fluid never
         // writes a made-up one.
+        // A writer is held against the block as it was shown to them: a
+        // reader who may not see a source of another domain read the block
+        // without it, and sends it back that way.
+        let stored_foreign: BTreeSet<String> = current
+            .as_deref()
+            .map(r::read_provenance)
+            .unwrap_or_default()
+            .into_values()
+            .flat_map(|record| record.sources.into_iter().filter_map(|src| src.domain))
+            .collect();
+        let sight = if stored_foreign.is_empty() {
+            None
+        } else {
+            Some(self.source_sight(&caller.scope).await?)
+        };
+        let shown_block = match (&sight, current.as_deref()) {
+            (Some(sight), Some(page)) => r::block_as_written(&sight.shown_text(page)),
+            _ => None,
+        };
         let made_up_block = r::block_as_written(&incoming).is_some_and(|block| {
             current.as_deref().and_then(r::block_as_written).as_ref() != Some(&block)
+                && shown_block.as_ref() != Some(&block)
         });
+        // The stored sources of domains that cannot be checked here: a
+        // write keeps them, as it keeps those the writer may not see.
+        let mut unchecked: BTreeSet<String> = BTreeSet::new();
+        for name in &stored_foreign {
+            if !self.source_domain_checkable(name).await {
+                unchecked.insert(name.clone());
+            }
+        }
         // An id is per page, so one only another page carries was copied or
         // made up: it is replaced too. Asked only for ids this page, its
         // baseline and its records never had, so a page sent back as it was
@@ -1774,21 +1813,44 @@ impl Engine {
                 .id
                 .clone()
                 .expect("every heading has an id after assign_ids");
-            let mut refs = Vec::new();
-            for permalink in engrams {
-                let fact = facts.get(permalink).ok_or_else(|| {
-                    EngineError::Invalid(format!(
-                        "no engram '{permalink}' in domain '{}' to name as a source",
-                        p.domain
-                    ))
+            let mut refs: Vec<r::SourceRef> = Vec::new();
+            for name in engrams {
+                let source = &named[name];
+                let fact = facts.fact(&source.source_ref("")).ok_or_else(|| {
+                    EngineError::Invalid(match &source.domain {
+                        None => format!(
+                            "no engram '{}' in domain '{}' to name as a source",
+                            source.permalink, p.domain
+                        ),
+                        Some(_) => format!("no engram '{}' to name as a source", source.said()),
+                    })
                 })?;
-                refs.push(r::SourceRef {
-                    domain: None,
-                    engram: permalink.clone(),
-                    checksum: fact.checksum.clone(),
-                });
+                let src = source.source_ref(&fact.checksum);
+                // One engram named twice (by permalink and by address) is
+                // one source.
+                if !refs
+                    .iter()
+                    .any(|r| r.domain == src.domain && r.engram == src.engram)
+                {
+                    refs.push(src);
+                }
             }
             let record = prov.entry(id.clone()).or_default();
+            // A write never drops what the writer could not see: the
+            // section's sources in a domain hidden from them, or in one
+            // that cannot be checked here, stay as they were.
+            refs.extend(
+                record
+                    .sources
+                    .iter()
+                    .filter(|src| {
+                        src.domain.as_ref().is_some_and(|domain| {
+                            unchecked.contains(domain)
+                                || sight.as_ref().is_some_and(|sight| !sight.sees(src))
+                        })
+                    })
+                    .cloned(),
+            );
             record.sources = refs;
             record.reflected = Some(r::section_hash(&section.text));
             record.changed_by.clear();
@@ -2377,26 +2439,41 @@ impl Engine {
             EngineError::NotFound(format!("no reflection '{inner}' in domain '{domain}'"))
         })?;
         let prov = r::read_provenance(&text);
-        // Only the engrams the page cites are read, one seek each: a page
-        // without sources asks the index nothing.
+        // Only the engrams the page cites are read, one seek each (in their
+        // own domain for a source of another): a page without sources asks
+        // the index nothing. A source in a domain the reader may not open is
+        // neither read nor shown; its section counts it.
+        let sight = if access.engrams_visible
+            && prov
+                .values()
+                .any(|record| record.sources.iter().any(|src| src.domain.is_some()))
+        {
+            Some(self.source_sight(&caller.scope).await?)
+        } else {
+            None
+        };
+        let sees = |src: &r::SourceRef| sight.as_ref().is_none_or(|sight| sight.sees(src));
         let facts = if access.engrams_visible {
-            self.cited_facts(
+            self.source_facts(
                 access.domain_id,
+                None,
                 prov.values()
-                    .flat_map(|record| record.sources.iter().map(|src| src.engram.clone()))
-                    .collect(),
+                    .flat_map(|record| record.sources.iter())
+                    .filter(|src| sees(src)),
             )
             .await?
         } else {
-            HashMap::new()
+            SourceFacts::default()
         };
         // A reader who cannot read engrams gets the page without the block
-        // that names them. The sections, `line` included, are counted on the
-        // markdown answered, so a line always points at its heading there.
-        let markdown = if access.engrams_visible {
-            text.clone()
-        } else {
-            without_provenance(&text)
+        // that names them, and one who may not open a source's domain gets
+        // it without that source. The sections, `line` included, are counted
+        // on the markdown answered, so a line always points at its heading
+        // there.
+        let markdown = match &sight {
+            _ if !access.engrams_visible => without_provenance(&text),
+            Some(sight) => sight.shown_text(&text),
+            None => text.clone(),
         };
         // A section whose only difference from what was last reflected is a
         // task box is not changed: ticking a box is not something to weigh.
@@ -2419,15 +2496,18 @@ impl Engine {
                     "changed": r::text_changed(record, s) && !only_boxes,
                 });
                 if access.engrams_visible {
+                    let sources = record.map(|rec| rec.sources.as_slice()).unwrap_or_default();
                     row["sources"] = json!(
-                        record
-                            .map(|rec| rec
-                                .sources
-                                .iter()
-                                .map(|src| source_view(src, &facts))
-                                .collect::<Vec<_>>())
-                            .unwrap_or_default()
+                        sources
+                            .iter()
+                            .filter(|src| sees(src))
+                            .map(|src| source_view(src, &facts))
+                            .collect::<Vec<_>>()
                     );
+                    let hidden = sources.iter().filter(|src| !sees(src)).count();
+                    if hidden > 0 {
+                        row["hidden_sources"] = json!(hidden);
+                    }
                 }
                 row
             })
@@ -3008,16 +3088,25 @@ impl Engine {
         // from the page as it stands under the file lock. The store lock is
         // taken inside the file lock, the order `index_reflection` below
         // already uses.
-        let facts = if outcome == "taken_in" {
-            let cited = ids
-                .iter()
+        // A source in a domain the settler may not open is not refreshed:
+        // they cannot have taken in what they could not read.
+        let cited: Vec<r::SourceRef> = if outcome == "taken_in" {
+            ids.iter()
                 .filter_map(|id| prov.get(id))
-                .flat_map(|record| record.sources.iter().map(|src| src.engram.clone()))
-                .collect();
-            self.cited_facts(access.domain_id, cited).await?
+                .flat_map(|record| record.sources.iter().cloned())
+                .collect()
         } else {
-            HashMap::new()
+            Vec::new()
         };
+        let sight = if cited.iter().any(|src| src.domain.is_some()) {
+            Some(self.source_sight(&caller.scope).await?)
+        } else {
+            None
+        };
+        let sees = |src: &r::SourceRef| sight.as_ref().is_none_or(|sight| sight.sees(src));
+        let facts = self
+            .source_facts(access.domain_id, None, cited.iter().filter(|src| sees(src)))
+            .await?;
         let known: BTreeSet<String> = sections
             .iter()
             .filter_map(|s| s.id.clone())
@@ -3040,7 +3129,10 @@ impl Engine {
                 record.answered_by = None;
                 if outcome == "taken_in" {
                     for src in &mut record.sources {
-                        if let Some(fact) = facts.get(&src.engram) {
+                        if !sees(src) {
+                            continue;
+                        }
+                        if let Some(fact) = facts.fact(src) {
                             src.checksum = fact.checksum.clone();
                         }
                     }

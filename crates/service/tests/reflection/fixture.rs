@@ -368,3 +368,38 @@ impl EmbeddingProvider for BagOfWords {
         512
     }
 }
+
+/// `eng` with Reflection on and `eng_files`, beside a second file domain
+/// `name` (registered before the first sync) holding `files` and a MANIFEST
+/// of its own: the domain a Reflection page of `eng` cites sources from.
+pub async fn beside(eng_files: &[(&str, &str)], name: &str, files: &[(&str, &str)]) -> Fx {
+    let mut all: Vec<(&str, String)> = vec![("MANIFEST.md", manifest("reflection: on\n"))];
+    all.extend(eng_files.iter().map(|(p, t)| (*p, t.to_string())));
+    let refs: Vec<(&str, &str)> = all.iter().map(|(p, t)| (*p, t.as_str())).collect();
+    let name = name.to_string();
+    let files: Vec<(String, String)> = files
+        .iter()
+        .map(|(p, t)| (p.to_string(), t.to_string()))
+        .collect();
+    fixture_with(&refs, move |cfg, base| {
+        let root = base.join(&name);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("MANIFEST.md"),
+            crystalline_core::manifest_template(&name, "2026-01-01"),
+        )
+        .unwrap();
+        for (rel, text) in files {
+            let abs = root.join(rel);
+            std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+            std::fs::write(abs, text).unwrap();
+        }
+        cfg.domains.insert(name, DomainEntry::file(root));
+    })
+    .await
+}
+
+/// The root of the domain `name` a [`beside`] fixture registered.
+pub fn root_of(fx: &Fx, name: &str) -> PathBuf {
+    fx.tmp.path().join(name)
+}

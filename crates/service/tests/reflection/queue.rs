@@ -1838,3 +1838,196 @@ async fn a_blocking_thread_comes_first_and_carries_its_label() {
         "{guidance}"
     );
 }
+
+/// `crossing` with `overview.md`: three sections, each built from one
+/// engram of `scotty` (team, rota, pager).
+async fn cross_curated() -> Fx {
+    let fx = crate::sources::crossing().await;
+    let mut p = write(
+        "overview.md",
+        "# Overview\n\nFor people.\n\n## Team\n\nFive.\n\n## Rota\n\nWeekly.\n\n## Pager\n\nOne.\n",
+    );
+    p.sources = BTreeMap::from([
+        (
+            "Team".to_string(),
+            vec!["crystalline://scotty/team/scotty-team".to_string()],
+        ),
+        (
+            "Rota".to_string(),
+            vec!["crystalline://scotty/team/rota".to_string()],
+        ),
+        (
+            "Pager".to_string(),
+            vec!["crystalline://scotty/team/pager".to_string()],
+        ),
+    ]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    fx
+}
+
+fn items_of<'a>(queue: &'a serde_json::Value, what: &str) -> Vec<&'a serde_json::Value> {
+    queue["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["what"] == what)
+        .collect()
+}
+
+fn eng_only() -> ReflectParams {
+    ReflectParams {
+        domains: vec!["eng".into()],
+        ..Default::default()
+    }
+}
+
+/// An engram of another domain that changes, is retired or is deleted
+/// gives the same items a local one gives, each naming the source in its
+/// domain. Citing `scotty` engrams covers nothing of `eng`'s own.
+#[tokio::test]
+async fn a_source_in_another_domain_changes_retires_and_goes() {
+    let fx = cross_curated().await;
+    let scotty = crate::fixture::root_of(&fx, "scotty");
+    std::fs::write(
+        scotty.join("team/scotty-team.md"),
+        engram("Scotty team", "team/scotty-team", "- [fact] six people"),
+    )
+    .unwrap();
+    std::fs::write(
+        scotty.join("team/rota.md"),
+        engram("Rota", "team/rota", "- [fact] weekly")
+            .replace("status: stable", "status: superseded"),
+    )
+    .unwrap();
+    std::fs::remove_file(scotty.join("team/pager.md")).unwrap();
+    fx.engine.sync(None).await.unwrap();
+
+    let queue = fx.engine.reflect(&eng_only(), &agent()).await.unwrap();
+    for (what, heading, permalink) in [
+        ("source_changed", "Team", "team/scotty-team"),
+        ("source_retired", "Rota", "team/rota"),
+        ("source_missing", "Pager", "team/pager"),
+    ] {
+        let items = items_of(&queue, what);
+        assert_eq!(items.len(), 1, "{what}: {queue}");
+        assert_eq!(items[0]["heading"], heading, "{queue}");
+        assert_eq!(items[0]["sources"][0]["permalink"], permalink, "{queue}");
+        assert_eq!(items[0]["sources"][0]["domain"], "scotty", "{queue}");
+    }
+    // eng's runbook is cited by no page of eng: still unreflected.
+    let unreflected = items_of(&queue, "unreflected");
+    assert_eq!(unreflected.len(), 1, "{queue}");
+    assert_eq!(
+        unreflected[0]["engrams"],
+        serde_json::json!(["runbooks/deploy"])
+    );
+
+    // Taking the change in refreshes the foreign checksum.
+    let doc = fx
+        .engine
+        .read_reflection("eng", "overview.md", &agent())
+        .await
+        .unwrap();
+    let team = doc["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["heading"] == "Team")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    fx.engine
+        .settle_reflection("eng", "overview.md", &[team], "taken_in", &agent())
+        .await
+        .unwrap();
+    let queue = fx.engine.reflect(&eng_only(), &agent()).await.unwrap();
+    assert!(items_of(&queue, "source_changed").is_empty(), "{queue}");
+}
+
+/// Sources in a domain this instance does not have are `unavailable`,
+/// never `missing`: one item per page and domain says they cannot be
+/// checked here, a reader who may not open such a name gets the plain
+/// words, and a write keeps them.
+#[tokio::test]
+async fn sources_in_a_domain_not_here_are_unavailable_never_missing() {
+    let fx = cross_curated().await;
+    let abs = fx.root.join("reflections/overview.md");
+    let text = std::fs::read_to_string(&abs).unwrap();
+    std::fs::write(&abs, text.replace("domain: scotty", "domain: elsewhere")).unwrap();
+    fx.engine.sync(None).await.unwrap();
+
+    let doc = fx
+        .engine
+        .read_reflection("eng", "overview.md", &agent())
+        .await
+        .unwrap();
+    let states: Vec<&str> = doc["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|s| s["sources"].as_array().unwrap())
+        .map(|s| s["state"].as_str().unwrap())
+        .collect();
+    assert_eq!(states, ["unavailable"; 3], "{doc}");
+
+    let queue = fx.engine.reflect(&eng_only(), &agent()).await.unwrap();
+    assert!(items_of(&queue, "source_missing").is_empty(), "{queue}");
+    let items = items_of(&queue, "source_unavailable");
+    assert_eq!(items.len(), 1, "one per page and domain: {queue}");
+    assert_eq!(items[0]["source_domain"], "elsewhere");
+    assert_eq!(items[0]["count"], 3);
+    assert_eq!(
+        items[0]["note"],
+        "sources in elsewhere cannot be checked here"
+    );
+    assert_eq!(items[0]["path"], "overview.md");
+
+    // A signed-in account: a name no registration covers is not shown.
+    let auth = std::sync::Arc::new(
+        crystalline_service::rest::AuthStore::open(&fx.tmp.path().join("web-auth.db"))
+            .await
+            .unwrap(),
+    );
+    auth.add_user(
+        "ed",
+        "ed",
+        None,
+        crystalline_service::rest::Role::Editor,
+        "pw12345678",
+    )
+    .await
+    .unwrap();
+    fx.engine
+        .set_domain_access(std::sync::Arc::new(crystalline_service::DomainAccess::new(
+            auth,
+        )));
+    let ed = ReflectionCaller::agent(
+        crystalline_service::Scope::User {
+            account: "ed".into(),
+            admin: false,
+        },
+        "claude-code",
+        false,
+    );
+    let queue = fx.engine.reflect(&eng_only(), &ed).await.unwrap();
+    assert!(!queue.to_string().contains("elsewhere"), "{queue}");
+    let items = items_of(&queue, "source_unavailable");
+    assert_eq!(items.len(), 1, "{queue}");
+    assert_eq!(items[0]["hidden_sources"], 3);
+    assert_eq!(
+        items[0]["note"],
+        "a source in a domain you cannot open cannot be checked here"
+    );
+
+    // A write that names the section's sources keeps the unavailable one.
+    let mut p = crystalline_service::params::WriteReflectionParams {
+        domain: "eng".into(),
+        path: "overview.md".into(),
+        ..Default::default()
+    };
+    p.sources = BTreeMap::from([("Team".to_string(), vec!["runbooks/deploy".to_string()])]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let text = std::fs::read_to_string(&abs).unwrap();
+    assert_eq!(text.matches("domain: elsewhere").count(), 3, "{text}");
+}
