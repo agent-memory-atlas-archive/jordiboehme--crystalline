@@ -10,7 +10,7 @@ use crystalline_core::threads::{self as th, SectionRef, ThreadStatus, Waiting};
 use super::reflection::{
     EngramFact, ReflectionAccess, reflection_abs, source_state, source_view, thread_view,
 };
-use super::sources::{hidden_source_note, unavailable_note};
+use super::sources::{HIDDEN_SOURCE_NOTE, unavailable_note};
 use super::*;
 use crate::scope::{ReflectionCaller, ReflectionRight, Scope};
 
@@ -169,7 +169,8 @@ enum Detail {
     /// Every member a queue row shows: diffs, sources.
     Full,
     /// Only what ranks and counts an item; no diff is rendered and no
-    /// source is looked up (the nudge counts).
+    /// source view is built, though every source's state is still read (the
+    /// nudge counts).
     Count,
     /// Only the update items, as [`Detail::Count`] builds them: no page is
     /// compared with its baseline for feedback and no thread is queued (the
@@ -332,10 +333,8 @@ impl Engine {
                 });
             }
             // The sources of domains that cannot be checked here, by
-            // domain: the count and the sections that cite them. Those in a
-            // domain the caller may not open are only counted.
+            // domain: the count and the sections that cite them.
             let mut unavailable: BTreeMap<&str, (usize, Vec<String>)> = BTreeMap::new();
-            let mut unavailable_hidden = 0usize;
             for section in r::split_sections(&row.content) {
                 let Some(id) = section.id.as_deref() else {
                     continue;
@@ -353,25 +352,38 @@ impl Engine {
                         cited.insert(src.engram.clone());
                     }
                     // The read and the queue decide a source's state in one place.
+                    let state = source_state(src, &facts).0;
+                    // A source the caller may not see tells nothing of
+                    // itself: whatever its state, and whether its domain is
+                    // registered here or not, it counts as one changed
+                    // source, aged by the page, never by its engram.
+                    if !sees(src) {
+                        if state != "current" {
+                            let entry =
+                                by_what
+                                    .entry("source_changed")
+                                    .or_insert((0, Vec::new(), 0));
+                            entry.0 = entry.0.max(row_age);
+                            entry.2 += 1;
+                        }
+                        continue;
+                    }
                     let engram_age = || {
                         facts
                             .fact(src)
                             .map_or(row_age, |f| secs_since_epoch(f.mtime))
                     };
-                    let (what, age) = match source_state(src, &facts).0 {
+                    let (what, age) = match state {
                         "missing" => ("source_missing", row_age),
                         "retired" => ("source_retired", engram_age()),
                         "changed" => ("source_changed", engram_age()),
                         "unavailable" => {
-                            match src.domain.as_deref().filter(|_| sees(src)) {
-                                Some(domain) => {
-                                    let entry = unavailable.entry(domain).or_default();
-                                    entry.0 += 1;
-                                    if !entry.1.iter().any(|s| s == id) {
-                                        entry.1.push(id.to_string());
-                                    }
+                            if let Some(domain) = src.domain.as_deref() {
+                                let entry = unavailable.entry(domain).or_default();
+                                entry.0 += 1;
+                                if !entry.1.iter().any(|s| s == id) {
+                                    entry.1.push(id.to_string());
                                 }
-                                None => unavailable_hidden += 1,
                             }
                             continue;
                         }
@@ -379,9 +391,7 @@ impl Engine {
                     };
                     let entry = by_what.entry(what).or_insert((0, Vec::new(), 0));
                     entry.0 = entry.0.max(age);
-                    if !sees(src) {
-                        entry.2 += 1;
-                    } else if full {
+                    if full {
                         entry.1.push(source_view(src, &facts));
                     }
                 }
@@ -389,7 +399,7 @@ impl Engine {
                     let mut extra = json!({ "sources": sources });
                     if hidden > 0 {
                         extra["hidden_sources"] = json!(hidden);
-                        extra["note"] = json!(hidden_source_note(what));
+                        extra["note"] = json!(HIDDEN_SOURCE_NOTE);
                     }
                     items.push(Item {
                         kind: "update",
@@ -404,8 +414,9 @@ impl Engine {
                 }
             }
             // One item per page and domain that cannot be checked here, so
-            // no agent drops a source because a domain is offline; one for
-            // all such domains the caller may not open, by count.
+            // no agent drops a source because a domain is offline. Those in
+            // a domain the caller may not open are on the section's changed
+            // item above, as any other source it may not see.
             for (source_domain, (count, sections)) in unavailable {
                 items.push(Item {
                     kind: "update",
@@ -420,21 +431,6 @@ impl Engine {
                         "count": count,
                         "sections": sections,
                         "note": unavailable_note(source_domain),
-                    }),
-                });
-            }
-            if unavailable_hidden > 0 {
-                items.push(Item {
-                    kind: "update",
-                    what: "source_unavailable",
-                    domain: domain.to_string(),
-                    path: row.path.clone(),
-                    section: None,
-                    heading: String::new(),
-                    age_secs: row_age,
-                    extra: json!({
-                        "hidden_sources": unavailable_hidden,
-                        "note": hidden_source_note("source_unavailable"),
                     }),
                 });
             }

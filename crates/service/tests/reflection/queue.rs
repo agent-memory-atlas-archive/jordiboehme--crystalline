@@ -2016,7 +2016,7 @@ async fn a_source_in_another_domain_changes_retires_and_goes() {
 /// Sources in a domain this instance does not have are `unavailable`,
 /// never `missing`: one item per page and domain says they cannot be
 /// checked here, a reader who may not open such a name gets the plain
-/// words, a write by such a reader keeps them and a writer who sees the
+/// words of any hidden source, a write by such a reader keeps them and a writer who sees the
 /// address may leave one out.
 #[tokio::test]
 async fn sources_in_a_domain_not_here_are_unavailable_never_missing() {
@@ -2081,13 +2081,20 @@ async fn sources_in_a_domain_not_here_are_unavailable_never_missing() {
     );
     let queue = fx.engine.reflect(&eng_only(), &ed).await.unwrap();
     assert!(!queue.to_string().contains("elsewhere"), "{queue}");
-    let items = items_of(&queue, "source_unavailable");
-    assert_eq!(items.len(), 1, "{queue}");
-    assert_eq!(items[0]["hidden_sources"], 3);
+    assert!(items_of(&queue, "source_unavailable").is_empty(), "{queue}");
+    let items = items_of(&queue, "source_changed");
     assert_eq!(
-        items[0]["note"],
-        "a source in a domain you cannot open cannot be checked here"
+        items.len(),
+        3,
+        "one per section, as any hidden source: {queue}"
     );
+    for item in items {
+        assert_eq!(item["hidden_sources"], 1);
+        assert_eq!(
+            item["note"],
+            "a source in a domain you cannot open has changed"
+        );
+    }
 
     // A writer who is not shown the name keeps it: a sources write by the
     // account leaves the section's unavailable source as it was.

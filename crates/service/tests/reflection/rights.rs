@@ -699,3 +699,84 @@ async fn over_mcp_the_open_tier_is_refused_alike_and_sees_only_a_count() {
     assert!(!text.contains("team/scotty-team"), "{read}");
     assert!(text.contains("hidden_sources"), "{read}");
 }
+
+/// What the queue tells `ann` (who may not open `scotty`) about the `Team`
+/// section of `overview.md` after `change` ran on the fixture, without the
+/// row's position: every member, `age_secs` included.
+async fn hidden_team_item(change: impl FnOnce(&crate::fixture::Fx)) -> serde_json::Value {
+    let (fx, ann, _) = crossing_rights().await;
+    change(&fx);
+    // The engram behind the source last changed ten days ago: a hidden
+    // item is aged by its page, never by the engram.
+    let team = crate::fixture::root_of(&fx, "scotty").join("team/scotty-team.md");
+    if team.exists() {
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(10 * 86_400);
+        std::fs::File::options()
+            .write(true)
+            .open(&team)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
+    fx.engine.sync(None).await.unwrap();
+    let params = crystalline_service::params::ReflectParams {
+        domains: vec!["eng".into()],
+        ..Default::default()
+    };
+    let queue = fx.engine.reflect(&params, &agent_as(&ann)).await.unwrap();
+    let mut items: Vec<serde_json::Value> = queue["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["heading"] == "Team")
+        .cloned()
+        .collect();
+    assert_eq!(items.len(), 1, "{queue}");
+    let mut item = items.remove(0);
+    assert!(item["age_secs"].as_i64().unwrap() < 3600, "{item}");
+    let obj = item.as_object_mut().unwrap();
+    for key in ["n", "section", "age_secs"] {
+        obj.remove(key);
+    }
+    item
+}
+
+/// A source the caller may not see tells nothing of itself in the queue:
+/// changed, retired, gone, or in a domain this instance does not register,
+/// the item is the same, aged by the page.
+#[tokio::test]
+async fn a_hidden_source_looks_the_same_in_every_state() {
+    let scotty_team =
+        |fx: &crate::fixture::Fx| crate::fixture::root_of(fx, "scotty").join("team/scotty-team.md");
+    let changed = hidden_team_item(|fx| {
+        std::fs::write(
+            scotty_team(fx),
+            engram("Scotty team", "team/scotty-team", "- [fact] six people"),
+        )
+        .unwrap();
+    })
+    .await;
+    let retired = hidden_team_item(|fx| {
+        std::fs::write(
+            scotty_team(fx),
+            engram("Scotty team", "team/scotty-team", "- [fact] five people")
+                .replace("status: stable", "status: superseded"),
+        )
+        .unwrap();
+    })
+    .await;
+    let missing = hidden_team_item(|fx| {
+        std::fs::remove_file(scotty_team(fx)).unwrap();
+    })
+    .await;
+    let unregistered = hidden_team_item(|fx| {
+        let abs = fx.root.join("reflections/overview.md");
+        let text = std::fs::read_to_string(&abs).unwrap();
+        std::fs::write(&abs, text.replace("domain: scotty", "domain: elsewhere")).unwrap();
+    })
+    .await;
+    assert_eq!(changed["what"], "source_changed", "{changed}");
+    assert_eq!(changed, retired);
+    assert_eq!(changed, missing);
+    assert_eq!(changed, unregistered);
+}

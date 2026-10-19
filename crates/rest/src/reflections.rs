@@ -996,8 +996,9 @@ pub struct QueueQuery {
                            when it is another domain than the page's. Sources \
                            in a domain the caller may not open are never named: \
                            the item carries `hidden_sources`, their count, and \
-                           `note`, a plain sentence saying what happened to \
-                           them.",
+                           `note`, one plain sentence whatever their state; \
+                           such an item is always `source_changed` and aged by \
+                           its page.",
             body = Object,
             example = json!({ "domain": "eng", "total": 1, "page": 1, "limit": 10,
                 "count": 1, "kinds": { "feedback": 0, "update": 1, "review": 0 },

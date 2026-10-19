@@ -16,16 +16,9 @@ use super::*;
 use crate::scope::Scope;
 
 /// What a queue item says about sources in a domain the caller cannot
-/// open, by the item's `what`: the item stands, with no title, permalink,
-/// domain or state of those sources.
-pub(crate) fn hidden_source_note(what: &str) -> &'static str {
-    match what {
-        "source_retired" => "a source in a domain you cannot open was retired",
-        "source_missing" => "a source in a domain you cannot open is missing",
-        "source_unavailable" => "a source in a domain you cannot open cannot be checked here",
-        _ => "a source in a domain you cannot open has changed",
-    }
-}
+/// open. One sentence whatever their state, so the item tells nothing of
+/// them but that they need a person who may open their domain.
+pub(crate) const HIDDEN_SOURCE_NOTE: &str = "a source in a domain you cannot open has changed";
 
 /// What a `source_unavailable` item says to a caller who may open the
 /// domain, with how to clear it.
