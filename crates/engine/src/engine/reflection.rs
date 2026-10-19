@@ -1783,6 +1783,7 @@ impl Engine {
                     ))
                 })?;
                 refs.push(r::SourceRef {
+                    domain: None,
                     engram: permalink.clone(),
                     checksum: fact.checksum.clone(),
                 });
