@@ -135,10 +135,16 @@ export function LabelPill({ head }: { head: ConventionalHead }): ReactElement {
   );
 }
 
+/** A head as a screen reader hears it: `Label: question, non-blocking`. */
+function spoken(head: ConventionalHead): string {
+  return `Label: ${[head.label, ...head.decorations].join(", ")}`;
+}
+
 /**
- * The chip above a comment box: the label it will send, read out when it
- * appears, and a button that takes it off. The live region is drawn even
- * without a chip, so a chip that appears is heard.
+ * The chip above a comment box: the label it will send and a button that
+ * takes it off. A status line that is always there (and never seen) reads the
+ * label out when it is chosen, typed or changed; a live region that appeared
+ * together with its words would not reliably be heard.
  */
 export function LabelChip({
   head,
@@ -148,24 +154,29 @@ export function LabelChip({
   onRemove: () => void;
 }): ReactElement {
   return (
-    <div aria-live="polite" className="empty:hidden">
+    <>
+      <span role="status" className="sr-only">
+        {head === null ? "" : spoken(head)}
+      </span>
       {head !== null && (
-        <span className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-hair-strong bg-sunken py-0.5 pr-0.5 pl-2 text-[12.5px] text-ink-3">
-          {isBlocking(head) && <BlockingDot />}
-          <LabelIcon head={head} size={13} />
-          <span className="sr-only">Label: </span>
-          <HeadWords head={head} />
-          <button
-            type="button"
-            aria-label="Remove the label"
-            onClick={onRemove}
-            className={`inline-grid size-5 place-items-center rounded-full text-muted hover:bg-hair hover:text-ink ${FOCUS_RING}`}
-          >
-            <X aria-hidden size={12} />
-          </button>
-        </span>
+        <div>
+          <span className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-hair-strong bg-sunken py-0.5 pr-0.5 pl-2 text-[12.5px] text-ink-3">
+            {isBlocking(head) && <BlockingDot />}
+            <LabelIcon head={head} size={13} />
+            <span className="sr-only">Label: </span>
+            <HeadWords head={head} />
+            <button
+              type="button"
+              aria-label="Remove the label"
+              onClick={onRemove}
+              className={`inline-grid size-5 place-items-center rounded-full text-muted hover:bg-hair hover:text-ink ${FOCUS_RING}`}
+            >
+              <X aria-hidden size={12} />
+            </button>
+          </span>
+        </div>
       )}
-    </div>
+    </>
   );
 }
 

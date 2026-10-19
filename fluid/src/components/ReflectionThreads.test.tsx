@@ -2140,6 +2140,10 @@ describe("conventional comment labels", () => {
       expect(field).toHaveFocus();
     });
     expect(within(form).getByText("Label:")).toBeInTheDocument();
+    // The choice is read out by a status line that was there all along.
+    expect(within(form).getByRole("status")).toHaveTextContent(
+      "Label: question, non-blocking",
+    );
     expect(
       within(form).getByRole("button", { name: "Remove the label" }),
     ).toBeVisible();
