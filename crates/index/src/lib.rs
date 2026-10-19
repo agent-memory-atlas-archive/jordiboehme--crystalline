@@ -93,11 +93,11 @@ pub use sweep::{
 };
 pub use sync::{
     DomainScan, NoReindexHooks, PathChange, PathChangeKind, ReflectionPathChange,
-    ReflectionPathKind, ReindexHooks, ReparseSeam, ReparseStep, SyncReport, apply_scan,
-    apply_scan_with_slab, pending_engrams, reflection_effective, reflection_files_on_disk,
-    reflection_mode, refresh_tag_aliases, reindex_domains, reparse_due, reparse_stored_domain,
-    reparse_stored_domain_with, resolve_forward_refs, scan_domain, scan_paths, sync_domain,
-    sync_domain_with,
+    ReflectionPathKind, ReflectionWalk, ReindexHooks, ReparseSeam, ReparseStep, SyncReport,
+    apply_scan, apply_scan_with_slab, pending_engrams, reflection_effective,
+    reflection_files_on_disk, reflection_mode, refresh_tag_aliases, reindex_domains, reparse_due,
+    reparse_stored_domain, reparse_stored_domain_with, resolve_forward_refs, scan_domain,
+    scan_paths, sync_domain, sync_domain_with,
 };
 pub use turso::TursoStore;
 pub use vocab::{TagCluster, tag_clusters, tag_clusters_with_aliases};

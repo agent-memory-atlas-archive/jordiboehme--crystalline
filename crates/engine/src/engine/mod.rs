@@ -1114,6 +1114,11 @@ pub struct Engine {
     // before a due backup loses the mark, and the next change marks it again
     // and commits both (the backup diffs the whole folder).
     backup_marks: crate::reflection_backup::BackupMarks,
+    /// When the last complete walk of each domain with its Reflection in
+    /// effect began, in Unix seconds: what the next complete walk compares
+    /// the newest entry under `reflections/` with
+    /// ([`Engine::walk_changed_reflection`]).
+    reflection_walks: std::sync::Mutex<HashMap<String, i64>>,
     // Overrides where per-domain origin state (the base snapshot, conflict
     // records, `state.json`) is read and written, for tests: `None` means the
     // real `crystalline_core::config::origin_state_dir`, a real machine path
@@ -2359,6 +2364,7 @@ impl Engine {
             origin_provider_override: None,
             origin_provider_override_login: None,
             backup_marks: Default::default(),
+            reflection_walks: Default::default(),
             origins_dir_override: None,
             state_dir_override: None,
             connect_auth: Arc::new(RealConnectAuth),
@@ -4400,6 +4406,21 @@ impl Engine {
         report: &SyncReport,
         actor: Option<&str>,
     ) -> bool {
+        // A complete walk cannot say which threads files changed (they have
+        // no stamp), so when anything under `reflections/` is newer than the
+        // previous walk it says the whole Reflection changed, once, in place
+        // of the paths it can name. Fluid refetches the whole Reflection for
+        // an empty path either way.
+        if self.walk_changed_reflection(name, report) {
+            self.announce_reflection(
+                name,
+                "",
+                ReflectionChangeKind::Changed,
+                None,
+                actor.map(str::to_string),
+            );
+            return true;
+        }
         let mut seen = HashSet::new();
         let changes: Vec<&crystalline_index::ReflectionPathChange> = report
             .reflection_changes
@@ -4437,6 +4458,28 @@ impl Engine {
             threads_heard |= threads_change && heard.is_some();
         }
         threads_heard
+    }
+
+    /// Whether the complete walk behind `report` may have changed anything
+    /// under `reflections/` since the previous complete walk of `name`: an
+    /// entry there is at least as new as the second that walk began in. The
+    /// first walk in effect after a start or after the switch came on says
+    /// no (nobody has a page open yet, or `switched` said it). A targeted
+    /// pass carries no walk and says no.
+    fn walk_changed_reflection(&self, name: &str, report: &SyncReport) -> bool {
+        let Some(walk) = report.reflection_walk else {
+            return false;
+        };
+        let mut walks = self
+            .reflection_walks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !walk.effective {
+            walks.remove(name);
+            return false;
+        }
+        let previous = walks.insert(name.to_string(), walk.started);
+        previous.is_some_and(|before| walk.newest.is_some_and(|newest| newest >= before))
     }
 
     /// Announce a batch of changes one verb made in one domain, through the

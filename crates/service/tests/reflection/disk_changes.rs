@@ -177,3 +177,38 @@ async fn the_watchers_echo_of_an_engine_page_or_file_write_is_not_announced() {
         .unwrap();
     assert_eq!(heard(&mut rx), Vec::new());
 }
+
+/// A full walk (the watcher's fallback after a folder event or a queue
+/// overflow, a manual sync) cannot tell which threads files changed, since
+/// they have no stamp. When anything under `reflections/` is newer than the
+/// previous walk it says the whole Reflection changed, once; when nothing
+/// there moved since, it says nothing.
+#[tokio::test]
+async fn a_full_walk_after_a_change_on_disk_says_the_whole_reflection_changed() {
+    let fx = reflecting().await;
+    // Past the second the fixture's own walk started in.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    fx.engine.sync(Some("eng")).await.unwrap();
+    let mut rx = fx.engine.changes().subscribe();
+    fx.engine.sync(Some("eng")).await.unwrap();
+    assert_eq!(
+        heard(&mut rx),
+        Vec::new(),
+        "nothing moved since the last walk"
+    );
+
+    put(&fx, "d.threads.md", THREADS);
+    fx.engine.sync(Some("eng")).await.unwrap();
+    assert_eq!(heard(&mut rx), vec![(K::Changed, String::new(), None)]);
+}
+
+/// The first file dropped into an empty `reflections/assets/` (a folder
+/// event, so the watcher walks the whole domain) is heard too.
+#[tokio::test]
+async fn the_first_file_into_an_empty_assets_folder_is_heard_on_a_full_walk() {
+    let fx = reflecting().await;
+    let mut rx = fx.engine.changes().subscribe();
+    put(&fx, "assets/p.png", "png");
+    fx.engine.sync(Some("eng")).await.unwrap();
+    assert_eq!(heard(&mut rx), vec![(K::Changed, String::new(), None)]);
+}

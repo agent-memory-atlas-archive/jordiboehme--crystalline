@@ -739,6 +739,14 @@ async fn reflection_changes_on_disk_are_named(store: &dyn Store) {
         Vec::new(),
         "a walk that fills an empty table is the Reflection coming on, no page's change"
     );
+    let walk = seeded
+        .reflection_walk
+        .expect("a complete walk says what it saw");
+    assert!(walk.effective);
+    assert!(
+        walk.newest.is_some_and(|newest| newest <= walk.started + 1),
+        "{walk:?}"
+    );
 
     let threads = "# Threads\n\n## t1\n\nA comment from outside.\n";
     write(root, "reflections/a.threads.md", threads);
@@ -752,6 +760,10 @@ async fn reflection_changes_on_disk_are_named(store: &dyn Store) {
         )]
     );
     assert_eq!(report.reflections_changed, 0, "a threads file is no row");
+    assert_eq!(
+        report.reflection_walk, None,
+        "a targeted pass walks nothing"
+    );
     let domain = upsert_domain(store, "d", root).await;
     let rows: Vec<String> = store
         .list_reflection_stamps(domain)

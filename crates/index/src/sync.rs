@@ -171,6 +171,24 @@ pub struct ReflectionPathChange {
     pub checksum: Option<String>,
 }
 
+/// What a complete walk saw of the Reflection, for the change bus.
+/// A threads file has no stamp, so a walk cannot say which ones changed;
+/// it can say when it started and how new the newest entry under
+/// `reflections/` is, and the engine compares that with its previous walk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReflectionWalk {
+    /// When the walk began, in Unix seconds.
+    pub started: i64,
+    /// The newest modification time, in Unix seconds, of every file and
+    /// folder under `reflections/` the walk entered (hidden ones left out),
+    /// or `None` when there is none.
+    pub newest: Option<i64>,
+    /// Whether the Reflection was in effect for this walk. A walk with it
+    /// off tells the engine that the next walk in effect is the switch
+    /// coming on, which the `switched` event already says.
+    pub effective: bool,
+}
+
 /// The outcome of a sync over one domain.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SyncReport {
@@ -230,6 +248,10 @@ pub struct SyncReport {
     /// `changes`.
     #[serde(skip)]
     pub reflection_changes: Vec<ReflectionPathChange>,
+    /// Set by every complete walk, never by a targeted pass: see
+    /// [`ReflectionWalk`]. Skipped by serde like `changes`.
+    #[serde(skip)]
+    pub reflection_walk: Option<ReflectionWalk>,
     /// Files the walk skipped or the scan or the apply could not read: what
     /// `failed` lists for want of the bytes, plus the walk entries that could
     /// not even be stat'd (a file that read but did not parse is not counted).
@@ -955,6 +977,11 @@ pub async fn scan_domain(
     force: bool,
 ) -> Result<DomainScan> {
     let started = Instant::now();
+    let walk_started = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let mut reflection_newest: Option<i64> = None;
 
     // What every path of this domain is: the MANIFEST's in-root artifact
     // folders are pruned with the hidden ones (none when the MANIFEST is
@@ -1009,11 +1036,22 @@ pub async fn scan_domain(
                 continue;
             }
         };
+        let rel = slash_rel(root, entry.path());
+        // Every file and folder the walk enters under the Reflection's
+        // folder (a hidden one is never entered): the newest of them tells
+        // the engine whether anything there may have changed since its last
+        // walk, threads files included.
+        if reflection == ReflectionMode::Effective
+            && crystalline_core::reflection::is_under_reflections(&rel)
+            && let Ok(meta) = entry.metadata()
+        {
+            let mtime = file_mtime(&meta);
+            reflection_newest = Some(reflection_newest.map_or(mtime, |n| n.max(mtime)));
+        }
         if !entry.file_type().is_file() {
             continue;
         }
         let fname = entry.file_name().to_string_lossy();
-        let rel = slash_rel(root, entry.path());
         match layout.classify(&rel) {
             // The `assets/` folder is reserved for attachments: nothing under
             // it is ever an engram, whatever its extension, so the branch
@@ -1138,6 +1176,11 @@ pub async fn scan_domain(
     scan.reflections_complete = !unread_reflections;
     scan.reflection = reflection;
     scan.report.unread += unread;
+    scan.report.reflection_walk = Some(ReflectionWalk {
+        started: walk_started,
+        newest: reflection_newest,
+        effective: reflection == ReflectionMode::Effective,
+    });
     Ok(scan)
 }
 
