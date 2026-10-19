@@ -97,7 +97,11 @@ def detect_transient(events: list[dict]) -> str:
     for event in events:
         if event.get("type") == "rate_limit_event":
             info = event.get("rate_limit_info", {}) or {}
-            if info.get("status") == "rejected":
+            ran_on_overage = (
+                info.get("isUsingOverage") is True
+                and info.get("overageStatus") == "allowed"
+            )
+            if info.get("status") == "rejected" and not ran_on_overage:
                 return f"rate limited ({info.get('rateLimitType', 'unknown')})"
         if event.get("type") == "result":
             status = event.get("api_error_status")

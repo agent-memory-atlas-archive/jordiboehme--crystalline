@@ -107,8 +107,8 @@ async fn writing_with_sources_curates_and_advances_the_baseline() {
     let baseline = file(&fx, ".reflected/guides/deploying.md");
     let changes = feedback_changes(&text, &baseline);
     assert!(
-        changes.iter().all(|c| c.id.as_deref() == Some("_top")),
-        "only the unreflected top is left: {changes:?}"
+        changes.is_empty(),
+        "the agent's own top is reflected with the section: {changes:?}"
     );
     let doc = fx
         .engine
@@ -280,6 +280,42 @@ async fn every_section_line_points_at_its_heading_in_the_markdown_answered() {
         doc["checksum"], written["checksum"],
         "the checksum of the file as stored"
     );
+}
+
+#[tokio::test]
+async fn ticking_a_task_box_does_not_mark_a_section_changed() {
+    let fx = reflecting().await;
+    let page =
+        "# Steps\n\nFor new people.\n\n## Night deploys\n\n- [ ] stop the job\n- [ ] restore\n";
+    let mut p = write("a.md", page);
+    p.sources = BTreeMap::from([(
+        "Night deploys".to_string(),
+        vec!["runbooks/deploy".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let stored = file(&fx, "a.md");
+    let ticked = stored.replace("- [ ] stop the job", "- [x] stop the job");
+    fx.engine
+        .write_reflection(&write("a.md", &ticked), &person())
+        .await
+        .unwrap();
+    let doc = fx
+        .engine
+        .read_reflection("eng", "a.md", &agent())
+        .await
+        .unwrap();
+    assert_eq!(doc["sections"][0]["changed"], false, "{doc}");
+    let worded = ticked.replace("- [ ] restore", "- [ ] restore the data");
+    fx.engine
+        .write_reflection(&write("a.md", &worded), &person())
+        .await
+        .unwrap();
+    let doc = fx
+        .engine
+        .read_reflection("eng", "a.md", &agent())
+        .await
+        .unwrap();
+    assert_eq!(doc["sections"][0]["changed"], true, "{doc}");
 }
 
 #[tokio::test]
@@ -606,12 +642,11 @@ async fn a_section_operation_changes_one_section_and_keeps_its_id_and_sources() 
     );
     let prov = crystalline_core::reflection::read_provenance(&text);
     assert_eq!(prov[&night_id].sources.len(), 1, "provenance kept");
-    // The agent wrote the section without naming its sources, so it was
-    // never reflected: the agent who wrote it and the person who changed it
-    // since are both on the list, in that order.
+    // The agent's curated write reflected the section it wrote without
+    // sources too, so only the person who changed it since is on the list.
     assert_eq!(
         prov[&rollback_id].changed_by,
-        vec!["claude-code".to_string(), "jordi".to_string()],
+        vec!["jordi".to_string()],
         "the edited section records who changed it"
     );
     let after = WriteReflectionParams {
@@ -911,10 +946,10 @@ async fn a_write_that_leaves_the_top_alone_does_not_mark_it_changed() {
         .await
         .unwrap();
     let prov = crystalline_core::reflection::read_provenance(&file(&fx, "a.md"));
-    assert_eq!(
-        prov["_top"].changed_by,
-        vec!["claude-code".to_string()],
-        "the person did not change the top"
+    assert!(
+        prov["_top"].changed_by.is_empty() && prov["_top"].changed_at.is_none(),
+        "the agent's curated write reflected the top, and the person did not change it: {:?}",
+        prov["_top"]
     );
 }
 
@@ -1086,7 +1121,6 @@ async fn a_respelled_section_the_writer_left_alone_owes_no_feedback() {
     )
     .unwrap();
     let night = r::split_sections(&aliased.page)[1].id.clone().unwrap();
-    let owed_before = r::feedback_changes(&aliased.page, &aliased.baseline).len();
 
     let op = WriteReflectionParams {
         domain: "eng".into(),
@@ -1111,10 +1145,11 @@ async fn a_respelled_section_the_writer_left_alone_owes_no_feedback() {
             .all(|c| c.id.as_deref() != Some(night.as_str())),
         "{changes:?}"
     );
+    let owed: Vec<&str> = changes.iter().map(|c| c.heading.as_str()).collect();
     assert_eq!(
-        changes.len(),
-        owed_before,
-        "the respell owes no feedback: {changes:?}"
+        owed,
+        ["Rollback"],
+        "only the person's change is owed, the respell owes nothing: {changes:?}"
     );
     let prov = r::read_provenance(&text);
     assert!(
@@ -1366,4 +1401,481 @@ async fn a_move_announces_the_pages_whose_links_it_rewrote() {
         heard.contains(&(K::Changed, "links.md".to_string(), None)),
         "{heard:?}"
     );
+}
+
+/// A reflection receipt names an unknown callout kind, and never raises Q008
+/// (an observation inside a callout is only a finding for an engram).
+#[tokio::test]
+async fn a_reflection_receipt_names_an_unknown_callout_kind_but_never_q008() {
+    let fx = reflecting().await;
+    let page = "# Deploying\n\n> [!DANGER]\n> Careful.\n> - [fact] x\n";
+    let written = fx
+        .engine
+        .write_reflection(&write("guides/danger.md", page), &person())
+        .await
+        .unwrap();
+    let codes: Vec<&str> = written["markdown_findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["Q007"], "{written}");
+    // The line is the one the saved page holds it on, ids and all.
+    let saved = file(&fx, "guides/danger.md");
+    let line = saved.lines().position(|l| l.contains("[!DANGER]")).unwrap() + 1;
+    assert_eq!(written["markdown_findings"][0]["line"], line, "{written}");
+
+    let clean = fx
+        .engine
+        .write_reflection(&write("guides/clean.md", PAGE), &person())
+        .await
+        .unwrap();
+    assert!(clean.get("markdown_findings").is_none(), "{clean}");
+}
+
+/// Crystalline gives a heading its id: an id line no heading can carry (not
+/// hex, a blank line away from its heading, or one another page of the
+/// domain holds) is replaced and the receipt says so, and sources keyed by
+/// the replaced id still find their section. An id the page had stays.
+#[tokio::test]
+async fn an_id_line_no_heading_can_carry_is_replaced_and_said() {
+    let fx = reflecting().await;
+    let other = fx
+        .engine
+        .write_reflection(
+            &write("other.md", "# O\n\n## Elsewhere\n\nText.\n"),
+            &agent(),
+        )
+        .await
+        .unwrap();
+    let foreign = other["ids_assigned"][0].as_str().unwrap().to_string();
+    let markdown = format!(
+        "# Deploying\n\n## Night deploys\n\n<!-- r:t2u3v4w5 -->\n\nDeploys run at night.\n\n## Rollback\n\n<!-- r:a1b2c3d4 -->\n\nRoll back.\n\n## Elsewhere\n<!-- r:{foreign} -->\n\nCopied.\n"
+    );
+    let mut p = write("guides/deploying.md", &markdown);
+    p.sources = BTreeMap::from([("a1b2c3d4".to_string(), vec!["runbooks/deploy".to_string()])]);
+    let written = fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    assert_eq!(written["curated"], true, "{written}");
+    let text = file(&fx, "guides/deploying.md");
+    assert!(
+        !text.contains("t2u3v4w5") && !text.contains("a1b2c3d4") && !text.contains(&foreign),
+        "{text}"
+    );
+    let sections = crystalline_core::reflection::split_sections(&text);
+    let ids: Vec<String> = sections[1..]
+        .iter()
+        .map(|s| s.id.clone().unwrap())
+        .collect();
+    assert_eq!(written["ids_assigned"], serde_json::json!(ids), "{written}");
+    assert_eq!(
+        sections[1].text, "## Night deploys\n\nDeploys run at night.\n",
+        "no stray line and no extra blank line"
+    );
+    let prov = crystalline_core::reflection::read_provenance(&text);
+    assert_eq!(prov[&ids[1]].sources[0].engram, "runbooks/deploy");
+    let guidance = written["guidance"].as_str().unwrap();
+    for (made_up, id) in [
+        ("t2u3v4w5", &ids[0]),
+        ("a1b2c3d4", &ids[1]),
+        (&foreign, &ids[2]),
+    ] {
+        assert!(
+            guidance.contains(&format!("{made_up} (now {id})")),
+            "{guidance}"
+        );
+    }
+    assert!(guidance.contains("never write one yourself"), "{guidance}");
+
+    // The page's own ids stay when it is sent back, the copied one now too.
+    let again = fx
+        .engine
+        .write_reflection(
+            &write(
+                "guides/deploying.md",
+                &text.replace("Copied.", "Copied, then kept."),
+            ),
+            &agent(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(again["ids_assigned"], serde_json::json!([]), "{again}");
+    assert!(again.get("guidance").is_none(), "{again}");
+}
+
+/// The page sent back as it was read, block and ids included, is told
+/// nothing: the receipt carries no guidance.
+#[tokio::test]
+async fn a_page_sent_back_as_read_is_told_nothing() {
+    let fx = reflecting().await;
+    let mut p = write("guides/deploying.md", PAGE);
+    p.sources = BTreeMap::from([(
+        "Night deploys".to_string(),
+        vec!["runbooks/deploy".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let read = file(&fx, "guides/deploying.md");
+    assert!(read.contains("reflection:"), "{read}");
+    let mut again = write(
+        "guides/deploying.md",
+        &read.replace("Deploys run at night.", "Deploys run at night, late."),
+    );
+    again.sources = p.sources.clone();
+    let written = fx.engine.write_reflection(&again, &agent()).await.unwrap();
+    assert_eq!(written["ids_assigned"], serde_json::json!([]), "{written}");
+    assert!(written.get("guidance").is_none(), "{written}");
+}
+
+/// A `reflection:` key the writer made up is Crystalline's bookkeeping: it is
+/// replaced and the receipt says so, beside the note on a made-up id line.
+#[tokio::test]
+async fn a_bookkeeping_block_the_writer_made_up_is_replaced_and_said() {
+    let fx = reflecting().await;
+    let markdown = "---\nreflection:\n  for: new operators\n---\n\n# Deploying\n\n## Night deploys\n<!-- r:s1t2u3v4 -->\n\nDeploys run at night.\n";
+    let written = fx
+        .engine
+        .write_reflection(&write("guides/deploying.md", markdown), &agent())
+        .await
+        .unwrap();
+    let text = file(&fx, "guides/deploying.md");
+    assert!(!text.contains("new operators"), "{text}");
+    let guidance = written["guidance"].as_str().unwrap();
+    assert!(
+        guidance.contains("reflection: frontmatter key is Crystalline's bookkeeping")
+            && guidance.contains("pass sources")
+            && guidance.contains("s1t2u3v4"),
+        "both notes: {guidance}"
+    );
+}
+
+/// The path is inside reflections/ already: a new page whose path repeats
+/// the folder is refused with the corrected path, and one that sits there
+/// from before can still be moved out.
+#[tokio::test]
+async fn a_path_that_repeats_the_reflections_folder_is_refused() {
+    let fx = reflecting().await;
+    let err = fx
+        .engine
+        .write_reflection(&write("reflections/guides/a.md", PAGE), &agent())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("drop the reflections/ prefix") && err.contains("'guides/a.md'"),
+        "{err}"
+    );
+    assert!(!fx.root.join("reflections/reflections").exists());
+
+    std::fs::create_dir_all(fx.root.join("reflections/reflections")).unwrap();
+    std::fs::write(fx.root.join("reflections/reflections/old.md"), PAGE).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let err = fx
+        .engine
+        .move_reflection("eng", "guides/x.md", "reflections/x.md", &person())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("drop the reflections/ prefix"), "{err}");
+    fx.engine
+        .write_reflection(
+            &write("reflections/old.md", &PAGE.replace("night", "dawn")),
+            &agent(),
+        )
+        .await
+        .expect("a page already there can be edited");
+    fx.engine
+        .move_reflection("eng", "reflections/old.md", "old.md", &person())
+        .await
+        .expect("and moved out");
+    assert!(fx.root.join("reflections/old.md").exists());
+}
+
+/// A page's own id one blank line below its heading is seated back under
+/// its heading: no id is minted, nothing is said and the section does not
+/// read as changed.
+#[tokio::test]
+async fn a_pages_own_id_a_blank_line_down_is_seated_back() {
+    let fx = reflecting().await;
+    let first = fx
+        .engine
+        .write_reflection(&write("a.md", PAGE), &agent())
+        .await
+        .unwrap();
+    let id = first["ids_assigned"][0].as_str().unwrap().to_string();
+    let read = file(&fx, "a.md");
+    let loose = read.replace(
+        &format!("## Night deploys\n<!-- r:{id} -->\n"),
+        &format!("## Night deploys\n\n<!-- r:{id} -->\n"),
+    );
+    assert_ne!(loose, read);
+    let written = fx
+        .engine
+        .write_reflection(&write("a.md", &loose), &agent())
+        .await
+        .unwrap();
+    assert_eq!(written["ids_assigned"], serde_json::json!([]), "{written}");
+    assert!(written.get("guidance").is_none(), "{written}");
+    assert_eq!(file(&fx, "a.md"), read, "seated back, nothing else moved");
+}
+
+/// A domain rename rewrites the stored domain of every source of the
+/// renamed domain, also on a page whose text never names it, so a rename
+/// never turns those sources into ones that cannot be checked. The
+/// rewrite owes no feedback.
+#[tokio::test]
+async fn a_domain_rename_rewrites_the_domain_of_sources_it_names() {
+    use crystalline_core::reflection as r;
+    let fx = with_ops(
+        "",
+        "",
+        &[(
+            "runbook.md",
+            &engram("Runbook", "runbook", "- [fact] page the on-call"),
+        )],
+    )
+    .await;
+    let mut p = write("a.md", "# A\n\nFor people.\n\n## On call\n\nPage them.\n");
+    p.sources = BTreeMap::from([(
+        "On call".to_string(),
+        vec!["crystalline://ops/runbook".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    assert!(file(&fx, "a.md").contains("domain: ops"));
+
+    rename_ops(&fx).await;
+
+    let text = file(&fx, "a.md");
+    assert!(text.contains("domain: platform"), "{text}");
+    assert!(!text.contains("domain: ops"), "{text}");
+    assert!(
+        r::feedback_changes(&text, &file(&fx, ".reflected/a.md")).is_empty(),
+        "the rename owes no feedback"
+    );
+    let doc = fx
+        .engine
+        .read_reflection("eng", "a.md", &agent())
+        .await
+        .unwrap();
+    let source = &doc["sections"][0]["sources"][0];
+    assert_eq!(source["domain"], "platform", "{doc}");
+    assert_eq!(source["state"], "current", "{doc}");
+}
+
+/// A rename of this machine's name only keeps every former name as an
+/// alias, so a stored source domain still resolves and reads current.
+#[tokio::test]
+async fn a_local_rename_keeps_the_sources_of_the_renamed_domain_current() {
+    let fx = with_ops(
+        "",
+        "",
+        &[(
+            "runbook.md",
+            &engram("Runbook", "runbook", "- [fact] page the on-call"),
+        )],
+    )
+    .await;
+    let mut p = write("a.md", "# A\n\nFor people.\n\n## On call\n\nPage them.\n");
+    p.sources = BTreeMap::from([(
+        "On call".to_string(),
+        vec!["crystalline://ops/runbook".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    fx.engine
+        .rename_domain(
+            "ops",
+            "platform",
+            true,
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    let doc = fx
+        .engine
+        .read_reflection("eng", "a.md", &agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        doc["sections"][0]["sources"][0]["state"], "current",
+        "{doc}"
+    );
+}
+
+/// A canonical name changed by editing the MANIFEST, outside a rename,
+/// leaves the stored name resolving nowhere: its sources read unavailable,
+/// never missing, and stay on the page.
+#[tokio::test]
+async fn a_canonical_name_edited_in_the_manifest_leaves_sources_unavailable() {
+    let fx = with_ops(
+        "",
+        "",
+        &[(
+            "runbook.md",
+            &engram("Runbook", "runbook", "- [fact] page the on-call"),
+        )],
+    )
+    .await;
+    let rename_in_manifest = |from: &str, to: &str| crystalline_service::params::EditParams {
+        identifier: "manifest".to_string(),
+        domain: "ops".to_string(),
+        operation: "find_replace".to_string(),
+        find_text: Some(format!("domain_name: {from}\n")),
+        content: Some(format!("domain_name: {to}\n")),
+        expected_replacements: Some(1),
+        ..Default::default()
+    };
+    fx.engine
+        .edit_engram(&rename_in_manifest("ops", "ops-team"))
+        .await
+        .unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let mut p = write("a.md", "# A\n\nFor people.\n\n## On call\n\nPage them.\n");
+    p.sources = BTreeMap::from([(
+        "On call".to_string(),
+        vec!["crystalline://ops/runbook".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    assert!(
+        file(&fx, "a.md").contains("domain: ops-team"),
+        "the canonical name: {}",
+        file(&fx, "a.md")
+    );
+    fx.engine
+        .edit_engram(&rename_in_manifest("ops-team", "ops-crew"))
+        .await
+        .unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let doc = fx
+        .engine
+        .read_reflection("eng", "a.md", &agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        doc["sections"][0]["sources"][0]["state"], "unavailable",
+        "{doc}"
+    );
+    let queue = fx
+        .engine
+        .reflect(
+            &crystalline_service::params::ReflectParams {
+                domains: vec!["eng".into()],
+                ..Default::default()
+            },
+            &agent(),
+        )
+        .await
+        .unwrap();
+    let whats: Vec<&str> = queue["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["what"].as_str().unwrap())
+        .collect();
+    assert!(whats.contains(&"source_unavailable"), "{queue}");
+    assert!(!whats.contains(&"source_missing"), "{queue}");
+    assert!(file(&fx, "a.md").contains("domain: ops-team"), "kept");
+}
+
+/// A page whose frontmatter cannot be rewritten key by key keeps its
+/// stored source domain through a rename, and the report lists it with
+/// why, instead of passing it over in silence.
+#[tokio::test]
+async fn a_rename_lists_a_page_whose_sources_it_cannot_rewrite() {
+    use crystalline_core::reflection as r;
+    let fx = with_ops(
+        "",
+        "",
+        &[(
+            "runbook.md",
+            &engram("Runbook", "runbook", "- [fact] page the on-call"),
+        )],
+    )
+    .await;
+    let mut p = write("a.md", "# A\n\nFor people.\n\n## On call\n\nPage them.\n");
+    p.sources = BTreeMap::from([(
+        "On call".to_string(),
+        vec!["crystalline://ops/runbook".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let text = file(&fx, "a.md");
+    let (id, record) = r::read_provenance(&text)
+        .into_iter()
+        .find(|(_, rec)| !rec.sources.is_empty())
+        .unwrap();
+    let body = crystalline_core::frontmatter::split_frontmatter(&text)
+        .unwrap()
+        .body
+        .to_string();
+    let flow = format!(
+        "---\n{{reflection: {{{id}: {{sources: [{{domain: ops, engram: runbook, checksum: {}}}]}}}}}}\n---\n{body}",
+        record.sources[0].checksum
+    );
+    std::fs::write(fx.root.join("reflections/a.md"), &flow).unwrap();
+    fx.engine.sync(None).await.unwrap();
+
+    let report = rename_ops(&fx).await;
+
+    assert!(file(&fx, "a.md").contains("domain: ops"), "left as it was");
+    let left = report["left_behind"].as_array().unwrap();
+    assert!(
+        left.iter().any(|row| row["domain"] == "eng"
+            && row["path"] == "reflections/a.md"
+            && row["reason"]
+                .as_str()
+                .is_some_and(|why| why.contains("cannot be rewritten key by key"))),
+        "{report}"
+    );
+}
+
+/// A domain rename by an account that cannot see the citing page's domain
+/// still rewrites the stored source domain there, and names nothing of
+/// that domain in its report.
+#[tokio::test]
+async fn a_rename_rewrites_sources_in_a_domain_hidden_from_the_renamer() {
+    use crystalline_service::rest::{AuthStore, Role};
+    use std::sync::Arc;
+    let fx = with_ops(
+        "",
+        "",
+        &[(
+            "runbook.md",
+            &engram("Runbook", "runbook", "- [fact] page the on-call"),
+        )],
+    )
+    .await;
+    let mut p = write("a.md", "# A\n\nFor people.\n\n## On call\n\nPage them.\n");
+    p.sources = BTreeMap::from([(
+        "On call".to_string(),
+        vec!["crystalline://ops/runbook".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let auth = Arc::new(
+        AuthStore::open(&fx.tmp.path().join("web-auth.db"))
+            .await
+            .unwrap(),
+    );
+    for name in ["keeper", "olga"] {
+        auth.add_user(name, name, None, Role::Editor, "pw12345678")
+            .await
+            .unwrap();
+    }
+    auth.set_domain_visibility("eng", true, "keeper")
+        .await
+        .unwrap();
+    auth.set_domain_visibility("ops", true, "olga")
+        .await
+        .unwrap();
+    fx.engine
+        .set_domain_access(Arc::new(crystalline_service::DomainAccess::new(auth)));
+    let olga = crystalline_service::Scope::User {
+        account: "olga".into(),
+        admin: false,
+    };
+    let report = fx
+        .engine
+        .rename_domain("ops", "platform", false, &olga)
+        .await
+        .unwrap();
+    assert!(!report.to_string().contains("\"eng\""), "{report}");
+    let text = file(&fx, "a.md");
+    assert!(text.contains("domain: platform"), "{text}");
 }

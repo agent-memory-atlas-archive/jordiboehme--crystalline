@@ -242,6 +242,7 @@ impl Engine {
         };
         let mut heading_stripped: Option<String> = None;
         let mut manifest_text: Option<String> = None;
+        let mut written_text: Option<String> = None;
         let edited = self
             .apply_source_edit_staged(
                 &desc,
@@ -285,6 +286,8 @@ impl Engine {
                     }
                     if is_manifest {
                         manifest_text = Some(text.clone());
+                    } else {
+                        written_text = Some(text.clone());
                     }
                     Ok(text)
                 },
@@ -352,8 +355,16 @@ impl Engine {
                 .note(&mut response);
         }
         note_heading_stripped(&mut response, heading_stripped);
-        if let Some(text) = manifest_text {
-            note_manifest_findings(&mut response, &text, domain_verify_config(&source).as_ref());
+        let verify = domain_verify_config(&source);
+        if let Some(text) = &manifest_text {
+            note_manifest_findings(&mut response, text, verify.as_ref());
+        }
+        if let Some(text) = written_text.or(manifest_text) {
+            note_markdown_findings(
+                &mut response,
+                crystalline_core::lint_engram_source(&text),
+                verify.as_ref(),
+            );
         }
         Ok(response)
     }

@@ -13,8 +13,8 @@
 use std::path::Path;
 
 use crystalline_index::{
-    ChunkParams, DomainKind, PathChangeKind, SearchQuery, Store, TursoStore, apply_scan,
-    scan_paths, sync_domain_with,
+    ChunkParams, DomainKind, PathChangeKind, ReflectionPathChange, ReflectionPathKind, SearchQuery,
+    Store, TursoStore, apply_scan, scan_paths, sync_domain_with,
 };
 
 fn write(dir: &Path, rel: &str, content: &str) {
@@ -696,4 +696,191 @@ fn the_reflection_disk_probe_skips_what_the_walk_skips() {
     );
     std::fs::write(root.join("reflections/assets/small.png"), b"png").unwrap();
     assert!(crystalline_index::reflection_files_on_disk(root));
+}
+
+// --- the Reflection's changes, named for the change bus ----------------------
+
+const MANIFEST_ON: &str = "---\ntype: manifest\ntitle: eng\npermalink: manifest\ntags: [manifest]\nstatus: stable\nreflection: on\n---\n\n## Scope\n\n- s\n\n## When to Use\n\n- w\n";
+
+/// A page carries a section marker, so the walk reads it as a page and the
+/// Reflection is in effect from the first sync.
+const PAGE_ONE: &str = "# A\n\n## One\n<!-- r:aaaa1111 -->\n\nfirst\n";
+const PAGE_TWO: &str = "# A\n\n## One\n<!-- r:aaaa1111 -->\n\nsecond, longer\n";
+
+fn sha(bytes: impl AsRef<[u8]>) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes.as_ref())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn change(path: &str, kind: ReflectionPathKind, checksum: Option<String>) -> ReflectionPathChange {
+    ReflectionPathChange {
+        path: path.to_string(),
+        kind,
+        checksum,
+    }
+}
+
+/// A threads file touched on disk is reported as its page, by the page's
+/// path inside `reflections/`, with the threads file's checksum; it gets no
+/// row. A page edited or deleted on disk is named with its own kind, and a
+/// file under `reflections/assets/` as a file.
+async fn reflection_changes_on_disk_are_named(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", MANIFEST_ON);
+    write(root, "reflections/a.md", PAGE_ONE);
+    write(root, "reflections/a.threads.md", "# Threads\n");
+    let seeded = sync_domain_with(store, "d", root, &params()).await.unwrap();
+    assert_eq!(
+        seeded.reflection_changes,
+        vec![change(
+            "a.md",
+            ReflectionPathKind::Changed,
+            Some(sha(PAGE_ONE))
+        )],
+        "the walk names the page it indexed; the engine decides whether that is the switch"
+    );
+    let walk = seeded
+        .reflection_walk
+        .expect("a complete walk says what it saw");
+    assert!(walk.effective);
+    assert_eq!(
+        walk.threads.into_iter().collect::<Vec<_>>(),
+        vec![("a.md".to_string(), sha("# Threads\n"))],
+        "every threads file by its page, with its checksum"
+    );
+    assert_eq!(walk.pages.into_iter().collect::<Vec<_>>(), vec!["a.md"]);
+
+    let threads = "# Threads\n\n## t1\n\nA comment from outside.\n";
+    write(root, "reflections/a.threads.md", threads);
+    let report = target(store, root, &["reflections/a.threads.md"]).await;
+    assert_eq!(
+        report.reflection_changes,
+        vec![change(
+            "a.md",
+            ReflectionPathKind::Threads,
+            Some(sha(threads))
+        )]
+    );
+    assert_eq!(report.reflections_changed, 0, "a threads file is no row");
+    assert_eq!(
+        report.reflection_walk, None,
+        "a targeted pass walks nothing"
+    );
+    let domain = upsert_domain(store, "d", root).await;
+    let rows: Vec<String> = store
+        .list_reflection_stamps(domain)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.path)
+        .collect();
+    assert_eq!(
+        rows,
+        vec!["a.md".to_string()],
+        "no row for the threads file"
+    );
+
+    std::fs::remove_file(root.join("reflections/a.threads.md")).unwrap();
+    let report = target(store, root, &["reflections/a.threads.md"]).await;
+    assert_eq!(
+        report.reflection_changes,
+        vec![change("a.md", ReflectionPathKind::Threads, None)],
+        "threads removed by hand beside a page that stays"
+    );
+
+    write(root, "reflections/a.md", PAGE_TWO);
+    let report = target(store, root, &["reflections/a.md"]).await;
+    assert_eq!(
+        report.reflection_changes,
+        vec![change(
+            "a.md",
+            ReflectionPathKind::Changed,
+            Some(sha(PAGE_TWO))
+        )]
+    );
+
+    write(root, "reflections/b.md", PAGE_ONE);
+    let walked = sync_domain_with(store, "d", root, &params()).await.unwrap();
+    assert_eq!(
+        walked.reflection_changes,
+        vec![change(
+            "b.md",
+            ReflectionPathKind::Changed,
+            Some(sha(PAGE_ONE))
+        )],
+        "a full walk names the page it found and never a threads file"
+    );
+
+    write_bytes(root, "reflections/assets/p.png", b"png");
+    let report = target(store, root, &["reflections/assets/p.png"]).await;
+    assert_eq!(
+        report.reflection_changes,
+        vec![change(
+            "assets/p.png",
+            ReflectionPathKind::Files,
+            Some(sha(b"png"))
+        )]
+    );
+
+    write(root, "reflections/a.threads.md", threads);
+    std::fs::remove_file(root.join("reflections/a.md")).unwrap();
+    std::fs::remove_file(root.join("reflections/a.threads.md")).unwrap();
+    let report = target(
+        store,
+        root,
+        &["reflections/a.md", "reflections/a.threads.md"],
+    )
+    .await;
+    assert_eq!(
+        report.reflection_changes,
+        vec![change("a.md", ReflectionPathKind::Deleted, None)],
+        "a page that went with its threads is one deletion"
+    );
+}
+parity!(
+    reflection_changes_found_on_disk_are_named_for_the_bus,
+    reflection_changes_on_disk_are_named
+);
+
+/// A targeted pass reads a threads path only when it is a regular file, as
+/// the walk does: a link is not followed and a pipe is never opened (the
+/// read would block the pass).
+#[cfg(unix)]
+#[tokio::test]
+async fn a_threads_path_that_is_a_link_or_a_pipe_is_not_read() {
+    let store = TursoStore::open_in_memory().await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "MANIFEST.md", MANIFEST_ON);
+    write(root, "reflections/a.md", PAGE_ONE);
+    write(root, "reflections/b.md", PAGE_ONE);
+    write(root, "outside.txt", "# Threads\n");
+    sync_domain_with(&store, "d", root, &params())
+        .await
+        .unwrap();
+    std::os::unix::fs::symlink(
+        root.join("outside.txt"),
+        root.join("reflections/a.threads.md"),
+    )
+    .unwrap();
+    let made = std::process::Command::new("mkfifo")
+        .arg(root.join("reflections/b.threads.md"))
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let report = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        target(
+            &store,
+            root,
+            &["reflections/a.threads.md", "reflections/b.threads.md"],
+        ),
+    )
+    .await
+    .expect("the pass does not block on the pipe");
+    assert_eq!(report.reflection_changes, Vec::new());
 }

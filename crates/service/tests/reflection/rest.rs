@@ -2142,3 +2142,79 @@ async fn the_reflection_summary_agrees_with_the_review_for_every_reader() {
     let (status, err) = ed.get("/api/v1/domains/nope/reflection/summary").await;
     assert_eq!(status, 404, "{err}");
 }
+
+/// Over REST, a source in a domain the reader may not open reaches them as
+/// a count only, on the page, in the queue and on the review screen; a
+/// reader of that domain sees it in full. A save of the page as read keeps
+/// the source.
+#[tokio::test]
+async fn a_source_in_another_domain_reaches_only_its_readers() {
+    let fx = crate::sources::crossing().await;
+    let mut p = crate::docs::write(
+        "overview.md",
+        "# Overview\n\nFor people.\n\n## Team\n\nFive people.\n",
+    );
+    p.sources = std::collections::BTreeMap::from([(
+        "Team".to_string(),
+        vec!["crystalline://harbor/team/harbor-team".to_string()],
+    )]);
+    fx.engine
+        .write_reflection(&p, &crystalline_service::ReflectionCaller::owner())
+        .await
+        .unwrap();
+    std::fs::write(
+        crate::fixture::root_of(&fx, "harbor").join("team/harbor-team.md"),
+        engram("Harbor team", "team/harbor-team", "- [fact] six people"),
+    )
+    .unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let s = serve_fx(fx, false).await;
+    s.auth
+        .set_domain_visibility("harbor", true, "keeper")
+        .await
+        .unwrap();
+    let (ed, keeper) = (
+        Session::login(s.addr, "ed").await,
+        Session::login(s.addr, "keeper").await,
+    );
+    let page = "/api/v1/domains/eng/reflections/overview.md";
+    for path in [
+        page,
+        "/api/v1/domains/eng/reflection/queue",
+        "/api/v1/domains/eng/reflection/review",
+    ] {
+        let (status, body) = ed.get(path).await;
+        assert_eq!(status, 200, "{path}: {body}");
+        assert!(!body.to_string().contains("harbor"), "{path}: {body}");
+        let (status, body) = keeper.get(path).await;
+        assert_eq!(status, 200, "{path}: {body}");
+        assert!(body.to_string().contains("harbor"), "{path}: {body}");
+    }
+    let (_, doc) = ed.get(page).await;
+    let team = &doc["sections"][0];
+    assert_eq!(team["heading"], "Team", "{doc}");
+    assert_eq!(team["hidden_sources"], 1, "{doc}");
+    let (_, queue) = ed.get("/api/v1/domains/eng/reflection/queue").await;
+    let item = queue["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["what"] == "source_changed")
+        .unwrap_or_else(|| panic!("{queue}"));
+    assert_eq!(item["hidden_sources"], 1, "{queue}");
+
+    let (status, saved) = ed
+        .send(
+            reqwest::Method::PUT,
+            page,
+            Some(json!({
+                "markdown": doc["markdown"].as_str().unwrap().replace("Five", "Six"),
+                "expected_checksum": doc["checksum"],
+            })),
+        )
+        .await;
+    assert_eq!(status, 200, "{saved}");
+    let stored = std::fs::read_to_string(s.fx.root.join("reflections/overview.md")).unwrap();
+    assert!(stored.contains("domain: harbor"), "kept: {stored}");
+    assert!(stored.contains("Six people"), "{stored}");
+}

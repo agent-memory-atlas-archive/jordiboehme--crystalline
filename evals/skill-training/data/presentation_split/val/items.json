@@ -1,0 +1,57 @@
+[
+  {
+    "id": "pr-va-01",
+    "workspace": "beacon",
+    "task_type": "full_page",
+    "question": "Make the relay Reflection complete for operators in their first week.",
+    "expect": {
+      "checks": [
+        "diagram_for_protocol",
+        "callout_for_risk",
+        "table_for_comparison",
+        "restraint",
+        "clean_dialect"
+      ]
+    }
+  },
+  {
+    "id": "pr-va-02",
+    "workspace": "beacon",
+    "task_type": "pact_override",
+    "question": "The quiet relay Reflection has no pages. Write it for new operators.",
+    "expect": {
+      "checks": [
+        "pact_override",
+        "table_for_comparison",
+        "restraint",
+        "clean_dialect"
+      ],
+      "pact_override": {
+        "domain": "quiet"
+      },
+      "table_for_comparison": {
+        "domain": "quiet"
+      },
+      "restraint": {
+        "domain": "quiet"
+      },
+      "clean_dialect": {
+        "domain": "quiet"
+      }
+    }
+  },
+  {
+    "id": "pr-va-03",
+    "workspace": "beacon",
+    "task_type": "protocol_risk",
+    "question": "Explain the handshake and the purge in the relay Reflection.",
+    "expect": {
+      "checks": [
+        "diagram_for_protocol",
+        "callout_for_risk",
+        "restraint",
+        "clean_dialect"
+      ]
+    }
+  }
+]

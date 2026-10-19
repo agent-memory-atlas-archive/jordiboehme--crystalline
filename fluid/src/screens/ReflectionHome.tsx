@@ -52,6 +52,10 @@ import {
   reflectionSearchRoute,
 } from "../paths";
 import { useHeadingFocusRequest } from "../focusHeading";
+import {
+  stripHtmlComments,
+  withoutHtmlComments,
+} from "../markdown/htmlComments";
 import { stripIdLines } from "../reflectionText";
 
 /** The refusal face, the one `DomainPoliciesCard` announces a problem in. */
@@ -559,12 +563,12 @@ function SearchSection({ domain }: { domain: string }): ReactElement {
                 to={`${reflectionPageRoute(domain, hit.path)}${hit.section !== null ? `#s-${hit.section}` : ""}`}
                 className={LINK}
               >
-                {hit.heading !== ""
-                  ? `${hit.title}: ${hit.heading}`
+                {withoutHtmlComments(hit.heading).trim() !== ""
+                  ? `${hit.title}: ${withoutHtmlComments(hit.heading).trim()}`
                   : hit.title}
               </Link>
               <p className="text-caption text-slate-600 dark:text-slate-300">
-                {stripIdLines(hit.snippet)}
+                {stripHtmlComments(stripIdLines(hit.snippet))}
               </p>
             </li>
           ))}

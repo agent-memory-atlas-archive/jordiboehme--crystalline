@@ -1,0 +1,99 @@
+[
+  {
+    "id": "pr-tr-01",
+    "workspace": "beacon",
+    "task_type": "full_page",
+    "question": "Bring the relay Reflection up to date.",
+    "expect": {
+      "checks": [
+        "diagram_for_protocol",
+        "callout_for_risk",
+        "table_for_comparison",
+        "restraint",
+        "clean_dialect"
+      ]
+    }
+  },
+  {
+    "id": "pr-tr-02",
+    "workspace": "beacon",
+    "task_type": "full_page",
+    "question": "The relay Reflection has no pages yet. Write it so a new operator can follow it.",
+    "expect": {
+      "checks": [
+        "diagram_for_protocol",
+        "callout_for_risk",
+        "table_for_comparison",
+        "restraint",
+        "clean_dialect"
+      ]
+    }
+  },
+  {
+    "id": "pr-tr-03",
+    "workspace": "beacon",
+    "task_type": "protocol_risk",
+    "question": "Cover how a client joins the relay and how a tenant is removed in the relay Reflection.",
+    "expect": {
+      "checks": [
+        "diagram_for_protocol",
+        "callout_for_risk",
+        "clean_dialect"
+      ]
+    }
+  },
+  {
+    "id": "pr-tr-04",
+    "workspace": "beacon",
+    "task_type": "comparison_howto",
+    "question": "Write up the transport choice and the relay restart for operators in the relay Reflection.",
+    "expect": {
+      "checks": [
+        "table_for_comparison",
+        "restraint",
+        "clean_dialect"
+      ]
+    }
+  },
+  {
+    "id": "pr-tr-05",
+    "workspace": "beacon",
+    "task_type": "pact_override",
+    "question": "Bring the quiet relay Reflection up to date.",
+    "expect": {
+      "checks": [
+        "pact_override",
+        "table_for_comparison",
+        "restraint",
+        "clean_dialect"
+      ],
+      "pact_override": {
+        "domain": "quiet"
+      },
+      "table_for_comparison": {
+        "domain": "quiet"
+      },
+      "restraint": {
+        "domain": "quiet"
+      },
+      "clean_dialect": {
+        "domain": "quiet"
+      }
+    }
+  },
+  {
+    "id": "pr-tr-06",
+    "workspace": "beacon",
+    "task_type": "full_page",
+    "question": "Work through the relay Reflection queue and write what operators need to know.",
+    "expect": {
+      "checks": [
+        "diagram_for_protocol",
+        "callout_for_risk",
+        "table_for_comparison",
+        "restraint",
+        "clean_dialect"
+      ]
+    }
+  }
+]

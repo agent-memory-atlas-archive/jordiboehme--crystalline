@@ -16,7 +16,9 @@ import {
   renderApp,
   userFixture,
 } from "../test/harness";
+import type { ThreadView } from "../api/reflection";
 import { ACTIVE_HIGHLIGHT, QUOTE_HIGHLIGHT } from "../reflectionQuotes";
+import { waitingWords } from "./ReflectionThreads";
 
 vi.setConfig({ testTimeout: 15000 });
 vi.mock("../api/client", async (importOriginal) => {
@@ -234,6 +236,57 @@ async function findOnScreen(text: string): Promise<HTMLElement> {
 }
 
 describe("comments on a reflection", () => {
+  it("quotes what a key left selected even when Tab collapsed it before the press", async () => {
+    serve([]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await screen.findByText("at");
+    select(textNode("Deploys run "), textNode("Deploys run "), 4);
+    const unheard = (event: Event) => {
+      event.stopImmediatePropagation();
+    };
+    window.addEventListener("selectionchange", unheard, true);
+    try {
+      window.getSelection()?.getRangeAt(0).setEnd(textNode("Deploys run "), 7);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      // The key comes up: the page reads the selection then.
+      act(() => {
+        document.dispatchEvent(
+          new KeyboardEvent("keyup", { key: "ArrowRight" }),
+        );
+      });
+      // Tab moves on and the selection collapses outside the page.
+      window.getSelection()?.collapse(document.body, 0);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } finally {
+      window.removeEventListener("selectionchange", unheard, true);
+    }
+    await userEvent.click(screen.getByRole("button", { name: "Comment" }));
+    expect(screen.getByText("Deploys")).toBeVisible();
+    expect(screen.queryByText("Depl")).toBeNull();
+  });
+
+  it("quotes the selection as it stands when Comment is pressed", async () => {
+    serve([]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await screen.findByText("at");
+    select(textNode("Deploys run "), textNode("Deploys run "), 4);
+    // The browser's last step of a keyboard selection, with no
+    // selectionchange the page has read yet.
+    const unheard = (event: Event) => {
+      event.stopImmediatePropagation();
+    };
+    window.addEventListener("selectionchange", unheard, true);
+    try {
+      window.getSelection()?.getRangeAt(0).setEnd(textNode("Deploys run "), 7);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } finally {
+      window.removeEventListener("selectionchange", unheard, true);
+    }
+    await userEvent.click(screen.getByRole("button", { name: "Comment" }));
+    expect(screen.getByText("Deploys")).toBeVisible();
+    expect(screen.queryByText("Depl")).toBeNull();
+  });
+
   it("anchors a comment on the selected passage, source markers included", async () => {
     const opened = vi.fn((_path: string, _init?: RequestInit) =>
       thread("t-00000001"),
@@ -964,6 +1017,87 @@ describe("comments on a reflection", () => {
     expect(screen.queryByText("Resolved: Done.")).toBeNull();
   });
 
+  it("says a person's thread was answered and waits for them, without Show resolved", async () => {
+    const answered = (who: string) => [
+      {
+        at: "2026-09-30T10:00:00Z",
+        kind: "comment",
+        author: { name: who, agent: false },
+        text: "Still true?",
+      },
+      {
+        at: "2026-09-30T11:00:00Z",
+        kind: "comment",
+        author: { name: "scribe", agent: true },
+        text: "Yes, still true.",
+      },
+    ];
+    serve([
+      thread("t-00000001", { waiting_on: "people", entries: answered("vera") }),
+      thread("t-00000002", { waiting_on: "people", entries: answered("ann") }),
+    ]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const [mine, theirs] = (await screen.findAllByRole("article", {
+      name: "Thread on Night deploys",
+    })) as [HTMLElement, HTMLElement];
+    expect(
+      screen.getByRole("switch", { name: "Show resolved threads" }),
+    ).toHaveAttribute("aria-checked", "false");
+    expect(within(mine).getByText("Answered, waiting for you")).toBeVisible();
+    expect(within(theirs).getByText("Answered, waiting for ann")).toBeVisible();
+    expect(within(mine).queryByText("Waiting for people")).toBeNull();
+  });
+
+  it("words who a thread waits on", () => {
+    const view = (entries: unknown[], waitingOn: "people" | "agent") =>
+      ({
+        id: "t-1",
+        path: "a.md",
+        anchor: { section: "s", quote: null, occurrence: 1, state: "found" },
+        status: "open",
+        waitingOn,
+        entries,
+      }) as unknown as ThreadView;
+    const person = (name: string, kind = "comment") => ({
+      at: "",
+      kind,
+      author: { name, agent: false },
+      text: "x",
+    });
+    const agent = {
+      at: "",
+      kind: "comment",
+      author: { name: "a", agent: true },
+      text: "y",
+    };
+    expect(waitingWords(view([person("vera")], "agent"), "vera").words).toBe(
+      "Waiting for the agent",
+    );
+    // An agent's own thread waits for people in general.
+    expect(waitingWords(view([agent], "people"), "vera").words).toBe(
+      "Waiting for people",
+    );
+    // The stored name is the sanitized account name.
+    expect(
+      waitingWords(view([person("Ada ops"), agent], "people"), "Ada (ops)")
+        .words,
+    ).toBe("Answered, waiting for you");
+    expect(
+      waitingWords(view([person("vera"), agent], "people"), null).words,
+    ).toBe("Answered, waiting for vera");
+    // The same white space as the core: U+0085 splits, a byte order mark
+    // does not.
+    expect(
+      waitingWords(
+        view([person("Ada Lovelace"), agent], "people"),
+        "Ada\u0085Lovelace",
+      ).words,
+    ).toBe("Answered, waiting for you");
+    expect(
+      waitingWords(view([person("\ufeff"), agent], "people"), "\ufeff").words,
+    ).toBe("Answered, waiting for you");
+  });
+
   it("draws a thread as quote, avatar, name and time, quiet actions and who it waits on", async () => {
     serve([
       thread("t-00000001"),
@@ -1358,6 +1492,36 @@ describe("comments on a reflection", () => {
     });
   });
 
+  it("opens a folded callout that holds the quote of the thread a reader picks", async () => {
+    serve(
+      [
+        thread("t-00000001", {
+          anchor: {
+            section: "7f3a9c2e",
+            quote: "after the batch",
+            occurrence: 1,
+            state: "found",
+          },
+        }),
+      ],
+      {},
+      "# Deploying\n\n## Night deploys\n<!-- r:7f3a9c2e -->\n\n> [!DETAILS]- Why\n> Deploys run at night, after the batch.\n",
+    );
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const card = await screen.findByRole("article", {
+      name: "Thread on Night deploys",
+    });
+    await waitFor(() => {
+      expect(registry.get(QUOTE_HIGHLIGHT)?.ranges ?? []).toHaveLength(1);
+    });
+    const fold = document.querySelector("details[data-callout]")!;
+    expect(fold).toHaveProperty("open", false);
+    await userEvent.click(within(card).getByText("Still true?"));
+    await waitFor(() => {
+      expect(fold).toHaveProperty("open", true);
+    });
+  });
+
   it("says the Comment button is there once per selection, and puts focus on the new thread", async () => {
     let posted = false;
     serve([], {
@@ -1734,6 +1898,41 @@ describe("threads on a narrow screen", () => {
     ).toHaveValue("Half a th");
   });
 
+  it("keeps a label taken off when the sheet is shut and opened again", async () => {
+    serve([thread("t-00000001")]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Show 1 thread" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Threads" });
+    await userEvent.click(
+      within(sheet).getByRole("button", { name: "Answer" }),
+    );
+    const field = within(sheet).getByRole("textbox", { name: "Your answer" });
+    await userEvent.type(field, "note: ");
+    await userEvent.click(
+      within(sheet).getByRole("button", { name: "Remove the label" }),
+    );
+    await userEvent.type(field, "Note: plain");
+    await userEvent.click(
+      within(sheet).getByRole("button", { name: "Close the threads" }),
+    );
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Threads" })).toBeNull();
+    });
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show 1 thread" }),
+    );
+    const again = await screen.findByRole("dialog", { name: "Threads" });
+    const kept = within(again).getByRole("textbox", { name: "Your answer" });
+    await userEvent.type(kept, " words");
+    // Still the person's plain words, never a chip.
+    expect(kept).toHaveValue("Note: plain words");
+    expect(
+      within(again).queryByRole("button", { name: "Remove the label" }),
+    ).toBeNull();
+  });
+
   it("comments on a passage selected on the page from inside the sheet", async () => {
     const opened = vi.fn((_path: string, _init?: RequestInit) =>
       thread("t-00000001"),
@@ -1985,5 +2184,337 @@ describe("threads on paper", () => {
     expect(
       document.querySelector("style[data-print-page]")?.textContent,
     ).toContain(`@bottom-left { content: "${address}"; }`);
+  });
+});
+
+describe("conventional comment labels", () => {
+  /** Open the comment form on a passage. */
+  async function openForm(): Promise<HTMLElement> {
+    await screen.findByText("at");
+    select(textNode("Deploys run "), textNode(" night."), 6);
+    await userEvent.click(screen.getByRole("button", { name: "Comment" }));
+    return screen.getByRole("form", { name: "New comment" });
+  }
+
+  function opener() {
+    const opened = vi.fn((_path: string, _init?: RequestInit) =>
+      thread("t-00000001"),
+    );
+    serve([], {
+      "/domains/eng/reflection/threads": (path, init) => opened(path, init),
+    });
+    return opened;
+  }
+
+  async function send(form: HTMLElement) {
+    await userEvent.click(
+      within(form).getByRole("button", { name: "Comment" }),
+    );
+  }
+
+  function labelled(text: string, overrides: Record<string, unknown> = {}) {
+    return {
+      entries: [
+        {
+          at: "2026-09-30T10:00:00Z",
+          kind: "comment",
+          author: { name: "vera", agent: false },
+          text,
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  it("chooses a label and decorations from the menu and sends the head with the words", async () => {
+    const opened = opener();
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const form = await openForm();
+    await userEvent.click(within(form).getByRole("button", { name: "Label" }));
+    const menu = await screen.findByRole("menu");
+    // No decorations until a label is chosen.
+    expect(
+      within(menu).queryByRole("menuitemcheckbox", { name: /blocking/ }),
+    ).toBeNull();
+    const question = within(menu).getByRole("menuitemradio", {
+      name: /question/,
+    });
+    expect(question).toHaveTextContent("You need an answer.");
+    await userEvent.click(question);
+    expect(question).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(
+      within(menu).getByRole("menuitemcheckbox", { name: /^blocking/ }),
+    );
+    await userEvent.click(
+      within(menu).getByRole("menuitemcheckbox", { name: /^non-blocking/ }),
+    );
+    // Blocking and non-blocking exclude each other.
+    expect(
+      within(menu).getByRole("menuitemcheckbox", { name: /^blocking/ }),
+    ).toHaveAttribute("aria-checked", "false");
+    await userEvent.keyboard("{Escape}");
+    const field = within(form).getByRole("textbox", { name: "Your comment" });
+    await waitFor(() => {
+      expect(field).toHaveFocus();
+    });
+    expect(within(form).getByText("Label:")).toBeInTheDocument();
+    // The choice is read out by a status line that was there all along.
+    expect(within(form).getByRole("status")).toHaveTextContent(
+      "Label: question, non-blocking",
+    );
+    expect(
+      within(form).getByRole("button", { name: "Remove the label" }),
+    ).toBeVisible();
+    await userEvent.type(field, "Is this still true?{Enter}After the move.");
+    expect(field).toHaveValue("Is this still true?\nAfter the move.");
+    await send(form);
+    await waitFor(() => {
+      expect(opened).toHaveBeenCalledTimes(1);
+    });
+    expect(bodyOf(opened.mock.calls[0]?.[1])).toMatchObject({
+      text: "question (non-blocking): Is this still true?\nAfter the move.",
+    });
+  });
+
+  it("turns a typed head at the very start into the chip", async () => {
+    const opened = opener();
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const form = await openForm();
+    const field = within(form).getByRole("textbox", { name: "Your comment" });
+    await userEvent.type(field, "issue (blocking): the window moved");
+    expect(field).toHaveValue("the window moved");
+    expect(within(form).getByText("blocking")).toBeVisible();
+    await send(form);
+    await waitFor(() => {
+      expect(opened).toHaveBeenCalledTimes(1);
+    });
+    expect(bodyOf(opened.mock.calls[0]?.[1])).toMatchObject({
+      text: "issue (blocking): the window moved",
+    });
+  });
+
+  it("turns a pasted conventional comment into the chip and its words", async () => {
+    opener();
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const form = await openForm();
+    const field = within(form).getByRole("textbox", { name: "Your comment" });
+    await userEvent.click(field);
+    await userEvent.paste("suggestion (if-minor): name it\nOr not.");
+    expect(field).toHaveValue("name it\nOr not.");
+    expect(within(form).getByText("if-minor")).toBeVisible();
+  });
+
+  it("leaves a head that does not parse as text, and one typed after the chip is taken off", async () => {
+    const opened = opener();
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const form = await openForm();
+    const field = within(form).getByRole("textbox", { name: "Your comment" });
+    await userEvent.type(field, "bug: it breaks");
+    expect(field).toHaveValue("bug: it breaks");
+    await userEvent.clear(field);
+    await userEvent.type(field, "note: ");
+    expect(field).toHaveValue("");
+    await userEvent.click(
+      within(form).getByRole("button", { name: "Remove the label" }),
+    );
+    expect(within(form).queryByText("Label:")).toBeNull();
+    await userEvent.type(field, "Note: plain words");
+    expect(field).toHaveValue("Note: plain words");
+    await send(form);
+    await waitFor(() => {
+      expect(opened).toHaveBeenCalledTimes(1);
+    });
+    expect(bodyOf(opened.mock.calls[0]?.[1])).toMatchObject({
+      text: "Note: plain words",
+    });
+  });
+
+  it("draws a labelled comment as its pill and bold subject, a plain one as it is", async () => {
+    serve([
+      thread(
+        "t-00000001",
+        labelled("issue (blocking): the window moved\nSee the runbook."),
+      ),
+      thread("t-00000002", labelled("Plain words: here.")),
+      thread(
+        "t-00000003",
+        labelled("question (non-blocking): is this still true?"),
+      ),
+    ]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const subject = await screen.findByText("the window moved");
+    expect(subject.tagName).toBe("STRONG");
+    const pill = subject.parentElement?.querySelector("[data-label-pill]");
+    expect(pill).toHaveTextContent("issue");
+    expect(pill).toHaveTextContent("blocking");
+    // Only blocking gets colour.
+    expect(pill?.querySelector("[data-blocking]")).not.toBeNull();
+    expect(screen.getByText("See the runbook.")).toBeVisible();
+    expect((await findOnScreen("Plain words: here.")).tagName).toBe("P");
+    expect(document.querySelectorAll("[data-label-pill]")).toHaveLength(2);
+    // A non-blocking pill gets no red dot.
+    const calm = screen
+      .getByText("is this still true?")
+      .parentElement?.querySelector("[data-label-pill]");
+    expect(calm).toHaveTextContent("non-blocking");
+    expect(calm?.querySelector("[data-blocking]")).toBeNull();
+    // The card shows the opening comment's label icon beside its passage,
+    // red only for a blocking thread.
+    const [first, second, third] = screen.getAllByRole("article", {
+      name: "Thread on Night deploys",
+    });
+    expect(first?.querySelector("blockquote svg")).toHaveClass(
+      "text-(--blocking)",
+    );
+    expect(second?.querySelector("blockquote svg")).toBeNull();
+    const quiet = third?.querySelector("blockquote svg");
+    expect(quiet).not.toBeNull();
+    expect(quiet).not.toHaveClass("text-(--blocking)");
+    expect(quiet).toHaveClass("text-muted");
+  });
+
+  it("filters to blocking threads behind a switch that is there only when one is open", async () => {
+    serve([
+      thread("t-00000001", labelled("issue (blocking): the window moved")),
+      thread("t-00000002", labelled("question: still true?")),
+    ]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const toggle = await screen.findByRole("switch", {
+      name: "Show blocking threads only",
+    });
+    expect(toggle).toHaveTextContent("Blocking only");
+    expect(screen.getByText("still true?")).toBeVisible();
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByText("still true?")).toBeNull();
+    expect(screen.getByText("the window moved")).toBeVisible();
+  });
+
+  it("shows every thread again when a hidden thread's quote is tapped", async () => {
+    serve([
+      thread(
+        "t-00000001",
+        labelled("issue (blocking): the window moved", {
+          anchor: {
+            section: "7f3a9c2e",
+            quote: "after the batch",
+            occurrence: 1,
+            state: "found",
+          },
+        }),
+      ),
+      thread("t-00000002", labelled("question: still true?")),
+    ]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const toggle = await screen.findByRole("switch", {
+      name: "Show blocking threads only",
+    });
+    await waitFor(() => {
+      expect(registry.get(QUOTE_HIGHLIGHT)?.ranges ?? []).toHaveLength(2);
+    });
+    await userEvent.click(toggle);
+    expect(screen.queryByText("still true?")).toBeNull();
+    const { node: words, at } = pageText("Deploys run at night, after");
+    const doc = document as unknown as { caretRangeFromPoint?: unknown };
+    doc.caretRangeFromPoint = () => {
+      const range = document.createRange();
+      range.setStart(words, at + 3);
+      range.collapse(true);
+      return range;
+    };
+    try {
+      fireEvent.click(words.parentElement as HTMLElement);
+    } finally {
+      delete doc.caretRangeFromPoint;
+    }
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    const card = await screen.findByText("still true?");
+    expect(card.closest("article")?.parentElement).toHaveAttribute(
+      "data-picked",
+    );
+  });
+
+  it("shows every thread again when a comment is posted under Blocking only", async () => {
+    const blocking = thread(
+      "t-00000001",
+      labelled("issue (blocking): the window moved"),
+    );
+    let posted = false;
+    serve([], {
+      "/domains/eng/reflection/threads": () => {
+        posted = true;
+        return thread("t-00000007");
+      },
+      "/domains/eng/reflections/guides/deploying.md": docWith(() =>
+        posted ? [blocking, thread("t-00000007")] : [blocking],
+      ),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const toggle = await screen.findByRole("switch", {
+      name: "Show blocking threads only",
+    });
+    await userEvent.click(toggle);
+    select(textNode("Deploys run "), textNode(" night."), 6);
+    await userEvent.click(screen.getByRole("button", { name: "Comment" }));
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "Your comment" }),
+      "Still true?",
+    );
+    await userEvent.click(
+      within(screen.getByRole("form", { name: "New comment" })).getByRole(
+        "button",
+        { name: "Comment" },
+      ),
+    );
+    await waitFor(() => {
+      expect(document.getElementById("t-00000007")).toHaveFocus();
+    });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("offers no blocking switch on a page without a blocking thread", async () => {
+    serve([thread("t-00000001", labelled("question: still true?"))]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await screen.findByText("still true?");
+    expect(
+      screen.queryByRole("switch", { name: "Show blocking threads only" }),
+    ).toBeNull();
+  });
+
+  it("gives a reply the label menu and a resolve none", async () => {
+    const answered = vi.fn((_path: string, _init?: RequestInit) =>
+      thread("t-00000001"),
+    );
+    serve([thread("t-00000001")], {
+      "/domains/eng/reflection/threads/t-00000001/answer": (path, init) =>
+        answered(path, init),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const card = await screen.findByRole("article", {
+      name: "Thread on Night deploys",
+    });
+    await userEvent.click(
+      within(card).getByRole("button", { name: "Resolve" }),
+    );
+    expect(within(card).queryByRole("button", { name: "Label" })).toBeNull();
+    await userEvent.click(within(card).getByRole("button", { name: "Cancel" }));
+    await userEvent.click(within(card).getByRole("button", { name: "Answer" }));
+    expect(within(card).getByRole("button", { name: "Label" })).toBeVisible();
+    // A reply starts with no label.
+    expect(within(card).queryByText("Label:")).toBeNull();
+    await userEvent.type(
+      within(card).getByRole("textbox", { name: "Your answer" }),
+      "praise: well spotted",
+    );
+    expect(
+      within(card).getByRole("textbox", { name: "Your answer" }),
+    ).toHaveValue("well spotted");
+    await userEvent.click(within(card).getByRole("button", { name: "Answer" }));
+    await waitFor(() => {
+      expect(answered).toHaveBeenCalledTimes(1);
+    });
+    expect(bodyOf(answered.mock.calls[0]?.[1])).toMatchObject({
+      text: "praise: well spotted",
+    });
   });
 });

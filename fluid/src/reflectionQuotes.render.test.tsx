@@ -94,6 +94,11 @@ function textIn(el: Element, text: string): Text {
 }
 
 describe("a quote through the real renderer", () => {
+  it("anchors around inline math", async () => {
+    await roundTrip("Before $`x^2`$ after.", "Before");
+    await roundTrip("Before $`x^2`$ after.", "after.");
+  });
+
   it("crosses inline code, backticks included", async () => {
     const range = await roundTrip(
       "Run `cargo test` now, then `cargo build`.",
@@ -161,6 +166,18 @@ describe("a quote through the real renderer", () => {
       "first line\n> quoted",
     );
     expect(range.toString()).toBe("first line\nquoted");
+  });
+
+  it("anchors a quote inside a callout and across two of its lines", async () => {
+    const text =
+      "> [!NOTE] Heads up\n> Deploys run at night.\n> Rollbacks run by day.";
+    await roundTrip(text, "Deploys run at night.");
+    await roundTrip(text, "night.\n> Rollbacks");
+  });
+
+  it("anchors a quote beside and inside a status label", async () => {
+    await roundTrip("Login is :status[In review]{blue} today.", "Login is");
+    await roundTrip("State :status[In review]{blue} now", "In review");
   });
 
   it("crosses an indented paragraph continuation", async () => {

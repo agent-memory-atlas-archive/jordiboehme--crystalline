@@ -116,6 +116,7 @@ import { isMissing, useDomainRights } from "../domainRights";
 import { orderQuery, useEngramsOrder } from "../engramsOrder";
 import { frontmatterFilters } from "../filters";
 import { isWebAddress, plural } from "../format";
+import { statusLabelWords } from "../markdown/statusText";
 import {
   WHEN_TO_USE_KEY,
   configKeys,
@@ -465,7 +466,10 @@ function DomainPage({
       : Math.max(0, engramTotal - (hasManifest ? 1 : 0));
 
   return (
-    <div className="grid gap-x-14 gap-y-10 lg:grid-cols-[minmax(0,1fr)_18.75rem]">
+    <div
+      data-print-column=""
+      className="grid gap-x-14 gap-y-10 lg:grid-cols-[minmax(0,1fr)_18.75rem]"
+    >
       {/* The lead sits close under the heading, as in the mockup. */}
       <div className="flex min-w-0 flex-col gap-3">
         <header>
@@ -1099,11 +1103,12 @@ function ManifestProsePanel({
 }
 
 /**
- * A heading's text as it reads, for its slug: inline markup and a link's
- * target dropped, the way the rendered heading's text has none of them.
+ * A heading's text as it reads, for its slug: inline markup, a link's target
+ * and a status label's syntax dropped, the way the rendered heading's text
+ * has none of them.
  */
 function headingText(heading: string): string {
-  return heading
+  return statusLabelWords(heading)
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/[*`~]/g, "");
 }

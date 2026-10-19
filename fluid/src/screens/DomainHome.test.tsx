@@ -812,7 +812,7 @@ describe("the domain screen", () => {
       "/domains/eng/manifest": () => ({
         domain: "eng",
         markdown:
-          "# eng\n\nLead.\n\n## When to Use\n\n- a\n\n## The `deploy` flow\n\nText.\n",
+          "# eng\n\nLead.\n\n## When to Use\n\n- a\n\n## The `deploy` flow\n\nText.\n\n## Rollout :status[Beta]{blue}\n\nSoon.\n",
         sections: sectionsResponse(),
       }),
     });
@@ -826,6 +826,10 @@ describe("the domain screen", () => {
     });
     expect(flow).toHaveAttribute("id", "the-deploy-flow");
     expect(within(flow).getByText("deploy").tagName).toBe("CODE");
+    // A status label in a heading reads as its words, in the slug too.
+    expect(
+      within(manifest).getByRole("heading", { level: 2, name: /^Rollout/ }),
+    ).toHaveAttribute("id", "rollout-beta");
     expect(
       within(manifest).getByRole("heading", { level: 2, name: "When to Use" }),
     ).toHaveAttribute("id", "when-to-use");

@@ -159,6 +159,18 @@ describe("fence previews", () => {
     view.destroy();
   });
 
+  it("draws a status label in a table cell as its pill", () => {
+    const doc =
+      "| Item | State |\n| --- | --- |\n| Login | :status[In review]{blue} now |\n\nEnd\n";
+    const view = editor(doc);
+    const pill = view.dom.querySelector(
+      '.cm-table-preview .status-label[data-status="blue"]',
+    );
+    expect(pill?.textContent).toBe("In review");
+    expect(pill?.parentElement?.textContent).toBe("In review now");
+    view.destroy();
+  });
+
   it("renders a table preview below the pipe syntax", () => {
     const view = editor("| a | b |\n|---|---|\n| 1 | 2 |\n");
     const table = view.dom.querySelector(".cm-table-preview table");

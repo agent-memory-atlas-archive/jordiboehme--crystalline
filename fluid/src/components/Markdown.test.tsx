@@ -17,11 +17,14 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, useLocation } from "react-router";
+import { useEffect, useState } from "react";
+import { Link, MemoryRouter, useLocation } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 
+import { REVEAL_EVENT } from "../markdown/callouts";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import type { WikilinkResolver } from "../wikilinks";
 import { Markdown } from "./Markdown";
@@ -279,6 +282,83 @@ describe("the markdown renderer", () => {
     // The markup is shown as what it is: the characters somebody wrote, not
     // an element the browser acts on.
     expect(screen.getByText("A <b>bold</b> claim.")).toBeVisible();
+  });
+
+  it("never draws an HTML comment, and leaves code and other HTML as text", async () => {
+    const { container } = await renderMarkdown(
+      [
+        "# Notes",
+        "",
+        "<!-- sources: the harbor master's log -->",
+        "",
+        "A line <!-- an aside --> that goes on.",
+        "",
+        "<!--",
+        "  a note over",
+        "  three lines",
+        "-->",
+        "",
+        "- An item <!-- in a list -->",
+        "",
+        "> Quoted <!-- in a quote -->",
+        "",
+        "<!-- before --> <span>after</span>",
+        "",
+        "Code `<!-- in a span -->` stays.",
+        "",
+        "```html",
+        "<!-- in a fence -->",
+        "```",
+        "",
+        "<div>not a comment</div>",
+        "",
+      ].join("\n"),
+    );
+    const text = container.textContent ?? "";
+    for (const gone of [
+      "sources:",
+      "an aside",
+      "a note over",
+      "in a list",
+      "in a quote",
+      "before",
+    ]) {
+      expect(text).not.toContain(gone);
+    }
+    expect(screen.getByText(/A line\s+that goes on\./)).toBeVisible();
+    // What is not a comment in a raw block stays, as its text.
+    expect(text).toContain("<span>after</span>");
+    // Code is code: the comment in it is what was written.
+    expect(text).toContain("<!-- in a span -->");
+    expect(container.querySelector("pre")).toHaveTextContent(
+      "<!-- in a fence -->",
+    );
+    // Any other raw HTML is drawn as text, as before.
+    expect(text).toContain("<div>not a comment</div>");
+  });
+
+  it("marks a short list item and a short table for the print sheet", async () => {
+    const { container } = await renderMarkdown(
+      [
+        "- Check the lamp.",
+        "- Hand it over.",
+        "  - Sign the log.",
+        "",
+        "| a |",
+        "| - |",
+        "| 1 |",
+        "",
+      ].join("\n"),
+    );
+    // `.measured li[data-short]` keeps an item whole on paper: the mark has
+    // to reach the drawn element, or the rule is lost without a word.
+    const items = Array.from(container.querySelectorAll("li"));
+    expect(items.map((li) => li.hasAttribute("data-short"))).toEqual([
+      true,
+      false,
+      true,
+    ]);
+    expect(container.querySelector("table")).toHaveAttribute("data-short", "");
   });
 
   it("drops the frontmatter block rather than drawing it", async () => {
@@ -885,5 +965,734 @@ describe("section anchors", () => {
     // The fragment is added to where the reader stands rather than replacing
     // it: a page opened with a query string is still that page afterwards.
     expect(screen.getByTestId("location")).toHaveTextContent("?tab=graph#api");
+  });
+});
+
+describe("callouts", () => {
+  it("renders a callout as a named note with its title", async () => {
+    await renderMarkdown(
+      "> [!WARNING] Data loss\n> The restore drops writes.\n",
+    );
+    const note = screen.getByRole("note", { name: "Warning: Data loss" });
+    expect(note).toHaveTextContent("The restore drops writes.");
+    expect(note).not.toHaveTextContent("[!WARNING]");
+  });
+
+  it("names a callout without a title by its kind, and keeps a title's emphasis out of the body", async () => {
+    await renderMarkdown(
+      "> [!TIP]\n> Run it twice.\n\n> [!IMPORTANT] Read **this**\n> Then go.\n",
+    );
+    expect(screen.getByRole("note", { name: "Tip" })).toHaveTextContent(
+      "Run it twice.",
+    );
+    const important = screen.getByRole("note", {
+      name: "Important: Read this",
+    });
+    expect(important.querySelector("p")).toHaveTextContent(/^Then go\.$/);
+  });
+
+  it("folds a callout closed, and an unknown kind stays a plain quote", async () => {
+    const { container } = await renderMarkdown(
+      "> [!DETAILS]- Rollback steps\n> 1. Stop the job\n\n> [!DANGER] Hot\n> body\n",
+    );
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details?.open).toBe(false);
+    expect(screen.getByText("Rollback steps")).toBeVisible();
+    expect(container.querySelector("blockquote")).toHaveTextContent(
+      "[!DANGER] Hot",
+    );
+  });
+
+  it("folds a callout open with a plus", async () => {
+    const { container } = await renderMarkdown(
+      "> [!NOTE]+ More\n> Shown at first.\n",
+    );
+    expect(container.querySelector("details")?.open).toBe(true);
+    expect(screen.getByText("Shown at first.")).toBeVisible();
+  });
+
+  it("keeps source spans inside a callout", async () => {
+    const source = "> [!NOTE] Heads up\n> Deploys run **at** night.\n";
+    const { container } = await renderSpans(source);
+    const stamped = expectSpansMatch(container, source);
+    // The words after the head share its text node, whose start the
+    // transform moves past the head line and the next line's `> `.
+    const deploys = stamped.find((span) =>
+      span.textContent?.startsWith("Deploys run"),
+    );
+    expect(deploys?.getAttribute("data-src")).toBe(
+      String(source.indexOf("Deploys run")),
+    );
+  });
+
+  it("keeps a second line's words out of the title when emphasis spans the break", async () => {
+    await renderMarkdown("> [!NOTE] Heads **up\n> now** please\n");
+    const note = screen.getByRole("note", { name: "Note: Heads" });
+    expect(note.querySelector("p strong")).toHaveTextContent(/^up\s+now$/);
+  });
+
+  it("leaves an escaped marker a plain quote", async () => {
+    const { container } = await renderMarkdown("> \\[!NOTE] Not a callout\n");
+    expect(screen.queryByRole("note")).toBeNull();
+    expect(container.querySelector("blockquote")).toHaveTextContent(
+      "[!NOTE] Not a callout",
+    );
+  });
+
+  it("does not reopen a fold the reader closed when the text changes", async () => {
+    const source = "> [!DETAILS]- Steps\n>\n> ### Restore\n>\n> Run it.\n";
+    const anchors = { pageUrl: "https://kb.example.com/d/eng/e/alpha" };
+    const tree = (text: string) => (
+      <MemoryRouter initialEntries={["/#restore"]}>
+        <ThemeProvider>
+          <Markdown source={text} anchors={anchors} />
+        </ThemeProvider>
+      </MemoryRouter>
+    );
+    const { container, rerender } = render(tree(source));
+    await waitFor(() => {
+      expect(container.querySelector("details")?.open).toBe(true);
+    });
+    const details = container.querySelector("details")!;
+    details.open = false;
+    rerender(tree(source.replace("Run it.", "Run it twice.")));
+    await screen.findByText("Run it twice.");
+    expect(container.querySelector("details")?.open).toBe(false);
+  });
+
+  it("opens a folded callout when the location points inside it", async () => {
+    const source = "> [!DETAILS]- Steps\n>\n> ### Restore\n>\n> Run it.\n";
+    const anchors = { pageUrl: "https://kb.example.com/d/eng/e/alpha" };
+    const viaRouter = await renderMarkdown(
+      source,
+      undefined,
+      undefined,
+      undefined,
+      anchors,
+      "/#restore",
+    );
+    expect(viaRouter.container.querySelector("details")?.open).toBe(true);
+    viaRouter.unmount();
+
+    const { container } = await renderMarkdown(
+      source,
+      undefined,
+      undefined,
+      undefined,
+      anchors,
+    );
+    const details = container.querySelector("details");
+    expect(details?.open).toBe(false);
+    try {
+      window.location.hash = "#restore";
+      await waitFor(() => {
+        expect(details?.open).toBe(true);
+      });
+    } finally {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+  });
+
+  it("opens the fold for the same fragment on the next document", async () => {
+    const pages: Record<string, string> = {
+      "/e/a": "> [!DETAILS]- Steps\n>\n> ### Restore\n>\n> Run A.\n",
+      "/e/b": "> [!DETAILS]- Steps\n>\n> ### Restore\n>\n> Run B.\n",
+    };
+    function Page() {
+      const { pathname } = useLocation();
+      return (
+        <>
+          <Link to="/e/b#restore">Next page</Link>
+          <Markdown
+            source={pages[pathname] ?? ""}
+            anchors={{ pageUrl: `https://kb.example.com/d/eng${pathname}` }}
+          />
+        </>
+      );
+    }
+    const { container } = render(
+      <MemoryRouter initialEntries={["/e/a#restore"]}>
+        <ThemeProvider>
+          <Page />
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(container.querySelector("details")?.open).toBe(true);
+    });
+    // The reader closed it again before following the link.
+    container.querySelector("details")!.open = false;
+    await userEvent.click(screen.getByRole("link", { name: "Next page" }));
+    await screen.findByText("Run B.");
+    await waitFor(() => {
+      expect(container.querySelector("details")?.open).toBe(true);
+    });
+  });
+
+  it("opens the next document's fold when its text arrives after the path", async () => {
+    // The engram page's way: the router names the next page at once, and the
+    // last page's text stays on screen until the next one has loaded.
+    const pages: Record<string, string> = {
+      "/e/a": "> [!DETAILS]- Steps\n>\n> ### Restore\n>\n> Run A.\n",
+      "/e/b": "> [!DETAILS]- Steps\n>\n> ### Restore\n>\n> Run B.\n",
+    };
+    function Page() {
+      const { pathname } = useLocation();
+      const [shown, setShown] = useState(pathname);
+      useEffect(() => {
+        const timer = setTimeout(() => {
+          setShown(pathname);
+        }, 50);
+        return () => {
+          clearTimeout(timer);
+        };
+      }, [pathname]);
+      return (
+        <>
+          <Link to="/e/b#restore">Next page</Link>
+          <Markdown
+            source={pages[shown] ?? ""}
+            anchors={{ pageUrl: `https://kb.example.com/d/eng${shown}` }}
+          />
+        </>
+      );
+    }
+    const { container } = render(
+      <MemoryRouter initialEntries={["/e/a#restore"]}>
+        <ThemeProvider>
+          <Page />
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(container.querySelector("details")?.open).toBe(true);
+    });
+    container.querySelector("details")!.open = false;
+    await userEvent.click(screen.getByRole("link", { name: "Next page" }));
+    // Still the first page: the fold the reader closed stays closed.
+    expect(screen.getByText("Run A.")).toBeInTheDocument();
+    expect(container.querySelector("details")?.open).toBe(false);
+    await screen.findByText("Run B.");
+    await waitFor(() => {
+      expect(container.querySelector("details")?.open).toBe(true);
+    });
+  });
+
+  it("opens a folded callout when something inside it is revealed", async () => {
+    const { container } = await renderMarkdown(
+      "> [!CAUTION]- Old data\n> The quote is in here.\n",
+    );
+    const details = container.querySelector("details")!;
+    expect(details.open).toBe(false);
+    const words = screen.getByText("The quote is in here.");
+    act(() => {
+      words.dispatchEvent(
+        new CustomEvent(REVEAL_EVENT, {
+          bubbles: true,
+          detail: { target: words },
+        }),
+      );
+    });
+    expect(details.open).toBe(true);
+  });
+});
+
+describe("status labels and other directives", () => {
+  it("renders a status label as its text in a coloured pill", async () => {
+    await renderMarkdown(
+      "| Item | State |\n| --- | --- |\n| Login | :status[In review]{blue} |\n",
+    );
+    const label = screen.getByText("In review");
+    expect(label.closest("[data-status]")?.getAttribute("data-status")).toBe(
+      "blue",
+    );
+  });
+
+  it("leaves a label of nothing but spaces as its text", async () => {
+    const { container } = await renderMarkdown("Now :status[ ]{blue} here.\n");
+    expect(container.querySelector("[data-status]")).toBeNull();
+    expect(container).toHaveTextContent("Now :status[ ]{blue} here.");
+  });
+
+  it("leaves every other colon in prose exactly as typed", async () => {
+    const lines = [
+      "Meet at 10:30, see note:this and https://example.com/a:b.",
+      "A :word[here] and ::leaf and :::box stay text.",
+      ":status without brackets stays text.",
+      ":status[Odd]{orange} falls back to grey.",
+    ];
+    await renderMarkdown(lines.join("\n\n"));
+    expect(screen.getByText(/Meet at 10:30, see note:this/)).toBeVisible();
+    expect(
+      screen.getByText(/A :word\[here\] and ::leaf and :::box stay text\./),
+    ).toBeVisible();
+    expect(
+      screen.getByText(/:status without brackets stays text\./),
+    ).toBeVisible();
+    expect(
+      screen
+        .getByText("Odd")
+        .closest("[data-status]")
+        ?.getAttribute("data-status"),
+    ).toBe("grey");
+  });
+
+  it("names a colour only when the braces hold exactly one palette word", async () => {
+    await renderMarkdown(
+      ":status[A]{orange blue} :status[B]{blue green} :status[C]{red=1} :status[D]{ Purple }\n",
+    );
+    const colour = (text: string) =>
+      screen
+        .getByText(text)
+        .closest("[data-status]")
+        ?.getAttribute("data-status");
+    expect(colour("A")).toBe("grey");
+    expect(colour("B")).toBe("grey");
+    expect(colour("C")).toBe("grey");
+    expect(colour("D")).toBe("purple");
+  });
+
+  it("keeps a status label with no words as text", async () => {
+    const { container } = await renderMarkdown("Empty :status[]{blue} here.\n");
+    expect(container.querySelector("[data-status]")).toBeNull();
+    expect(screen.getByText("Empty :status[]{blue} here.")).toBeVisible();
+  });
+
+  it("renders inline markdown beside a word:name exactly as without directives", async () => {
+    const { container } = await renderMarkdown(
+      [
+        "See foo:bar[link](https://x.example) now.",
+        "",
+        "A term:x[^1] with a note.",
+        "",
+        "Some a:b[**x**] y.",
+        "",
+        "Ref a:b[t][ref] here.",
+        "",
+        "![a:b[c]](x.png)",
+        "",
+        "[ref]: https://r.example",
+        "[^1]: The note.",
+      ].join("\n"),
+    );
+    expect(screen.getByRole("link", { name: "link" })).toHaveAttribute(
+      "href",
+      "https://x.example",
+    );
+    expect(
+      container.querySelector("section[data-footnotes]"),
+    ).toHaveTextContent("The note.");
+    expect(container.querySelector("sup a")).not.toBeNull();
+    expect(container.querySelector("strong")).toHaveTextContent(/^x$/);
+    expect(screen.getByRole("link", { name: "t" })).toHaveAttribute(
+      "href",
+      "https://r.example",
+    );
+    expect(container.querySelector("img")?.getAttribute("alt")).toBe("a:b[c]");
+  });
+
+  it("keeps a ::name line inside a paragraph and a list item", async () => {
+    const { container } = await renderMarkdown(
+      "First line\n::x\nlast line\n\n- one\n::y\n- two\n",
+    );
+    const paragraph = container.querySelector("p");
+    expect(paragraph).toHaveTextContent("First line ::x last line");
+    expect(container.querySelectorAll("ul")).toHaveLength(1);
+    const items = screen.getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent("one ::y");
+  });
+
+  it("reads the colour the way the core lint does", async () => {
+    await renderMarkdown(
+      ":status[Done]{Green} and :status[Open] and :status[Gone]{.red}\n",
+    );
+    const colour = (text: string) =>
+      screen
+        .getByText(text)
+        .closest("[data-status]")
+        ?.getAttribute("data-status");
+    expect(colour("Done")).toBe("green");
+    expect(colour("Open")).toBe("grey");
+    expect(colour("Gone")).toBe("grey");
+  });
+
+  it("keeps a wikilink that names its domain one link", async () => {
+    await renderMarkdown("See [[moon:Crater Base]] now.", (inner) =>
+      inner === "moon:Crater Base"
+        ? { kind: "resolved", href: "/d/moon/e/crater", label: "Crater Base" }
+        : null,
+    );
+    expect(screen.getByRole("link", { name: "Crater Base" })).toBeVisible();
+  });
+
+  it("draws a swatch for a colour code and not for other code", async () => {
+    const { container } = await renderMarkdown(
+      "Brand `#0969DA`, and `rgb(9, 105, 218)`, not `#define`.\n",
+    );
+    expect(container.querySelectorAll("[data-swatch]")).toHaveLength(2);
+  });
+
+  it("draws a swatch for a colour code on a page with source spans", async () => {
+    const { container } = await renderSpans("Brand `#0969DA` here.\n");
+    expect(container.querySelectorAll("[data-swatch]")).toHaveLength(1);
+  });
+
+  it("keeps a line-start container or leaf directive as text around rendered content", async () => {
+    const { container } = await renderMarkdown(
+      [
+        ":::note",
+        "Some **bold** text",
+        ":::",
+        "",
+        "::toc",
+        "",
+        ":::warning",
+        "Never closed **here**",
+        "",
+        "## After",
+      ].join("\n"),
+    );
+    expect(container.querySelectorAll("strong")).toHaveLength(2);
+    for (const marker of [":::note", "::toc", ":::warning"]) {
+      expect(container).toHaveTextContent(marker);
+    }
+    expect(
+      screen.getByRole("heading", { name: "After", level: 2 }),
+    ).toBeVisible();
+  });
+
+  it("keeps a heading inside an unclosed container reachable by its anchor", async () => {
+    await renderMarkdown(
+      ":::warning\nNever closed\n\n## After\n\n- one\n- two\n",
+      undefined,
+      undefined,
+      undefined,
+      { pageUrl: "/d/x" },
+    );
+    const heading = screen.getByRole("heading", { name: /After/, level: 2 });
+    expect(heading.id).toBe("after");
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("stamps directive text and a status label at their source offsets", async () => {
+    const source = [
+      "Login is :status[In review]{blue} and :word[x]{y} today.",
+      "",
+      ":::note[Title]",
+      "Inside **here**",
+      ":::",
+      "",
+      "::toc",
+    ].join("\n");
+    const { container } = await renderSpans(source);
+    const stamped = expectSpansMatch(container, source);
+    const texts = stamped.map((span) => span.textContent);
+    expect(texts).toContain("In review");
+    expect(container).toHaveTextContent(":word[x]{y} today.");
+    expect(container).toHaveTextContent(":::note[Title]");
+    expect(container).toHaveTextContent("::toc");
+  });
+});
+
+describe("math", () => {
+  it("renders the safe math forms and leaves dollar amounts alone", async () => {
+    const { container } = await renderMarkdown(
+      [
+        "The loss is $`L = -\\sum y`$ here.",
+        "",
+        "$$",
+        "E = mc^2",
+        "$$",
+        "",
+        "```math",
+        "a^2 + b^2",
+        "```",
+        "",
+        "It costs $5 and $10, set $HOME.",
+      ].join("\n"),
+    );
+    await waitFor(() =>
+      expect(container.querySelectorAll(".katex")).toHaveLength(3),
+    );
+    expect(screen.getByText("It costs $5 and $10, set $HOME.")).toBeVisible();
+  });
+
+  it("keeps the words around inline math and never reads a single dollar pair", async () => {
+    const { container } = await renderMarkdown(
+      "Before $`x^2`$ after, and $a$ stays $b$ text.",
+    );
+    await waitFor(() =>
+      expect(container.querySelectorAll(".katex")).toHaveLength(1),
+    );
+    expect(container).toHaveTextContent("Before");
+    expect(container).toHaveTextContent("$a$ stays $b$ text.");
+  });
+});
+
+describe("math edges", () => {
+  it("sets two inline formulas that touch", async () => {
+    const { container } = await renderMarkdown("Both $`x`$$`y`$ here.");
+    await waitFor(() =>
+      expect(container.querySelectorAll(".katex")).toHaveLength(2),
+    );
+    expect(container).not.toHaveTextContent("$");
+  });
+
+  it("reads a dollar after an escaped backslash as a math opener and an escaped dollar as text", async () => {
+    const { container } = await renderMarkdown(
+      "Path \\\\$`x`$ and price \\$`y`$ end.",
+    );
+    await waitFor(() =>
+      expect(container.querySelectorAll(".katex")).toHaveLength(1),
+    );
+    expect(container).toHaveTextContent("price $");
+  });
+
+  it("keeps the TeX on screen when the setter throws", async () => {
+    const katex = (await import("katex")).default;
+    const render = vi.spyOn(katex, "render").mockImplementation(() => {
+      throw new Error("boom");
+    });
+    try {
+      const { container } = await renderMarkdown("Broken $`\\frac{1`$ here.");
+      await waitFor(() => expect(container).toHaveTextContent("\\frac{1"));
+    } finally {
+      render.mockRestore();
+    }
+  });
+});
+
+describe("footnotes and code copy", () => {
+  it("styles footnotes at the end with links both ways", async () => {
+    const { container } = await renderMarkdown("Claim.[^1]\n\n[^1]: Source.\n");
+    const ref = container.querySelector("sup a");
+    expect(ref?.getAttribute("href")).toMatch(/#user-content-.*fn-1$/);
+    const notes = container.querySelector("section[data-footnotes]");
+    expect(notes).toHaveTextContent("Source.");
+    expect(notes).toHaveClass("border-t", "border-hair", "text-[13px]");
+    expect(container.querySelector("sup")).toHaveClass("text-[0.75em]");
+    const label = notes?.querySelector("h2");
+    expect(label).toHaveTextContent("Footnotes");
+    expect(label).not.toHaveClass("text-prose-h2");
+    const back = notes?.querySelector('a[href*="fnref-1"]');
+    expect(back?.getAttribute("href")).toMatch(/#user-content-.*fnref-1$/);
+    for (const link of [ref, back]) {
+      const id = link?.getAttribute("href")?.split("#")[1] ?? "";
+      expect(container.querySelector(`[id="${id}"]`)).not.toBeNull();
+    }
+  });
+
+  it("keeps a heading the writer called Footnote label a heading", async () => {
+    const { container } = await renderMarkdown(
+      "## Footnote label\n\nClaim.[^1]\n\n[^1]: Source.\n",
+      undefined,
+      undefined,
+      undefined,
+      { pageUrl: "https://kb.example.com/d/eng/e/alpha" },
+    );
+    const own = screen.getByRole("heading", {
+      level: 2,
+      name: "Footnote label",
+    });
+    expect(own).toHaveClass("text-prose-h2");
+    expect(
+      own.querySelector('button[aria-label="Link to this section"]') ??
+        within(own).queryByRole("button", { name: "Link to this section" }),
+    ).not.toBeNull();
+    const label = container.querySelector("section[data-footnotes] h2");
+    expect(label).toHaveTextContent("Footnotes");
+    expect(label).not.toHaveClass("text-prose-h2");
+  });
+
+  it("keeps footnote ids unique across documents on one page", async () => {
+    const { container } = render(
+      <MemoryRouter>
+        <ThemeProvider>
+          <Markdown source={"One.[^1]\n\n[^1]: First.\n"} />
+          <Markdown source={"Two.[^1]\n\n[^1]: Second.\n"} />
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(
+        container.querySelectorAll("section[data-footnotes]"),
+      ).toHaveLength(2);
+    });
+    const ids = Array.from(container.querySelectorAll("[id]")).map((e) => e.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    const refs = Array.from(container.querySelectorAll("sup a"));
+    const notes = Array.from(
+      container.querySelectorAll("section[data-footnotes]"),
+    );
+    expect(refs).toHaveLength(2);
+    refs.forEach((ref, i) => {
+      const id = ref.getAttribute("href")?.split("#")[1] ?? "";
+      expect(notes[i]?.querySelector(`[id="${id}"]`)).not.toBeNull();
+    });
+  });
+
+  it("copies a code block", async () => {
+    const write = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: write },
+    });
+    await renderMarkdown("```sh\ncargo test\n```\n");
+    await userEvent.click(screen.getByRole("button", { name: "Copy code" }));
+    expect(write).toHaveBeenCalledWith("cargo test");
+    expect(await screen.findByText("Copied")).toBeVisible();
+  });
+
+  it("puts no copy button on a diagram or a formula", async () => {
+    await renderMarkdown(
+      "```mermaid\ngraph TD; A-->B\n```\n\n```math\nx^2\n```\n",
+    );
+    expect(screen.queryByRole("button", { name: "Copy code" })).toBeNull();
+  });
+});
+
+describe("task boxes", () => {
+  /** Render with the tick props a reading page passes. */
+  async function renderTasks(
+    source: string,
+    tick: {
+      onTick?: (offset: number, next: "[ ]" | "[x]") => void;
+      canTick?: boolean | string;
+      foldTitle?: string;
+      sourceSpans?: boolean;
+    },
+  ) {
+    const result = render(
+      <MemoryRouter>
+        <ThemeProvider>
+          <Markdown source={source} {...tick} />
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("status", { name: "Loading the text" }),
+      ).toBeNull();
+    });
+    return result;
+  }
+
+  it("draws a not-applicable item as a struck box that is no checkbox", async () => {
+    const onTick = vi.fn<(offset: number, next: "[ ]" | "[x]") => void>();
+    await renderTasks("- [~] skipped\n- [ ] open\n", { onTick, canTick: true });
+    const box = screen.getByRole("img", { name: "Not applicable: skipped" });
+    expect(box).toBeVisible();
+    expect(screen.queryByRole("checkbox", { name: /skipped/ })).toBeNull();
+    expect(screen.queryByText(/\[~\]/)).toBeNull();
+    expect(screen.getByText("skipped")).toBeVisible();
+    await userEvent.click(box);
+    expect(onTick).not.toHaveBeenCalled();
+  });
+
+  it("names a box by the words a reader sees, without wikilink brackets", async () => {
+    await renderTasks("- [ ] read [[Deploy Guide]] and [[ops:Rollback]]\n", {
+      onTick: vi.fn(),
+      canTick: true,
+    });
+    expect(
+      screen.getByRole("checkbox", { name: "read Deploy Guide and Rollback" }),
+    ).toBeVisible();
+  });
+
+  it("ticks an open box through onTick with the offset of its bracket", async () => {
+    const onTick = vi.fn<(offset: number, next: "[ ]" | "[x]") => void>();
+    await renderTasks("- [ ] a\n- [x] b\n", { onTick, canTick: true });
+    const open = screen.getByRole("checkbox", { name: "a" });
+    expect(open).toBeEnabled();
+    expect(open).not.toBeChecked();
+    await userEvent.click(open);
+    expect(onTick).toHaveBeenCalledWith(2, "[x]");
+    await userEvent.click(screen.getByRole("checkbox", { name: "b" }));
+    expect(onTick).toHaveBeenLastCalledWith(10, "[ ]");
+  });
+
+  it("counts the offset into the whole file, frontmatter and folded title included", async () => {
+    const source = [
+      "---",
+      "title: Alpha",
+      "---",
+      "",
+      "# Alpha",
+      "",
+      "- [ ] first",
+      "  - [ ] nested",
+      "10. [ ] numbered",
+      "",
+    ].join("\n");
+    const onTick = vi.fn<(offset: number, next: "[ ]" | "[x]") => void>();
+    await renderTasks(source, { onTick, canTick: true, foldTitle: "Alpha" });
+    await userEvent.click(screen.getByRole("checkbox", { name: "first" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "nested" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "numbered" }));
+    expect(onTick.mock.calls.map(([at]) => source.slice(at, at + 4))).toEqual([
+      "[ ] ",
+      "[ ] ",
+      "[ ] ",
+    ]);
+    expect(onTick.mock.calls.map(([at]) => at)).toEqual([
+      source.indexOf("[ ] first"),
+      source.indexOf("[ ] nested"),
+      source.indexOf("[ ] numbered"),
+    ]);
+  });
+
+  it("finds the box in a loose list and in a quote", async () => {
+    const source = "- [ ] loose one\n\n- [x] loose two\n\n> - [ ] quoted\n";
+    const onTick = vi.fn<(offset: number, next: "[ ]" | "[x]") => void>();
+    await renderTasks(source, { onTick, canTick: true });
+    await userEvent.click(screen.getByRole("checkbox", { name: "loose one" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "loose two" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "quoted" }));
+    expect(onTick.mock.calls).toEqual([
+      [source.indexOf("[ ] loose"), "[x]"],
+      [source.indexOf("[x] loose"), "[ ]"],
+      [source.indexOf("[ ] quoted"), "[x]"],
+    ]);
+  });
+
+  it("disables the box with the reason when the reader may not change the page", async () => {
+    const onTick = vi.fn<(offset: number, next: "[ ]" | "[x]") => void>();
+    await renderTasks("- [ ] a\n", {
+      onTick,
+      canTick: "You can read this page but not change it",
+    });
+    const box = screen.getByRole("checkbox", { name: "a" });
+    expect(box).toBeDisabled();
+    expect(box.closest("[title]")).toHaveAttribute(
+      "title",
+      "You can read this page but not change it",
+    );
+    expect(box).toHaveAccessibleDescription(
+      "You can read this page but not change it",
+    );
+  });
+
+  it("keeps source spans reading the source on a not-applicable item", async () => {
+    const source = "- [~] skipped here\n";
+    const { container } = render(
+      <MemoryRouter>
+        <ThemeProvider>
+          <Markdown source={source} sourceSpans />
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(screen.getByText("skipped here")).toBeVisible();
+    });
+    const stamped = container.querySelectorAll("[data-src]");
+    expect(stamped.length).toBeGreaterThan(0);
+    for (const span of stamped) {
+      const at = Number(span.getAttribute("data-src"));
+      expect(source.slice(at, at + (span.textContent ?? "").length)).toBe(
+        span.textContent,
+      );
+    }
   });
 });

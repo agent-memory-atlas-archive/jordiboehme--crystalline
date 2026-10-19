@@ -1,5 +1,7 @@
 import {
   defaultKeymap,
+  cursorCharLeft,
+  cursorCharRight,
   deleteCharBackward,
   deleteCharForward,
   deleteLine,
@@ -8,14 +10,20 @@ import {
   redo,
   selectLine,
   undo,
+  undoDepth,
 } from "@codemirror/commands";
 import type { Extension } from "@codemirror/state";
-import { EditorSelection, EditorState } from "@codemirror/state";
+import {
+  Annotation,
+  EditorSelection,
+  EditorState,
+  Transaction,
+} from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { normalizePastedEndings } from "../collab/pastedEndings";
-import { hiddenIdLines } from "./hiddenIdLines";
+import { hiddenIdLines, isIdLineAt, joinSections } from "./hiddenIdLines";
 import { insertBlock } from "./toolbar";
 
 let view: EditorView | null = null;
@@ -140,16 +148,25 @@ describe("hiddenIdLines keeps an id with its heading", () => {
   });
 
   it.each([
-    ["start", "## One\n".length],
-    ["end", "## One\n<!-- r:aaaa1111 -->".length],
+    // A caret put on the id line by a dispatch goes to the blank line
+    // below, from either end, and a block from an empty line takes that
+    // line.
+    [
+      "start",
+      "## One\n".length,
+      "## One\n<!-- r:aaaa1111 -->\n![a](assets/a.png)\n\nFirst.\n",
+    ],
+    [
+      "end",
+      "## One\n<!-- r:aaaa1111 -->".length,
+      "## One\n<!-- r:aaaa1111 -->\n![a](assets/a.png)\n\nFirst.\n",
+    ],
   ])(
     "lands a block below the id from a caret at the id line's %s",
-    (_, pos) => {
+    (_, pos, after) => {
       const v = at(SPACED, pos);
       insertBlock(v, ["![a](assets/a.png)"]);
-      expect(v.state.doc.toString()).toBe(
-        "## One\n<!-- r:aaaa1111 -->\n\n![a](assets/a.png)\n\n\nFirst.\n",
-      );
+      expect(v.state.doc.toString()).toBe(after);
     },
   );
 
@@ -508,5 +525,255 @@ describe("hiddenIdLines keeps an id with its heading", () => {
     expect(v.state.doc.toString()).toBe(
       "## One\nRemote.\n<!-- r:aaaa1111 -->\nFirst.\n",
     );
+  });
+});
+
+describe("joining a section into the one above", () => {
+  const DOC =
+    "# P\n\n## A\n<!-- r:aaaa0001 -->\n\none\n\n## B\n<!-- r:bbbb0002 -->\n\ntwo\n";
+  const B = DOC.indexOf("## B");
+  const B_END = B + "## B".length;
+  const B_ID_END = DOC.indexOf("-->", B_END) + "-->".length;
+  const A_END = DOC.indexOf("## A") + "## A".length;
+  const A_ID_END = DOC.indexOf("-->", A_END) + "-->".length;
+
+  /** `## B` made `### B`, and its id line taken out with the break before it. */
+  const demote = [
+    { from: B, to: B + "## ".length, insert: "### " },
+    { from: B_END, to: B_ID_END, insert: "" },
+  ];
+
+  it("tells an id line from any other line, only where the ids are hidden", () => {
+    const v = mount(DOC);
+    expect(isIdLineAt(v.state, 4)).toBe(true);
+    expect(isIdLineAt(v.state, 3)).toBe(false);
+    expect(isIdLineAt(v.state, 6)).toBe(false);
+    // Out of the document is no id line either.
+    expect(isIdLineAt(v.state, 0)).toBe(false);
+    expect(isIdLineAt(v.state, 99)).toBe(false);
+    const plain = EditorState.create({ doc: DOC });
+    expect(isIdLineAt(plain, 4)).toBe(false);
+  });
+
+  it("lets the demoted heading's id go with the annotation", () => {
+    const v = mount(DOC);
+    v.dispatch({
+      changes: demote,
+      annotations: joinSections.of(true),
+      userEvent: "input",
+    });
+    expect(v.state.doc.toString()).toBe(
+      "# P\n\n## A\n<!-- r:aaaa0001 -->\n\none\n\n### B\n\ntwo\n",
+    );
+  });
+
+  it("puts the id back when the same change comes without the annotation", () => {
+    const v = mount(DOC);
+    v.dispatch({ changes: demote, userEvent: "input" });
+    expect(v.state.doc.toString()).toBe(
+      "# P\n\n## A\n<!-- r:aaaa0001 -->\n\none\n\n### B\n<!-- r:bbbb0002 -->\n\ntwo\n",
+    );
+  });
+
+  it("lets the id go when the change leaves no heading on the line", () => {
+    // An id is kept only under a heading: one range that takes the mark off
+    // and another that crosses the line break leave plain text.
+    for (const mark of ["", "Note: "]) {
+      const v = mount(DOC);
+      v.dispatch({
+        changes: [
+          { from: B, to: B + "## ".length, insert: mark },
+          { from: B_END, to: B_ID_END + 1, insert: "" },
+        ],
+        userEvent: "input",
+      });
+      expect(v.state.doc.toString()).toBe(
+        `# P\n\n## A\n<!-- r:aaaa0001 -->\n\none\n\n${mark}B\ntwo\n`,
+      );
+      v.destroy();
+    }
+  });
+
+  it("lets only the demoted heading's id go, never another one in the same change", () => {
+    const v = mount(DOC);
+    v.dispatch({
+      changes: [{ from: A_END, to: A_ID_END, insert: "" }, ...demote],
+      annotations: joinSections.of(true),
+      userEvent: "input",
+    });
+    expect(v.state.doc.toString()).toBe(
+      "# P\n\n## A\n<!-- r:aaaa0001 -->\n\none\n\n### B\n\ntwo\n",
+    );
+  });
+
+  it("still refuses a single-character delete into the id line with the annotation", () => {
+    const v = mount(DOC);
+    v.dispatch({
+      changes: { from: B_ID_END - 1, to: B_ID_END },
+      annotations: joinSections.of(true),
+      userEvent: "delete.backward",
+    });
+    expect(v.state.doc.toString()).toBe(DOC);
+  });
+});
+
+describe("a caret on an id line", () => {
+  const DOC = "## A\n<!-- r:aaaa0001 -->\n\none\n";
+  const ID_FROM = "## A\n".length;
+  const ID_TO = DOC.indexOf("-->") + "-->".length;
+
+  /** A buffer that opened with its caret at `pos`, which no filter saw. */
+  function opened(pos: number): EditorView {
+    view = new EditorView({
+      state: EditorState.create({
+        doc: DOC,
+        selection: EditorSelection.cursor(pos),
+        extensions: [EditorState.lineSeparator.of("\n"), hiddenIdLines()],
+      }),
+      parent: document.body,
+    });
+    return view;
+  }
+
+  it("steps over the id line with the arrow keys, both ways", () => {
+    const v = mount(DOC);
+    v.dispatch({ selection: EditorSelection.cursor("## A".length) });
+    cursorCharRight(v);
+    expect(v.state.selection.main.head).toBe(ID_TO + 1);
+    cursorCharLeft(v);
+    expect(v.state.selection.main.head).toBe("## A".length);
+  });
+
+  it("is put below the id line when a dispatch places it there", () => {
+    const v = mount(DOC);
+    v.dispatch({ selection: EditorSelection.cursor(ID_FROM) });
+    expect(v.state.selection.main.head).toBe(ID_TO + 1);
+    v.dispatch({ selection: EditorSelection.cursor(ID_TO) });
+    expect(v.state.selection.main.head).toBe(ID_TO + 1);
+  });
+
+  it("stays below the heading when a remote change puts an id line where it is", () => {
+    // What a room's binding dispatches: an annotation, no user event. A
+    // peer's undo of a join puts the id line back at the start of the line
+    // the caret is on.
+    const remote = Annotation.define<boolean>();
+    const v = mount("## A\n\nmore\n");
+    v.dispatch({ selection: EditorSelection.cursor("## A\n".length) });
+    v.dispatch({
+      changes: { from: "## A\n".length, insert: "<!-- r:aaaa0001 -->\n" },
+      annotations: remote.of(true),
+    });
+    v.dispatch(v.state.replaceSelection("x"), { userEvent: "input.type" });
+    expect(v.state.doc.toString()).toBe("## A\n<!-- r:aaaa0001 -->\nx\nmore\n");
+  });
+
+  it("puts a character typed at the id line's start on the line below", () => {
+    const v = opened(ID_FROM);
+    v.dispatch(v.state.replaceSelection("x"), { userEvent: "input.type" });
+    expect(v.state.doc.toString()).toBe("## A\n<!-- r:aaaa0001 -->\nx\none\n");
+    expect(v.state.selection.main.head).toBe(ID_TO + 2);
+  });
+
+  it("puts a character typed at the id line's end on the line below", () => {
+    const v = opened(ID_TO);
+    v.dispatch(v.state.replaceSelection("x"), { userEvent: "input.type" });
+    expect(v.state.doc.toString()).toBe("## A\n<!-- r:aaaa0001 -->\nx\none\n");
+    expect(v.state.selection.main.head).toBe(ID_TO + 2);
+  });
+
+  it("puts a paste at either end beside the id line", () => {
+    const one = opened(ID_FROM);
+    one.dispatch(one.state.replaceSelection("p\nq"), {
+      userEvent: "input.paste",
+    });
+    expect(one.state.doc.toString()).toBe(
+      "## A\n<!-- r:aaaa0001 -->\np\nq\none\n",
+    );
+    one.destroy();
+    const two = opened(ID_TO);
+    two.dispatch(two.state.replaceSelection("p"), { userEvent: "input.paste" });
+    expect(two.state.doc.toString()).toBe(
+      "## A\n<!-- r:aaaa0001 -->\np\none\n",
+    );
+  });
+
+  it("leaves a remote-mapped caret at the end of an id line that ends the page", () => {
+    const remote = Annotation.define<boolean>();
+    const v = mount("## A\nmore");
+    v.dispatch({ selection: EditorSelection.cursor(v.state.doc.length) });
+    v.dispatch({
+      changes: {
+        from: "## A\n".length,
+        to: v.state.doc.length,
+        insert: "<!-- r:aaaa0001 -->",
+      },
+      annotations: remote.of(true),
+    });
+    expect(v.state.selection.main.head).toBe(v.state.doc.length);
+    v.dispatch(v.state.replaceSelection("x"), { userEvent: "input.type" });
+    expect(v.state.doc.toString()).toBe("## A\n<!-- r:aaaa0001 -->\nx");
+  });
+
+  it("keeps what the moved insert says about the undo history", () => {
+    view = new EditorView({
+      state: EditorState.create({
+        doc: DOC,
+        selection: EditorSelection.cursor(ID_FROM),
+        extensions: [
+          EditorState.lineSeparator.of("\n"),
+          history(),
+          hiddenIdLines(),
+        ],
+      }),
+      parent: document.body,
+    });
+    view.dispatch(view.state.replaceSelection("x"), {
+      userEvent: "input.type",
+      annotations: Transaction.addToHistory.of(false),
+    });
+    expect(view.state.doc.toString()).toBe(
+      "## A\n<!-- r:aaaa0001 -->\nx\none\n",
+    );
+    expect(undoDepth(view.state)).toBe(0);
+  });
+
+  it("keeps the history flag of a block moved below an id", () => {
+    view = new EditorView({
+      state: EditorState.create({
+        doc: "## One\n<!-- r:aaaa1111 -->\nFirst.\n",
+        selection: EditorSelection.cursor("## One".length),
+        extensions: [
+          EditorState.lineSeparator.of("\n"),
+          history(),
+          hiddenIdLines(),
+        ],
+      }),
+      parent: document.body,
+    });
+    view.dispatch({
+      changes: { from: "## One".length, insert: "\nnew" },
+      userEvent: "input.paste",
+      annotations: Transaction.addToHistory.of(false),
+    });
+    expect(view.state.doc.toString()).toBe(
+      "## One\n<!-- r:aaaa1111 -->\nnew\nFirst.\n",
+    );
+    expect(undoDepth(view.state)).toBe(0);
+  });
+
+  it("puts text typed on an id line that ends the page after a new line", () => {
+    view = new EditorView({
+      state: EditorState.create({
+        doc: "## A\n<!-- r:aaaa0001 -->",
+        selection: EditorSelection.cursor("## A\n<!-- r:aaaa0001 -->".length),
+        extensions: [EditorState.lineSeparator.of("\n"), hiddenIdLines()],
+      }),
+      parent: document.body,
+    });
+    view.dispatch(view.state.replaceSelection("x"), {
+      userEvent: "input.type",
+    });
+    expect(view.state.doc.toString()).toBe("## A\n<!-- r:aaaa0001 -->\nx");
+    expect(view.state.selection.main.head).toBe(view.state.doc.length);
   });
 });

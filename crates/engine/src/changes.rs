@@ -41,7 +41,10 @@ pub const COLLAPSE_THRESHOLD: usize = 32;
 
 /// An `engram` event equal to the previous one in domain, path, kind and
 /// checksum inside this window is dropped: a platform whose mtime granularity
-/// makes the watcher re-announce an engine write costs nobody a refetch.
+/// makes the watcher re-announce an engine write costs nobody a refetch. A
+/// `reflection` event equal to any one of this window in domain, path, kind
+/// and a checksum both carry is dropped too: a threads file has no stamp, so
+/// the watcher finds every engine write of one again a moment later.
 pub const DUPLICATE_WINDOW: Duration = Duration::from_secs(2);
 
 /// What happened to the engram: the four things the sync engine counts.
@@ -160,20 +163,41 @@ pub enum ReflectionChangeKind {
     Switched,
 }
 
+impl From<crystalline_index::ReflectionPathKind> for ReflectionChangeKind {
+    fn from(kind: crystalline_index::ReflectionPathKind) -> ReflectionChangeKind {
+        use crystalline_index::ReflectionPathKind as K;
+        match kind {
+            K::Changed => ReflectionChangeKind::Changed,
+            K::Deleted => ReflectionChangeKind::Deleted,
+            K::Threads => ReflectionChangeKind::Threads,
+            K::Files => ReflectionChangeKind::Files,
+        }
+    }
+}
+
 /// One change in a domain's Reflection, as a session that may read it hears
 /// it. A path and a kind, never text and never an engram name, so a person
 /// with knowledge `none` may hear it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ReflectionChanged {
     pub domain: String,
-    /// Inside `reflections/`, after the change; empty for `switched`.
+    /// Inside `reflections/`, after the change; empty for `switched`, and
+    /// for `changed` when a sync found more paths than
+    /// [`COLLAPSE_THRESHOLD`] at once (the whole Reflection, then).
     pub path: String,
     pub kind: ReflectionChangeKind,
     /// `moved`, and `files` on a move: the path before.
     pub from: Option<String>,
     /// Who made the change, as a display label; null for a link that
-    /// followed, a room save with no single typist, and the machine owner.
+    /// followed, a room save with no single typist, the machine owner and a
+    /// change found on disk.
     pub actor: Option<String>,
+    /// The lowercase hex SHA-256 of the file the change left behind (the
+    /// threads file for `threads`), when the announcer knows it. The bus
+    /// compares it to drop the watcher's echo of an engine write; `None` is
+    /// never an echo. Never on the wire.
+    #[serde(skip)]
+    pub checksum: Option<String>,
     /// As on [`EngramChanged::audience`]. Never on the wire.
     #[serde(skip)]
     pub audience: Option<DomainAudience>,
@@ -293,6 +317,10 @@ struct Ring {
     entries: VecDeque<Envelope>,
     /// The last `engram` announcement and when, for the duplicate window.
     last_engram: Option<(EngramChanged, Instant)>,
+    /// The `reflection` announcements with a checksum inside the duplicate
+    /// window, oldest first. One echo batch can name several pages, so this
+    /// keeps more than the last.
+    recent_reflections: VecDeque<(ReflectionChanged, Instant)>,
     /// The audiences captured for domain names being renamed or removed,
     /// stamped onto every event under that name until the capture ends.
     captured: HashMap<String, DomainAudience>,
@@ -326,6 +354,7 @@ impl ChangeBus {
             ring: Mutex::new(Ring {
                 entries: VecDeque::with_capacity(RING_CAPACITY),
                 last_engram: None,
+                recent_reflections: VecDeque::new(),
                 captured: HashMap::new(),
             }),
         }
@@ -356,6 +385,32 @@ impl ChangeBus {
                 return None;
             }
             ring.last_engram = Some((engram.clone(), now));
+        }
+        if let Change::Reflection(reflection) = &change
+            && reflection.checksum.is_some()
+        {
+            let now = Instant::now();
+            while ring
+                .recent_reflections
+                .front()
+                .is_some_and(|(_, at)| now.duration_since(*at) >= DUPLICATE_WINDOW)
+            {
+                ring.recent_reflections.pop_front();
+            }
+            // Only the latest event of this path and kind counts: a file that
+            // went A, B and back to A inside the window is a change again.
+            let latest = ring.recent_reflections.iter().rev().find(|(seen, _)| {
+                seen.domain == reflection.domain
+                    && seen.path == reflection.path
+                    && seen.kind == reflection.kind
+            });
+            if latest.is_some_and(|(seen, _)| seen.checksum == reflection.checksum) {
+                return None;
+            }
+            if ring.recent_reflections.len() == RING_CAPACITY {
+                ring.recent_reflections.pop_front();
+            }
+            ring.recent_reflections.push_back((reflection.clone(), now));
         }
         let seq = self.seq.fetch_add(1, Ordering::Relaxed).saturating_add(1);
         let id = EventId {
@@ -679,6 +734,7 @@ mod tests {
             kind: ReflectionChangeKind::Moved,
             from: Some("guides/a.md".to_string()),
             actor: Some("jordi".to_string()),
+            checksum: Some("ab".to_string()),
             audience: None,
         });
         assert_eq!(change.name(), "reflection");
@@ -695,12 +751,78 @@ mod tests {
             kind: ReflectionChangeKind::Switched,
             from: None,
             actor: None,
+            checksum: None,
             audience: None,
         });
         let data: serde_json::Value = serde_json::from_str(&switched.data().unwrap()).unwrap();
         // Fluid drops a frame whose path is not a string: an empty one it keeps.
         assert_eq!(data["path"], "");
         assert_eq!(data["kind"], "switched");
+    }
+
+    fn reflection(path: &str, kind: ReflectionChangeKind, checksum: Option<&str>) -> Change {
+        Change::Reflection(ReflectionChanged {
+            domain: "eng".to_string(),
+            path: path.to_string(),
+            kind,
+            from: None,
+            actor: None,
+            checksum: checksum.map(str::to_string),
+            audience: None,
+        })
+    }
+
+    /// The watcher's echo of an engine write (the same file, so the same
+    /// checksum, a moment later) is dropped; a second write of the same page
+    /// inside the window is new content and is heard, and an event that
+    /// carries no checksum is never taken for an echo.
+    #[test]
+    fn a_reflection_echo_inside_two_seconds_is_dropped_and_new_content_is_not() {
+        use ReflectionChangeKind::{Changed, Threads};
+        let bus = ChangeBus::new();
+        assert!(
+            bus.announce(reflection("a.md", Threads, Some("1")))
+                .is_some()
+        );
+        assert!(
+            bus.announce(reflection("b.md", Threads, Some("9")))
+                .is_some()
+        );
+        assert!(
+            bus.announce(reflection("a.md", Threads, Some("1")))
+                .is_none(),
+            "the echo of the first, behind another page's event"
+        );
+        assert!(
+            bus.announce(reflection("a.md", Threads, Some("2")))
+                .is_some()
+        );
+        assert!(
+            bus.announce(reflection("a.md", Changed, Some("2")))
+                .is_some()
+        );
+        assert!(bus.announce(reflection("a.md", Threads, None)).is_some());
+        assert!(bus.announce(reflection("a.md", Threads, None)).is_some());
+        assert_eq!(bus.ring_len(), 6);
+        // A, B and back to A: the last one is new content again.
+        assert!(
+            bus.announce(reflection("c.md", Threads, Some("A")))
+                .is_some()
+        );
+        assert!(
+            bus.announce(reflection("c.md", Threads, Some("B")))
+                .is_some()
+        );
+        assert!(
+            bus.announce(reflection("c.md", Threads, Some("A")))
+                .is_some()
+        );
+        assert!(
+            bus.announce(reflection("c.md", Threads, Some("A")))
+                .is_none()
+        );
+        let data = reflection("a.md", Threads, Some("1")).data().unwrap();
+        assert!(!data.contains("checksum"), "{data}");
     }
 
     #[test]

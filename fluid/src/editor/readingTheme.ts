@@ -38,6 +38,17 @@ export const readingTheme: Extension = Prec.high([
     ".cm-scroller": { lineHeight: "1.72" },
     ".cm-content": { padding: "0.5rem 0 3rem" },
     ".cm-line": { padding: "0" },
+    // A callout's lines inset like the page's callout: its words in from the
+    // rule, its head and foot padded, the right corners rounded.
+    ".cm-line.callout": { padding: "0 0.75rem 0 1rem" },
+    ".cm-line.callout.cm-callout-first": {
+      paddingTop: "0.5rem",
+      borderTopRightRadius: "0.375rem",
+    },
+    ".cm-line.callout.cm-callout-last": {
+      paddingBottom: "0.5rem",
+      borderBottomRightRadius: "0.375rem",
+    },
     // Pictures stand on the text's own left edge, as on the reading page.
     ".cm-image-preview": { padding: "0.5rem 0" },
     // A frontmatter block shown as text (the Reflection editor) reads as the

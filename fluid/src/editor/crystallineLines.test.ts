@@ -5,7 +5,11 @@ import { describe, expect, it } from "vitest";
 
 import type { Vocabulary } from "../api/vocabulary";
 import { parsedState } from "../test/parse";
-import { crystallineCompletions, crystallineLines } from "./crystallineLines";
+import {
+  OBSERVATION_LINE,
+  crystallineCompletions,
+  crystallineLines,
+} from "./crystallineLines";
 import { baseExtensions } from "./setup";
 
 const DOC =
@@ -167,5 +171,16 @@ describe("completion stays out of code and frontmatter", () => {
       "relates_to",
       "supersedes",
     ]);
+  });
+});
+
+describe("task lines", () => {
+  it("never reads a task box as an observation category", () => {
+    expect(OBSERVATION_LINE.test("- [x] done ")).toBe(false);
+    expect(OBSERVATION_LINE.test("- [X] done ")).toBe(false);
+    expect(OBSERVATION_LINE.test("- [~] skipped ")).toBe(false);
+    expect(OBSERVATION_LINE.test("- [ ] open ")).toBe(false);
+    expect(OBSERVATION_LINE.test("- [fact] x ")).toBe(true);
+    expect(OBSERVATION_LINE.test("- [xy] x ")).toBe(true);
   });
 });

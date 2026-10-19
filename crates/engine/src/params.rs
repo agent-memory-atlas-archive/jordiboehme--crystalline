@@ -614,10 +614,12 @@ pub struct WriteReflectionParams {
     /// move_asset and delete_asset the file's path inside reflections/, for
     /// example assets/flow.png.
     pub path: String,
-    /// write: the whole markdown of the reflection. Section ids (the
-    /// <!-- r:... --> lines) are kept as they are and added under new ##
-    /// headings; the reflection: frontmatter block is Crystalline's own and is
-    /// ignored. Leave it out when you pass operation.
+    /// write: the whole markdown of the reflection. Keep the <!-- r:... -->
+    /// id lines a read returned as they are; Crystalline gives a new ##
+    /// heading its id line, never write one yourself. The reflection:
+    /// frontmatter key is Crystalline's bookkeeping; never write it (pass
+    /// sources instead). Leave it out when you pass operation, and when you
+    /// pass sources alone to curate sections as the page stands.
     #[serde(default)]
     pub markdown: Option<String>,
     /// write: change one section instead of the whole page, the way
@@ -638,9 +640,15 @@ pub struct WriteReflectionParams {
     /// write with replace_section: replace deeper subsections too.
     #[serde(default)]
     pub include_subsections: bool,
-    /// write: the engrams each section was built from, by section id or
-    /// heading, as permalinks in this domain. Naming a section here curates
-    /// it: its reflected text moves to what you wrote.
+    /// write: the engrams each section was built from, by a `##` section's
+    /// id or heading text (a heading this write creates included): a
+    /// permalink for an engram in this domain, a
+    /// `crystalline://<domain>/<permalink>` address for one in another
+    /// domain you can read. Naming a section here curates it: its
+    /// reflected text moves to what you wrote. Without markdown and
+    /// operation, sources curate the sections as the page stands: none of
+    /// its text is rewritten, though a heading without an id line still gets
+    /// one and addresses are spelled with current domain names.
     #[serde(default, deserialize_with = "null_as_default")]
     pub sources: BTreeMap<String, Vec<String>>,
     /// move: the new path inside reflections/; move_asset: the file's new

@@ -226,13 +226,31 @@ pub fn apply_overrides(
         .collect()
 }
 
-/// Run the single-document rule families - format (`E`) and temporal (`T`) -
-/// over one in-memory markdown text, without touching a filesystem or writing
-/// anything. Backs the HTTP validation dry-run, so editors and agents get the
-/// same findings `crystalline verify` would raise for these families. Link,
-/// manifest, schema and quality rules need a whole domain for context and are
-/// deliberately not run here, and `T006` is dropped from the temporal results
-/// below for the same reason - see that filter for why.
+/// The dialect findings (`Q006`-`Q008`) of a write receipt under a domain's
+/// overrides, the way validate reports them: a rule the domain turned off is
+/// dropped and a re-levelled one carries its new severity.
+pub fn markdown_findings_under(
+    findings: Vec<crate::markdown::MarkdownFinding>,
+    verify: Option<&crate::config::VerifyConfig>,
+) -> Vec<crate::markdown::MarkdownFinding> {
+    findings
+        .into_iter()
+        .filter_map(|mut f| {
+            f.severity = severity::resolve(f.code, f.severity, verify, false)?;
+            Some(f)
+        })
+        .collect()
+}
+
+/// Run the single-document rule families - format (`E`), temporal (`T`) and
+/// the Markdown dialect quality rules (`Q006`-`Q008`) - over one in-memory
+/// markdown text, without touching a filesystem or writing anything. Backs
+/// the HTTP validation dry-run, so editors and agents get the same findings
+/// `crystalline verify` would raise for these families. Link, manifest,
+/// schema and the other quality rules need a whole domain for context and
+/// are deliberately not run here, and `T006` is dropped from the temporal
+/// results below for the same reason - see that filter for why. A MANIFEST
+/// is linted like any other text: Fluid renders it on the domain home.
 ///
 /// Like [`check_temporal`]: no `.crystalline.yaml` override and no `--strict`
 /// promotion apply here; a caller with a domain's settings passes the result
@@ -264,6 +282,13 @@ pub fn check_document(domain: &str, rel_path: &Path, source: &str) -> Vec<Issue>
             .into_iter()
             .filter(|issue| issue.rule != "T006"),
     );
+
+    // The rich Markdown dialect (Q006-Q008), so the editor's findings rail
+    // hears about an unknown status colour or callout kind as it types.
+    for f in crate::markdown::lint_engram_source(source) {
+        let mut sink = Sink::new(&mut issues, &mut summary, None, false);
+        sink.emit(rel_path, Some(f.line), f.code, f.severity, f.message, None);
+    }
 
     issues
 }

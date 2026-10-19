@@ -3480,6 +3480,121 @@ fn data_command_against_a_toon_daemon_returns_json() {
     let _ = env.run(&["ctl", "shutdown"]);
 }
 
+/// A comment that reaches a Reflection's threads file from outside the
+/// daemon (another process, a pull, a plain editor) is heard on
+/// `GET /api/v1/events` once the watcher finds it, and the stream's first
+/// bytes arrive at once rather than at the first heartbeat.
+#[test]
+fn a_threads_file_written_on_disk_reaches_the_event_stream() {
+    let env = Env::new("live");
+    env.setup_domain("eng");
+    let root = env.dir.join("kb-eng");
+    let manifest = std::fs::read_to_string(root.join("MANIFEST.md")).unwrap();
+    std::fs::write(
+        root.join("MANIFEST.md"),
+        manifest.replace("status: current\n", "status: current\nreflection: on\n"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("reflections")).unwrap();
+    std::fs::write(
+        root.join("reflections/d.md"),
+        "# D\n\n## Part\n<!-- r:aaaa1111 -->\n\nText.\n",
+    )
+    .unwrap();
+
+    let addr = format!("127.0.0.1:{}", free_port());
+    let mut serve = Command::new(bin());
+    env.apply(&mut serve);
+    let mut child = serve
+        .args(["serve", "--http", &addr, "--config"])
+        .arg(env.config_path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_port(&addr);
+
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap();
+    let setup = client
+        .post(format!("http://{addr}/api/v1/auth/setup"))
+        .json(&json!({ "name": "ada", "password": "ada-password-long" }))
+        .send()
+        .unwrap();
+    assert_eq!(
+        setup.status().as_u16(),
+        200,
+        "first-run setup over loopback"
+    );
+    let cookie = setup
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find_map(|v| {
+            v.split(';')
+                .next()
+                .filter(|c| c.starts_with("fluid_session="))
+        })
+        .expect("a session cookie")
+        .to_string();
+
+    let stream = client
+        .get(format!("http://{addr}/api/v1/events"))
+        .header("accept", "text/event-stream")
+        .header("cookie", &cookie)
+        .send()
+        .unwrap();
+    assert_eq!(stream.status().as_u16(), 200);
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stream).lines() {
+            let Ok(line) = line else { return };
+            if tx.send(line).is_err() {
+                return;
+            }
+        }
+    });
+    let first = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the stream opens before the first heartbeat");
+    assert_eq!(first, ": open");
+
+    std::fs::write(
+        root.join("reflections/d.threads.md"),
+        "# Threads\n\n## t-0000aaaa\n\n```yaml\nsection: aaaa1111\nstatus: open\n```\n\n- 2026-10-19T09:00:00Z, comment by scribe (agent): From another process.\n",
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut event = String::new();
+    let mut seen = Vec::new();
+    let data = loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let line = rx
+            .recv_timeout(left)
+            .unwrap_or_else(|_| panic!("no reflection frame within 10 s: {seen:?}"));
+        seen.push(line.clone());
+        if let Some(name) = line.strip_prefix("event:") {
+            event = name.trim().to_string();
+        } else if let Some(data) = line.strip_prefix("data:")
+            && event == "reflection"
+        {
+            // The start-up sync may still announce the page it indexed.
+            let data = serde_json::from_str::<Value>(data.trim()).unwrap();
+            if data["kind"] == "threads" {
+                break data;
+            }
+        }
+    };
+    assert_eq!(data["domain"], "eng", "{data}");
+    assert_eq!(data["path"], "d.md", "{data}");
+
+    let _ = env.run(&["ctl", "shutdown"]);
+    let _ = child.wait();
+}
+
 #[test]
 fn http_smoke_initialize_list_and_search() {
     let env = Env::new("http");

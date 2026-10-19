@@ -1219,7 +1219,24 @@ impl Engine {
         let hidden = self
             .hidden_for(&caller_scope(journal.caller.as_ref()))
             .await?;
-        let respell = |text: &str| respell_old(text, spellings, new, BodyGate::Split);
+        // The links of a page's body follow the rename where the caller may
+        // write. The stored domain of a source in another domain is
+        // Crystalline's bookkeeping, so it follows in every page of every
+        // domain, or a rename would turn those sources into ones that cannot
+        // be checked; a domain hidden from the caller is never named for it.
+        let sources = |text: &str| {
+            crystalline_core::reflection::respell_source_domains(text, &|domain: &str| {
+                spellings
+                    .iter()
+                    .any(|s| s == domain)
+                    .then(|| new.to_string())
+            })
+        };
+        let respell = |text: &str| {
+            let (text, links) = respell_old(text, spellings, new, BodyGate::Split);
+            let (text, domains) = sources(&text);
+            (text, links + domains)
+        };
         let mut domains: Vec<String> = self
             .registered_domain_entries_now()
             .await
@@ -1227,9 +1244,8 @@ impl Engine {
             .collect();
         domains.sort();
         for domain in domains {
-            if hidden.contains(&domain)
-                || !self.reflection_effective(&domain).await.unwrap_or(false)
-            {
+            let visible = !hidden.contains(&domain);
+            if !self.reflection_effective(&domain).await.unwrap_or(false) {
                 continue;
             }
             let ContentSource::File { root } = self.read_source(&domain) else {
@@ -1242,23 +1258,31 @@ impl Engine {
                         domain = domain.as_str(),
                         "the rename to '{new}' could not read the reflections of this domain: {e}"
                     );
-                    outcome.left_behind.push(LeftBehind {
-                        domain: domain.clone(),
-                        path: format!("{}/", crystalline_core::reflection::REFLECTIONS_DIR),
-                        references: 0,
-                        reason: Some(e.to_string()),
-                    });
+                    if visible {
+                        outcome.left_behind.push(LeftBehind {
+                            domain: domain.clone(),
+                            path: format!("{}/", crystalline_core::reflection::REFLECTIONS_DIR),
+                            references: 0,
+                            reason: Some(e.to_string()),
+                        });
+                    }
                     continue;
                 }
             };
-            let writable = journal.writable.binary_search(&domain).is_ok();
+            let writable = visible && journal.writable.binary_search(&domain).is_ok();
+            let rewrite: &(dyn Fn(&str) -> (String, usize) + Sync) =
+                if writable { &respell } else { &sources };
             let folder = super::reflection::reflection_dir(&root);
             // A page's row is written only by the domain's host (the
             // host-lock fence), so the step claims each domain it respells
             // as a sync would, a one-shot command included, which gives the
             // lock back when the step is done. A domain another live
-            // instance holds stops the step, so it runs again.
-            let needs_writes = writable && rows.iter().any(|row| respell(&row.content).1 > 0);
+            // instance holds stops the step, so it runs again; one hidden
+            // from the caller is passed over instead, never named. Nothing
+            // comes back for it: the old name is no alias after a full
+            // rename and the step counts as done, so those sources read as
+            // unavailable until a writer who sees them drops or re-adds them.
+            let needs_writes = rows.iter().any(|row| rewrite(&row.content).1 > 0);
             if needs_writes && !self.instance_id.is_empty() {
                 let claim = {
                     let store = self.store.lock().await;
@@ -1270,6 +1294,21 @@ impl Engine {
                 };
                 match claim {
                     Ok(HostClaim::Acquired { .. }) => {}
+                    Ok(HostClaim::HeldByOther(_)) if !visible => {
+                        tracing::warn!(
+                            domain = domain.as_str(),
+                            "the rename to '{new}' left the sources of this domain's Reflection: another instance hosts it"
+                        );
+                        continue;
+                    }
+                    // The caller cannot act on a domain it cannot see.
+                    Err(e) if !visible => {
+                        tracing::warn!(
+                            domain = domain.as_str(),
+                            "the rename to '{new}' left the sources of this domain's Reflection: its host lock could not be claimed: {e}"
+                        );
+                        continue;
+                    }
                     Ok(HostClaim::HeldByOther(host)) => {
                         self.release_taken_hosts().await;
                         return Err(EngineError::Conflict(host_refusal(&domain, &host)));
@@ -1281,22 +1320,45 @@ impl Engine {
                 }
             }
             for row in rows {
-                let references = respell(&row.content).1;
+                let path = crystalline_core::reflection::domain_rel(&row.path);
+                // A source naming an old spelling in a frontmatter that cannot
+                // be rewritten key by key is never passed over in silence.
+                let named = crystalline_core::reflection::source_domains_named(
+                    &row.content,
+                    &|domain: &str| spellings.iter().any(|s| s == domain),
+                );
+                if named > 0 && sources(&row.content).1 == 0 {
+                    tracing::warn!(
+                        domain = domain.as_str(),
+                        path = row.path.as_str(),
+                        "the rename to '{new}' could not rewrite the sources of this reflection"
+                    );
+                    if visible {
+                        outcome.left_behind.push(LeftBehind {
+                            domain: domain.clone(),
+                            path: path.clone(),
+                            references: named,
+                            reason: Some(SOURCES_NOT_REWRITTEN.to_string()),
+                        });
+                    }
+                }
+                if visible && !writable {
+                    let references = respell_old(&row.content, spellings, new, BodyGate::Split).1;
+                    if references > 0 {
+                        outcome.left_behind.push(LeftBehind {
+                            domain: domain.clone(),
+                            path: path.clone(),
+                            references,
+                            reason: None,
+                        });
+                    }
+                }
+                let references = rewrite(&row.content).1;
                 if references == 0 {
                     continue;
                 }
-                let path = crystalline_core::reflection::domain_rel(&row.path);
-                if !writable {
-                    outcome.left_behind.push(LeftBehind {
-                        domain: domain.clone(),
-                        path,
-                        references,
-                        reason: None,
-                    });
-                    continue;
-                }
                 match self
-                    .relink_page(&domain, domain_id, &folder, &row.path, &respell)
+                    .relink_page(&domain, domain_id, &folder, &row.path, rewrite)
                     .await
                 {
                     Ok(0) => {}
@@ -1313,14 +1375,17 @@ impl Engine {
                             None,
                             None,
                         );
-                        let counts = outcome.rewritten.entry(domain.clone()).or_default();
-                        counts.0 += 1;
-                        counts.1 += references;
+                        if writable {
+                            let counts = outcome.rewritten.entry(domain.clone()).or_default();
+                            counts.0 += 1;
+                            counts.1 += references;
+                        }
                     }
                     // The fence refused: this instance lost the domain's lock
                     // meanwhile. The step is not done; the next run tries
-                    // again.
-                    Err(e) if super::fence::is_fence_refusal(&e) => {
+                    // again. A domain hidden from the caller is not named in
+                    // a refusal: its page is passed over.
+                    Err(e) if visible && super::fence::is_fence_refusal(&e) => {
                         self.release_taken_hosts().await;
                         return Err(e);
                     }
@@ -1330,12 +1395,14 @@ impl Engine {
                             path = row.path.as_str(),
                             "the rename to '{new}' could not respell the links in this reflection: {e}"
                         );
-                        outcome.left_behind.push(LeftBehind {
-                            domain: domain.clone(),
-                            path,
-                            references,
-                            reason: Some(e.to_string()),
-                        });
+                        if visible {
+                            outcome.left_behind.push(LeftBehind {
+                                domain: domain.clone(),
+                                path,
+                                references,
+                                reason: Some(e.to_string()),
+                            });
+                        }
                     }
                 }
             }
@@ -1605,6 +1672,9 @@ impl Engine {
                 // The backup state moved with the folder; a backup still
                 // pending goes along under the new name.
                 self.backup_marks.rename(old, new);
+                // So does what the last walk saw of its Reflection: the
+                // renamed domain's next walk is no first walk.
+                self.rename_reflection_walk(old, new);
             }
             RenameStep::OverlaysDir => {
                 move_state_dir(
@@ -2025,6 +2095,9 @@ fn caller_scope(caller: Option<&RenameCaller>) -> crate::scope::Scope {
         None => crate::scope::Scope::Unrestricted,
     }
 }
+
+/// Why a page's stored source domains did not follow a rename.
+const SOURCES_NOT_REWRITTEN: &str = "its frontmatter cannot be rewritten key by key, so the domain its sources name was left as it was; write the frontmatter as plain `key: value` lines, then rename again or write the sources again";
 
 /// `text` with every link domain and `crystalline://` domain that is one of
 /// `spellings` respelled as `new`, and how many were, over the body `gate`

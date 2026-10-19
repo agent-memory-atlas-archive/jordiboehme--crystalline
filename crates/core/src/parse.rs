@@ -36,7 +36,9 @@ use crate::yaml::YamlValue;
 /// - 0: every index before the generation was recorded.
 /// - 1: a bullet that wraps onto further lines is one observation or
 ///   relation (0.22).
-pub const PARSE_GENERATION: u32 = 1;
+/// - 2: task boxes (`[ ]`, `[x]`, `[X]`, `[~]`) and directive-led bullets
+///   stopped reading as observations and relations (0.28.0).
+pub const PARSE_GENERATION: u32 = 2;
 
 /// An error encountered while parsing an Engram.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -777,6 +779,10 @@ pub(crate) fn split_category(content: &str) -> Option<(&str, &str)> {
     if category.is_empty() || category.contains('[') {
         return None;
     }
+    // A GFM task box, open, done or not applicable, is not a category.
+    if matches!(category, " " | "x" | "X" | "~") {
+        return None;
+    }
     let after = &rest[close + 1..];
     if after.starts_with(['(', '[']) {
         return None;
@@ -830,7 +836,7 @@ pub(crate) fn is_hashtag(token: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '/')
 }
 
-fn parse_relation(content: &str) -> Option<(String, LinkTarget)> {
+pub(crate) fn parse_relation(content: &str) -> Option<(String, LinkTarget)> {
     let open = content.find("[[")?;
     let after = &content[open + 2..];
     let close = after.find("]]")?;
@@ -839,7 +845,10 @@ fn parse_relation(content: &str) -> Option<(String, LinkTarget)> {
 
     let rel_type = if before.len() >= 2 && before.starts_with('"') && before.ends_with('"') {
         before[1..before.len() - 1].to_string()
-    } else if !before.is_empty() && !before.contains(char::is_whitespace) {
+    } else if !before.is_empty()
+        && !before.contains(char::is_whitespace)
+        && !before.starts_with([':', '['])
+    {
         before.to_string()
     } else {
         return None;
@@ -1024,6 +1033,45 @@ mod tests {
 
     fn observations_of(body: &str) -> Vec<Observation> {
         scan_body(body, 1).0
+    }
+
+    #[test]
+    fn task_items_are_not_observations() {
+        for line in [
+            "- [ ] ship it\n",
+            "- [x] ship it\n",
+            "- [X] ship it\n",
+            "- [~] ship it\n",
+        ] {
+            assert!(
+                observations_of(line).is_empty(),
+                "{line:?} read as an observation"
+            );
+        }
+        // A real category still parses.
+        assert_eq!(observations_of("- [fact] ship it\n")[0].category, "fact");
+    }
+
+    #[test]
+    fn a_directive_or_task_box_is_never_a_relation_type() {
+        for body in [
+            "- :status[Done]{green} [[Target]]\n",
+            "- [x] [[Target]]\n",
+            "- [ ] [[Target]]\n",
+        ] {
+            let (_, relations, links, _) = scan_body(body, 1);
+            assert!(relations.is_empty(), "{body:?} read as a relation");
+            assert_eq!(
+                links.len(),
+                1,
+                "the wikilink stays a prose link in {body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_parse_generation_moved_for_task_items() {
+        assert_eq!(PARSE_GENERATION, 2);
     }
 
     #[test]

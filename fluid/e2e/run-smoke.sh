@@ -228,6 +228,9 @@ locked_root="$run_dir/locked-domain"
 cp -R "$here/fixtures/locked-domain" "$locked_root"
 reflection_root="$run_dir/reflection-domain"
 cp -R "$here/fixtures/reflection-domain" "$reflection_root"
+# The Reflection journeys write one threads file on disk, the way another
+# process or a pull would, to see the open page follow it.
+export FLUID_E2E_REFLECTION_ROOT="$reflection_root"
 
 echo "smoke: registering the fixture domains"
 "${isolated[@]}" "$bin" domain add "$FLUID_E2E_DOMAIN" "$domain_root"

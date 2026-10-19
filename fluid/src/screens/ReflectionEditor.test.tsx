@@ -138,9 +138,119 @@ describe("the reflection editor", () => {
     // for it, and the page's own title line is there.
     expect(editor.textContent).toContain("title: Deploying");
     expect(editor.textContent).not.toContain("Frontmatter");
-    // The one verb of the sticky row.
-    expect(screen.getByRole("toolbar", { name: "Insert" })).toContainElement(
-      screen.getByRole("button", { name: "Attach a file" }),
+    // The engram editor's format bar, Attach included.
+    expect(
+      screen.getByRole("toolbar", { name: "Formatting" }),
+    ).toContainElement(screen.getByRole("button", { name: "Attach a file" }));
+  });
+
+  it("wears the engram editor's format bar, with no Raw and no one-button row", async () => {
+    serve("edit");
+    sessionMock.mockReturnValue(room(PAGE));
+    renderApp("/d/eng/reflection-edit/guides/a.md");
+    await screen.findByRole("textbox", { name: "Page source" });
+    const bar = screen.getByRole("toolbar", { name: "Formatting" });
+    expect(
+      within(bar)
+        .getAllByRole("button")
+        .map(
+          (button) => button.getAttribute("aria-label") ?? button.textContent,
+        ),
+    ).toEqual([
+      "Bold",
+      "Italic",
+      "Strikethrough",
+      "Inline code",
+      "Heading",
+      "Bulleted list",
+      "Numbered list",
+      "Task list",
+      "Blockquote",
+      "Link",
+      "Insert table",
+      "Insert",
+      "Attach a file",
+    ]);
+    expect(screen.queryByRole("toolbar", { name: "Insert" })).toBeNull();
+    // A Reflection page renders `[[...]]` as plain text, so no Wiki link.
+    expect(within(bar).queryByRole("button", { name: "Wiki link" })).toBeNull();
+  });
+
+  it("joins a section into the one above only once the person confirms, in one undo step", async () => {
+    serve("edit");
+    const session = live(room(PAGE));
+    const editor = await openEditor();
+    const view = EditorView.findFromDOM(
+      editor.closest(".cm-editor") as HTMLElement,
+    ) as EditorView;
+    act(() => {
+      view.dispatch({ selection: { anchor: PAGE.indexOf("## One") + 3 } });
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Heading" }));
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Heading 3" }),
+    );
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent(
+      "This joins the section with the one above. The agent will see the change and rebuild its sources.",
+    );
+    expect(session.get().ytext?.toJSON()).toBe(PAGE);
+    await user.click(
+      within(dialog).getByRole("button", { name: "Join sections" }),
+    );
+    expect(session.get().ytext?.toJSON()).toBe("# A\n\n### One\n\nFirst.\n");
+    const undo = yUndoManagerKeymap.find((binding) => binding.key === "Mod-z");
+    act(() => {
+      undo?.run?.(view);
+    });
+    expect(session.get().ytext?.toJSON()).toBe(PAGE);
+  });
+
+  it("keeps typing below the heading when a peer's undo puts the joined section's id back", async () => {
+    serve("edit");
+    const session = live(room(PAGE));
+    const editor = await openEditor();
+    const view = EditorView.findFromDOM(
+      editor.closest(".cm-editor") as HTMLElement,
+    ) as EditorView;
+    act(() => {
+      view.dispatch({ selection: { anchor: PAGE.indexOf("## One") + 3 } });
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Heading" }));
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Heading 3" }),
+    );
+    await user.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Join sections",
+      }),
+    );
+    const joined = "# A\n\n### One\n\nFirst.\n";
+    const ytext = session.get().ytext as Y.Text;
+    expect(ytext.toJSON()).toBe(joined);
+    // This person's caret on the line below the heading; then a peer undoes
+    // the join, which puts the id line back at the start of that line. The
+    // change reaches this buffer through the room, with no user event.
+    const below = joined.indexOf("### One\n") + "### One\n".length;
+    act(() => {
+      view.dispatch({ selection: { anchor: below } });
+    });
+    act(() => {
+      ytext.doc?.transact(() => {
+        ytext.insert(below, "<!-- r:aaaa1111 -->\n");
+        ytext.delete(joined.indexOf("### One"), 1);
+      });
+    });
+    expect(ytext.toJSON()).toBe(PAGE);
+    act(() => {
+      view.dispatch(view.state.replaceSelection("x"), {
+        userEvent: "input.type",
+      });
+    });
+    expect(ytext.toJSON()).toBe(
+      "# A\n\n## One\n<!-- r:aaaa1111 -->\nx\nFirst.\n",
     );
   });
 
@@ -1505,6 +1615,9 @@ describe("the reflection editor takes files", () => {
     expect(
       screen.getByRole("button", { name: "Attach a file" }),
     ).toBeDisabled();
+    // The whole bar is off with it: the text can take no edit now.
+    expect(screen.getByRole("button", { name: "Bold" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Heading" })).toBeDisabled();
     editor.dispatchEvent(carrying("paste", [png()]));
     const drop = carrying("drop", [png()]);
     editor.dispatchEvent(drop);

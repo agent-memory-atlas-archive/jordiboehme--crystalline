@@ -13,7 +13,7 @@ import type { ReactElement, ReactNode, Ref } from "react";
 import { DropdownMenu } from "radix-ui";
 import { Link } from "react-router";
 
-import { ITEM_CLASSES, MENU_CLASSES } from "./menu";
+import { ITEM_CLASSES, MENU_CLASSES, MENU_SEPARATOR } from "./menu";
 
 // What Print view prints, beside the menu that offers it. Handed out from
 // here so the reading pages load it with their actions rather than as a
@@ -122,9 +122,7 @@ export function ActionItem({
 }
 
 export function ActionSeparator(): ReactElement {
-  return (
-    <DropdownMenu.Separator className="my-1 h-px bg-slate-200 dark:bg-slate-700" />
-  );
+  return <DropdownMenu.Separator className={MENU_SEPARATOR} />;
 }
 
 /**

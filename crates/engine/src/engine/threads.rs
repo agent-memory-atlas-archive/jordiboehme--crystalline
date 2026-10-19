@@ -232,11 +232,53 @@ impl Engine {
                     EngineError::NotFound(format!("no reflection '{path}' in domain '{domain}'"))
                 })?;
                 let sections = r::split_sections(&page);
-                let section = r::find_section(&sections, key)
-                    .filter(|s| s.id.as_deref() != Some(r::TOP_SECTION) || key == r::TOP_SECTION)
-                    .ok_or_else(|| {
-                        EngineError::Invalid(format!("no section '{key}' in '{path}'"))
-                    })?;
+                let section = match r::resolve_section_key(&sections, key) {
+                    Ok(s) if s.id.as_deref() != Some(r::TOP_SECTION) || key == r::TOP_SECTION => s,
+                    Err(r::SectionKeyMiss::Ambiguous(headings)) => {
+                        // Headings typed in a plain editor have no id until
+                        // the page's next write through Crystalline.
+                        let shared: Vec<&r::Section> = sections
+                            .iter()
+                            .filter(|s| headings.contains(&s.heading))
+                            .collect();
+                        let idless: Vec<String> = shared
+                            .iter()
+                            .filter(|s| s.id.is_none())
+                            .map(|s| s.line.to_string())
+                            .collect();
+                        const BY_ID: &str = "open it by the section's id (read_reflection \
+                                             shows each id under its heading)";
+                        const GIVE_IDS: &str = "save or write the page once so Crystalline \
+                             gives each heading its id, then open the thread by the id (the \
+                             write's ids_assigned, or read_reflection under the heading)";
+                        let way = match idless.len() {
+                            0 => BY_ID.to_string(),
+                            n if n == shared.len() => {
+                                format!("none of them has an id yet: {GIVE_IDS}")
+                            }
+                            1 => format!(
+                                "the one at line {} has no id yet: {GIVE_IDS}; for the others, \
+                                 {BY_ID}",
+                                idless[0]
+                            ),
+                            _ => format!(
+                                "the ones at lines {} have no id yet: {GIVE_IDS}; for the \
+                                 others, {BY_ID}",
+                                idless.join(", ")
+                            ),
+                        };
+                        return Err(EngineError::Invalid(format!(
+                            "the heading '{key}' names {} sections in '{path}', so the thread \
+                             cannot tell which one it is on: {way}",
+                            headings.len()
+                        )));
+                    }
+                    _ => {
+                        return Err(EngineError::Invalid(format!(
+                            "no section '{key}' in '{path}'"
+                        )));
+                    }
+                };
                 // A heading a plain editor added has no id yet. A comment
                 // never rewrites the page (a reader may open a thread, and a
                 // rewrite would make a person's open editor stale), so the
@@ -294,7 +336,8 @@ impl Engine {
         undo.record(&threads_abs)?;
         undo.record(&doc_abs)?;
         let existing = read_opt(&threads_abs)?.unwrap_or_default();
-        write_file(&threads_abs, &th::open_thread(&existing, &thread))?;
+        let threads_file = th::open_thread(&existing, &thread);
+        write_file(&threads_abs, &threads_file)?;
         let mut document = document;
         // The thread and the page commit behind the host-lock fence: a host
         // that lost the lock since its gate keeps the comment in the kept
@@ -332,13 +375,7 @@ impl Engine {
         match target {
             ThreadTarget::Reflection { path } => {
                 self.mark_reflection_dirty(domain, BackupCause::Settled);
-                self.announce_reflection(
-                    domain,
-                    path,
-                    ReflectionChangeKind::Threads,
-                    None,
-                    change_label(&caller.scope),
-                );
+                self.announce_threads(domain, path, &threads_file, change_label(&caller.scope));
             }
         }
         Ok(match target {
@@ -383,6 +420,17 @@ impl Engine {
         };
         let file = read_opt(&threads_abs)?
             .ok_or_else(|| EngineError::NotFound(format!("no thread {id} here")))?;
+        // A person's thread is the person's to close: an agent's answer in a
+        // resolved thread is hidden from them until they ask to see it.
+        if kind == EntryKind::Resolve
+            && caller.author.agent
+            && th::parse_threads(&file)
+                .iter()
+                .find(|t| t.id == id)
+                .is_some_and(|t| !th::agent_may_resolve(t))
+        {
+            return Err(EngineError::Invalid(th::PERSON_RESOLVES.to_string()));
+        }
         let updated =
             th::append_entry(&file, id, &entry(kind, caller, text)).map_err(thread_error)?;
         let mut undo = DiskUndo::default();
@@ -418,13 +466,7 @@ impl Engine {
         match target {
             ThreadTarget::Reflection { path } => {
                 self.mark_reflection_dirty(domain, BackupCause::Settled);
-                self.announce_reflection(
-                    domain,
-                    path,
-                    ReflectionChangeKind::Threads,
-                    None,
-                    change_label(&caller.scope),
-                );
+                self.announce_threads(domain, path, &updated, change_label(&caller.scope));
             }
         }
         Ok(match target {

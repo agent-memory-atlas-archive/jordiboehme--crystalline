@@ -62,19 +62,43 @@ import {
   imageStyle,
   parseImageFragment,
 } from "../editor/imageFormat";
+import {
+  CALLOUT_KINDS,
+  REVEAL_EVENT,
+  remarkCallouts,
+} from "../markdown/callouts";
+import type { CalloutKind, RevealDetail } from "../markdown/callouts";
+import {
+  isStatusColour,
+  remarkCrystallineDirectives,
+  remarkStatusSyntax,
+} from "../markdown/directives";
+import {
+  remarkGithubMath,
+  remarkMath,
+  remarkMathOptions,
+} from "../markdown/math";
+import { SWATCH_CLASSES, colourOf } from "../markdown/swatch";
+import { dropHtmlComments } from "../markdown/htmlComments";
+import { keepWithNext } from "../markdown/keepWithNext";
+import { remarkTaskState } from "../markdown/taskState";
 import { printUrl } from "../printUrl";
 import { SOURCE_ATTR, spanPieces } from "../reflectionQuotes";
-import { isIdLine } from "../reflectionText";
-import { WIKILINK, referenceState } from "../wikilinks";
+import { WIKILINK, parseWikiTarget, referenceState } from "../wikilinks";
 import type { WikilinkResolution, WikilinkResolver } from "../wikilinks";
+import Callout from "./Callout";
+import CopyCode from "./CopyCode";
 import DiagramOverlay from "./DiagramOverlay";
 import DiagramToolbar from "./DiagramToolbar";
 import { imageFileName } from "./downloads";
 import { lazyPart } from "./lazyPart";
 import { Chip, FOCUS_RING } from "./primitives";
+import StatusLabel from "./StatusLabel";
+import { NotApplicableBox, TaskBox } from "./TaskBox";
 import { useSaid } from "./useSaid";
 
 const MermaidDiagram = lazyPart(() => import("./MermaidDiagram"));
+const MathPart = lazyPart(() => import("./MathPart"));
 
 /**
  * The renderer's own plugin-list type, taken from its props rather than from
@@ -82,6 +106,7 @@ const MermaidDiagram = lazyPart(() => import("./MermaidDiagram"));
  * package does not declare.
  */
 type RehypePlugins = ComponentProps<typeof ReactMarkdown>["rehypePlugins"];
+type RemarkPlugins = ComponentProps<typeof ReactMarkdown>["remarkPlugins"];
 
 /**
  * The frontmatter block at the top of every engram and every MANIFEST.
@@ -280,8 +305,7 @@ function element(resolution: WikilinkResolution, literal: string): HastNode {
  * continuation line) stays unstamped, and a selection that ends there becomes
  * a section comment rather than a guessed quote.
  *
- * A section id comment is dropped on the way: it is bookkeeping, and the
- * renderer would otherwise draw it as the text it was written as.
+ * A section id comment is gone by then (`dropHtmlComments`).
  */
 function sourceSpanStamp(source: string) {
   return function plugin() {
@@ -296,33 +320,31 @@ function stamp(node: HastNode, source: string): void {
   if (!node.children) {
     return;
   }
-  node.children = node.children
-    .filter((child) => !(child.type === "raw" && isIdLine(child.value ?? "")))
-    .flatMap((child) => {
-      if (child.type !== "text") {
-        stamp(child, source);
-        return [child];
-      }
-      const pieces = spanPieces(
-        source,
-        child.position?.start?.offset,
-        child.position?.end?.offset,
-        child.value ?? "",
-      );
-      if (pieces.length === 1 && pieces[0]?.base === null) {
-        return [child];
-      }
-      return pieces.map(({ value, base }) =>
-        base === null
-          ? { type: "text", value }
-          : {
-              type: "element",
-              tagName: "span",
-              properties: { [SOURCE_ATTR]: String(base) },
-              children: [{ type: "text", value }],
-            },
-      );
-    });
+  node.children = node.children.flatMap((child) => {
+    if (child.type !== "text") {
+      stamp(child, source);
+      return [child];
+    }
+    const pieces = spanPieces(
+      source,
+      child.position?.start?.offset,
+      child.position?.end?.offset,
+      child.value ?? "",
+    );
+    if (pieces.length === 1 && pieces[0]?.base === null) {
+      return [child];
+    }
+    return pieces.map(({ value, base }) =>
+      base === null
+        ? { type: "text", value }
+        : {
+            type: "element",
+            tagName: "span",
+            properties: { [SOURCE_ATTR]: String(base) },
+            children: [{ type: "text", value }],
+          },
+    );
+  });
 }
 
 /**
@@ -362,7 +384,7 @@ function codeSpanStamp(source: string) {
 
 /** Stamp one fence's text nodes at their offsets, or leave it as it is. */
 function stampFence(code: HastNode, source: string): void {
-  if (languageOf(code) === "mermaid") {
+  if (languageOf(code) === "mermaid" || languageOf(code) === "math") {
     return;
   }
   const start = code.position?.start?.offset;
@@ -464,6 +486,141 @@ function markFirstTitle() {
     };
     first(tree as HastNode);
   };
+}
+
+/** The offset of a task box's `[` in `shown`, as `remarkTaskState` stamps it. */
+const TASK_AT = "data-task-at";
+/** The words a task box is named by, as {@link taskBoxes} copies them. */
+const TASK_LABEL = "data-task-label";
+/** The element {@link taskBoxes} adds where a not-applicable box is drawn. */
+const TASK_NA_BOX = "data-task-box";
+
+/**
+ * An item's own words: its text without the lists nested in it, and a
+ * wikilink read as its target's words (the rewrite that draws the link runs
+ * later in the chain, so the brackets are still in the text here).
+ */
+function itemWords(node: HastNode): string {
+  return words(node).replace(
+    WIKILINK,
+    (_link, inner: string) => parseWikiTarget(inner).target,
+  );
+}
+
+function words(node: HastNode): string {
+  return (node.children ?? [])
+    .map((child) =>
+      child.type === "element" &&
+      (child.tagName === "ul" || child.tagName === "ol")
+        ? ""
+        : child.type === "element" && child.tagName === "p"
+          ? words(child)
+          : textOf(child),
+    )
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Hand every task box what it is drawn from: the item's words, which name
+ * it, and the offset `remarkTaskState` found for its `[`. The checkbox is
+ * GitHub's own `input`, which the converter puts first in the item, or first
+ * in the item's paragraph when the list is loose; a not-applicable item gets
+ * an element of its own in the same place. First in the chain, before the
+ * stamp wraps the words in spans.
+ */
+function taskBoxes() {
+  return function transform(tree: unknown) {
+    const walk = (node: HastNode): void => {
+      if (node.type === "element" && node.tagName === "li") {
+        const at = node.properties?.[TASK_AT];
+        const na = node.properties?.["data-task"] === "na";
+        if (na || isTaskItem(node)) {
+          const first = node.children?.find(
+            (child) => child.type === "element",
+          );
+          const holder = first?.tagName === "p" ? first : node;
+          const label = itemWords(node);
+          if (na) {
+            holder.children = [
+              {
+                type: "element",
+                tagName: "span",
+                properties: { [TASK_NA_BOX]: "na", [TASK_LABEL]: label },
+                children: [],
+              },
+              ...(holder.children ?? []),
+            ];
+          } else {
+            const input = (holder.children ?? []).find(
+              (child) => child.type === "element" && child.tagName === "input",
+            );
+            if (input !== undefined) {
+              input.properties = {
+                ...input.properties,
+                [TASK_LABEL]: label,
+                ...(typeof at === "string" ? { [TASK_AT]: at } : {}),
+              };
+            }
+          }
+        }
+      }
+      for (const child of node.children ?? []) {
+        walk(child);
+      }
+    };
+    walk(tree as HastNode);
+  };
+}
+
+/** Whether remark-gfm made this item a task item. */
+function isTaskItem(node: HastNode): boolean {
+  const names = node.properties?.className;
+  return Array.isArray(names) && names.includes("task-list-item");
+}
+
+/**
+ * What a task box may do here, handed down by context rather than through
+ * the component map, for the same reason as `TitleNoteContext`: a page's
+ * changing callback must not remount the document. Undefined, a box only
+ * shows its state, as it always did.
+ */
+interface TaskTick {
+  /** Flip the box whose `[` is at this offset into `shown`. Absent, nothing ticks. */
+  tick?: (at: number, next: "[ ]" | "[x]") => void;
+  /** Why nothing ticks, shown with every box. */
+  reason?: string;
+}
+
+const TaskTickContext = createContext<TaskTick | undefined>(undefined);
+
+/** One GitHub task box, wired to what the page allows. */
+function TaskInput({
+  checked,
+  at,
+  label,
+}: {
+  checked: boolean;
+  at: number | null;
+  label: string;
+}) {
+  const task = useContext(TaskTickContext);
+  const tick = task?.tick;
+  return (
+    <TaskBox
+      checked={checked}
+      label={label}
+      reason={task?.reason}
+      onToggle={
+        tick === undefined || at === null
+          ? undefined
+          : () => {
+              tick(at, checked ? "[ ]" : "[x]");
+            }
+      }
+    />
+  );
 }
 
 /** The source offset a stamped span carries, or undefined for any other span. */
@@ -590,6 +747,33 @@ function structuredBullet(children: ReactNode): ReactNode {
   return children;
 }
 
+/** The callout a component's props describe, or the element as it came. */
+function calloutOf(
+  props: Record<string, unknown>,
+  children: ReactNode,
+  tag: "aside" | "details",
+): ReactNode {
+  const kind = props["data-callout"];
+  if (
+    typeof kind !== "string" ||
+    !(CALLOUT_KINDS as readonly string[]).includes(kind)
+  ) {
+    const Tag = tag;
+    return <Tag>{children}</Tag>;
+  }
+  const title = props["data-title"];
+  const fold = props["data-fold"];
+  return (
+    <Callout
+      kind={kind as CalloutKind}
+      title={typeof title === "string" ? title : null}
+      fold={fold === "open" || fold === "closed" ? fold : null}
+    >
+      {children}
+    </Callout>
+  );
+}
+
 /**
  * How each element is drawn.
  *
@@ -609,19 +793,62 @@ const components: Components = {
   ol: ({ children }) => (
     <ol className="my-3 list-decimal pl-6 leading-relaxed">{children}</ol>
   ),
-  li: ({ children }) => <li className="my-1">{structuredBullet(children)}</li>,
-  span: ({ children, className, node }) =>
-    // Three sources make spans in this tree, all plugin-generated rather than
+  // The id is what a footnote reference jumps to. A task item draws its
+  // box where the bullet would be, so it has no bullet of its own.
+  // `data-short` from `keepWithNext`: an item the print sheet keeps whole.
+  li: ({ children, id, className, node, ...props }) => (
+    <li
+      id={id}
+      data-short={node?.properties["dataShort"] === undefined ? undefined : ""}
+      className={
+        className?.includes("task-list-item") === true ||
+        (props as Record<string, unknown>)["data-task"] === "na"
+          ? "my-1 list-none"
+          : "my-1"
+      }
+    >
+      {structuredBullet(children)}
+    </li>
+  ),
+  // Only GitHub's task boxes make an input here: raw HTML stays text.
+  input: ({ checked, type, ...props }) => {
+    if (type !== "checkbox") {
+      return null;
+    }
+    const extra = props as Record<string, unknown>;
+    const at = extra[TASK_AT];
+    const label = extra[TASK_LABEL];
+    return (
+      <TaskInput
+        checked={checked === true}
+        at={typeof at === "string" ? Number(at) : null}
+        label={typeof label === "string" ? label : ""}
+      />
+    );
+  },
+  span: ({ children, className, node, ...props }) => {
+    // Four sources make spans in this tree, all plugin-generated rather than
     // raw HTML an engram could write: the wikilink rewrite's own markers,
     // rehype-highlight's per-token spans inside a fenced code block (the
-    // `.hljs-string` etc. classes `index.css`'s syntax palette styles), and
-    // the source-span stamp. The wikilink case gets its own fixed look;
+    // `.hljs-string` etc. classes `index.css`'s syntax palette styles), the
+    // source-span stamp, and a status label from the directives plugin. A
+    // status label and the wikilink case get their own fixed look;
     // everything else has to keep whatever class it arrived with; passing an
     // incoming `className` through unconditionally, rather than dropping it,
     // is what makes a code fence render in color instead of the page's plain
     // text color. A stamp keeps its offset, and a span without one renders
     // exactly as before, because an undefined attribute is never written.
-    wikilinkKind(node) === "unresolved" ? (
+    const status = (props as Record<string, unknown>)["data-status"];
+    if ((props as Record<string, unknown>)[TASK_NA_BOX] === "na") {
+      const label = (props as Record<string, unknown>)[TASK_LABEL];
+      return (
+        <NotApplicableBox label={typeof label === "string" ? label : ""} />
+      );
+    }
+    if (isStatusColour(status)) {
+      return <StatusLabel colour={status}>{children}</StatusLabel>;
+    }
+    return wikilinkKind(node) === "unresolved" ? (
       <span
         title="not resolved"
         className="underline decoration-dotted underline-offset-2 opacity-70"
@@ -632,18 +859,52 @@ const components: Components = {
       <span className={className} data-src={sourceStamp(node)}>
         {children}
       </span>
-    ),
+    );
+  },
   blockquote: ({ children }) => (
     <blockquote className="my-3 border-l-2 border-slate-300 pl-4 text-slate-600 dark:border-slate-700 dark:text-slate-300">
       {children}
     </blockquote>
   ),
+  // A callout, named by `remarkCallouts`; nothing else in this tree makes an
+  // `aside` or a `details`, as raw HTML stays text.
+  aside: ({ children, ...props }) => calloutOf(props, children, "aside"),
+  details: ({ children, ...props }) => calloutOf(props, children, "details"),
+  // The reference mark: a small raised accent link, as `a` already draws it.
+  sup: ({ children }) => (
+    <sup className="text-[0.75em] leading-none [&_a]:no-underline">
+      {children}
+    </sup>
+  ),
+  // The notes at the end: a hairline above, meta size, the label in the
+  // section-label style (see `heading`).
+  // The converter's notes section is the only `section` a text can hold
+  // (raw HTML stays literal); its hast node says so with `dataFootnotes`.
+  section: ({ children, node }) =>
+    node?.properties["dataFootnotes"] !== true ? (
+      <section>{children}</section>
+    ) : (
+      <section
+        data-footnotes=""
+        className="footnotes mt-10 border-t border-hair pt-3 text-[13px] text-ink-3 [&_ol]:my-1 [&_p]:my-1"
+      >
+        {children}
+      </section>
+    ),
   hr: () => <hr className="my-6 border-slate-200 dark:border-slate-800" />,
-  table: ({ children }) => (
+  table: ({ children, node }) => (
     // Wide tables scroll inside themselves rather than widening the page, and
     // keep the full column rather than the reading measure.
     <div className="breakout my-4 overflow-x-auto">
-      <table className="w-full border-collapse text-sm">{children}</table>
+      <table
+        // Short enough to keep on one page in print (`keepWithNext`).
+        data-short={
+          node?.properties["dataShort"] === undefined ? undefined : ""
+        }
+        className="w-full border-collapse text-sm"
+      >
+        {children}
+      </table>
     </div>
   ),
   // The colons in a table's delimiter row are the only way markdown can say
@@ -670,19 +931,42 @@ const components: Components = {
       {children}
     </td>
   ),
-  code: ({ children, className }) => {
+  code: ({ children, className, node }) => {
     // A fenced block carries a language class or the highlighter's own, and
     // sits inside a `pre` that is already the box. Only the inline kind gets
     // drawn as a chip.
+    if (typeof className === "string" && className.includes("math-inline")) {
+      const tex = textOf(node as HastNode | undefined);
+      return (
+        <MathPart fallback={<code>{tex}</code>} tex={tex} display={false} />
+      );
+    }
     const fenced =
       typeof className === "string" &&
       (className.includes("language-") || className.includes("hljs"));
-    return fenced ? (
-      <code className={className}>{children}</code>
-    ) : (
+    if (fenced) {
+      return <code className={className}>{children}</code>;
+    }
+    // A colour code alone in the span gets a swatch of that colour before it.
+    // Read from the node, as a stamped span wraps the text in its own span.
+    const colour = colourOf(textOf(node as HastNode | undefined));
+    const chip = (
       <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.9em] dark:bg-slate-800">
         {children}
       </code>
+    );
+    return colour === null ? (
+      chip
+    ) : (
+      <>
+        <span
+          data-swatch
+          aria-hidden="true"
+          style={{ background: colour }}
+          className={SWATCH_CLASSES}
+        />
+        {chip}
+      </>
     );
   },
 };
@@ -700,6 +984,17 @@ function preFor(
   return ({ children, node }) => {
     const fence = (node as HastNode | undefined)?.children?.[0];
     const source = textOf(fence);
+    if (languageOf(fence) === "math" && source.trim() !== "") {
+      return (
+        <div className="breakout my-4 overflow-x-auto">
+          <MathPart
+            fallback={<code>{source}</code>}
+            tex={source}
+            display={true}
+          />
+        </div>
+      );
+    }
     if (languageOf(fence) === "mermaid" && source.trim() !== "") {
       return (
         <figure
@@ -715,9 +1010,12 @@ function preFor(
       );
     }
     return (
-      <pre className="breakout my-4 overflow-x-auto rounded bg-slate-100 p-3 text-sm dark:bg-slate-900">
-        {children}
-      </pre>
+      <div className="group breakout relative my-4">
+        <pre className="overflow-x-auto rounded bg-slate-100 p-3 text-sm dark:bg-slate-900">
+          {children}
+        </pre>
+        <CopyCode text={source.replace(/\n$/, "")} />
+      </div>
     );
   };
 }
@@ -783,8 +1081,11 @@ function MarkdownAnchor({
   href,
   node,
   assets,
+  id,
 }: {
   children?: ReactNode;
+  /** A footnote reference carries the id its note links back to. */
+  id?: string | undefined;
   /** Undefined is spelled out: react-markdown hands a link with no target on. */
   href?: string | undefined;
   node?: unknown;
@@ -819,6 +1120,7 @@ function MarkdownAnchor({
   // `#heading` and `../other` go where the author meant (`documentHref`).
   return (
     <a
+      id={id}
       href={documentHref(href)}
       className={LINK_CLASSES}
       {...(outward ? { target: "_blank", rel: "noreferrer" } : {})}
@@ -1135,17 +1437,19 @@ function heading(
   anchored: boolean,
 ) {
   const Tag = `h${level}` as const;
-  const className = `group scroll-mt-16 ${sizes}`.trimEnd();
   return function Heading({
     children,
     id,
+    className: given,
     ...rest
   }: {
     children?: ReactNode | undefined;
     id?: string | undefined;
+    className?: string | undefined;
     [FIRST_TITLE_PROP]?: string | undefined;
     [FIRST_HEADING_PROP]?: string | undefined;
   }) {
+    const className = `group scroll-mt-16 ${sizes}`.trimEnd();
     // Generated rather than derived from the slug: a heading literally called
     // "Auth text" would collide with a `${slug}-text` spelling, and two
     // elements sharing an id is a reference pointing at whichever came first.
@@ -1167,6 +1471,18 @@ function heading(
     // printed title block already carries.
     const firstTitle = rest[FIRST_TITLE_PROP] === "true" ? "" : undefined;
     const aside = useContext(HeadingAsideContext);
+    // The notes section's own label, which the converter marks screen-reader
+    // only: shown here in the section-label style, with no link symbol. Told
+    // apart by that class, which no heading in the text can carry (raw HTML
+    // stays literal), so a heading the writer called "Footnote label" stays
+    // a heading.
+    if (level === 2 && given?.split(/\s+/).includes("sr-only") === true) {
+      return (
+        <h2 className="mb-1 text-caption font-semibold tracking-wide text-ink-3 uppercase">
+          {children}
+        </h2>
+      );
+    }
     // The control is no part of the heading's words either: unstamped,
     // unselectable, passed over by the anchoring, and left out of the
     // heading's name by naming it from the span around its text.
@@ -1246,10 +1562,10 @@ function heading(
  * body's own size, weight and spacing. Nothing about them moves here.
  */
 const HEADING_SIZES = [
-  "mt-6 mb-3 text-display first:mt-0",
-  "mt-[38px] mb-3 text-prose-h2 first:mt-0",
-  "mt-6 mb-2 text-prose-h3 first:mt-0",
-  "mt-4 mb-2 font-semibold first:mt-0",
+  "mt-6 mb-3 text-display [&:first-child:not([data-keep]>*)]:mt-0 [.measured>[data-keep]:first-child>&:first-child]:mt-0",
+  "mt-[38px] mb-3 text-prose-h2 [&:first-child:not([data-keep]>*)]:mt-0 [.measured>[data-keep]:first-child>&:first-child]:mt-0",
+  "mt-6 mb-2 text-prose-h3 [&:first-child:not([data-keep]>*)]:mt-0 [.measured>[data-keep]:first-child>&:first-child]:mt-0",
+  "mt-4 mb-2 font-semibold [&:first-child:not([data-keep]>*)]:mt-0 [.measured>[data-keep]:first-child>&:first-child]:mt-0",
   "",
   "",
 ] as const;
@@ -1274,9 +1590,10 @@ function componentsFor(
     h5: heading(5, HEADING_SIZES[4], anchored),
     h6: heading(6, HEADING_SIZES[5], anchored),
     pre: preFor(documentName),
-    a: ({ children, href, node }) => (
+    a: ({ children, href, node, id }) => (
       <MarkdownAnchor
         href={href}
+        id={id}
         node={node}
         {...(assets === undefined ? {} : { assets })}
       >
@@ -1291,6 +1608,42 @@ function componentsFor(
       />
     ),
   };
+}
+
+/** Open every folded callout around `target`, innermost first. */
+function revealIn(root: HTMLElement | null, target: Element | null): void {
+  if (root === null || target === null || !root.contains(target)) {
+    return;
+  }
+  for (
+    let fold = target.closest("details");
+    fold !== null && root.contains(fold);
+    fold = fold.parentElement?.closest("details") ?? null
+  ) {
+    fold.open = true;
+  }
+}
+
+/**
+ * Open the folds around the element a location fragment (`#id`) names.
+ * True when that element is in `root`.
+ */
+function revealFragment(root: HTMLElement | null, fragment: string): boolean {
+  if (root === null || fragment.length < 2) {
+    return false;
+  }
+  let id = fragment.slice(1);
+  try {
+    id = decodeURIComponent(id);
+  } catch {
+    // A hash that is not encoded stays as it is.
+  }
+  const target = document.getElementById(id);
+  if (target === null || !root.contains(target)) {
+    return false;
+  }
+  revealIn(root, target);
+  return true;
 }
 
 /** A diagram's source, which is what shows while the renderer is on its way. */
@@ -1313,8 +1666,21 @@ export default function MarkdownBody({
   sourceSpans,
   titleNote,
   headingAside,
+  onTick,
+  canTick,
 }: {
   source: string;
+  /**
+   * Flip one task box: `offset` is the `[` of its `[ ]` or `[x]` in
+   * `source` (the whole file, frontmatter and folded title counted), `next`
+   * what it becomes. Absent, a box only shows its state.
+   */
+  onTick?: (offset: number, next: "[ ]" | "[x]") => void;
+  /**
+   * Whether the boxes tick: true, or a sentence saying why not, shown with
+   * every box. Absent or false, they do not tick and say nothing.
+   */
+  canTick?: boolean | string;
   /**
    * A small control drawn at the right end of the document's first heading
    * and counted as no part of it (see `HeadingAsideContext`).
@@ -1358,10 +1724,29 @@ export default function MarkdownBody({
   sourceSpans?: boolean;
 }) {
   const anchored = anchors !== undefined;
+  // Footnote ids are unique per document on the page: a reflection page draws
+  // one document per section, and each may use `[^1]`.
+  const noteScope = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   // What the parser is handed, and so what every stamped offset counts into.
   const shown = foldLeadingTitle(source.replace(FRONTMATTER, ""), foldTitle);
+  // Both cuts above take a prefix and nothing else (each is anchored at the
+  // start), so an offset into `shown` is this much short of one into `source`.
+  const dropped = source.length - shown.length;
+  const taskTick = useMemo<TaskTick | undefined>(() => {
+    if (onTick === undefined) {
+      return undefined;
+    }
+    if (canTick === true) {
+      return {
+        tick: (at, next) => {
+          onTick(at + dropped, next);
+        },
+      };
+    }
+    return typeof canTick === "string" ? { reason: canTick } : {};
+  }, [onTick, canTick, dropped]);
   const rootRef = useRef<HTMLDivElement>(null);
-  const { hash } = useLocation();
+  const { hash, pathname } = useLocation();
   // Memoized on its inputs so the component map below is too: a new map
   // every render would remount every image and close an open full window.
   const resolver = useMemo(
@@ -1387,16 +1772,46 @@ export default function MarkdownBody({
     () => componentsFor(resolver, documentName, anchored),
     [resolver, documentName, anchored],
   );
+  // The markdown extensions, in the order they run:
+  // 1. GitHub's tables, task lists and footnotes, the base the rest reads.
+  // 2. The status label syntax (only `:status[` is a directive).
+  // 3. The transform that names the labels; it reads `shown` for the brace
+  //    text, so it runs on the tree the syntax just built.
+  // 4. Math (`$$...$$` and the ```math fence), a syntax of its own.
+  // 5. GitHub's inline math (`` $`...`$ ``), which reads the inline code
+  //    nodes the parser built and checks the `$` beside them in the source.
+  // 6. The callouts, which read the quotes the parser built and strip the
+  //    head paragraph's first line.
+  // 7. The task state (`[~]`), last: a callout's first line may hold the
+  //    words a box would be read from, so the head is cut first.
+  const remarkPlugins = useMemo<RemarkPlugins>(
+    () => [
+      remarkGfm,
+      remarkStatusSyntax,
+      remarkCrystallineDirectives(shown),
+      [remarkMath, remarkMathOptions],
+      remarkGithubMath,
+      remarkCallouts,
+      remarkTaskState,
+    ],
+    [shown],
+  );
   const rehypePlugins = useMemo<RehypePlugins>(
     () => [
-      // First, so the positions it reads are the parser's own.
+      // HTML comments (a section's id line, a `<!-- sources: ... -->` note)
+      // are for whoever edits the file: drawn as text they would show on
+      // the page. Dropping a node moves no position the next steps read.
+      dropHtmlComments,
+      // First of the rest, so the positions it reads are the parser's own.
       // Always, so the plugin chain never depends on the note's text: a
       // changing note re-renders its own line and remounts nothing.
       markFirstTitle,
+      // Before the stamp, so it reads the item's words as plain text.
+      taskBoxes,
       ...(sourceSpans ? [sourceSpanStamp(shown)] : []),
       // `plainText` keeps the highlighter's hands off a mermaid fence, whose
       // text this file reads back out to draw the diagram from.
-      [rehypeHighlight, { plainText: ["mermaid"] }],
+      [rehypeHighlight, { plainText: ["mermaid", "math"] }],
       // After the highlighter, which rebuilds a fence's children.
       ...(sourceSpans ? [codeSpanStamp(shown)] : []),
       // After the highlighter, so the headings it may have rewritten are
@@ -1411,9 +1826,56 @@ export default function MarkdownBody({
       // passes no resolver, and `selectionAnchor` and `domRange` refuse such
       // a span rather than map through it (`reflectionQuotes.ts`).
       ...(wikilinks ? [wikilinkRewrite(wikilinks)] : []),
+      // Last: a heading and the block after it in one wrapper that may not
+      // break on paper and draws no box on screen. After everything that
+      // reads a heading or its neighbours.
+      keepWithNext,
     ],
     [anchored, wikilinks, sourceSpans, shown],
   );
+  // A folded callout opens when what a reader is sent to is inside it: the
+  // fragment in the location (the router's, and the window's for a hash set
+  // from outside the router), or an element another part of the page asks to
+  // show (`REVEAL_EVENT`, from the threads beside a Reflection page). Before
+  // the scroll below, which cannot scroll to what a closed fold hides.
+  // The location's fragment opens its fold once: a source change re-runs
+  // this only until the target exists, so a fold the reader closed again
+  // stays closed while the text changes underneath.
+  // Keyed by the document too: a link to the same fragment on another
+  // document reuses this renderer, and its fold must open. The key is the
+  // document drawn (its page address), not the router's path: while the next
+  // page loads, the router already names it and this still draws the last
+  // one, whose fold the reader may have closed.
+  const revealedHash = useRef<string | null>(null);
+  const shownPage = anchors?.pageUrl ?? pathname;
+  useEffect(() => {
+    const at = `${shownPage}${hash}`;
+    if (revealedHash.current === at) {
+      return;
+    }
+    if (revealFragment(rootRef.current, hash)) {
+      revealedHash.current = at;
+    }
+  }, [hash, shownPage, source]);
+  useEffect(() => {
+    const root = rootRef.current;
+    const onHash = () => {
+      revealFragment(root, window.location.hash);
+    };
+    const onReveal = (event: Event) => {
+      const detail = (event as CustomEvent<RevealDetail | undefined>).detail;
+      const target =
+        detail?.target ??
+        (event.target instanceof Element ? event.target : null);
+      revealIn(root, target);
+    };
+    window.addEventListener("hashchange", onHash);
+    root?.addEventListener(REVEAL_EVENT, onReveal);
+    return () => {
+      window.removeEventListener("hashchange", onHash);
+      root?.removeEventListener(REVEAL_EVENT, onReveal);
+    };
+  }, []);
   // Arriving at a section: scroll it into view and point it out for a moment.
   // It runs on the hash rather than on a navigation, which is what makes a
   // click on a link symbol behave exactly like opening the URL it copied, and
@@ -1461,10 +1923,11 @@ export default function MarkdownBody({
   }, [anchored, hash, source]);
   const rendered = (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={remarkPlugins}
       rehypePlugins={rehypePlugins}
       components={componentMap}
       urlTransform={urlTransform}
+      remarkRehypeOptions={{ clobberPrefix: `user-content-${noteScope}-` }}
     >
       {shown}
     </ReactMarkdown>
@@ -1479,14 +1942,16 @@ export default function MarkdownBody({
     <div ref={rootRef} className="measured text-body">
       <TitleNoteContext.Provider value={titleNote}>
         <HeadingAsideContext.Provider value={headingAside}>
-          {anchors ? (
-            <SectionAnchorProvider pageUrl={anchors.pageUrl}>
-              {rendered}
-              <SectionLinkStatus />
-            </SectionAnchorProvider>
-          ) : (
-            rendered
-          )}
+          <TaskTickContext.Provider value={taskTick}>
+            {anchors ? (
+              <SectionAnchorProvider pageUrl={anchors.pageUrl}>
+                {rendered}
+                <SectionLinkStatus />
+              </SectionAnchorProvider>
+            ) : (
+              rendered
+            )}
+          </TaskTickContext.Provider>
         </HeadingAsideContext.Provider>
       </TitleNoteContext.Provider>
     </div>

@@ -528,6 +528,13 @@ impl Engine {
             receipt["notices"] = json!(notices);
         }
         note_domain_names_normalized(&mut receipt, domain_names_normalized);
+        // A MANIFEST gets `manifest_findings` too: Fluid renders it on the
+        // domain home, so its dialect reads as an engram's does.
+        note_markdown_findings(
+            &mut receipt,
+            crystalline_core::lint_engram_source(&markdown),
+            domain_verify_config(&source).as_ref(),
+        );
 
         // **The live arm, and it stands ahead of every arm that writes**, the
         // way the edit's does (`Engine::apply_source_edit_staged`). While a

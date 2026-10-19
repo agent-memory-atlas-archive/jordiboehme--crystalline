@@ -675,7 +675,8 @@ describe("the Reflection home", () => {
               path: "guides/deploying.md",
               title: "Deploying",
               section: "7f3a9c2e",
-              heading: "Night deploys",
+              // A comment in the heading is a note for editors, never shown.
+              heading: "Night deploys <!-- checked in March -->",
               // The shipped snippet (core Task 30) carries no heading line;
               // an id line is stripped anyway, as defence.
               snippet: "Deploys run at night.\n<!-- r:0b1c2d3e -->",
@@ -711,6 +712,7 @@ describe("the Reflection home", () => {
       ),
     ).toBeVisible();
     expect(screen.queryByText(/r:0b1c2d3e/)).toBeNull();
+    expect(screen.queryByText(/checked in March/)).toBeNull();
   });
 
   it("links a hit on the intro to the page's top and pages through a long answer", async () => {

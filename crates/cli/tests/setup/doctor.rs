@@ -3312,10 +3312,8 @@ fn a_read_only_instance_reports_the_rows_and_collects_none_of_them() {
 }
 
 /// Rewind the receipt so it reads as written by an older release that did
-/// not know the newest managed skill: the row version goes to 0.0.1 and the
-/// skill's record is dropped. Returns the name of a skill whose `since` is
-/// newer than that, taken from the receipt's own list so the test follows
-/// the shipped set.
+/// not know `skill`: the row version goes to 0.0.1, older than every
+/// shipped skill's `since`, and the skill's record is dropped.
 #[cfg(unix)]
 fn age_receipt(state_dir: &Path, skill: &str) {
     let path = state_dir.join("installs.json");
@@ -3335,7 +3333,8 @@ fn age_receipt(state_dir: &Path, skill: &str) {
 #[test]
 #[cfg(unix)]
 fn a_new_managed_skill_is_pending_only_for_a_row_that_installs_skills() {
-    let skill = "crystalline-provisioning";
+    // The newest managed skill, the one an upgrade really adds.
+    let skill = "crystalline-presentation";
     for (flags, pending) in [
         (&["--skip-mcp"][..], true),
         (&["--skip-mcp", "--skip-skills"][..], false),

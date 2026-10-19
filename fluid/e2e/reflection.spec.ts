@@ -24,7 +24,7 @@
  * e2e/reflection.spec.ts`).
  */
 
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
@@ -41,6 +41,8 @@ const DOMAIN = process.env.FLUID_E2E_REFLECTION_DOMAIN ?? "smoke-pages";
  * done with it by then, and nothing after this file reads it.
  */
 const OFF_DOMAIN = process.env.FLUID_E2E_PRIVATE_DOMAIN ?? "smoke-vault";
+/** The engram domain the welcome page cites a source from (its fixture names it). */
+const ENGRAM_DOMAIN = process.env.FLUID_E2E_DOMAIN ?? "fluid-smoke";
 // `run-smoke.sh` exports it; empty unless the daemon serves under a prefix.
 const BASE_PATH = process.env.FLUID_E2E_BASE_PATH ?? "";
 
@@ -121,6 +123,25 @@ test.describe.serial("the Reflection journeys", () => {
       .getByRole("button", { name: /^\d+ sources? for Night deploys$/ })
       .click();
     await expect(page.getByText("missing", { exact: true })).toBeVisible();
+    // A source of another domain links into that domain and names it.
+    const foreign = page.getByRole("link", { name: "Tide Tables" });
+    await expect(foreign).toHaveAttribute(
+      "href",
+      new RegExp(`/d/${ENGRAM_DOMAIN}/e/tide-tables$`),
+    );
+    await expect(foreign.locator("xpath=..")).toContainText(
+      `Tide Tables in domain ${ENGRAM_DOMAIN}`,
+    );
+    // On a phone, in light and in dark, the list with the marker fits.
+    await page.setViewportSize({ width: 390, height: 844 });
+    for (const colorScheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme });
+      await expect(foreign).toBeVisible();
+      const box = await foreign.locator("xpath=ancestor::ul[1]").boundingBox();
+      expect(box).not.toBeNull();
+      expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
+      expect(box?.x ?? -1).toBeGreaterThanOrEqual(0);
+    }
   });
 
   test("a curator writes the pact in the live editor", async ({ page }) => {
@@ -234,6 +255,7 @@ test.describe.serial("the Reflection journeys", () => {
       page.getByRole("button", { name: /^\d+ sources? for / }),
     ).toHaveCount(0);
     expect(await page.content()).not.toContain("notes/smoke-source");
+    expect(await page.content()).not.toContain("tide-tables");
     // Select "Deploys run at night" the way a drag would leave it. The
     // paragraph's first child is the stamped span, whose first child is the
     // text node.
@@ -469,6 +491,13 @@ test.describe.serial("the Reflection journeys", () => {
     const field = page.getByRole("textbox", { name: "Your comment" });
     await expect(field).toBeFocused();
     await page.keyboard.type("Which batch window?");
+    // The Label menu stands left of the send button.
+    await page.keyboard.press("Tab");
+    await expect(
+      page
+        .getByRole("form", { name: "New comment" })
+        .getByRole("button", { name: "Label", exact: true }),
+    ).toBeFocused();
     await page.keyboard.press("Tab");
     const post = page
       .getByRole("form", { name: "New comment" })
@@ -495,6 +524,135 @@ test.describe.serial("the Reflection journeys", () => {
     await added.getByRole("textbox", { name: "Outcome" }).fill("Answered.");
     await added.getByRole("button", { name: "Resolve", exact: true }).click();
     await expect(added).toHaveCount(0);
+  });
+
+  test("a reader labels a comment from the menu or by typing, and filters to blocking threads", async ({
+    page,
+  }) => {
+    // On a phone first: the Label menu opens inside the sheet and fits.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await signIn(page, USER, PASSWORD);
+    await page.goto(WELCOME);
+    const passage = page.getByText(
+      "Deploys run at night, after the batch window.",
+    );
+    await expect(passage).toBeVisible();
+    const selectWords = (words: string) =>
+      passage.evaluate((el, phrase) => {
+        const text = el.firstChild?.firstChild ?? el.firstChild;
+        if (text === null || text === undefined) {
+          throw new Error("no text node");
+        }
+        const start = (text.textContent ?? "").indexOf(phrase);
+        const range = document.createRange();
+        range.setStart(text, start);
+        range.setEnd(text, start + phrase.length);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }, words);
+    await selectWords("after the batch window");
+    await page.getByRole("button", { name: "Show 1 thread" }).click();
+    const sheet = page.getByRole("dialog", { name: "Threads" });
+    await sheet.getByRole("button", { name: "Comment", exact: true }).click();
+    const form = sheet.getByRole("form", { name: "New comment" });
+    await form.getByRole("button", { name: "Label", exact: true }).click();
+    const menu = page.getByRole("menu");
+    await expect(menu).toBeVisible();
+    const box = await menu.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box?.x ?? -1).toBeGreaterThanOrEqual(0);
+    expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
+    await menu.getByRole("menuitemradio", { name: /^question/ }).click();
+    await menu.getByRole("menuitemcheckbox", { name: /^non-blocking/ }).click();
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    const field = form.getByRole("textbox", { name: "Your comment" });
+    await expect(field).toBeFocused();
+    await expect(
+      form.getByRole("button", { name: "Remove the label" }),
+    ).toBeVisible();
+    await field.fill("Which batch window?");
+    await form.getByRole("button", { name: "Comment", exact: true }).click();
+    const asked = sheet
+      .getByRole("article", { name: "Thread on Night deploys" })
+      .filter({ hasText: "Which batch window?" });
+    const pill = asked.locator("[data-label-pill]");
+    await expect(pill).toContainText("question");
+    await expect(pill).toContainText("non-blocking");
+    await page.keyboard.press("Escape");
+    await expect(sheet).toHaveCount(0);
+
+    // Beside the page: the exact head typed at the start becomes the chip.
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const threads = page.getByRole("complementary", { name: "Threads" });
+    await selectWords("Deploys run at night");
+    await threads.getByRole("button", { name: "Comment", exact: true }).click();
+    const typed = page.getByRole("form", { name: "New comment" });
+    const words = typed.getByRole("textbox", { name: "Your comment" });
+    await words.pressSequentially("issue (blocking): The batch moved.");
+    await expect(words).toHaveValue("The batch moved.");
+    await expect(
+      typed.getByRole("button", { name: "Remove the label" }),
+    ).toBeVisible();
+    await typed.getByRole("button", { name: "Comment", exact: true }).click();
+    const blocking = threads
+      .getByRole("article", { name: "Thread on Night deploys" })
+      .filter({ hasText: "The batch moved." });
+    await expect(blocking.locator("[data-label-pill]")).toContainText("issue");
+    await expect(
+      page.getByRole("article", { name: "Thread on Night deploys" }),
+    ).toHaveCount(3);
+
+    // Blocking only: the other threads leave the list until it is off.
+    const only = threads.getByRole("switch", {
+      name: "Show blocking threads only",
+    });
+    await only.click();
+    await expect(
+      page.getByRole("article", { name: "Thread on Night deploys" }),
+    ).toHaveCount(1);
+    await expect(blocking).toBeVisible();
+    await only.click();
+    await expect(
+      page.getByRole("article", { name: "Thread on Night deploys" }),
+    ).toHaveCount(3);
+
+    // Resolved again, so the journeys after this one see one open thread.
+    const asked2 = threads
+      .getByRole("article", { name: "Thread on Night deploys" })
+      .filter({ hasText: "Which batch window?" });
+    for (const added of [blocking, asked2]) {
+      await added.getByRole("button", { name: "Resolve", exact: true }).click();
+      await added.getByRole("textbox", { name: "Outcome" }).fill("Answered.");
+      await added.getByRole("button", { name: "Resolve", exact: true }).click();
+      await expect(added).toHaveCount(0);
+    }
+    await expect(only).toHaveCount(0);
+  });
+
+  test("the quote highlight paints in light and in dark", async ({ page }) => {
+    await signIn(page, USER, PASSWORD);
+    for (const scheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme: scheme });
+      await page.goto(WELCOME);
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => CSS.highlights.get("reflection-quote")?.size ?? 0,
+          ),
+        )
+        .toBeGreaterThan(0);
+      // What the stylesheet paints for `::highlight(reflection-quote)`: the
+      // passage with the quotes registered differs from the same passage
+      // with them taken away.
+      const passage = page.getByText(
+        "Deploys run at night, after the batch window.",
+      );
+      const painted = await passage.screenshot();
+      await page.evaluate(() => CSS.highlights.delete("reflection-quote"));
+      expect(painted.equals(await passage.screenshot())).toBe(false);
+    }
   });
 
   test("at 1100 wide the threads are a sheet too, beside the sidebar", async ({
@@ -738,6 +896,29 @@ test.describe.serial("the Reflection journeys", () => {
     ).toBeVisible();
   });
 
+  test("a thread an agent answered waits for the person who opened it, at 390 in light and dark", async ({
+    page,
+  }) => {
+    await signIn(page, USER, PASSWORD);
+    await page.setViewportSize({ width: 390, height: 844 });
+    for (const scheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme: scheme });
+      await page.goto(`${HOME}/guides/diagram.md`);
+      await page.getByRole("button", { name: "Show 1 thread" }).click();
+      const card = page.getByRole("article", { name: "Thread on Old diagram" });
+      // Open, so it shows without Show resolved.
+      const cue = card.getByText("Answered, waiting for you");
+      await expect(cue).toBeVisible();
+      const box = await cue.boundingBox();
+      expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
+      const colour = await cue.evaluate((el) => getComputedStyle(el).color);
+      const background = await page.evaluate(
+        () => getComputedStyle(document.body).backgroundColor,
+      );
+      expect(colour).not.toBe(background);
+    }
+  });
+
   test("a page refuses to show an engram's file", async ({ page }) => {
     await signIn(page, USER, PASSWORD);
     await page.goto(`${HOME}/guides/diagram.md`);
@@ -750,6 +931,27 @@ test.describe.serial("the Reflection journeys", () => {
       page.getByRole("img", { name: "Old harbor diagram" }),
     ).toHaveCount(0);
     await expect(page.locator('img[src*="old-harbor"]')).toHaveCount(0);
+  });
+
+  test("a comment written to the threads file on disk shows on the open page", async ({
+    page,
+  }) => {
+    // `run-smoke.sh` exports where the daemon's copy of the fixture lives.
+    const root = process.env.FLUID_E2E_REFLECTION_ROOT;
+    test.skip(!root, "run through run-smoke.sh, which names the domain root");
+    await signIn(page, USER, PASSWORD);
+    await page.goto(`${HOME}/guides/diagram.md`);
+    const card = page.getByRole("article", { name: "Thread on Old diagram" });
+    await expect(card).toContainText("It is on the welcome page now.");
+    // Another process appends to the file, as an agent outside the daemon
+    // or a pull would. No reload: the change stream brings it.
+    appendFileSync(
+      `${root}/reflections/guides/diagram.threads.md`,
+      "- 2026-10-19T09:00:00Z, comment by scribe (agent): The legend moved under the picture.\n",
+    );
+    await expect(card).toContainText("The legend moved under the picture.", {
+      timeout: 10_000,
+    });
   });
 
   test("the domain policies card turns a Reflection on", async ({ page }) => {

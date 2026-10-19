@@ -46,6 +46,17 @@ import {
   userFixture,
 } from "../test/harness";
 
+// A tick whose box is no longer where the page drew it: `refuse` makes the
+// next `tickAt` answer null, the way an engram that moved underneath does.
+const tickControl = vi.hoisted(() => ({ refuse: false }));
+vi.mock("../taskTick", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../taskTick")>();
+  return {
+    ...actual,
+    tickAt: (...args: Parameters<typeof actual.tickAt>) =>
+      tickControl.refuse ? null : actual.tickAt(...args),
+  };
+});
 vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
   return { ...actual, api: vi.fn(), setCsrfToken: vi.fn() };
@@ -299,6 +310,114 @@ describe("the engram page", () => {
         "its owner switches read_only off in the domain policies",
       ),
     ).not.toBeInTheDocument();
+  });
+
+  describe("the outline of a long page", () => {
+    const LONG = `${BODY}\n## Setup\n\ntext\n\n### Install\n\ntext\n\n## Usage\n\ntext\n\n## Limits\n\ntext\n`;
+    const HREFS = ["#setup", "#install", "#usage", "#limits"];
+
+    /** A window of this many rem: answers min-width queries by it. */
+    function stubWidth(rem: number) {
+      Object.defineProperty(window, "matchMedia", {
+        configurable: true,
+        value: (query: string) => {
+          const min = /min-width:\s*([\d.]+)rem/.exec(query);
+          return {
+            matches: min ? rem >= Number(min[1]) : false,
+            media: query,
+            addEventListener: () => undefined,
+            removeEventListener: () => undefined,
+          };
+        },
+      });
+    }
+    afterEach(() => {
+      Reflect.deleteProperty(window, "matchMedia");
+    });
+
+    function hrefs(nav: HTMLElement) {
+      return Array.from(nav.querySelectorAll("a")).map((a) =>
+        a.getAttribute("href"),
+      );
+    }
+
+    it("leads the rail from lg up", async () => {
+      stubWidth(80);
+      serve({
+        "/domains/eng/engrams/alpha": () => detailResponse({ content: LONG }),
+      });
+      renderApp("/d/eng/e/alpha");
+      const nav = await screen.findByRole("navigation", {
+        name: "On this page",
+      });
+      expect(hrefs(nav)).toEqual(HREFS);
+      expect(nav.closest("aside")).not.toBeNull();
+    });
+
+    it("is a collapsed disclosure over the body between md and lg", async () => {
+      stubWidth(52);
+      serve({
+        "/domains/eng/engrams/alpha": () => detailResponse({ content: LONG }),
+      });
+      renderApp("/d/eng/e/alpha");
+      const summary = await screen.findByText("On this page", {
+        selector: "summary",
+      });
+      const details = summary.closest("details");
+      expect(details).not.toBeNull();
+      expect(details?.open).toBe(false);
+      expect(details?.nextElementSibling?.tagName).toBe("ARTICLE");
+      expect(
+        document.querySelector("aside nav[aria-label='On this page']"),
+      ).toBeNull();
+      expect(
+        hrefs(
+          within(details as HTMLElement).getByRole("navigation", {
+            name: "On this page",
+            hidden: true,
+          }),
+        ),
+      ).toEqual(HREFS);
+    });
+
+    it("is a disclosure at full width, even on a wide window", async () => {
+      stubWidth(80);
+      localStorage.setItem(LAYOUT_WIDTH_KEY, "full");
+      serve({
+        "/domains/eng/engrams/alpha": () => detailResponse({ content: LONG }),
+      });
+      renderApp("/d/eng/e/alpha");
+      const summary = await screen.findByText("On this page", {
+        selector: "summary",
+      });
+      expect(summary.closest("details")).not.toBeNull();
+      expect(
+        document.querySelector("aside nav[aria-label='On this page']"),
+      ).toBeNull();
+    });
+
+    it("is neither in the page nor the rail below md (the drawer has it)", async () => {
+      stubWidth(30);
+      serve({
+        "/domains/eng/engrams/alpha": () => detailResponse({ content: LONG }),
+      });
+      renderApp("/d/eng/e/alpha");
+      await screen.findByRole("heading", { name: "Alpha", level: 1 });
+      await screen.findByRole("heading", { name: "Setup" });
+      expect(document.querySelector("details")).toBeNull();
+      expect(
+        document.querySelector("aside nav[aria-label='On this page']"),
+      ).toBeNull();
+    });
+  });
+
+  it("draws no outline for a short page", async () => {
+    serve();
+    renderApp("/d/eng/e/alpha");
+    await screen.findByRole("heading", { name: "Alpha", level: 1 });
+    expect(
+      screen.queryByRole("navigation", { name: "On this page" }),
+    ).toBeNull();
   });
 
   it("draws the body and links the wikilinks the server resolved", async () => {
@@ -2513,5 +2632,182 @@ describe("the printed engram", () => {
       screen.getByRole("heading", { name: "Linked from" }).closest("aside")
         ?.className,
     ).toContain("print:hidden");
+  });
+});
+
+describe("the aside beside the body", () => {
+  it("draws each panel once: no two siblings share a key", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      serve();
+      renderApp("/d/eng/e/alpha");
+      await screen.findByRole("heading", { name: "Alpha", level: 1 });
+      await waitFor(() => {
+        expect(screen.getAllByText("Linked from")).toHaveLength(1);
+      });
+      const twins = errors.mock.calls.filter((call) =>
+        String(call[0]).includes("same key"),
+      );
+      expect(twins).toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+});
+
+describe("task boxes on the engram page", () => {
+  const TASKS = `${BODY}\n- [ ] ship it\n- [x] write it\n`;
+
+  /** Every PUT the mock has seen, as body and If-Match pairs. */
+  function puts(): { content: string; ifMatch: string | undefined }[] {
+    return apiMock.mock.calls
+      .filter(([, init]) => init?.method === "PUT")
+      .map(([, init]) => ({
+        content: (JSON.parse(init?.body as string) as { content: string })
+          .content,
+        ifMatch: (init?.headers as Record<string, string> | undefined)?.[
+          "If-Match"
+        ],
+      }));
+  }
+
+  /** How many times the detail was read. */
+  function reads(): number {
+    return apiMock.mock.calls.filter(
+      ([path, init]) =>
+        path === "/domains/eng/engrams/alpha" && init?.method !== "PUT",
+    ).length;
+  }
+
+  it("ticks a box and saves the whole file with the page's checksum", async () => {
+    const ticked = TASKS.replace("- [ ] ship it", "- [x] ship it");
+    serve({
+      "/domains/eng/engrams/alpha": (_path, init) =>
+        init?.method === "PUT"
+          ? detailResponse({ content: ticked, checksum: "c2" })
+          : detailResponse({ content: TASKS }),
+    });
+    renderApp("/d/eng/e/alpha");
+    const box = await screen.findByRole("checkbox", { name: "ship it" });
+    expect(box).toBeEnabled();
+    await userEvent.click(box);
+    await waitFor(() => {
+      expect(puts()).toEqual([{ content: ticked, ifMatch: '"3f8a1c05e2"' }]);
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("checkbox", { name: "ship it" })).toBeChecked();
+    });
+    // The page shows the frontmatter-free body still: nothing else moved.
+    expect(screen.getByRole("checkbox", { name: "write it" })).toBeChecked();
+  });
+
+  it("says so and reads the engram again when it changed underneath", async () => {
+    serve({
+      "/domains/eng/engrams/alpha": (_path, init) => {
+        if (init?.method === "PUT") {
+          throw new ApiProblem(
+            412,
+            "precondition failed",
+            "stale edit: engram changed since it was read",
+            { current_etag: '"srv9"', current_content: TASKS },
+          );
+        }
+        return detailResponse({ content: TASKS });
+      },
+    });
+    renderApp("/d/eng/e/alpha");
+    await userEvent.click(
+      await screen.findByRole("checkbox", { name: "ship it" }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Someone else saved this engram first. Try again.",
+    );
+    await waitFor(() => {
+      expect(reads()).toBeGreaterThanOrEqual(2);
+    });
+    expect(screen.getByRole("checkbox", { name: "ship it" })).not.toBeChecked();
+  });
+
+  it("says so and reads the engram again when the box is not where the page drew it", async () => {
+    serve({
+      "/domains/eng/engrams/alpha": () => detailResponse({ content: TASKS }),
+    });
+    renderApp("/d/eng/e/alpha");
+    const box = await screen.findByRole("checkbox", { name: "ship it" });
+    await waitFor(() => {
+      expect(box).toBeEnabled();
+    });
+    tickControl.refuse = true;
+    try {
+      await userEvent.click(box);
+    } finally {
+      tickControl.refuse = false;
+    }
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Someone else saved this engram first. Try again.",
+    );
+    await waitFor(() => {
+      expect(reads()).toBeGreaterThanOrEqual(2);
+    });
+    expect(puts()).toEqual([]);
+  });
+
+  it("sends one save for a double click", async () => {
+    const ticked = TASKS.replace("- [ ] ship it", "- [x] ship it");
+    let land: (value: unknown) => void = () => undefined;
+    serve({
+      "/domains/eng/engrams/alpha": (_path, init) =>
+        init?.method === "PUT"
+          ? new Promise((resolve) => {
+              land = resolve;
+            })
+          : detailResponse({ content: TASKS }),
+    });
+    renderApp("/d/eng/e/alpha");
+    const box = await screen.findByRole("checkbox", { name: "ship it" });
+    await waitFor(() => {
+      expect(box).toBeEnabled();
+    });
+    await userEvent.dblClick(box);
+    await waitFor(() => {
+      expect(puts()).toHaveLength(1);
+    });
+    land(detailResponse({ content: ticked, checksum: "c2" }));
+    await waitFor(() => {
+      expect(screen.getByRole("checkbox", { name: "ship it" })).toBeChecked();
+    });
+    expect(puts()).toHaveLength(1);
+  });
+
+  it("disables the box with the reason in a domain this reader may not change", async () => {
+    serve({
+      "/domains": () => ({
+        ...domainsResponse(),
+        domains: [{ ...domainsResponse().domains[0], read_only: true }],
+      }),
+      "/domains/eng/engrams/alpha": () => detailResponse({ content: TASKS }),
+    });
+    renderApp("/d/eng/e/alpha");
+    const box = await screen.findByRole("checkbox", { name: "ship it" });
+    await waitFor(() => {
+      expect(box).toBeDisabled();
+    });
+    expect(box).toHaveAccessibleDescription(
+      "You can read this page but not change it",
+    );
+  });
+
+  it("disables the box for the anonymous viewer and says why", async () => {
+    serve({
+      "/auth/me": () => meResponse({ anonymous: true }),
+      "/domains/eng/engrams/alpha": () => detailResponse({ content: TASKS }),
+    });
+    renderApp("/d/eng/e/alpha");
+    const box = await screen.findByRole("checkbox", { name: "ship it" });
+    await waitFor(() => {
+      expect(box).toBeDisabled();
+    });
+    expect(box).toHaveAccessibleDescription("Sign in to change this page");
+    expect(puts()).toEqual([]);
   });
 });

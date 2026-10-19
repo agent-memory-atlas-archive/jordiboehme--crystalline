@@ -28,10 +28,17 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Clock, MessageSquarePlus, MessagesSquare, X } from "lucide-react";
+import {
+  Clock,
+  MessageSquarePlus,
+  MessagesSquare,
+  Reply,
+  X,
+} from "lucide-react";
 import type { ReactElement, ReactNode, RefObject } from "react";
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useId,
@@ -61,6 +68,19 @@ import type { ReflectionRight } from "../api/reflectionDomains";
 import { atLeast } from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
 import { plural, relativeTime } from "../format";
+import { REVEAL_EVENT } from "../markdown/callouts";
+import { withoutHtmlComments } from "../markdown/htmlComments";
+import type { RevealDetail } from "../markdown/callouts";
+import type { ConventionalHead } from "../markdown/conventionalComment";
+import {
+  composeComment,
+  formatHead,
+  isBlocking,
+  matchHead,
+  parseConventional,
+  parseHead,
+} from "../markdown/conventionalComment";
+import { LabelChip, LabelIcon, LabelMenu, LabelPill } from "./CommentLabel";
 import { KeptComments } from "./KeptComments";
 import { useSaid } from "./useSaid";
 import { onlyMarkers, placeMarkers, printNotes } from "../printNotes";
@@ -73,6 +93,7 @@ import {
   paintQuotes,
   selectionAnchor,
 } from "../reflectionQuotes";
+import { PageOutline } from "./PageOutline";
 import type { SectionText } from "../reflectionText";
 import { TOP_SECTION, locateQuote } from "../reflectionText";
 import {
@@ -151,6 +172,137 @@ function useForget(): (key: string) => void {
   return (key) => {
     kept?.store.delete(`${kept.page}\n${key}`);
   };
+}
+
+/**
+ * A comment box's label: kept under `keep` like its words (as the head's
+ * text, so no label is forgotten rather than kept), and how typed words
+ * reach the box. The exact head typed or pasted at the very start of the box
+ * becomes the chip while the box has none; once a person takes a chip off,
+ * what they type stays text. That choice is kept beside the label (under
+ * `${keep}-removed`), so a sheet shut and opened again never turns their
+ * plain words into a chip.
+ */
+function useLabel(
+  keep: string,
+  setWords: (words: string) => void,
+): {
+  head: ConventionalHead | null;
+  setHead: (head: ConventionalHead | null) => void;
+  /** Takes the chip off; a head typed after it stays text. */
+  remove: () => void;
+  /** The box's words changed to `value`. */
+  type: (value: string) => void;
+} {
+  const [raw, setRaw] = useKept(keep, "");
+  const [removed, setRemoved] = useKept(`${keep}-removed`, false);
+  const head = raw === "" ? null : parseHead(raw);
+  const setHead = (next: ConventionalHead | null) => {
+    setRaw(next === null ? "" : formatHead(next));
+  };
+  return {
+    head,
+    setHead,
+    remove: () => {
+      setRemoved(true);
+      setHead(null);
+    },
+    type: (value) => {
+      const match = head === null && !removed ? matchHead(value) : null;
+      if (match !== null) {
+        setHead(match.head);
+        setWords(value.slice(match.end));
+      } else {
+        setWords(value);
+      }
+    },
+  };
+}
+
+/** The label of a thread's opening comment, or null for a plain one. */
+function openingHead(thread: ThreadView): ConventionalHead | null {
+  const first = thread.entries[0];
+  return first?.kind === "comment" ? parseConventional(first.text) : null;
+}
+
+/**
+ * An entry's words: a labelled comment as its pill and its subject in bold,
+ * then the discussion; anything else as written.
+ */
+function EntryWords({ entry }: { entry: ThreadView["entries"][number] }) {
+  const words =
+    "col-start-2 text-[13.5px] leading-[1.55] whitespace-pre-wrap text-ink-2";
+  const labelled =
+    entry.kind === "comment" ? parseConventional(entry.text) : null;
+  if (labelled === null) {
+    return (
+      <p className={words}>
+        {entry.kind === "resolve"
+          ? `Resolved: ${entry.text}`
+          : entry.kind === "reopen"
+            ? entry.text === ""
+              ? "Reopened"
+              : `Reopened: ${entry.text}`
+            : entry.text}
+      </p>
+    );
+  }
+  return (
+    <div className="col-start-2 flex flex-col gap-1">
+      <p className={words}>
+        <LabelPill head={labelled} />
+        <strong className="font-semibold text-ink">{labelled.subject}</strong>
+      </p>
+      {labelled.discussion.trim() !== "" && (
+        <p className={words}>{labelled.discussion}</p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A quiet switch with its words beside it, as the column's head draws its
+ * filters.
+ */
+function Switch({
+  on,
+  label,
+  words,
+  onChange,
+}: {
+  on: boolean;
+  /** The accessible name. */
+  label: string;
+  /** What is shown. */
+  words: string;
+  onChange: (on: boolean) => void;
+}): ReactElement {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      onClick={() => {
+        onChange(!on);
+      }}
+      className={`inline-flex items-center gap-2 rounded text-[12.5px] whitespace-nowrap text-muted hover:text-ink-3 ${FOCUS_RING}`}
+    >
+      <span
+        aria-hidden
+        className={`relative h-[15px] w-[26px] shrink-0 rounded-full transition-colors motion-reduce:transition-none ${
+          on ? "bg-accent-600 dark:bg-accent-400" : "bg-slate-500 dark:bg-faint"
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 left-0.5 size-[11px] rounded-full bg-white shadow-sm transition-transform motion-reduce:transition-none ${
+            on ? "translate-x-[11px]" : ""
+          }`}
+        />
+      </span>
+      {words}
+    </button>
+  );
 }
 
 /**
@@ -254,9 +406,10 @@ function headingOf(
   sections: readonly SectionText[],
 ): string | null {
   const section = sectionOf(thread.anchor.section, sections);
+  // A comment in the heading is a note for whoever edits it.
   return section === undefined || section.id === TOP_SECTION
     ? null
-    : section.heading;
+    : withoutHtmlComments(section.heading).trim();
 }
 
 /**
@@ -269,9 +422,12 @@ function shownQuote(
   source: string | null,
 ): string {
   const at = source === null ? null : locateQuote(source, quote, occurrence);
-  return source === null || at === null
-    ? quote
-    : displayQuote(source, at.start, at.end);
+  if (source === null || at === null) {
+    // As stored, less a comment the page would not draw.
+    const shown = withoutHtmlComments(quote);
+    return shown.trim() === "" ? quote : shown;
+  }
+  return displayQuote(source, at.start, at.end);
 }
 
 /** Colours a person's initial is drawn on; white text reads on each. */
@@ -322,6 +478,58 @@ export function Avatar({
   );
 }
 
+/**
+ * The white space Rust's `split_whitespace` splits on (Unicode White_Space):
+ * unlike JavaScript's `\s` it splits on U+0085 and not on a byte order mark.
+ */
+const CORE_SPACE =
+  /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/;
+
+/**
+ * An account name as a thread entry stores it (core `sanitize_name`):
+ * parentheses, colons, commas and line breaks become spaces, runs of spaces
+ * collapse, and an empty name is `someone`.
+ */
+function entryName(name: string): string {
+  const joined = name
+    .replace(/[():,\n\r]/g, " ")
+    .split(CORE_SPACE)
+    .filter((word) => word !== "")
+    .join(" ");
+  return joined === "" ? "someone" : joined;
+}
+
+/**
+ * Who an open thread waits on, in words. A thread a person opened and an
+ * agent answered last waits for that person, who resolves it: the cue says
+ * so, to them as "you".
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function waitingWords(
+  thread: ThreadView,
+  viewer: string | null,
+): { words: string; answered: boolean } {
+  if (thread.waitingOn === "agent") {
+    return { words: "Waiting for the agent", answered: false };
+  }
+  const opener = thread.entries[0];
+  const last = thread.entries.at(-1);
+  if (
+    opener === undefined ||
+    opener.author.agent ||
+    last === undefined ||
+    !last.author.agent ||
+    last.kind !== "comment"
+  ) {
+    return { words: "Waiting for people", answered: false };
+  }
+  const you = viewer !== null && entryName(viewer) === opener.author.name;
+  return {
+    words: `Answered, waiting for ${you ? "you" : opener.author.name}`,
+    answered: true,
+  };
+}
+
 export function ThreadCard({
   thread,
   heading,
@@ -329,6 +537,7 @@ export function ThreadCard({
   actions,
   source = null,
   picked = false,
+  viewer = null,
 }: {
   thread: ThreadView;
   heading: string | null;
@@ -338,16 +547,23 @@ export function ThreadCard({
   source?: string | null;
   /** The thread the reader picked: its quote rule turns accent. */
   picked?: boolean;
+  /** The signed-in account's name, so a thread waiting on them says "you". */
+  viewer?: string | null;
 }): ReactElement {
   const now = new Date();
   const quote = quoteOf(thread.anchor.quote);
+  const opening = openingHead(thread);
+  const cue = waitingWords(thread, viewer);
+  const Icon = cue.answered ? Reply : Clock;
   const waiting =
     thread.status === "open" ? (
-      <span className="ml-auto inline-flex items-center gap-1.5 text-xs text-muted">
-        <Clock aria-hidden size={14} />
-        {thread.waitingOn === "agent"
-          ? "Waiting for the agent"
-          : "Waiting for people"}
+      <span
+        className={`ml-auto inline-flex items-center gap-1.5 text-xs ${
+          cue.answered ? "text-ink-3" : "text-muted"
+        }`}
+      >
+        <Icon aria-hidden size={14} />
+        {cue.words}
       </span>
     ) : null;
   return (
@@ -361,11 +577,19 @@ export function ThreadCard({
     >
       {quote !== null && (
         <blockquote
-          className={`border-l-2 py-px pl-2.5 text-[13px] leading-normal text-ink-3 ${
+          className={`flex gap-1.5 border-l-2 py-px pl-2.5 text-[13px] leading-normal text-ink-3 ${
             picked ? "border-accent-400" : "border-(--mark-rule)"
           }`}
         >
-          {shownQuote(quote, thread.anchor.occurrence, source)}
+          {/* The opening comment's label, beside the passage it is about. */}
+          {opening !== null && (
+            <span className="mt-[3px]">
+              <LabelIcon head={opening} size={13} alone />
+            </span>
+          )}
+          <span className="min-w-0">
+            {shownQuote(quote, thread.anchor.occurrence, source)}
+          </span>
         </blockquote>
       )}
       {state === "text_changed" && (
@@ -389,15 +613,7 @@ export function ThreadCard({
                 {relativeTime(entry.at, now) ?? ""}
               </span>
             </p>
-            <p className="col-start-2 text-[13.5px] leading-[1.55] whitespace-pre-wrap text-ink-2">
-              {entry.kind === "resolve"
-                ? `Resolved: ${entry.text}`
-                : entry.kind === "reopen"
-                  ? entry.text === ""
-                    ? "Reopened"
-                    : `Reopened: ${entry.text}`
-                  : entry.text}
-            </p>
+            <EntryWords entry={entry} />
           </li>
         ))}
       </ol>
@@ -423,6 +639,8 @@ export function sourceChip(state: SourceState): ReactElement | null {
       return <Chip variant="retired">retired</Chip>;
     case "missing":
       return <Chip variant="danger">missing</Chip>;
+    case "unavailable":
+      return <Chip variant="retired">not checked here</Chip>;
   }
 }
 
@@ -466,6 +684,7 @@ export function ReflectionThreads({
   const [hovered, setHovered] = useState<string | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
   const [showResolved, setShowResolved] = useState(false);
+  const [blockingOnly, setBlockingOnly] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [store] = useState(() => new Map<string, unknown>());
   const kept = useMemo(
@@ -473,6 +692,7 @@ export function ReflectionThreads({
     [store, domain, path],
   );
   const commentKey = `${kept.page}\n${COMMENT_KEY}`;
+  const commentLabelKey = `${kept.page}\n${COMMENT_LABEL_KEY}`;
   const [said, say] = useSaid(4000);
   // Whether a selection was captured a moment ago, so the Comment button is
   // announced once per selection, not at every change of it.
@@ -487,6 +707,9 @@ export function ReflectionThreads({
   const backToComment = useRef(false);
   // The painted quotes by thread, for a tap on one in the text.
   const painted = useRef(new Map<string, Range>());
+  // The threads the column lists now, for a tap on a quote whose card a
+  // filter hides.
+  const listedIds = useRef(new Set<string>());
   // Whether the page is printing, while the numbers are in its text.
   const printing = useRef(false);
   // The thread the sheet opens at, once, when a tap or a link asked for it.
@@ -519,6 +742,21 @@ export function ReflectionThreads({
       (commentButton.current ?? threadsHeading.current)?.focus();
     }
   }, [drafting]);
+
+  // The page's selection as it stands, or null when there is none in the
+  // page (Tab to the button collapses it). The Comment button reads it again
+  // when pressed, in case the last change of it was not heard.
+  const selectionNow = (): SelectionAnchor | null => {
+    const root = articleRef.current;
+    const selection = window.getSelection();
+    if (root === null || selection === null || selection.rangeCount === 0) {
+      return null;
+    }
+    const range = selection.getRangeAt(0);
+    return range.collapsed || !root.contains(range.commonAncestorContainer)
+      ? null
+      : selectionAnchor(root, range, sections);
+  };
 
   // What is selected on the page. A collapse on the page clears it, and so
   // does text selected elsewhere; a caret or a field outside the page
@@ -557,9 +795,17 @@ export function ReflectionThreads({
       hadCapture.current = next !== null;
       setCaptured(next);
     };
+    // A keyboard or pointer selection is read again when the key or the
+    // button comes up: Chrome can leave the last steps of a fast Shift+Arrow
+    // run without a selectionchange the page hears before focus moves on
+    // (Tab collapses the selection), and the quote would come out short.
     document.addEventListener("selectionchange", read);
+    document.addEventListener("keyup", read);
+    document.addEventListener("pointerup", read);
     return () => {
       document.removeEventListener("selectionchange", read);
+      document.removeEventListener("keyup", read);
+      document.removeEventListener("pointerup", read);
     };
   }, [articleRef, sections, say, column]);
 
@@ -588,6 +834,39 @@ export function ReflectionThreads({
   );
 
   const shown = hovered ?? picked;
+  // The thread whose quote the page was last asked to show, so a repaint
+  // does not open again a fold the reader closed.
+  const pickedNow = useRef(picked);
+  const revealed = useRef<string | null>(null);
+  useEffect(() => {
+    pickedNow.current = picked;
+    if (picked === null) {
+      revealed.current = null;
+    }
+  });
+  // A picked thread's quote may sit in a folded callout: ask the page to
+  // show it (`REVEAL_EVENT`, which `MarkdownBody` answers by opening the
+  // fold). Once per pick, as soon as the quote is painted.
+  const revealPicked = useCallback(() => {
+    const id = pickedNow.current;
+    const node =
+      id === null ? undefined : painted.current.get(id)?.startContainer;
+    if (id === null || node === undefined || revealed.current === id) {
+      return;
+    }
+    const target =
+      node.nodeType === Node.TEXT_NODE ? node.parentElement : (node as Element);
+    if (target === null) {
+      return;
+    }
+    revealed.current = id;
+    target.dispatchEvent(
+      new CustomEvent<RevealDetail>(REVEAL_EVENT, {
+        bubbles: true,
+        detail: { target },
+      }),
+    );
+  }, []);
 
   // Words kept for a thread that is no longer open (resolved, or gone) have
   // nowhere to go back to.
@@ -658,6 +937,7 @@ export function ReflectionThreads({
         }
       }
       stop = paintQuotes(all, current);
+      revealPicked();
     };
     paint();
     // While the page prints, the numbers put in the text are no change to
@@ -672,7 +952,11 @@ export function ReflectionThreads({
       observer.disconnect();
       stop();
     };
-  }, [articleRef, open, sections, shown]);
+  }, [articleRef, open, sections, shown, revealPicked]);
+  // A pick while another thread is under the pointer paints nothing new.
+  useEffect(() => {
+    revealPicked();
+  }, [picked, revealPicked]);
 
   // On paper each open thread is a numbered note at the end of the page
   // (`PrintNotes`), and its number stands at the end of the block that holds
@@ -767,6 +1051,12 @@ export function ReflectionThreads({
         setPicked(null);
         return;
       }
+      // Blocking only lists the blocking threads, and every quote stays
+      // painted: a tap on another one shows all threads again, so its card
+      // is there to be picked.
+      if (!listedIds.current.has(hit[0])) {
+        setBlockingOnly(false);
+      }
       setPicked(hit[0]);
       if (!column) {
         setOpenAt(hit[0]);
@@ -791,7 +1081,11 @@ export function ReflectionThreads({
       }),
     onSuccess: (thread) => {
       kept.store.delete(commentKey);
+      kept.store.delete(commentLabelKey);
+      kept.store.delete(`${commentLabelKey}-removed`);
       focusNew.current = thread?.id ?? null;
+      // The new thread must be listed to take the keyboard.
+      setBlockingOnly(false);
       say("Comment posted.");
       hadCapture.current = false;
       backToComment.current = true;
@@ -809,15 +1103,28 @@ export function ReflectionThreads({
     return refresh();
   };
 
+  // The open threads whose opening comment blocks. The filter holds only
+  // while there is one: once the last is resolved, its switch goes and the
+  // list shows everything again rather than nothing.
+  const blocking = open.filter((o) => {
+    const head = openingHead(o.thread);
+    return head !== null && isBlocking(head);
+  });
+  const onlyBlocking = blockingOnly && blocking.length > 0;
   // Open threads, then the resolved ones when asked for; a thread both
   // lists hold for a moment (between a step and the refetch) shows once.
   const openIds = new Set(open.map((o) => o.thread.id));
-  const listed: Listed[] = [
-    ...open.map((o) => list(o.thread)),
-    ...(showResolved ? (resolved.data ?? []) : [])
-      .filter((t) => t.status === "resolved" && !openIds.has(t.id))
-      .map(list),
-  ];
+  const listed: Listed[] = onlyBlocking
+    ? blocking.map((o) => list(o.thread))
+    : [
+        ...open.map((o) => list(o.thread)),
+        ...(showResolved ? (resolved.data ?? []) : [])
+          .filter((t) => t.status === "resolved" && !openIds.has(t.id))
+          .map(list),
+      ];
+  useEffect(() => {
+    listedIds.current = new Set(listed.map((item) => item.thread.id));
+  });
   const bySection = new Map<string, Listed[]>();
   for (const item of listed) {
     const key = item.state === "section_gone" ? "" : item.thread.anchor.section;
@@ -836,39 +1143,53 @@ export function ReflectionThreads({
     </h2>
   );
 
+  // The page's `##` sections, linked to the section elements the page draws
+  // (`s-<id>`, see `PageSection`): this page has no heading ids of its own.
+  const outline = sections.flatMap((s, index) =>
+    s.id === TOP_SECTION || s.heading === ""
+      ? []
+      : [
+          {
+            id: s.id === null ? `s-h${String(index)}` : `s-${s.id}`,
+            text: withoutHtmlComments(s.heading).trim(),
+            level: 2 as const,
+          },
+        ],
+  );
+
   const body = (
     <>
-      <div className="flex items-center gap-2.5">
+      <PageOutline
+        headings={outline}
+        onNavigate={
+          column
+            ? undefined
+            : () => {
+                setSheetOpen(false);
+              }
+        }
+      />
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
         {column ? heading : <Dialog.Title asChild>{heading}</Dialog.Title>}
         {open.length > 0 && (
           <span className="text-xs text-muted">{`${String(open.length)} open`}</span>
         )}
-        <button
-          type="button"
-          role="switch"
-          aria-checked={showResolved}
-          aria-label="Show resolved threads"
-          onClick={() => {
-            setShowResolved(!showResolved);
-          }}
-          className={`ml-auto inline-flex items-center gap-2 rounded text-[12.5px] text-muted hover:text-ink-3 ${FOCUS_RING}`}
-        >
-          <span
-            aria-hidden
-            className={`relative h-[15px] w-[26px] shrink-0 rounded-full transition-colors motion-reduce:transition-none ${
-              showResolved
-                ? "bg-accent-600 dark:bg-accent-400"
-                : "bg-slate-500 dark:bg-faint"
-            }`}
-          >
-            <span
-              className={`absolute top-0.5 left-0.5 size-[11px] rounded-full bg-white shadow-sm transition-transform motion-reduce:transition-none ${
-                showResolved ? "translate-x-[11px]" : ""
-              }`}
+        <span className="ml-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-1.5">
+          {blocking.length > 0 && (
+            <Switch
+              on={onlyBlocking}
+              label="Show blocking threads only"
+              words="Blocking only"
+              onChange={setBlockingOnly}
             />
-          </span>
-          Show resolved
-        </button>
+          )}
+          <Switch
+            on={showResolved}
+            label="Show resolved threads"
+            words="Show resolved"
+            onChange={setShowResolved}
+          />
+        </span>
         {!column && (
           <IconButton
             label="Close the threads"
@@ -898,7 +1219,7 @@ export function ReflectionThreads({
             }}
             onClick={() => {
               comment.reset();
-              setDrafting(captured);
+              setDrafting(selectionNow() ?? captured);
             }}
             className={`flex items-center gap-2.5 rounded-[10px] border border-accent-300 bg-accent-50 px-3 py-2.5 text-left text-[13px] font-medium text-accent-800 hover:bg-accent-100 dark:border-accent-700 dark:bg-accent-400/10 dark:text-accent-200 dark:hover:bg-accent-400/20 ${FOCUS_RING}`}
           >
@@ -919,6 +1240,8 @@ export function ReflectionThreads({
           error={comment.error}
           onCancel={() => {
             kept.store.delete(commentKey);
+            kept.store.delete(commentLabelKey);
+            kept.store.delete(`${commentLabelKey}-removed`);
             comment.reset();
             backToComment.current = true;
             setDrafting(null);
@@ -967,6 +1290,7 @@ export function ReflectionThreads({
                     state={state}
                     source={source}
                     picked={picked === thread.id}
+                    viewer={user?.name ?? null}
                     actions={
                       !mayComment ? null : thread.status === "open" ? (
                         <OpenActions
@@ -1089,6 +1413,9 @@ export function ReflectionThreads({
 /** Where the comment in progress is kept while the sheet is shut. */
 const COMMENT_KEY = "comment";
 
+/** Where its label is kept. */
+const COMMENT_LABEL_KEY = "comment-label";
+
 function CommentForm({
   anchor,
   source,
@@ -1105,6 +1432,7 @@ function CommentForm({
   onSubmit: (text: string) => void;
 }): ReactElement {
   const [text, setText] = useKept(COMMENT_KEY, "");
+  const label = useLabel(COMMENT_LABEL_KEY, setText);
   const field = useId();
   const box = useRef<HTMLTextAreaElement | null>(null);
   const quote = quoteOf(anchor.quote);
@@ -1117,8 +1445,10 @@ function CommentForm({
       className="flex flex-col gap-2 rounded-[10px] border border-hair p-3 text-sm"
       onSubmit={(event) => {
         event.preventDefault();
+        // With a label, the words' first line is its subject: words are
+        // needed either way.
         if (text.trim() !== "" && !pending) {
-          onSubmit(text.trim());
+          onSubmit(composeComment(label.head, text));
         }
       }}
     >
@@ -1135,13 +1465,14 @@ function CommentForm({
       <label htmlFor={field} className="text-caption">
         Your comment
       </label>
+      <LabelChip head={label.head} onRemove={label.remove} />
       <textarea
         ref={box}
         id={field}
         value={text}
         rows={3}
         onChange={(event) => {
-          setText(event.target.value);
+          label.type(event.target.value);
         }}
         className="rounded border border-hair-strong bg-raised px-2 py-1"
       />
@@ -1151,6 +1482,11 @@ function CommentForm({
         </p>
       )}
       <div className="flex gap-2">
+        <LabelMenu
+          head={label.head}
+          onChange={label.setHead}
+          onClosed={() => box.current?.focus()}
+        />
         <button type="submit" disabled={pending} className={BUTTON.primary}>
           Comment
         </button>
@@ -1169,6 +1505,7 @@ function CommentForm({
 function StepForm({
   keep,
   label,
+  labelled = false,
   button,
   pending,
   error,
@@ -1178,6 +1515,8 @@ function StepForm({
   /** Where the words in progress are kept while the sheet is shut. */
   keep: string;
   label: string;
+  /** Whether the words may carry a conventional comment label (a reply). */
+  labelled?: boolean;
   button: string;
   pending: boolean;
   error: Error | null;
@@ -1186,6 +1525,7 @@ function StepForm({
   onCancel: () => void;
 }): ReactElement {
   const [value, setValue] = useKept(keep, "");
+  const head = useLabel(`${keep}-label`, setValue);
   const id = useId();
   const field = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
@@ -1197,19 +1537,24 @@ function StepForm({
       onSubmit={(event) => {
         event.preventDefault();
         if (value.trim() !== "" && !pending) {
-          onSend(value.trim());
+          onSend(composeComment(labelled ? head.head : null, value));
         }
       }}
     >
       <label htmlFor={id} className="text-caption">
         {label}
       </label>
+      {labelled && <LabelChip head={head.head} onRemove={head.remove} />}
       <input
         ref={field}
         id={id}
         value={value}
         onChange={(event) => {
-          setValue(event.target.value);
+          if (labelled) {
+            head.type(event.target.value);
+          } else {
+            setValue(event.target.value);
+          }
         }}
         className={`min-w-0 ${FIELD}`}
       />
@@ -1219,6 +1564,13 @@ function StepForm({
         </p>
       )}
       <div className="flex gap-2">
+        {labelled && (
+          <LabelMenu
+            head={head.head}
+            onChange={head.setHead}
+            onClosed={() => field.current?.focus()}
+          />
+        )}
         <button type="submit" disabled={pending} className={BUTTON.secondary}>
           {button}
         </button>
@@ -1265,6 +1617,8 @@ function OpenActions({
   }, [form]);
   const close = (step: Step) => {
     forget(`${thread.id}:${step}`);
+    forget(`${thread.id}:${step}-label`);
+    forget(`${thread.id}:${step}-label-removed`);
     backTo.current = step;
     setForm(null);
   };
@@ -1276,6 +1630,8 @@ function OpenActions({
       stepThread(domain, thread.id, "answer", { path, text }),
     onSuccess: () => {
       forget(`${thread.id}:answer`);
+      forget(`${thread.id}:answer-label`);
+      forget(`${thread.id}:answer-label-removed`);
       forget(`${thread.id}:form`);
       void onAnswered();
     },
@@ -1299,6 +1655,7 @@ function OpenActions({
       <StepForm
         keep={`${thread.id}:answer`}
         label="Your answer"
+        labelled
         button="Answer"
         pending={answer.isPending}
         error={answer.error}

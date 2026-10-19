@@ -48,7 +48,7 @@ import { useEffect, useId, useRef, useState } from "react";
 
 import type { ShareChange } from "../api/admin";
 import { substantive } from "./changes";
-import { ITEM_CLASSES, MENU_CLASSES } from "./menu";
+import { ITEM_CLASSES, MENU_CLASSES, MENU_SEPARATOR } from "./menu";
 import { CHIP_VARIANTS, FOCUS_RING, IconButton } from "./primitives";
 
 /**
@@ -277,7 +277,7 @@ function ChangeRow({
               </DropdownMenu.Item>
               {onDiscard !== undefined && (
                 <>
-                  <DropdownMenu.Separator className="my-1 h-px bg-slate-200 dark:bg-slate-700" />
+                  <DropdownMenu.Separator className={MENU_SEPARATOR} />
                   <DropdownMenu.Item
                     className={`${ITEM_CLASSES} text-red-700 dark:text-red-300`}
                     onSelect={() => {

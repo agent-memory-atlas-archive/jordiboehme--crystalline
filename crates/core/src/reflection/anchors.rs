@@ -1,6 +1,7 @@
 //! The Reflection as a thread target: how an anchor finds its section in a
 //! reflection. An `Id` is a section id; a `Heading` is matched by heading
-//! text the way `find_section` matches one.
+//! text the way `find_section` matches one, so a heading two sections share
+//! anchors nowhere until the thread is moved onto an id.
 
 use crate::reflection::sections::{find_section, split_sections};
 use crate::threads::{Anchor, AnchorState, SectionRef, resolve_anchor};
@@ -56,6 +57,17 @@ mod tests {
             matches!(anchor_state(PAGE, &by_heading), AnchorState::Found { .. }),
             "a heading is looked up by its text"
         );
+    }
+
+    #[test]
+    fn a_heading_anchor_on_a_heading_two_sections_share_is_not_guessed() {
+        let shared = PAGE.replace("## Night deploys", "## Other");
+        let by_heading = Anchor {
+            section: SectionRef::Heading("other".into()),
+            quote: None,
+            occurrence: 1,
+        };
+        assert_eq!(anchor_state(&shared, &by_heading), AnchorState::SectionGone);
     }
 
     #[test]

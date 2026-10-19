@@ -708,6 +708,43 @@ describe("the engram editor", () => {
     );
   });
 
+  it("changes a heading level at once, with no question asked", async () => {
+    // The engram adapter has no sections to join: an id-shaped comment under
+    // a heading is ordinary text here.
+    const content = CONTENT.replace(
+      "A rule.",
+      "A rule.\n\n## Part\n<!-- r:aaaa0001 -->\n",
+    );
+    serveEditor({
+      "/domains/eng/engrams/alpha": () => detailResponse({ content }),
+    });
+    renderApp("/d/eng/edit/alpha");
+    const editor = await openBuffer();
+    const view = mountedView(editor);
+    act(() => {
+      view.dispatch({ selection: { anchor: content.indexOf("## Part") + 3 } });
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Heading" }));
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Heading 3" }),
+    );
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(docText(view.state)).toContain("### Part\n<!-- r:aaaa0001 -->\n");
+  });
+
+  it("offers Wiki link, which a Reflection page does not", async () => {
+    serveEditor();
+    renderApp("/d/eng/edit/alpha");
+    await openBuffer();
+    expect(
+      within(screen.getByRole("toolbar", { name: "Formatting" })).getByRole(
+        "button",
+        { name: "Wiki link" },
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("runs format-bar buttons from the keyboard", async () => {
     serveEditor();
     renderApp("/d/eng/edit/alpha");
@@ -725,16 +762,17 @@ describe("the engram editor", () => {
     await userEvent.keyboard(" ");
     expect(docText(view.state)).toContain("- ");
 
-    // The diagram button opens a menu of starters now, so its keyboard route
-    // is Enter to open and Enter again to take the item the menu highlights
-    // first - the flowchart the button used to insert on its own. Like the
-    // table above it, this goes through the real route rather than dispatching
-    // a fence in: that the shortest keyboard path still reaches a diagram, and
-    // still ends with the caret back in the buffer, is what the screen is
-    // worth pinning for, and it is exactly what a menu in front of the button
-    // could break.
-    within(bar).getByRole("button", { name: "Insert diagram" }).focus();
+    // Diagrams sit in the Insert menu now, so the keyboard route is Enter to
+    // open it on Callout, Down to Diagram, Right to open the starters on the
+    // flowchart, and Enter to take it. Like the table above it, this goes
+    // through the real route rather than dispatching a fence in: that the
+    // keyboard still reaches a diagram, and still ends with the caret back in
+    // the buffer, is what the screen is worth pinning for, and it is exactly
+    // what a menu in front of the starters could break.
+    within(bar).getByRole("button", { name: "Insert" }).focus();
     await userEvent.keyboard("{Enter}");
+    await screen.findByRole("menuitem", { name: "Callout" });
+    await userEvent.keyboard("{ArrowDown}{ArrowRight}");
     await screen.findByRole("menuitem", { name: "Flowchart" });
     await userEvent.keyboard("{Enter}");
     expect(docText(view.state)).toContain("```mermaid");
@@ -1334,6 +1372,31 @@ describe("the engram editor", () => {
     expect(disclosure).toHaveAttribute("aria-expanded", "false");
     await userEvent.click(disclosure);
     expect(disclosure).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("shows a status colour finding from validate in the findings rail", async () => {
+    serveEditor({
+      "/validate": () => ({
+        errors: 0,
+        findings: [
+          {
+            rule: "Q006",
+            severity: "warning",
+            message: "unknown status colour `orange`",
+            line: 9,
+            fix: null,
+          },
+        ],
+      }),
+    });
+    renderApp("/d/eng/edit/alpha");
+    await openBuffer();
+    const rail = await screen.findByRole("region", {
+      name: "Validation findings",
+    });
+    expect(
+      await within(rail).findByText(/unknown status colour `orange`/),
+    ).toBeInTheDocument();
   });
 
   it("Close leaves a clean buffer at once, with nothing to ask about", async () => {

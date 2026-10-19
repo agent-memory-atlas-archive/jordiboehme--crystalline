@@ -59,7 +59,7 @@ import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
 import { Breadcrumbs, reflectionCrumbsOf } from "../components/Breadcrumbs";
 import { Loading } from "../components/Loading";
 import { BUTTON } from "../components/primitives";
-import { AttachButton } from "../editor/AttachButton";
+import { reflectionAdapter } from "../editor/adapter";
 import CmEditor from "../editor/CmEditor";
 import type { Draft } from "../editor/drafts";
 import { assetRefsIn } from "../editor/imageFormat";
@@ -73,15 +73,14 @@ import {
   removeOffers,
   writeDraft,
 } from "../editor/drafts";
-import { hiddenIdLines } from "../editor/hiddenIdLines";
+import { EditorToolbar } from "../editor/EditorToolbar";
 import { KeptTextNotice } from "../editor/KeptTextNotice";
 import { imagePreviews } from "../editor/imagePreviews";
 import { readScalar } from "../editor/frontmatterFields";
-import { livePreview } from "../editor/preview";
-import { readingTheme } from "../editor/readingTheme";
 import type { SaveStateKind } from "../editor/SaveState";
 import { SaveState } from "../editor/SaveState";
-import { baseExtensions } from "../editor/setup";
+import type { ElementFace } from "../editor/elementContext";
+import { surfaceExtensions } from "../editor/surface";
 import {
   UploadScreenContext,
   useAttachmentUploads,
@@ -596,27 +595,51 @@ function Surface({
     },
   });
   const editable = useMemo(() => new Compartment(), []);
+  /**
+   * The engram editor's surface, with what a Reflection page adds: the
+   * hidden section ids, which every block verb keeps under their headings,
+   * and the question a heading change asks before it joins a section into
+   * the one above. No Raw toggle and no frontmatter fold: the page's own
+   * `title:` stays as text in reach.
+   */
+  const adapter = useMemo(() => reflectionAdapter(), []);
+  const preview = useMemo(() => new Compartment(), []);
+  /** Whether the caret is in a table or on an image: the bar's context verbs. */
+  const [tableActive, setTableActive] = useState(false);
+  const [imageActive, setImageActive] = useState(false);
+  /** The callout or status label the caret is in, for their segments. */
+  const [element, setElement] = useState<ElementFace>(null);
   const extensions = useMemo(
     () => [
       // The shared text is LF space by construction (see EngramEditor).
       EditorState.lineSeparator.of("\n"),
-      // The room's own undo stack replaces CodeMirror's.
-      ...baseExtensions(resolved === "dark", { history: false }),
-      yCollab(ytext, awareness, { undoManager: new Y.UndoManager(ytext) }),
-      keymap.of(yUndoManagerKeymap),
-      normalizePastedEndings,
-      cursorFlags,
-      readingTheme,
-      livePreview(),
-      hiddenIdLines(),
-      uploads.extension,
-      previews.of(imagePreviews(home)),
-      editable.of(readOnly(mountEnded)),
+      ...surfaceExtensions({
+        adapter,
+        dark: resolved === "dark",
+        // The room's own undo stack replaces CodeMirror's.
+        history: false,
+        screen: [
+          yCollab(ytext, awareness, { undoManager: new Y.UndoManager(ytext) }),
+          keymap.of(yUndoManagerKeymap),
+          normalizePastedEndings,
+          cursorFlags,
+          editable.of(readOnly(mountEnded)),
+        ],
+        preview,
+        raw: false,
+        images: previews.of(imagePreviews(home)),
+        uploads: uploads.extension,
+        onTableContext: setTableActive,
+        onImageContext: setImageActive,
+        onElementContext: setElement,
+      }),
     ],
     [
       ytext,
       awareness,
       resolved,
+      adapter,
+      preview,
       editable,
       mountEnded,
       uploads.extension,
@@ -1016,24 +1039,29 @@ function Surface({
       )}
       <div>
         {/*
-          The reading column's sticky row, as the engram editor's format bar
-          stands. This editor's only verb is a file: its text is a room's,
-          and the block verbs would have to learn the hidden section ids.
-          Off while the room is away or over: the bytes would not wait for
-          it, but a person should not start what the page cannot take now.
-          A paste while reconnecting still uploads, and the room merges the
-          link on its return.
+          The engram editor's format bar, in the same sticky row. Its block
+          verbs know the hidden section ids through the adapter: a block
+          inserted from a heading lands below the heading's id
+          (`newLineBelowId`), a list or quote over a range leaves the ids and
+          their headings alone, and a heading change that joins a section
+          into the one above asks first. Every verb is off once the room has
+          ended. Attach is off too while the room is away: the bytes would
+          not wait for it, but a person should not start what the page
+          cannot take now. A paste while reconnecting still uploads, and the
+          room merges the link on its return.
         */}
-        <div
-          role="toolbar"
-          aria-label="Insert"
-          className="sticky top-14 z-10 flex items-center gap-0.5 border-b border-hair bg-canvas/95 py-1.5 backdrop-blur print:hidden"
-        >
-          <AttachButton
-            onAttach={uploads.attach}
-            disabled={view === null || ended || collab.status !== "connected"}
-          />
-        </div>
+        <EditorToolbar
+          bare
+          view={view}
+          tableActive={tableActive}
+          imageActive={imageActive}
+          calloutActive={element?.kind === "callout" ? element : null}
+          statusActive={element?.kind === "status" ? element.colour : null}
+          onAttach={uploads.attach}
+          adapter={adapter}
+          disabled={ended}
+          attachDisabled={collab.status !== "connected"}
+        />
         <CmEditor
           initialDoc={mountText}
           extensions={extensions}

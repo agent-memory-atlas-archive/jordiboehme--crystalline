@@ -4,7 +4,7 @@ A domain can keep a Reflection: documents for people, next to the engrams the ag
 
 ## What a Reflection is
 
-A Reflection is a domain's documents for people. They live in the folder `reflections/` of the domain, and each one is called a reflection. They are written at the level that `reflections/PACT.md` agrees on: for whom, how deep and in which structure.
+A Reflection is a domain's documents for people. They live in the folder `reflections/` of the domain, and each one is called a reflection. They are written at the level that `reflections/PACT.md` agrees on: for whom, how deep, how it is presented and in which structure.
 
 Engrams stay the agent's knowledge. The Reflection is where people and agents meet. Both edit the pages, and both comment on them in threads. The agent brings what changed in the engrams into the pages, and it reads what people changed in the pages and decides what to learn from it.
 
@@ -12,7 +12,7 @@ A reflection is not an engram. It needs no frontmatter, `search_engrams` never r
 
 ## Switch it on
 
-Set the MANIFEST key `reflection: on`. Do it in the domain policies card in Fluid, with `PATCH /api/v1/domains/{domain}/manifest`, or ask your agent (the `configure` tool with `domain`). Switching it on writes a first `reflections/PACT.md` with the three headings to fill in. Switching it off again is always allowed, and the files stay where they are.
+Set the MANIFEST key `reflection: on`. Do it in the domain policies card in Fluid, with `PATCH /api/v1/domains/{domain}/manifest`, or ask your agent (the `configure` tool with `domain`). Switching it on writes a first `reflections/PACT.md` with the four headings to fill in. Switching it off again is always allowed, and the files stay where they are.
 
 On a domain connected to GitHub, switching it off has one more effect. The folder `reflections/` is then ordinary engram content, so "share changes" offers its pages, their threads and `PACT.md`. Threads can hold comments from people who may not see engrams. So do not share changes while the switch is off. Once these files are in the team's copy, switching on again is refused until the team's copy no longer holds them. The answer to the switch-off says this too.
 
@@ -32,13 +32,20 @@ A plain editor or a pull can still write `reflection: on` into the MANIFEST. If 
 
 ## The pact
 
-`reflections/PACT.md` is the agreement between the people and the agents who work on the Reflection. It has three parts:
+`reflections/PACT.md` is the agreement between the people and the agents who work on the Reflection. It has four parts:
 
 - `## Audience`: who reads these pages and what they already know.
 - `## Level of detail`: how deep the pages go, and what they leave to the engrams.
+- `## Presentation`: which diagrams, callouts, tables and status labels help these readers, and what to avoid.
 - `## Structure`: one bullet per glob, for example `- guides/*.md`.
 
 The agent reads the pact before it writes. A page that fits none of the `## Structure` globs is reported to the agent as an update item. A change to the pact is reported too, so the agent applies it to the pages it affects.
+
+## Presentation
+
+A reflection is Markdown with a few extra elements: callouts, status labels, math, task items, footnotes and diagrams. The full list is in [The Markdown Crystalline understands](markdown.md). The `## Presentation` part of the pact narrows or extends the defaults, and where they differ the pact wins. A pact that says "no diagrams" means no diagrams. The skill `crystalline-presentation` teaches agents to read it first and to use an element only where it helps the reader.
+
+Two rules matter for a reflection. Each `##` section renders on its own, so a footnote reference and its definition belong in the same section. And a change that only ticks or unticks a task item is not feedback, so a tick on the reading page does not send the agent back to the section.
 
 ## Sections and their hidden ids
 
@@ -48,13 +55,35 @@ The id lines also mark a file as a page. Give every page at least one `##` headi
 
 The frontmatter block `reflection:` is Crystalline's own. For each section it records the engrams the section was built from (with their checksum at that time), a hash of the text at the last reflect, and who changed the text since then. A person who cannot read the engrams gets the page without this block, so engram names stay hidden from them. Do not edit the block by hand.
 
-An agent can write a whole page or one section. `write_reflection` takes the same three section operations `edit_engram` takes: `replace_section`, `insert_before_section` and `insert_after_section`, with the section named by its heading. The section keeps its id. A `crystalline://` address in a page is spelled with the domain's current name on every write, as in an engram, and renaming a domain also respells its Reflection pages.
+An agent can write a whole page or one section. `write_reflection` takes the same three section operations `edit_engram` takes: `replace_section`, `insert_before_section` and `insert_after_section`, with the section named by its heading. The section keeps its id. With `sources` and no text at all, the write curates the named sections as the page stands and rewrites none of its text. Crystalline still does its usual upkeep on that write: a heading without an id line gets one, a `crystalline://` address is spelled with the domain's current name, and the `reflection:` block records the sources. A write that leaves out a section a person changed since the last reflection still lands, and its receipt names that section. A heading that two sections share does not name either of them: a thread on it is opened by the section id. A `crystalline://` address in a page is spelled with the domain's current name on every write, as in an engram, and renaming a domain also respells its Reflection pages.
+
+### Sources from other domains
+
+A page can also be built from engrams of other domains. So one page can sum up several domains. In `sources`, name an engram of this domain by its permalink and an engram of another domain by its address, for example `crystalline://harbor/team/harbor-team`. An address of the page's own domain is the same as the permalink. Never write sources into the page as HTML comments or text: only `sources` lets the queue notice a change.
+
+The writer needs the right to read engrams in the other domain. A domain the writer cannot see, a domain this instance does not have and a domain of a connected server are refused with the same words as a domain that does not exist. So a private domain never shows. The `reflection:` block stores the other domain by its name. Rename a domain with `crystalline domain rename`: it also renames the domain in the sources of every page, and a rename with `--local` keeps the old names as aliases, so the sources still resolve. A name changed only by editing `domain_name` in the MANIFEST is not followed. The sources that use the old name then read as `unavailable`.
+
+The queue notices when an engram of another domain changes, is retired or is gone, with the same items as for the page's own domain. When the other domain is not on this instance, or it is a domain of a connected server, its sources are `unavailable`. They are never `missing`, so no agent drops them by mistake. A write that sets a section's sources keeps every source the writer may not see. A writer who sees an unavailable source may leave it out of the section's sources, and that drops it: this is how a source of a domain that is gone for good goes. A section that is deleted takes all its sources with it, also those the writer could not see. Citing an engram of another domain does not count as covering it for that domain's own Reflection.
 
 ## Threads
 
 A thread is a discussion about one passage. It is anchored on a section and, if you like, on an exact quoted passage in it. A thread can be opened, answered, resolved with a short outcome and reopened. The threads of a page are stored in `<name>.threads.md` beside the page. The history of a thread is only ever added to: a resolved thread does not change, and a reopen is a new entry.
 
+Answer a person's thread and leave it open. The person who opened it resolves it. An agent that tries to resolve a person's thread right after its own answer is refused. Putting the answer into the resolve outcome is refused too. It may resolve it once the person wrote back, for example "thanks, you can close it". An agent may resolve a thread an agent opened. In Fluid a person's thread with an agent's answer as its last entry shows "Answered, waiting for you" to the person who opened it. A thread an agent opened never shows it.
+
 Agents write each comment as a conventional comment: a first line `<label> [decorations]: <subject>`, for example `question (non-blocking): is this still true after the migration?`. An agent never puts engram links into a thread, because some readers cannot see engrams.
+
+### Labels on comments
+
+A label says what a comment wants. Crystalline follows [conventional comments](https://conventionalcomments.org): the first line of a comment is `<label> (<decorations>): <subject>`, and the lines after it are the discussion. The labels are praise, nitpick, suggestion, issue, todo, question, thought, chore and note. The decorations are blocking, non-blocking and if-minor. Blocking and non-blocking exclude each other, and if-minor goes with either. Other decorations, for example `(security)`, are kept and shown as they are.
+
+For people a label is optional. In Fluid the comment box and the answer box have a Label menu beside the send button. Pick a label there, and then the decorations. The choice shows as a chip above the box, and the box holds only your words. Its first line becomes the subject. You can also type the label at the very start, for example `issue (blocking): `, and it turns into the chip. Pasting a whole conventional comment does the same. The remove button on the chip takes the label off again. A label you type while a chip is set, or after you took the chip off, stays text. A resolve outcome has no label.
+
+Only the exact form is a label. An unknown label, a missing `: ` or an empty subject leave the comment as plain text, and old comments stay as they are. A comment is stored exactly as it was sent, so the label is part of its text.
+
+A thread draws a labelled comment with its label, its decorations and its subject in bold. The thread card shows the icon of the opening comment's label beside the passage. Only blocking is red. When a page has open blocking threads, a Blocking only switch next to Show resolved lists just those.
+
+Agents keep writing every comment as a conventional comment. The `reflect` queue names the label of each thread's opening comment and whether it blocks, and lists a blocking thread before the other threads of its section. Agents answer blocking threads first.
 
 ## Who may do what
 
@@ -76,6 +105,7 @@ Access has two axes. They are set side by side: per account for every shared dom
 - A member of a private domain at knowledge `none` needs a Reflection level; without one the membership grants nothing and is refused.
 - An account whose write list leaves a domain out at most reads and comments there, whatever its levels say. The list never grants access.
 - An anonymous visitor reads a public domain's Reflection and never comments.
+- A source of another domain is shown only to a reader who may read engrams in that domain. Anyone else sees a count, for example "2 sources in a domain you cannot open", with no name and no state. The `reflection:` block they get leaves those sources out, and a write by them keeps those sources as they were. An agent that may not open the domain gets the queue item with the words "a source in a domain you cannot open has changed", so it asks a person instead of updating blind. Taking feedback into the engrams of another domain needs the right to write there. Without it, the agent answers in a thread or settles the item as kept.
 - A version before 0.26.0 does not know the knowledge level `none` and reads it as `viewer`. So before you go back to an older version, give those accounts and members a level that is right for the older version.
 
 The commands:
@@ -99,6 +129,7 @@ crystalline domain members eng add ada --level none --reflection reader
 | update | `source_changed` | An engram a section was built from changed. |
 | update | `source_retired` | An engram a section was built from was retired. |
 | update | `source_missing` | An engram a section was built from is gone. |
+| update | `source_unavailable` | Sources of a page in a domain that cannot be checked here: the domain is not on this instance, or it is a domain of a connected server. One item per page and domain. Keep them while the domain may come back, or leave one out of its section's sources to drop it. |
 | update | `unreflected` | An engram no section covers yet. |
 | update | `off_structure` | A page fits none of the pact's `## Structure` globs. |
 | update | `pact_changed` | The pact changed since the pages were last brought in line with it. |
@@ -164,7 +195,7 @@ The home backs the whole `reflections/` folder up to the branch `crystalline/ref
 - At once after an agent's write, a comment, a settle, a move or a delete, and when a co-editing session closes.
 - After one minute without a new edit, for a person's edits in a co-editing session or a change on disk.
 
-The branch starts empty and never carries an engram. "Share changes" never offers a file under `reflections/`. A change marked while the daemon restarts is committed with the next one. A failed backup is tried again later, with a growing wait up to one hour.
+The branch starts empty and never carries an engram. It keeps each page as it is on disk, so it also holds the names of other domains a page cites as sources, and the team's repository shows them. The domain archive an admin downloads carries the pages the same way. "Share changes" never offers a file under `reflections/`. A change marked while the daemon restarts is committed with the next one. A failed backup is tried again later, with a growing wait up to one hour.
 
 To move the home to a new `service.public_url` or to another server, copy the `reflections/` folder there first (the restore steps below work for that too). Then switch Reflection off and on again at the new home, in one go. That fills in `reflection_home` again. Do not share changes between the two steps: while the switch is off, "share changes" offers the files in `reflections/` as engram changes. Share the MANIFEST change at once after the switch-on. Until the old home pulls it, both instances act as the home and back up to the same branch. The old home stops when it pulls the change.
 

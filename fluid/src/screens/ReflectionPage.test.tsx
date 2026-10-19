@@ -11,6 +11,8 @@ import { clearDraft, readDraft, writeDraft } from "../editor/drafts";
 import type { Answer } from "../test/harness";
 import {
   answersFor,
+  defaultPolicyRows,
+  manifestSectionsResponse,
   meResponse,
   renderApp,
   userFixture,
@@ -22,6 +24,17 @@ vi.mock("../api/client", async (importOriginal) => {
   return { ...actual, api: vi.fn(), setCsrfToken: vi.fn() };
 });
 const apiMock = vi.mocked(api);
+// A tick whose box is no longer where the page drew it: `refuse` makes the
+// next `tickAt` answer null, the way a page that moved underneath does.
+const tickControl = vi.hoisted(() => ({ refuse: false }));
+vi.mock("../taskTick", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../taskTick")>();
+  return {
+    ...actual,
+    tickAt: (...args: Parameters<typeof actual.tickAt>) =>
+      tickControl.refuse ? null : actual.tickAt(...args),
+  };
+});
 
 const MARKDOWN =
   "---\ntitle: Deploying\nreflection:\n  7f3a9c2e:\n    sources:\n      - engram: runbooks/deploy\n        checksum: ab\n---\n\n# Deploying\n\nShort intro.\n\n## Night deploys\n<!-- r:7f3a9c2e -->\n\nDeploys run at night.\n";
@@ -117,6 +130,45 @@ describe("the reflection page", () => {
       article.querySelector("#s-7f3a9c2e")?.getAttribute("data-section"),
     ).toBe("7f3a9c2e");
     expect(article.querySelector("#s-_top")).not.toBeNull();
+  });
+
+  it("lists the page's sections above the threads once there are three", async () => {
+    const heads = ["Night deploys", "Rollbacks", "Alerts"];
+    serve("curate", true, {
+      "/domains/eng/reflections/guides/deploying.md": () =>
+        doc({
+          markdown: `# Deploying\n\nIntro.\n\n${heads
+            .map((h, i) => `## ${h}\n<!-- r:0000000${String(i)} -->\n\nText.\n`)
+            .join("\n")}`,
+          sections: heads.map((heading, i) => ({
+            id: `0000000${String(i)}`,
+            heading,
+            line: 5 + i * 5,
+            changed: false,
+            sources: [],
+          })),
+        }),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const nav = await screen.findByRole("navigation", {
+      name: "On this page",
+    });
+    expect(
+      Array.from(nav.querySelectorAll("a")).map((a) => a.textContent),
+    ).toEqual(heads);
+    expect(nav.querySelector("a")?.getAttribute("href")).toBe("#s-00000000");
+    expect(document.getElementById("s-00000000")).not.toBeNull();
+  });
+
+  it("draws no outline for a page with one section", async () => {
+    serve("curate", true);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await within(await screen.findByRole("article")).findByText(
+      "Deploys run at night.",
+    );
+    expect(
+      screen.queryByRole("navigation", { name: "On this page" }),
+    ).toBeNull();
   });
 
   it("draws one h1 when the page's own title is not its first line", async () => {
@@ -535,6 +587,88 @@ describe("the reflection page", () => {
     expect(
       screen.queryByRole("button", { name: / for Day deploys$/ }),
     ).toBeNull();
+  });
+
+  it("links a source of another domain into that domain, with a quiet domain marker", async () => {
+    serve("curate", true, {
+      "/domains/eng/reflections/guides/deploying.md": () =>
+        doc({
+          sections: [
+            {
+              id: "7f3a9c2e",
+              heading: "Night deploys",
+              line: 14,
+              changed: false,
+              sources: [
+                {
+                  permalink: "runbooks/deploy",
+                  title: "Deploy runbook",
+                  state: "current",
+                },
+                {
+                  permalink: "team/harbor-team",
+                  title: "Harbor team",
+                  state: "unavailable",
+                  domain: "harbor",
+                },
+              ],
+            },
+          ],
+        }),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const control = await screen.findByRole("button", {
+      name: "2 sources for Night deploys",
+    });
+    expect(control).toHaveAccessibleDescription(
+      "A source cannot be checked here.",
+    );
+    await userEvent.click(control);
+    const list = document.getElementById(
+      control.getAttribute("aria-controls") as string,
+    ) as HTMLElement;
+    expect(
+      within(list).getByRole("link", { name: "Deploy runbook" }),
+    ).toHaveAttribute("href", "/d/eng/e/runbooks/deploy");
+    // Its domain cannot be checked here: named, not linked.
+    expect(
+      within(list).queryByRole("link", { name: /Harbor team/ }),
+    ).toBeNull();
+    const row = within(list)
+      .getByText("Harbor team")
+      .closest("li") as HTMLElement;
+    expect(row).toHaveTextContent("Harbor team in domain harbor");
+    expect(within(row).getByText("not checked here")).toBeVisible();
+  });
+
+  it("shows sources in a domain the reader cannot open as a count, never by name", async () => {
+    serve("curate", true, {
+      "/domains/eng/reflections/guides/deploying.md": () =>
+        doc({
+          sections: [
+            {
+              id: "7f3a9c2e",
+              heading: "Night deploys",
+              line: 14,
+              changed: false,
+              sources: [],
+              hidden_sources: 2,
+            },
+          ],
+        }),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const control = await screen.findByRole("button", {
+      name: "2 sources for Night deploys",
+    });
+    await userEvent.click(control);
+    const list = document.getElementById(
+      control.getAttribute("aria-controls") as string,
+    ) as HTMLElement;
+    expect(
+      within(list).getByText("2 sources in a domain you cannot open"),
+    ).toBeVisible();
+    expect(within(list).queryByRole("link")).toBeNull();
   });
 
   it("points the toggle at a list that exists while closed", async () => {
@@ -1177,5 +1311,241 @@ describe("the reflection page while somebody is selecting", () => {
   it("keeps the passage and the selection when only the threads changed", async () => {
     const seen = await refetchUnderSelection(() => doc({ threads: [thread] }));
     expect(seen).toEqual({ removed: 0, selected: "Deploys" });
+  });
+});
+
+describe("task boxes on a reflection page", () => {
+  const TASK_PAGE = [
+    "---",
+    "title: Checks",
+    "reflection:",
+    "  aaaa1111:",
+    "    sources: []",
+    "---",
+    "",
+    "# Checks",
+    "",
+    "## One",
+    "<!-- r:aaaa1111 -->",
+    "",
+    "- [ ] check",
+    "",
+    "## Two",
+    "<!-- r:bbbb2222 -->",
+    "",
+    "- [ ] check",
+    "- [~] not this time",
+    "",
+  ].join("\n");
+  const PAGE_PATH = "/domains/eng/reflections/guides/deploying.md";
+
+  function taskDoc() {
+    return doc({
+      title: "Checks",
+      markdown: TASK_PAGE,
+      sections: [
+        { id: "aaaa1111", heading: "One", line: 10, changed: false },
+        { id: "bbbb2222", heading: "Two", line: 15, changed: false },
+      ],
+    });
+  }
+
+  /** Every PUT body the mock has seen. */
+  function puts(): Record<string, unknown>[] {
+    return apiMock.mock.calls
+      .filter(([, init]) => init?.method === "PUT")
+      .map(
+        ([, init]) =>
+          JSON.parse(init?.body as string) as Record<string, unknown>,
+      );
+  }
+
+  function reads(): number {
+    return apiMock.mock.calls.filter(
+      ([path, init]) => path === PAGE_PATH && init?.method !== "PUT",
+    ).length;
+  }
+
+  /** The box in section Two, whose text is the same as the one in One. */
+  async function secondBox(): Promise<HTMLElement> {
+    const article = await screen.findByRole("article");
+    const two = await waitFor(() => {
+      const found = article.querySelector<HTMLElement>("#s-bbbb2222");
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
+    });
+    return within(two).findByRole("checkbox", { name: "check" });
+  }
+
+  it("saves the whole page with the box in the second section ticked", async () => {
+    serve("edit", true, {
+      [PAGE_PATH]: (_path, init) =>
+        init?.method === "PUT"
+          ? { checksum: "c2", landed: "live", present: ["ann"] }
+          : taskDoc(),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const box = await secondBox();
+    expect(box).toBeEnabled();
+    await userEvent.click(box);
+    const at = TASK_PAGE.lastIndexOf("- [ ] check") + 2;
+    await waitFor(() => {
+      expect(puts()).toEqual([
+        {
+          markdown: `${TASK_PAGE.slice(0, at)}[x]${TASK_PAGE.slice(at + 3)}`,
+          expected_checksum: "c1",
+        },
+      ]);
+    });
+    // The receipt landed in the live room: the page is read again.
+    await waitFor(() => {
+      expect(reads()).toBeGreaterThanOrEqual(2);
+    });
+    expect(
+      screen.getByRole("img", { name: "Not applicable: not this time" }),
+    ).toBeVisible();
+  });
+
+  it("reads the page again and says so when it changed underneath", async () => {
+    serve("edit", true, {
+      [PAGE_PATH]: (_path, init) => {
+        if (init?.method === "PUT") {
+          throw new ApiProblem(
+            409,
+            "conflict",
+            "stale edit: the page changed since it was read",
+          );
+        }
+        return taskDoc();
+      },
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await userEvent.click(await secondBox());
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The page changed. Try again.",
+    );
+    await waitFor(() => {
+      expect(reads()).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  it("shows the server's words for any other refusal", async () => {
+    serve("edit", true, {
+      [PAGE_PATH]: (_path, init) => {
+        if (init?.method === "PUT") {
+          throw new ApiProblem(
+            409,
+            "conflict",
+            "this Reflection moved to another host; edit it there",
+          );
+        }
+        return taskDoc();
+      },
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await userEvent.click(await secondBox());
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "this Reflection moved to another host; edit it there",
+    );
+  });
+
+  it("disables the box for a reader who may not edit the page", async () => {
+    serve("read", true, { [PAGE_PATH]: () => taskDoc() });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const box = await secondBox();
+    expect(box).toBeDisabled();
+    expect(box).toHaveAccessibleDescription(
+      "You can read this page but not change it",
+    );
+  });
+
+  it("disables the box for the anonymous viewer and says why", async () => {
+    serve("read", true, {
+      "/auth/me": () => meResponse({ anonymous: true }),
+      [PAGE_PATH]: () => taskDoc(),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const box = await secondBox();
+    expect(box).toBeDisabled();
+    expect(box).toHaveAccessibleDescription("Sign in to change this page");
+  });
+
+  it("says the page changed when the box is not where the page drew it", async () => {
+    serve("edit", true, { [PAGE_PATH]: () => taskDoc() });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const box = await secondBox();
+    tickControl.refuse = true;
+    try {
+      await userEvent.click(box);
+    } finally {
+      tickControl.refuse = false;
+    }
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The page changed. Try again.",
+    );
+    expect(puts()).toEqual([]);
+  });
+
+  it("sends one save for a double click", async () => {
+    let land: (value: unknown) => void = () => undefined;
+    serve("edit", true, {
+      [PAGE_PATH]: (_path, init) =>
+        init?.method === "PUT"
+          ? new Promise((resolve) => {
+              land = resolve;
+            })
+          : taskDoc(),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const box = await secondBox();
+    await userEvent.dblClick(box);
+    await waitFor(() => {
+      expect(puts()).toHaveLength(1);
+    });
+    expect(box).toHaveAccessibleDescription("Saving the last change");
+    land({ checksum: "c2", landed: "file" });
+    await waitFor(() => {
+      expect(reads()).toBeGreaterThanOrEqual(2);
+    });
+    expect(puts()).toHaveLength(1);
+  });
+
+  it("waits for the domain's lock before a box can be ticked", async () => {
+    serve("edit", true, {
+      "/domains/eng/manifest": () => new Promise(() => undefined),
+      [PAGE_PATH]: () => taskDoc(),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const box = await secondBox();
+    expect(box).toBeDisabled();
+    expect(box).toHaveAccessibleDescription(
+      "Checking whether this domain is locked",
+    );
+  });
+
+  it("disables the box in a read-only domain", async () => {
+    serve("edit", true, {
+      "/domains/eng/manifest": () => ({
+        domain: "eng",
+        markdown: "",
+        sections: manifestSectionsResponse({
+          policies: defaultPolicyRows().map((row) =>
+            row.key === "read_only"
+              ? { ...row, declared: "on", effective: "on" }
+              : row,
+          ),
+        }),
+      }),
+      [PAGE_PATH]: () => taskDoc(),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const box = await secondBox();
+    await waitFor(() => {
+      expect(box).toBeDisabled();
+    });
+    expect(box).toHaveAccessibleDescription(
+      "You can read this page but not change it",
+    );
+    expect(puts()).toEqual([]);
   });
 });

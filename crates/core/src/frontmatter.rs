@@ -921,7 +921,7 @@ mod tests {
         }
     }
 
-    const SCOTTY: &str = "---\ntype: manifest\ntitle: Scotty\npermalink: manifest\ntags:\n  - manifest\nstatus: stable\n---\n\n# Scotty\n\n## Scope\n\n- Engineering\n";
+    const HARBOR: &str = "---\ntype: manifest\ntitle: Harbor\npermalink: manifest\ntags:\n  - manifest\nstatus: stable\n---\n\n# Harbor\n\n## Scope\n\n- Engineering\n";
 
     fn with(text: &str, after: &str, line: &str) -> String {
         text.replacen(after, &format!("{after}{line}"), 1)
@@ -929,63 +929,63 @@ mod tests {
 
     #[test]
     fn a_key_both_sides_added_with_one_value_lands_once_in_upstreams_place() {
-        let local = with(SCOTTY, "status: stable\n", "domain_name: scotty\n");
-        let upstream = with(SCOTTY, "title: Scotty\n", "domain_name: scotty\n");
+        let local = with(HARBOR, "status: stable\n", "domain_name: harbor\n");
+        let upstream = with(HARBOR, "title: Harbor\n", "domain_name: harbor\n");
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Clean(upstream.clone())
         );
     }
 
     #[test]
     fn a_key_both_sides_added_with_different_values_is_a_conflict() {
-        let local = with(SCOTTY, "status: stable\n", "domain_name: scotty\n");
-        let upstream = with(SCOTTY, "title: Scotty\n", "domain_name: scotty-eng\n");
+        let local = with(HARBOR, "status: stable\n", "domain_name: harbor\n");
+        let upstream = with(HARBOR, "title: Harbor\n", "domain_name: harbor-eng\n");
         assert_eq!(
-            merge_frontmatter(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_frontmatter(Some(HARBOR), &local, &upstream, &trivial),
             FrontmatterMerge::Conflict
         );
     }
 
     #[test]
     fn a_key_deleted_on_one_side_and_changed_on_the_other_is_a_conflict() {
-        let local = SCOTTY.replace("status: stable\n", "");
-        let upstream = SCOTTY.replace("status: stable", "status: archived");
+        let local = HARBOR.replace("status: stable\n", "");
+        let upstream = HARBOR.replace("status: stable", "status: archived");
         assert_eq!(
-            merge_frontmatter(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_frontmatter(Some(HARBOR), &local, &upstream, &trivial),
             FrontmatterMerge::Conflict
         );
     }
 
     #[test]
     fn a_key_deleted_on_one_side_and_unchanged_on_the_other_is_gone() {
-        let local = SCOTTY.replace("status: stable\n", "");
-        let upstream = with(SCOTTY, "- Engineering\n", "- Warp\n");
+        let local = HARBOR.replace("status: stable\n", "");
+        let upstream = with(HARBOR, "- Engineering\n", "- Warp\n");
         let expected = with(&local, "- Engineering\n", "- Warp\n");
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Clean(expected)
         );
     }
 
     #[test]
     fn a_key_only_local_added_follows_its_local_predecessor_and_upstream_spelling_stays() {
-        let local = with(SCOTTY, "permalink: manifest\n", "owner: kim\n");
-        let upstream = SCOTTY.replace("status: stable", "status: 'archived'");
+        let local = with(HARBOR, "permalink: manifest\n", "owner: kim\n");
+        let upstream = HARBOR.replace("status: stable", "status: 'archived'");
         let expected = with(&upstream, "permalink: manifest\n", "owner: kim\n");
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Clean(expected)
         );
     }
 
     #[test]
     fn an_upstream_respelling_of_an_equal_value_wins() {
-        let local = with(SCOTTY, "- Engineering\n", "- Warp\n");
-        let upstream = SCOTTY.replace("status: stable", "status: 'stable'");
+        let local = with(HARBOR, "- Engineering\n", "- Warp\n");
+        let upstream = HARBOR.replace("status: stable", "status: 'stable'");
         let expected = with(&upstream, "- Engineering\n", "- Warp\n");
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Clean(expected)
         );
     }
@@ -993,26 +993,26 @@ mod tests {
     #[test]
     fn a_comment_only_local_added_survives_an_upstream_change() {
         let local = with(
-            SCOTTY,
+            HARBOR,
             "permalink: manifest\n",
             "# ask kim before renaming\n",
         );
-        let upstream = SCOTTY.replace("status: stable", "status: archived");
+        let upstream = HARBOR.replace("status: stable", "status: archived");
         let expected = with(
             &upstream,
             "permalink: manifest\n",
             "# ask kim before renaming\n",
         );
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Clean(expected)
         );
     }
 
     #[test]
     fn a_repeat_already_in_local_is_repaired_when_upstream_moves() {
-        let base = with(SCOTTY, "title: Scotty\n", "domain_name: scotty\n");
-        let local = with(&base, "status: stable\n", "domain_name: scotty\n");
+        let base = with(HARBOR, "title: Harbor\n", "domain_name: harbor\n");
+        let local = with(&base, "status: stable\n", "domain_name: harbor\n");
         let upstream = with(&base, "- Engineering\n", "- Warp\n");
         assert_eq!(
             merge_text(Some(&base), &local, &upstream, &trivial),
@@ -1022,28 +1022,28 @@ mod tests {
 
     #[test]
     fn a_repeat_with_different_values_in_one_side_is_a_conflict() {
-        let local = with(SCOTTY, "status: stable\n", "status: archived\n");
-        let upstream = with(SCOTTY, "- Engineering\n", "- Warp\n");
+        let local = with(HARBOR, "status: stable\n", "status: archived\n");
+        let upstream = with(HARBOR, "- Engineering\n", "- Warp\n");
         assert_eq!(
-            merge_frontmatter(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_frontmatter(Some(HARBOR), &local, &upstream, &trivial),
             FrontmatterMerge::Conflict
         );
     }
 
     #[test]
     fn a_side_that_cannot_be_cut_steps_aside_before_a_repeat_conflicts() {
-        let local = SCOTTY.replace("title: Scotty", "title: \"Scotty");
-        let upstream = with(SCOTTY, "status: stable\n", "status: archived\n");
+        let local = HARBOR.replace("title: Harbor", "title: \"Harbor");
+        let upstream = with(HARBOR, "status: stable\n", "status: archived\n");
         assert_eq!(
-            merge_frontmatter(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_frontmatter(Some(HARBOR), &local, &upstream, &trivial),
             FrontmatterMerge::NotApplicable
         );
     }
 
     #[test]
     fn a_list_changed_on_both_sides_merges_through_the_line_merge() {
-        let local = SCOTTY.replace("  - manifest\n", "  - manifest\n  - c\n");
-        let upstream = SCOTTY.replace("tags:\n  - manifest\n", "tags:\n  - z\n  - manifest\n");
+        let local = HARBOR.replace("  - manifest\n", "  - manifest\n  - c\n");
+        let upstream = HARBOR.replace("tags:\n  - manifest\n", "tags:\n  - z\n  - manifest\n");
         let block_merge = |b: &str, l: &str, u: &str| {
             if b == "tags:\n  - manifest\n" {
                 Some("tags:\n  - z\n  - manifest\n  - c\n".to_string())
@@ -1051,20 +1051,20 @@ mod tests {
                 trivial(b, l, u)
             }
         };
-        let expected = SCOTTY.replace(
+        let expected = HARBOR.replace(
             "tags:\n  - manifest\n",
             "tags:\n  - z\n  - manifest\n  - c\n",
         );
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &block_merge),
+            merge_text(Some(HARBOR), &local, &upstream, &block_merge),
             MergedText::Clean(expected)
         );
     }
 
     #[test]
     fn a_block_line_merge_that_spills_into_another_key_is_a_conflict() {
-        let local = SCOTTY.replace("  - manifest\n", "  - manifest\n  - c\n");
-        let upstream = SCOTTY.replace("tags:\n  - manifest\n", "tags:\n  - z\n  - manifest\n");
+        let local = HARBOR.replace("  - manifest\n", "  - manifest\n  - c\n");
+        let upstream = HARBOR.replace("tags:\n  - manifest\n", "tags:\n  - z\n  - manifest\n");
         let spilling = |b: &str, l: &str, u: &str| {
             if b == "tags:\n  - manifest\n" {
                 Some("tags:\n  - z\nowner: kim\n".to_string())
@@ -1073,18 +1073,18 @@ mod tests {
             }
         };
         assert_eq!(
-            merge_frontmatter(Some(SCOTTY), &local, &upstream, &spilling),
+            merge_frontmatter(Some(HARBOR), &local, &upstream, &spilling),
             FrontmatterMerge::Conflict
         );
     }
 
     #[test]
     fn mixed_line_endings_merge_by_key_as_lf() {
-        let local = with(SCOTTY, "status: stable\n", "domain_name: scotty\n");
-        let upstream = with(SCOTTY, "title: Scotty\n", "domain_name: scotty\n");
+        let local = with(HARBOR, "status: stable\n", "domain_name: harbor\n");
+        let upstream = with(HARBOR, "title: Harbor\n", "domain_name: harbor\n");
         assert_eq!(
             merge_text(
-                Some(SCOTTY),
+                Some(HARBOR),
                 &local,
                 &upstream.replace('\n', "\r\n"),
                 &trivial
@@ -1095,9 +1095,9 @@ mod tests {
 
     #[test]
     fn crlf_on_every_side_merges_as_lf() {
-        let base = SCOTTY.replace('\n', "\r\n");
-        let local = with(SCOTTY, "status: stable\n", "domain_name: scotty\n").replace('\n', "\r\n");
-        let upstream = with(SCOTTY, "title: Scotty\n", "domain_name: scotty\n");
+        let base = HARBOR.replace('\n', "\r\n");
+        let local = with(HARBOR, "status: stable\n", "domain_name: harbor\n").replace('\n', "\r\n");
+        let upstream = with(HARBOR, "title: Harbor\n", "domain_name: harbor\n");
         assert_eq!(
             merge_text(
                 Some(&base),
@@ -1112,26 +1112,26 @@ mod tests {
     #[test]
     fn a_side_without_frontmatter_steps_aside() {
         assert_eq!(
-            merge_frontmatter(Some(SCOTTY), "# plain\n", SCOTTY, &trivial),
+            merge_frontmatter(Some(HARBOR), "# plain\n", HARBOR, &trivial),
             FrontmatterMerge::NotApplicable
         );
     }
 
     #[test]
     fn a_base_without_frontmatter_counts_as_an_empty_one() {
-        let base = "\n# Scotty\n\n## Scope\n\n- Engineering\n";
-        let local = with(SCOTTY, "permalink: manifest\n", "owner: kim\n");
+        let base = "\n# Harbor\n\n## Scope\n\n- Engineering\n";
+        let local = with(HARBOR, "permalink: manifest\n", "owner: kim\n");
         assert_eq!(
-            merge_text(Some(base), &local, SCOTTY, &trivial),
+            merge_text(Some(base), &local, HARBOR, &trivial),
             MergedText::Clean(local.clone())
         );
     }
 
     #[test]
     fn both_sides_added_the_file_keys_on_one_side_merge() {
-        let local = with(SCOTTY, "permalink: manifest\n", "owner: kim\n");
+        let local = with(HARBOR, "permalink: manifest\n", "owner: kim\n");
         assert_eq!(
-            merge_text(None, &local, SCOTTY, &trivial),
+            merge_text(None, &local, HARBOR, &trivial),
             MergedText::Clean(local.clone())
         );
     }
@@ -1166,9 +1166,9 @@ mod tests {
 
     #[test]
     fn a_repeat_only_the_base_holds_steps_aside() {
-        let base = with(SCOTTY, "status: stable\n", "status: archived\n");
-        let local = with(SCOTTY, "- Engineering\n", "- Warp\n");
-        let upstream = SCOTTY.replace("status: stable", "status: archived");
+        let base = with(HARBOR, "status: stable\n", "status: archived\n");
+        let local = with(HARBOR, "- Engineering\n", "- Warp\n");
+        let upstream = HARBOR.replace("status: stable", "status: archived");
         assert_eq!(
             merge_frontmatter(Some(&base), &local, &upstream, &trivial),
             FrontmatterMerge::NotApplicable
@@ -1177,9 +1177,9 @@ mod tests {
 
     #[test]
     fn a_repeat_in_the_base_and_in_local_is_still_a_conflict() {
-        let base = with(SCOTTY, "status: stable\n", "status: archived\n");
+        let base = with(HARBOR, "status: stable\n", "status: archived\n");
         let local = with(&base, "- Engineering\n", "- Warp\n");
-        let upstream = SCOTTY.replace("status: stable", "status: archived");
+        let upstream = HARBOR.replace("status: stable", "status: archived");
         assert_eq!(
             merge_frontmatter(Some(&base), &local, &upstream, &trivial),
             FrontmatterMerge::Conflict
@@ -1199,8 +1199,8 @@ mod tests {
 
     fn tags_on_both_sides() -> (String, String) {
         (
-            SCOTTY.replace("  - manifest\n", "  - manifest\n  - c\n"),
-            SCOTTY.replace("tags:\n  - manifest\n", "tags:\n  - z\n  - manifest\n"),
+            HARBOR.replace("  - manifest\n", "  - manifest\n  - c\n"),
+            HARBOR.replace("tags:\n  - manifest\n", "tags:\n  - z\n  - manifest\n"),
         )
     }
 
@@ -1209,7 +1209,7 @@ mod tests {
         let (local, upstream) = tags_on_both_sides();
         let merge = tags_merged_as("tags:\n  - z\n  - manifest\n  - c");
         assert_eq!(
-            merge_frontmatter(Some(SCOTTY), &local, &upstream, &merge),
+            merge_frontmatter(Some(HARBOR), &local, &upstream, &merge),
             FrontmatterMerge::Conflict
         );
     }
@@ -1219,7 +1219,7 @@ mod tests {
         let (local, upstream) = tags_on_both_sides();
         let merge = tags_merged_as("# c\ntags:\n  - z\n  - manifest\n  - c\n");
         assert_eq!(
-            merge_frontmatter(Some(SCOTTY), &local, &upstream, &merge),
+            merge_frontmatter(Some(HARBOR), &local, &upstream, &merge),
             FrontmatterMerge::Conflict
         );
     }
@@ -1229,50 +1229,50 @@ mod tests {
         let (local, upstream) = tags_on_both_sides();
         let merge = tags_merged_as("labels:\n  - z\n  - manifest\n  - c\n");
         assert_eq!(
-            merge_frontmatter(Some(SCOTTY), &local, &upstream, &merge),
+            merge_frontmatter(Some(HARBOR), &local, &upstream, &merge),
             FrontmatterMerge::Conflict
         );
     }
 
     #[test]
     fn a_preamble_changed_on_one_side_is_kept() {
-        let local = SCOTTY.replacen("---\n", "---\n# p local\n", 1);
-        let upstream = SCOTTY.replace("status: stable", "status: archived");
+        let local = HARBOR.replacen("---\n", "---\n# p local\n", 1);
+        let upstream = HARBOR.replace("status: stable", "status: archived");
         let expected = upstream.replacen("---\n", "---\n# p local\n", 1);
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Clean(expected)
         );
     }
 
     #[test]
     fn a_preamble_changed_differently_on_both_sides_is_a_conflict() {
-        let local = SCOTTY.replacen("---\n", "---\n# p local\n", 1);
-        let upstream = SCOTTY.replacen("---\n", "---\n# p upstream\n", 1);
+        let local = HARBOR.replacen("---\n", "---\n# p local\n", 1);
+        let upstream = HARBOR.replacen("---\n", "---\n# p upstream\n", 1);
         assert_eq!(
-            merge_frontmatter(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_frontmatter(Some(HARBOR), &local, &upstream, &trivial),
             FrontmatterMerge::Conflict
         );
     }
 
     #[test]
     fn two_keys_only_local_added_keep_their_order_after_their_predecessor() {
-        let local = with(SCOTTY, "title: Scotty\n", "x: 1\ny: 2\n");
-        let upstream = SCOTTY.replace("status: stable", "status: archived");
-        let expected = with(&upstream, "title: Scotty\n", "x: 1\ny: 2\n");
+        let local = with(HARBOR, "title: Harbor\n", "x: 1\ny: 2\n");
+        let upstream = HARBOR.replace("status: stable", "status: archived");
+        let expected = with(&upstream, "title: Harbor\n", "x: 1\ny: 2\n");
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Clean(expected)
         );
     }
 
     #[test]
     fn a_key_only_local_added_with_no_predecessor_goes_first() {
-        let local = SCOTTY.replacen("---\n", "---\nfirst: 0\n", 1);
-        let upstream = SCOTTY.replacen("---\n", "---\nzero: z\n", 1);
-        let expected = SCOTTY.replacen("---\n", "---\nfirst: 0\nzero: z\n", 1);
+        let local = HARBOR.replacen("---\n", "---\nfirst: 0\n", 1);
+        let upstream = HARBOR.replacen("---\n", "---\nzero: z\n", 1);
+        let expected = HARBOR.replacen("---\n", "---\nfirst: 0\nzero: z\n", 1);
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Clean(expected)
         );
     }
@@ -1294,30 +1294,30 @@ mod tests {
         ];
         assert!(!consistent("", &wrong));
         let right =
-            key_blocks(split_frontmatter(SCOTTY).expect("frontmatter").yaml).expect("splits");
+            key_blocks(split_frontmatter(HARBOR).expect("frontmatter").yaml).expect("splits");
         assert!(consistent(&right.preamble, &right.blocks));
     }
 
     #[test]
     fn a_repeat_with_one_value_keeps_its_first_copy() {
         let local = with(
-            &with(SCOTTY, "title: Scotty\n", "domain_name: scotty\n"),
+            &with(HARBOR, "title: Harbor\n", "domain_name: harbor\n"),
             "status: stable\n",
-            "domain_name: 'scotty'\n",
+            "domain_name: 'harbor'\n",
         );
-        let upstream = with(SCOTTY, "- Engineering\n", "- Warp\n");
-        let expected = with(&upstream, "title: Scotty\n", "domain_name: scotty\n");
+        let upstream = with(HARBOR, "- Engineering\n", "- Warp\n");
+        let expected = with(&upstream, "title: Harbor\n", "domain_name: harbor\n");
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Clean(expected)
         );
     }
 
     #[test]
     fn a_crlf_base_with_lf_sides_merges_as_lf() {
-        let base = SCOTTY.replace('\n', "\r\n");
-        let local = with(SCOTTY, "status: stable\n", "domain_name: scotty\n");
-        let upstream = with(SCOTTY, "- Engineering\n", "- Warp\n");
+        let base = HARBOR.replace('\n', "\r\n");
+        let local = with(HARBOR, "status: stable\n", "domain_name: harbor\n");
+        let upstream = with(HARBOR, "- Engineering\n", "- Warp\n");
         assert_eq!(
             merge_text(Some(&base), &local, &upstream, &trivial),
             MergedText::Clean(with(&local, "- Engineering\n", "- Warp\n"))
@@ -1326,12 +1326,12 @@ mod tests {
 
     #[test]
     fn bodies_that_settle_never_reach_the_line_merge() {
-        let local = with(SCOTTY, "permalink: manifest\n", "owner: kim\n");
-        let upstream = with(SCOTTY, "- Engineering\n", "- Warp\n");
+        let local = with(HARBOR, "permalink: manifest\n", "owner: kim\n");
+        let upstream = with(HARBOR, "- Engineering\n", "- Warp\n");
         let expected = with(&upstream, "permalink: manifest\n", "owner: kim\n");
         let refusing = |_: &str, _: &str, _: &str| None;
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &refusing),
+            merge_text(Some(HARBOR), &local, &upstream, &refusing),
             MergedText::Clean(expected)
         );
     }
@@ -1358,223 +1358,223 @@ mod tests {
         );
     }
 
-    /// SCOTTY with `title` and `permalink` swapped.
-    fn scotty_title_after_permalink(text: &str) -> String {
+    /// HARBOR with `title` and `permalink` swapped.
+    fn harbor_title_after_permalink(text: &str) -> String {
         text.replace(
-            "title: Scotty\npermalink: manifest\n",
-            "permalink: manifest\ntitle: Scotty\n",
+            "title: Harbor\npermalink: manifest\n",
+            "permalink: manifest\ntitle: Harbor\n",
         )
     }
 
     #[test]
     fn a_local_reorder_survives_a_body_only_upstream_change() {
-        let local = scotty_title_after_permalink(SCOTTY);
-        let upstream = with(SCOTTY, "- Engineering\n", "- Warp\n");
+        let local = harbor_title_after_permalink(HARBOR);
+        let upstream = with(HARBOR, "- Engineering\n", "- Warp\n");
         let expected = with(&local, "- Engineering\n", "- Warp\n");
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Clean(expected)
         );
     }
 
     #[test]
     fn a_key_only_upstream_added_lands_after_its_upstream_predecessor_in_a_local_order() {
-        let local = scotty_title_after_permalink(SCOTTY);
-        let upstream = with(SCOTTY, "permalink: manifest\n", "owner: kim\n");
+        let local = harbor_title_after_permalink(HARBOR);
+        let upstream = with(HARBOR, "permalink: manifest\n", "owner: kim\n");
         let expected = with(&local, "permalink: manifest\n", "owner: kim\n");
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Clean(expected)
         );
     }
 
     #[test]
     fn an_upstream_reorder_wins_when_local_kept_the_base_order() {
-        let local = with(SCOTTY, "- Engineering\n", "- Warp\n");
-        let upstream = scotty_title_after_permalink(SCOTTY);
+        let local = with(HARBOR, "- Engineering\n", "- Warp\n");
+        let upstream = harbor_title_after_permalink(HARBOR);
         let expected = with(&upstream, "- Engineering\n", "- Warp\n");
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Clean(expected)
         );
     }
 
     #[test]
     fn when_both_sides_reordered_upstreams_order_wins() {
-        let local = scotty_title_after_permalink(SCOTTY);
-        let upstream = SCOTTY.replace(
+        let local = harbor_title_after_permalink(HARBOR);
+        let upstream = HARBOR.replace(
             "tags:\n  - manifest\nstatus: stable\n",
             "status: stable\ntags:\n  - manifest\n",
         );
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Clean(upstream.clone())
         );
     }
 
     #[test]
     fn without_a_base_upstreams_order_wins() {
-        let local = scotty_title_after_permalink(SCOTTY);
+        let local = harbor_title_after_permalink(HARBOR);
         assert_eq!(
-            merge_text(None, &local, SCOTTY, &trivial),
-            MergedText::Clean(SCOTTY.to_string())
+            merge_text(None, &local, HARBOR, &trivial),
+            MergedText::Clean(HARBOR.to_string())
         );
     }
 
     #[test]
     fn a_local_comment_survives_an_upstream_requoting_of_the_same_value() {
-        let local = SCOTTY.replace("status: stable", "status: stable # keep");
-        let upstream = SCOTTY.replace("status: stable", "status: \"stable\"");
+        let local = HARBOR.replace("status: stable", "status: stable # keep");
+        let upstream = HARBOR.replace("status: stable", "status: \"stable\"");
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Clean(local.clone())
         );
     }
 
     #[test]
     fn a_local_comment_on_the_key_line_is_a_conflict_when_upstream_changes_the_value() {
-        let local = SCOTTY.replace("status: stable", "status: stable # reviewed by kim");
-        let upstream = SCOTTY.replace("status: stable", "status: archived");
+        let local = HARBOR.replace("status: stable", "status: stable # reviewed by kim");
+        let upstream = HARBOR.replace("status: stable", "status: archived");
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Conflict
         );
     }
 
     #[test]
     fn a_local_comment_under_the_key_is_a_conflict_when_upstream_changes_the_value() {
-        let local = with(SCOTTY, "title: Scotty\n", "# the ship's engineer\n");
-        let upstream = SCOTTY.replace("title: Scotty", "title: Montgomery Scott");
+        let local = with(HARBOR, "title: Harbor\n", "# the ship's engineer\n");
+        let upstream = HARBOR.replace("title: Harbor", "title: Montgomery Scott");
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Conflict
         );
     }
 
     #[test]
     fn a_local_comment_is_kept_when_the_line_merge_carries_upstreams_value() {
-        let local = SCOTTY.replace("tags:\n", "tags:\n  # keep\n");
-        let upstream = SCOTTY.replace("  - manifest\n", "  - manifest\n  - warp\n");
+        let local = HARBOR.replace("tags:\n", "tags:\n  # keep\n");
+        let upstream = HARBOR.replace("  - manifest\n", "  - manifest\n  - warp\n");
         let merge = tags_merged_as("tags:\n  # keep\n  - manifest\n  - warp\n");
-        let expected = SCOTTY.replace(
+        let expected = HARBOR.replace(
             "tags:\n  - manifest\n",
             "tags:\n  # keep\n  - manifest\n  - warp\n",
         );
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &merge),
+            merge_text(Some(HARBOR), &local, &upstream, &merge),
             MergedText::Clean(expected)
         );
     }
 
     #[test]
     fn a_line_merge_that_loses_upstreams_value_under_a_local_comment_is_a_conflict() {
-        let local = SCOTTY.replace("tags:\n", "tags:\n  # keep\n");
-        let upstream = SCOTTY.replace("  - manifest\n", "  - manifest\n  - warp\n");
+        let local = HARBOR.replace("tags:\n", "tags:\n  # keep\n");
+        let upstream = HARBOR.replace("  - manifest\n", "  - manifest\n  - warp\n");
         let merge = tags_merged_as("tags:\n  # keep\n  - manifest\n");
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &merge),
+            merge_text(Some(HARBOR), &local, &upstream, &merge),
             MergedText::Conflict
         );
     }
 
     #[test]
     fn a_local_comment_on_a_key_upstream_removed_is_a_conflict() {
-        let local = SCOTTY.replace("status: stable", "status: stable # reviewed by kim");
-        let upstream = SCOTTY.replace("status: stable\n", "");
+        let local = HARBOR.replace("status: stable", "status: stable # reviewed by kim");
+        let upstream = HARBOR.replace("status: stable\n", "");
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Conflict
         );
     }
 
     #[test]
     fn an_upstream_comment_on_the_key_line_is_a_conflict_when_local_changes_the_value() {
-        let local = SCOTTY.replace("status: stable", "status: archived");
-        let upstream = SCOTTY.replace("status: stable", "status: stable # reviewed by kim");
+        let local = HARBOR.replace("status: stable", "status: archived");
+        let upstream = HARBOR.replace("status: stable", "status: stable # reviewed by kim");
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Conflict
         );
     }
 
     #[test]
     fn an_upstream_comment_under_the_key_is_a_conflict_when_local_changes_the_value() {
-        let local = SCOTTY.replace("title: Scotty", "title: Montgomery Scott");
-        let upstream = with(SCOTTY, "title: Scotty\n", "# the ship's engineer\n");
+        let local = HARBOR.replace("title: Harbor", "title: Montgomery Scott");
+        let upstream = with(HARBOR, "title: Harbor\n", "# the ship's engineer\n");
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Conflict
         );
     }
 
     #[test]
     fn an_upstream_comment_is_kept_when_the_line_merge_carries_locals_value() {
-        let local = SCOTTY.replace("  - manifest\n", "  - manifest\n  - warp\n");
-        let upstream = SCOTTY.replace("tags:\n", "tags:\n  # keep\n");
+        let local = HARBOR.replace("  - manifest\n", "  - manifest\n  - warp\n");
+        let upstream = HARBOR.replace("tags:\n", "tags:\n  # keep\n");
         let merge = tags_merged_as("tags:\n  # keep\n  - manifest\n  - warp\n");
-        let expected = SCOTTY.replace(
+        let expected = HARBOR.replace(
             "tags:\n  - manifest\n",
             "tags:\n  # keep\n  - manifest\n  - warp\n",
         );
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &merge),
+            merge_text(Some(HARBOR), &local, &upstream, &merge),
             MergedText::Clean(expected)
         );
     }
 
     #[test]
     fn a_line_merge_that_loses_locals_value_under_an_upstream_comment_is_a_conflict() {
-        let local = SCOTTY.replace("  - manifest\n", "  - manifest\n  - warp\n");
-        let upstream = SCOTTY.replace("tags:\n", "tags:\n  # keep\n");
+        let local = HARBOR.replace("  - manifest\n", "  - manifest\n  - warp\n");
+        let upstream = HARBOR.replace("tags:\n", "tags:\n  # keep\n");
         let merge = tags_merged_as("tags:\n  # keep\n  - manifest\n");
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &merge),
+            merge_text(Some(HARBOR), &local, &upstream, &merge),
             MergedText::Conflict
         );
     }
 
     #[test]
     fn an_upstream_comment_on_a_key_local_removed_is_a_conflict() {
-        let local = SCOTTY.replace("status: stable\n", "");
-        let upstream = SCOTTY.replace("status: stable", "status: stable # reviewed by kim");
+        let local = HARBOR.replace("status: stable\n", "");
+        let upstream = HARBOR.replace("status: stable", "status: stable # reviewed by kim");
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Conflict
         );
     }
 
     #[test]
     fn both_respellings_of_an_equal_list_are_line_merged() {
-        let local = SCOTTY.replace("tags:\n", "tags:\n  # keep\n");
-        let upstream = SCOTTY.replace("  - manifest\n", "  - \"manifest\"\n");
+        let local = HARBOR.replace("tags:\n", "tags:\n  # keep\n");
+        let upstream = HARBOR.replace("  - manifest\n", "  - \"manifest\"\n");
         let merge = tags_merged_as("tags:\n  # keep\n  - \"manifest\"\n");
-        let expected = SCOTTY.replace(
+        let expected = HARBOR.replace(
             "tags:\n  - manifest\n",
             "tags:\n  # keep\n  - \"manifest\"\n",
         );
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &merge),
+            merge_text(Some(HARBOR), &local, &upstream, &merge),
             MergedText::Clean(expected)
         );
     }
 
     #[test]
     fn a_line_merge_of_two_respellings_that_changes_the_value_keeps_local() {
-        let local = SCOTTY.replace("tags:\n", "tags:\n  # keep\n");
-        let upstream = SCOTTY.replace("  - manifest\n", "  - \"manifest\"\n");
+        let local = HARBOR.replace("tags:\n", "tags:\n  # keep\n");
+        let upstream = HARBOR.replace("  - manifest\n", "  - \"manifest\"\n");
         let merge = tags_merged_as("tags:\n  - other\n");
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &merge),
+            merge_text(Some(HARBOR), &local, &upstream, &merge),
             MergedText::Clean(local.clone())
         );
     }
 
     #[test]
     fn a_key_both_added_with_one_value_in_two_spellings_takes_upstreams_spelling() {
-        let local = with(SCOTTY, "title: Scotty\n", "domain_name: 'scotty'\n");
-        let upstream = with(SCOTTY, "title: Scotty\n", "domain_name: scotty\n");
+        let local = with(HARBOR, "title: Harbor\n", "domain_name: 'harbor'\n");
+        let upstream = with(HARBOR, "title: Harbor\n", "domain_name: harbor\n");
         assert_eq!(
-            merge_text(Some(SCOTTY), &local, &upstream, &trivial),
+            merge_text(Some(HARBOR), &local, &upstream, &trivial),
             MergedText::Clean(upstream.clone())
         );
     }

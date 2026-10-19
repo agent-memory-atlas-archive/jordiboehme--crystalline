@@ -355,7 +355,9 @@ async fn a_local_domain_switches_on_with_no_home_key_and_seeds_its_pact() {
     );
     let pact = std::fs::read_to_string(fx.root.join("reflections/PACT.md")).unwrap();
     assert!(
-        pact.contains("## Audience") && pact.contains("## Structure"),
+        pact.contains("## Audience")
+            && pact.contains("## Presentation")
+            && pact.contains("## Structure"),
         "{pact}"
     );
     // The seeded pact carries its section ids, so an unedited pact never
@@ -1548,6 +1550,51 @@ async fn a_page_citing_engrams_reads_only_its_sources() {
         "{err}"
     );
     assert!(!fx.root.join("reflections/b.md").exists());
+}
+
+/// A page with sources in another domain reads that domain one seek per
+/// cited engram: a queue pass scans only its own domain, so the local cost
+/// floor holds whatever the page cites elsewhere.
+#[tokio::test]
+async fn sources_in_another_domain_cost_no_scan_of_it() {
+    use crate::docs::{agent, write};
+    let fx = crate::sources::crossing().await;
+    let mut p = write(
+        "a.md",
+        "# Notes\n\nFor people.\n\n## Team\n\nOne.\n\n## Local\n\nTwo.\n",
+    );
+    p.sources = std::collections::BTreeMap::from([
+        (
+            "Team".to_string(),
+            vec![
+                "crystalline://harbor/team/harbor-team".to_string(),
+                "crystalline://harbor/team/rota".to_string(),
+            ],
+        ),
+        ("Local".to_string(), vec!["runbooks/deploy".to_string()]),
+    ]);
+    let before = fx.engine.recorded_path_loads();
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    fx.engine
+        .read_reflection("eng", "a.md", &agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        fx.engine.recorded_path_loads(),
+        before,
+        "a write and a read scan no domain"
+    );
+    let params = crystalline_service::params::ReflectParams {
+        domains: vec!["eng".into()],
+        ..Default::default()
+    };
+    let before = fx.engine.recorded_path_loads();
+    fx.engine.reflect(&params, &agent()).await.unwrap();
+    assert_eq!(
+        fx.engine.recorded_path_loads(),
+        before + 1,
+        "one scan, of eng only"
+    );
 }
 
 /// The engrams the gate remembers per domain follow the rows. The switch

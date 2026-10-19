@@ -21,6 +21,7 @@ from envs.crystalline_capture.adapter import CrystallineCaptureAdapter
 from envs.crystalline_collaboration.adapter import CrystallineCollaborationAdapter
 from envs.crystalline_evolve.adapter import CrystallineEvolveAdapter
 from envs.crystalline_memory.adapter import CrystallineMemoryAdapter
+from envs.crystalline_presentation.adapter import CrystallinePresentationAdapter
 from envs.crystalline_provisioning.adapter import CrystallineProvisioningAdapter
 from envs.crystalline_routing.adapter import CrystallineRoutingAdapter
 from envs.crystalline_schema.adapter import CrystallineSchemaAdapter
@@ -40,6 +41,9 @@ def main() -> None:
     )
     skillopt_eval._ENV_REGISTRY["crystalline_provisioning"] = (
         CrystallineProvisioningAdapter
+    )
+    skillopt_eval._ENV_REGISTRY["crystalline_presentation"] = (
+        CrystallinePresentationAdapter
     )
     skillopt_eval.main()
 

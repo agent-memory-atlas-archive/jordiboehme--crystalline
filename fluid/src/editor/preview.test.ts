@@ -80,6 +80,66 @@ describe("live preview", () => {
     view.destroy();
   });
 
+  it("hides an HTML comment off the lines being edited, as the page does", () => {
+    const doc = [
+      "# Notes",
+      "",
+      "<!-- sources: the log -->",
+      "",
+      "A line <!-- an aside --> goes on.",
+      "",
+      "<!--",
+      "a note over",
+      "three lines",
+      "-->",
+      "",
+      "<!-- before --> <b>after</b>",
+      "",
+      "```",
+      "<!-- in a fence -->",
+      "```",
+      "",
+      "<div>not a comment</div>",
+      "",
+      "End.",
+    ].join("\n");
+    const view = editor(doc);
+    const text = () => view.contentDOM.textContent;
+    for (const gone of [
+      "sources:",
+      "an aside",
+      "a note over",
+      "three lines",
+      "before",
+    ]) {
+      expect(text()).not.toContain(gone);
+    }
+    expect(text()).toContain("A line  goes on.");
+    expect(text()).toContain("<b>after</b>");
+    expect(text()).toContain("<!-- in a fence -->");
+    expect(text()).toContain("<div>not a comment</div>");
+    // On the line being edited a comment shows as written, and the bytes
+    // never changed.
+    view.dispatch({
+      selection: EditorSelection.cursor(doc.indexOf("an aside")),
+    });
+    expect(text()).toContain("A line <!-- an aside --> goes on.");
+    view.dispatch({
+      selection: EditorSelection.cursor(doc.indexOf("a note over")),
+    });
+    expect(text()).toContain("a note over");
+    expect(text()).not.toContain("three lines");
+    expect(docText(view.state)).toBe(doc);
+    view.destroy();
+  });
+
+  it("leaves a section id line to the hidden id lines", () => {
+    const doc = "## Night\n<!-- r:7f3a9c2e -->\n\nText.\n";
+    const view = editor(doc);
+    expect(view.contentDOM.textContent).toContain("<!-- r:7f3a9c2e -->");
+    view.destroy();
+  });
+
   it("leaves the frontmatter block undecorated", () => {
     const view = editor(DOC);
     expect(view.contentDOM.textContent).toContain("---");
@@ -144,5 +204,30 @@ describe("live preview", () => {
       expect(docText(view.state)).toBe(doc);
       view.destroy();
     }
+  });
+});
+
+describe("the not-applicable task state", () => {
+  it("draws [~] as a struck box that does not toggle", () => {
+    const doc = "# Doc\n\n- [~] skipped\n- [ ] open\n";
+    const view = editor(doc, 0);
+    const box = view.dom.querySelector<HTMLElement>(".cm-task-na");
+    expect(box).not.toBeNull();
+    expect(box?.getAttribute("aria-label")).toBe("Not applicable");
+    expect(box?.tagName).not.toBe("INPUT");
+    expect(view.contentDOM.textContent).not.toContain("[~]");
+    box?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    expect(docText(view.state)).toBe(doc);
+    // The open task keeps its own checkbox.
+    expect(view.dom.querySelectorAll("input.cm-task-toggle").length).toBe(1);
+    view.destroy();
+  });
+
+  it("shows [~] as written on the line the cursor is on", () => {
+    const doc = "# Doc\n\n- [~] skipped\n";
+    const view = editor(doc, doc.indexOf("skipped"));
+    expect(view.dom.querySelector(".cm-task-na")).toBeNull();
+    expect(view.contentDOM.textContent).toContain("- [~] skipped");
+    view.destroy();
   });
 });

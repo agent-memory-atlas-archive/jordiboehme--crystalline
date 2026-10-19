@@ -327,21 +327,33 @@ pub async fn tree(
         (
             status = 200,
             description = "ReflectionDoc. `markdown` is the whole file for a \
-                           caller with `engrams_visible`, and the file without \
-                           its `reflection:` frontmatter block for anyone else; \
-                           `sections` (and their one-based `line`) are computed \
-                           over the `markdown` answered; `checksum` is always the \
-                           stored file's. `sections[].sources` is absent, not \
-                           empty, without `engrams_visible`. `threads` holds the \
-                           open threads; `live` is present while a co-editing \
-                           room is open.",
+                           caller with `engrams_visible`, less the sources in \
+                           its `reflection:` block that name a domain the caller \
+                           may not open, and the file without that block for \
+                           anyone else; `sections` (and their one-based `line`) \
+                           are computed over the `markdown` answered; \
+                           `checksum` is always the stored file's. \
+                           `sections[].sources` is absent, not empty, without \
+                           `engrams_visible`. A source's `state` is `current`, \
+                           `changed`, `retired`, `missing` or `unavailable` \
+                           (its domain cannot be checked here); a source of \
+                           another domain than the page's carries `domain`, \
+                           the local name it is reached by here. \
+                           `sections[].hidden_sources` counts the sources in a \
+                           domain the caller may not open, which are never \
+                           named; absent when there are none. `threads` holds \
+                           the open threads; `live` is present while a \
+                           co-editing room is open.",
             body = Object,
             example = json!({ "domain": "eng", "path": "guides/deploying.md",
                 "title": "Deploying", "markdown": "# Deploying\n...",
                 "checksum": "9f2c...", "sections": [ { "id": "7f3a9c2e",
                     "heading": "Night deploys", "line": 12, "changed": true,
                     "sources": [ { "permalink": "runbooks/deploy",
-                        "title": "Deploy runbook", "state": "current" } ] } ],
+                        "title": "Deploy runbook", "state": "current" },
+                        { "permalink": "team/on-call", "domain": "ops",
+                        "title": "On call", "state": "changed" } ],
+                    "hidden_sources": 1 } ],
                 "threads": [], "live": { "present": ["jordi"] } }),
         ),
         (
@@ -958,7 +970,11 @@ pub struct QueueQuery {
                            `changed`, `removed`), `update` (`source_changed`, \
                            `source_retired`, `source_missing`, `unreflected`, \
                            `off_structure`, `pact_changed`) or `review` \
-                           (`thread`). `sources`, an `unreflected` item's \
+                           (`thread`, with `thread`, the thread's id, and, \
+                           when its opening comment is a conventional \
+                           comment, `label` and `blocking`; a blocking thread \
+                           comes first among the threads of its section). \
+                           `sources`, an `unreflected` item's \
                            `folder` and `engrams`, and an `engram_attachment` \
                            item's `targets` are absent for a caller who \
                            cannot read engrams. The MCP `reflect` tool answers \
@@ -978,7 +994,18 @@ pub struct QueueQuery {
                            the previous host wrote: `only_elsewhere` is \
                            `{ previous_host, engrams, attachments, pages, \
                            files }`, counts only, `previous_host` null when \
-                           unknown).",
+                           unknown) or `source_unavailable` (one per page and \
+                           domain that cannot be checked here, `section` null, \
+                           with `source_domain`, `count`, `sections` and \
+                           `note`). A source in `sources` may carry `domain`, \
+                           the local name of another domain than the page's. \
+                           Sources in a domain the caller may not open are \
+                           never named. A feedback item and an update item \
+                           then carry `hidden_sources`, their count, and \
+                           `note`, one plain sentence whatever their state. \
+                           A feedback item keeps its own `what`; for update \
+                           items such sources are always on the section's \
+                           `source_changed` item, aged by its page.",
             body = Object,
             example = json!({ "domain": "eng", "total": 1, "page": 1, "limit": 10,
                 "count": 1, "kinds": { "feedback": 0, "update": 1, "review": 0 },

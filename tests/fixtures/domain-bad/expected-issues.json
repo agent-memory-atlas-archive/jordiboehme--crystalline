@@ -143,6 +143,21 @@
       "severity": "error"
     },
     {
+      "path": "domain-bad/quality-markdown.md",
+      "rule": "Q006",
+      "severity": "warning"
+    },
+    {
+      "path": "domain-bad/quality-markdown.md",
+      "rule": "Q007",
+      "severity": "warning"
+    },
+    {
+      "path": "domain-bad/quality-markdown.md",
+      "rule": "Q008",
+      "severity": "info"
+    },
+    {
       "path": "domain-bad/quality-near-miss.md",
       "rule": "Q005",
       "severity": "info"

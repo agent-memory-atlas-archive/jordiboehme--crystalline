@@ -3,17 +3,19 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use crystalline_core::conventional::parse_conventional;
 use crystalline_core::reflection::{self as r, ReflectionState, Structure};
 use crystalline_core::threads::{self as th, SectionRef, ThreadStatus, Waiting};
 
 use super::reflection::{
     EngramFact, ReflectionAccess, reflection_abs, source_state, source_view, thread_view,
 };
+use super::sources::{HIDDEN_SOURCE_NOTE, unavailable_note};
 use super::*;
-use crate::scope::{ReflectionCaller, ReflectionRight};
+use crate::scope::{ReflectionCaller, ReflectionRight, Scope};
 
 /// How an agent works the queue, returned with every page.
-pub const REFLECT_GUIDANCE: &str = "Work feedback items first: read what the person changed and decide - take it into the engrams (change them, then write_reflection the section with its sources), keep it as their text (write_reflection action=settle outcome=kept), or answer it in a thread (discuss with answers_feedback). Then update items: bring changed engrams into their sections and write them with sources; cover unreflected engrams with a new section or reflection; move pages the pact's structure does not fit; apply a changed pact to the pages it affects. Files under reflections/assets/: link an unreferenced file from the section it belongs to, or remove it with write_reflection action=delete_asset (ask first: removing is irreversible); for a missing file, ask a person to add it or correct the link; an engram attachment cannot be embedded, so ask a person to copy the file into reflections/assets/ and point the link there. A host_moved item means this instance took the domain over on a shared database and its disk lacks files the previous host wrote: their rows are kept and counted, never written here, so do not rewrite or delete those pages and files; ask a person to copy the domain folder over (or restore it) and sync, or to run the sync with --accept-disk if the files are gone for good. Answer review threads in plain words - the people reading them may not see engrams.";
+pub const REFLECT_GUIDANCE: &str = "Work feedback items first: read what the person changed and decide - take it into the engrams (change them, then write_reflection the section with its sources), keep it as their text (write_reflection action=settle outcome=kept), or answer it in a thread (discuss with answers_feedback). Taking feedback into the engrams of another domain needs write access there; without it, answer in a thread or settle it as kept. Then update items: bring changed engrams into their sections and write them with sources; cover unreflected engrams with a new section or reflection; move pages the pact's structure does not fit; apply a changed pact to the pages it affects. Files under reflections/assets/: link an unreferenced file from the section it belongs to, or remove it with write_reflection action=delete_asset (ask first: removing is irreversible); for a missing file, ask a person to add it or correct the link; an engram attachment cannot be embedded, so ask a person to copy the file into reflections/assets/ and point the link there. A host_moved item means this instance took the domain over on a shared database and its disk lacks files the previous host wrote: their rows are kept and counted, never written here, so do not rewrite or delete those pages and files; ask a person to copy the domain folder over (or restore it) and sync, or to run the sync with --accept-disk if the files are gone for good. Answer review threads in plain words - the people reading them may not see engrams. Answer a person's thread and leave it open. The person who opened it resolves it. A thread item carries the label of its opening comment and whether it blocks: answer blocking threads first; a praise needs no answer unless it asks something. Present every page you write with the crystalline-presentation skill (the skills tool serves it).";
 
 const DEFAULT_LIMIT: usize = 10;
 const MAX_LIMIT: usize = 100;
@@ -60,6 +62,12 @@ impl Item {
             _ => 2,
         }
     }
+
+    /// Whether the item is a thread whose opening comment blocks: it comes
+    /// before the other items of its rank in its group.
+    fn blocks(&self) -> bool {
+        self.extra.get("blocking") == Some(&Value::Bool(true))
+    }
 }
 
 fn secs_since_rfc3339(at: Option<&str>) -> Option<i64> {
@@ -75,7 +83,8 @@ fn secs_since_epoch(mtime: i64) -> i64 {
     (chrono::Utc::now().timestamp() - mtime).max(0)
 }
 
-/// Rank items: groups oldest first, feedback before update before review inside.
+/// Rank items: groups oldest first, feedback before update before review
+/// inside, and a blocking thread before the other threads of its group.
 fn rank(items: Vec<Item>) -> Vec<Item> {
     let mut groups: Vec<Vec<Item>> = Vec::new();
     let mut index: HashMap<(String, String, SectionKey), usize> = HashMap::new();
@@ -92,7 +101,7 @@ fn rank(items: Vec<Item>) -> Vec<Item> {
         }
     }
     for group in &mut groups {
-        group.sort_by_key(Item::rank);
+        group.sort_by_key(|item| (item.rank(), !item.blocks()));
     }
     let oldest = |g: &Vec<Item>| g.iter().map(|i| i.age_secs).max().unwrap_or(0);
     groups.sort_by(|a, b| {
@@ -101,6 +110,25 @@ fn rank(items: Vec<Item>) -> Vec<Item> {
             .then_with(|| a[0].path.cmp(&b[0].path))
     });
     groups.into_iter().flatten().collect()
+}
+
+/// What a thread item carries beside its place: the thread's id and, when
+/// its opening comment is a conventional comment, that comment's label and
+/// whether it blocks. A plain opening comment adds neither key.
+fn thread_extra(thread: &th::Thread) -> Value {
+    let opening = thread
+        .entries
+        .first()
+        .filter(|entry| entry.kind == th::EntryKind::Comment)
+        .and_then(|entry| parse_conventional(&entry.text));
+    match opening {
+        Some(comment) => json!({
+            "thread": thread.id,
+            "label": comment.label.as_str(),
+            "blocking": comment.is_blocking(),
+        }),
+        None => json!({ "thread": thread.id }),
+    }
 }
 
 /// The text of `sections`, each normalized as the hash sees it, empty ones
@@ -141,7 +169,8 @@ enum Detail {
     /// Every member a queue row shows: diffs, sources.
     Full,
     /// Only what ranks and counts an item; no diff is rendered and no
-    /// source is looked up (the nudge counts).
+    /// source view is built, though every source's state is still read (the
+    /// nudge counts).
     Count,
     /// Only the update items, as [`Detail::Count`] builds them: no page is
     /// compared with its baseline for feedback and no thread is queued (the
@@ -150,15 +179,17 @@ enum Detail {
 }
 
 impl Engine {
-    /// Every open item of one domain's Reflection, unranked. `threads` is
-    /// [`Engine::all_threads`] of the same domain, read once by a caller
-    /// that needs the threads too.
+    /// Every open item of one domain's Reflection, unranked, as `scope`
+    /// may see them: a source in a domain it may not open is counted on its
+    /// item and never named. `threads` is [`Engine::all_threads`] of the
+    /// same domain, read once by a caller that needs the threads too.
     async fn detect_reflection(
         &self,
         domain: &str,
         access: &ReflectionAccess,
         detail: Detail,
         threads: &[(String, th::Thread, String)],
+        scope: &Scope,
     ) -> Result<Vec<Item>> {
         let full = detail == Detail::Full;
         let feedback = detail != Detail::Updates;
@@ -169,7 +200,29 @@ impl Engine {
                 store.host_move(access.domain_id).await?,
             )
         };
-        let facts = self.engram_facts(access.domain_id, domain).await?;
+        // The domain's own engrams are scanned once (the unreflected items
+        // need all of them); every other domain a source names is read one
+        // seek per cited permalink, for every page at once.
+        let provenances: Vec<r::Provenance> = rows
+            .iter()
+            .map(|row| r::read_provenance(&row.content))
+            .collect();
+        let foreign: Vec<&r::SourceRef> = provenances
+            .iter()
+            .flat_map(|prov| prov.values())
+            .flat_map(|record| record.sources.iter())
+            .filter(|src| src.domain.is_some())
+            .collect();
+        let sight = if foreign.is_empty() {
+            None
+        } else {
+            Some(self.source_sight(scope).await?)
+        };
+        let sees = |src: &r::SourceRef| sight.as_ref().is_none_or(|sight| sight.sees(src));
+        let own = self.engram_facts(access.domain_id, domain).await?;
+        let facts = self
+            .source_facts(domain, access.domain_id, Some(own), foreign.into_iter())
+            .await?;
         let open_thread = |id: &str| {
             threads
                 .iter()
@@ -184,7 +237,7 @@ impl Engine {
         let structure = Structure::new(&pact_globs);
         let mut cited: HashSet<String> = HashSet::new();
         let mut items = Vec::new();
-        for row in &rows {
+        for (row, prov) in rows.iter().zip(&provenances) {
             // The baseline is read for feedback alone, and the pact's is
             // always read: a changed pact is an update.
             let baseline = if feedback || row.path == r::PACT_FILE {
@@ -199,7 +252,6 @@ impl Engine {
             let no_feedback = baseline.is_none() && host_move.is_some();
             let baseline = baseline.unwrap_or_default();
             let row_age = secs_since_rfc3339(Some(&row.modified)).unwrap_or(0);
-            let prov = r::read_provenance(&row.content);
             if row.path == r::PACT_FILE {
                 let changes = if no_feedback {
                     Vec::new()
@@ -246,10 +298,13 @@ impl Engine {
                 let age = secs_since_rfc3339(record.and_then(|rec| rec.changed_at.as_deref()))
                     .unwrap_or(row_age);
                 let extra = if full {
-                    let sources: Vec<Value> = record
-                        .map(|rec| rec.sources.iter().map(|s| source_view(s, &facts)).collect())
-                        .unwrap_or_default();
-                    json!({
+                    let all = record.map(|rec| rec.sources.as_slice()).unwrap_or_default();
+                    let sources: Vec<Value> = all
+                        .iter()
+                        .filter(|s| sees(s))
+                        .map(|s| source_view(s, &facts))
+                        .collect();
+                    let mut extra = json!({
                         "changed_by": record.map(|rec| rec.changed_by.clone()).unwrap_or_default(),
                         "diff": diffy::create_patch(
                             &r::normalize_section_text(&change.before),
@@ -257,7 +312,13 @@ impl Engine {
                         )
                         .to_string(),
                         "sources": sources,
-                    })
+                    });
+                    let hidden = all.iter().filter(|s| !sees(s)).count();
+                    if hidden > 0 {
+                        extra["hidden_sources"] = json!(hidden);
+                        extra["note"] = json!(HIDDEN_SOURCE_NOTE);
+                    }
+                    extra
                 } else {
                     Value::Null
                 };
@@ -272,6 +333,9 @@ impl Engine {
                     extra,
                 });
             }
+            // The sources of domains that cannot be checked here, by
+            // domain: the count and the sections that cite them.
+            let mut unavailable: BTreeMap<&str, (usize, Vec<String>)> = BTreeMap::new();
             for section in r::split_sections(&row.content) {
                 let Some(id) = section.id.as_deref() else {
                     continue;
@@ -279,28 +343,68 @@ impl Engine {
                 let Some(record) = prov.get(id) else {
                     continue;
                 };
-                let mut by_what: BTreeMap<&'static str, (i64, Vec<Value>)> = BTreeMap::new();
+                // Per `what`: the oldest age, the sources shown, and how many
+                // the caller may not see.
+                let mut by_what: BTreeMap<&'static str, (i64, Vec<Value>, usize)> = BTreeMap::new();
                 for src in &record.sources {
-                    cited.insert(src.engram.clone());
+                    // Unreflected stays per domain: citing another domain's
+                    // engram covers nothing of this one.
+                    if src.domain.is_none() {
+                        cited.insert(src.engram.clone());
+                    }
                     // The read and the queue decide a source's state in one place.
+                    let state = source_state(src, &facts).0;
+                    // A source the caller may not see tells nothing of
+                    // itself: whatever its state, and whether its domain is
+                    // registered here or not, it counts as one changed
+                    // source, aged by the page, never by its engram.
+                    if !sees(src) {
+                        if state != "current" {
+                            let entry =
+                                by_what
+                                    .entry("source_changed")
+                                    .or_insert((0, Vec::new(), 0));
+                            entry.0 = entry.0.max(row_age);
+                            entry.2 += 1;
+                        }
+                        continue;
+                    }
                     let engram_age = || {
                         facts
-                            .get(&src.engram)
+                            .fact(src)
                             .map_or(row_age, |f| secs_since_epoch(f.mtime))
                     };
-                    let (what, age) = match source_state(src, &facts).0 {
+                    let (what, age) = match state {
                         "missing" => ("source_missing", row_age),
                         "retired" => ("source_retired", engram_age()),
                         "changed" => ("source_changed", engram_age()),
+                        "unavailable" => {
+                            // By the name the read view shows (the local
+                            // one), the stored name when nothing resolves.
+                            if let Some(domain) = facts.shown_domain(src).or(src.domain.as_deref())
+                            {
+                                let entry = unavailable.entry(domain).or_default();
+                                entry.0 += 1;
+                                if !entry.1.iter().any(|s| s == id) {
+                                    entry.1.push(id.to_string());
+                                }
+                            }
+                            continue;
+                        }
                         _ => continue,
                     };
-                    let entry = by_what.entry(what).or_insert((0, Vec::new()));
+                    let entry = by_what.entry(what).or_insert((0, Vec::new(), 0));
                     entry.0 = entry.0.max(age);
                     if full {
                         entry.1.push(source_view(src, &facts));
                     }
                 }
-                for (what, (age, sources)) in by_what {
+                for (what, (age, sources, hidden)) in by_what {
+                    let mut extra = json!({ "sources": sources });
+                    if hidden > 0 {
+                        extra["hidden_sources"] = json!(hidden);
+                        extra["note"] = json!(HIDDEN_SOURCE_NOTE);
+                    }
                     items.push(Item {
                         kind: "update",
                         what,
@@ -309,9 +413,30 @@ impl Engine {
                         section: Some(id.to_string()),
                         heading: section.heading.clone(),
                         age_secs: age,
-                        extra: json!({ "sources": sources }),
+                        extra,
                     });
                 }
+            }
+            // One item per page and domain that cannot be checked here, so
+            // no agent drops a source because a domain is offline. Those in
+            // a domain the caller may not open are on the section's changed
+            // item above, as any other source it may not see.
+            for (source_domain, (count, sections)) in unavailable {
+                items.push(Item {
+                    kind: "update",
+                    what: "source_unavailable",
+                    domain: domain.to_string(),
+                    path: row.path.clone(),
+                    section: None,
+                    heading: String::new(),
+                    age_secs: row_age,
+                    extra: json!({
+                        "source_domain": source_domain,
+                        "count": count,
+                        "sections": sections,
+                        "note": unavailable_note(source_domain),
+                    }),
+                });
             }
             if !structure.fits(&row.path) {
                 items.push(Item {
@@ -406,7 +531,7 @@ impl Engine {
             });
         }
         let mut loose: BTreeMap<String, Vec<&EngramFact>> = BTreeMap::new();
-        for fact in facts.values() {
+        for fact in facts.own.values() {
             if cited.contains(&fact.permalink)
                 || fact.permalink == "manifest"
                 || crystalline_index::is_retired_status(&fact.status.to_lowercase())
@@ -469,7 +594,7 @@ impl Engine {
                 section,
                 heading,
                 age_secs: secs_since_rfc3339(Some(thread.last_at())).unwrap_or(0),
-                extra: json!({ "thread": thread.id }),
+                extra: thread_extra(thread),
             });
         }
         Ok(items)
@@ -519,6 +644,11 @@ impl Engine {
                     obj.remove("folder");
                     // The engram file paths a page links.
                     obj.remove("targets");
+                    // What an item says of sources in other domains.
+                    obj.remove("source_domain");
+                    obj.remove("hidden_sources");
+                    obj.remove("note");
+                    obj.remove("sections");
                 }
                 row
             })
@@ -646,7 +776,7 @@ impl Engine {
             visible_everywhere &= access.engrams_visible;
             let found = match self.all_threads(&access).await {
                 Ok(threads) => {
-                    self.detect_reflection(&domain, &access, Detail::Full, &threads)
+                    self.detect_reflection(&domain, &access, Detail::Full, &threads, &caller.scope)
                         .await
                 }
                 Err(e) => Err(e),
@@ -691,7 +821,7 @@ impl Engine {
             .await?;
         let threads = self.all_threads(&access).await?;
         let items = rank(
-            self.detect_reflection(domain, &access, Detail::Full, &threads)
+            self.detect_reflection(domain, &access, Detail::Full, &threads, &caller.scope)
                 .await?,
         );
         let mut value = Self::page_json(&items, &[], limit, page, access.engrams_visible);
@@ -750,7 +880,7 @@ impl Engine {
             out.into_iter().map(|(_, v)| v).collect()
         };
         let items = rank(
-            self.detect_reflection(domain, &access, Detail::Full, &threads)
+            self.detect_reflection(domain, &access, Detail::Full, &threads, &caller.scope)
                 .await?,
         );
         let mut queue = Self::page_json(&items, &[], Some(50), Some(1), access.engrams_visible);
@@ -833,7 +963,7 @@ impl Engine {
             .collect();
         open_by_page.sort_by(|a, b| a.0.cmp(b.0));
         let items = self
-            .detect_reflection(domain, &access, Detail::Updates, &threads)
+            .detect_reflection(domain, &access, Detail::Updates, &threads, &caller.scope)
             .await?;
         let shown: Vec<&Item> = items
             .iter()
@@ -876,7 +1006,7 @@ impl Engine {
             };
             let found = match self.all_threads(&access).await {
                 Ok(threads) => {
-                    self.detect_reflection(&domain, &access, Detail::Count, &threads)
+                    self.detect_reflection(&domain, &access, Detail::Count, &threads, &caller.scope)
                         .await
                 }
                 Err(e) => Err(e),

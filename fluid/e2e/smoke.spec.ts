@@ -582,6 +582,26 @@ test("an engram renders its mermaid fence as a diagram", async ({ page }) => {
   await expect(page.locator('article svg[id^="mermaid-"]')).toBeVisible();
 });
 
+test("an engram draws no HTML comment, and a heading first in a quote or an item sits at its top", async ({
+  page,
+}) => {
+  await openEngram(page, "Lantern Protocol");
+  const article = page.locator("main article").first();
+  await expect(article).toContainText("The light stays lit");
+  await expect(article).not.toContainText("sources:");
+  await expect(article).not.toContainText("checked in March");
+  await expect(article).not.toContainText("<!--");
+  const top = (name: string) =>
+    article
+      .getByRole("heading", { name })
+      .evaluate((el) => getComputedStyle(el).marginTop);
+  // The first thing in a quote or a list item has no space above it, as
+  // before the print sheet grouped headings; a heading of the page keeps its.
+  expect(await top("Night handover")).toBe("0px");
+  expect(await top("Sign the log")).toBe("0px");
+  expect(await top("Observations")).not.toBe("0px");
+});
+
 test("a multi-segment permalink loads from the address bar", async ({
   page,
 }) => {

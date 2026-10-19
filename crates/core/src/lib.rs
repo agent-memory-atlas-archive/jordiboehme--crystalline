@@ -19,6 +19,7 @@ pub mod address;
 pub mod attachment;
 pub mod base;
 pub mod config;
+pub mod conventional;
 pub mod emit;
 pub mod engram;
 pub mod folders;
@@ -34,6 +35,7 @@ pub mod layout;
 pub mod line_endings;
 pub mod manifest;
 pub mod manifest_view;
+pub mod markdown;
 pub mod names;
 pub mod parse;
 pub mod path;
@@ -91,6 +93,9 @@ pub use manifest::{
     generated_indexes_at, in_root_artifact_dirs, manifest_template, policy_registry, read_only_at,
     read_only_of_source, reflection_at, reflection_home_at, sharing_at, starter_stanzas,
     tag_alias_pairs, validate_reflection_home,
+};
+pub use markdown::{
+    CALLOUT_KINDS, MarkdownFinding, STATUS_COLOURS, lint_engram_source, lint_markdown,
 };
 pub use names::{NameInput, NameTable};
 pub use parse::{

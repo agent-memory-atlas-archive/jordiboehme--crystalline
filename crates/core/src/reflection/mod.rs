@@ -33,20 +33,22 @@ pub use assets::{
 };
 pub use baseline::{
     ChangeKind, Relinked, SectionChange, advance_baseline, baseline_ids, feedback_changes,
-    parse_baseline, relink, render_baseline,
+    parse_baseline, relink, render_baseline, same_but_task_boxes,
 };
 pub use layout::{
     BASELINE_DIR, PACT_FILE, REFLECTIONS_DIR, ReflectionFile, Structure, THREADS_SUFFIX,
     baseline_path, classify, domain_rel, fits_structure, is_under_reflections, reflection_folders,
-    structure_globs, threads_path, validate_reflection_path,
+    structure_globs, threads_path, validate_new_reflection_path, validate_reflection_path,
 };
 pub use links::{rebase_links, relative_to, rewrite_asset_links, rewrite_links_to};
 pub use provenance::{
-    PROVENANCE_KEY, Provenance, SectionRecord, SourceRef, read_provenance, text_changed, title_of,
-    write_provenance,
+    PROVENANCE_KEY, Provenance, SectionRecord, SourceName, SourceRef, block_as_written,
+    parse_source_name, read_provenance, respell_source_domains, source_domains_named, text_changed,
+    title_of, write_provenance,
 };
 pub use sections::{
-    Section, TOP_SECTION, assign_ids, edit_section, find_section, id_line, normalize_section_text,
-    parse_id_line, random_section_id, reattach_ids, section_hash, split_sections,
+    Section, SectionKeyMiss, TOP_SECTION, WrittenIds, assign_ids, drop_written_ids, edit_section,
+    find_section, id_line, normalize_section_text, parse_id_line, random_section_id, reattach_ids,
+    resolve_section_key, section_hash, split_sections,
 };
 pub use state::{ReflectionHome, ReflectionState};

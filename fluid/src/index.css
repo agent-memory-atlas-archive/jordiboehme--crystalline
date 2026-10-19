@@ -115,6 +115,29 @@
     --mark: var(--color-amber-100);
     --mark-rule: var(--color-amber-500);
     --mark-active: var(--color-accent-200);
+    /*
+     * The six callout kinds (`Callout.tsx`): the colour of the rule, the
+     * icon and a 6% tint. Text in a callout stays ink, so its contrast is
+     * the page's own.
+     */
+    --callout-note: var(--color-blue-600);
+    --callout-tip: var(--color-green-600);
+    --callout-important: var(--color-purple-600);
+    --callout-warning: var(--color-amber-600);
+    --callout-caution: var(--color-red-600);
+    --callout-details: var(--muted);
+    /*
+     * The six status label colours (`StatusLabel.tsx`): the ring and a light
+     * tint. The words stay ink, so their contrast is the page's own.
+     */
+    --status-grey: var(--muted);
+    --status-blue: var(--color-blue-600);
+    --status-green: var(--color-green-600);
+    --status-yellow: var(--color-yellow-600);
+    --status-red: var(--color-red-600);
+    --status-purple: var(--color-purple-600);
+    /* A blocking conventional comment's dot and icon (`CommentLabel.tsx`). */
+    --blocking: var(--color-red-600);
     /* The mode switch's track and its raised half, and a menu's shadow. */
     --seg: #f1f5f9;
     --seg-on: #ffffff;
@@ -172,6 +195,19 @@
       );
       --mark: color-mix(in srgb, var(--color-amber-400) 16%, transparent);
       --mark-rule: #d6a23a;
+      --callout-note: var(--color-blue-400);
+      --callout-tip: var(--color-green-400);
+      --callout-important: var(--color-purple-400);
+      --callout-warning: var(--color-amber-400);
+      --callout-caution: var(--color-red-400);
+      --callout-details: var(--muted);
+      --status-grey: var(--muted);
+      --status-blue: var(--color-blue-400);
+      --status-green: var(--color-green-400);
+      --status-yellow: var(--color-yellow-400);
+      --status-red: var(--color-red-400);
+      --status-purple: var(--color-purple-400);
+      --blocking: var(--color-red-400);
       --mark-active: color-mix(
         in srgb,
         var(--color-accent-400) 32%,
@@ -219,7 +255,86 @@
  * the same `data-theme` attribute every other themed thing follows, and no
  * stylesheet the bundle has to reach through the dependency tree for.
  */
+/*
+ * The one menu face (overhaul spec 5.6), drawn by `MENU_CLASSES` and
+ * `ITEM_CLASSES` (components/menu.ts) and by the switcher and avatar menus
+ * below. The rows take their ink from the surface, so a destructive row's own
+ * red is never fought over.
+ */
+@utility menu-face {
+  @apply z-50 max-w-[calc(100vw-1rem)] rounded-xl border border-hair bg-raised p-1.5 text-[13.5px] text-ink-2 shadow-pop;
+}
+@utility menu-row {
+  @apply flex h-11 cursor-pointer items-center gap-2.5 rounded-[7px] px-2.5 outline-none select-none data-[highlighted]:bg-sunken data-[state=open]:bg-sunken md:h-[34px];
+}
+
 @layer components {
+  /*
+   * A callout (`Callout.tsx`): a 3px rule and a light tint in its kind's
+   * colour, no box. The kind arrives as `data-callout`.
+   */
+  .callout {
+    --callout: var(--callout-note);
+    border-left: 3px solid var(--callout);
+    background: color-mix(in srgb, var(--callout) 6%, transparent);
+  }
+  .callout[data-callout="tip"] {
+    --callout: var(--callout-tip);
+  }
+  .callout[data-callout="important"] {
+    --callout: var(--callout-important);
+  }
+  .callout[data-callout="warning"] {
+    --callout: var(--callout-warning);
+  }
+  .callout[data-callout="caution"] {
+    --callout: var(--callout-caution);
+  }
+  .callout[data-callout="details"] {
+    --callout: var(--callout-details);
+  }
+  /*
+   * A status label (`StatusLabel.tsx`): a pill at cap height, a 1px ring and
+   * a light tint in its colour, the words in ink. The colour arrives as
+   * `data-status`; on paper the tint goes and the ring stays.
+   */
+  .status-label {
+    --status: var(--status-grey);
+    display: inline-block;
+    padding: 0.1em 0.5em;
+    border-radius: 9999px;
+    font-size: 0.8em;
+    font-weight: 500;
+    line-height: 1.25;
+    vertical-align: 0.05em;
+    white-space: nowrap;
+    color: var(--ink);
+    box-shadow: inset 0 0 0 1px
+      color-mix(in srgb, var(--status) 55%, transparent);
+    background: color-mix(in srgb, var(--status) 12%, transparent);
+  }
+  .status-label[data-status="blue"] {
+    --status: var(--status-blue);
+  }
+  .status-label[data-status="green"] {
+    --status: var(--status-green);
+  }
+  .status-label[data-status="yellow"] {
+    --status: var(--status-yellow);
+  }
+  .status-label[data-status="red"] {
+    --status: var(--status-red);
+  }
+  .status-label[data-status="purple"] {
+    --status: var(--status-purple);
+  }
+  @media print {
+    .status-label {
+      background: none;
+      box-shadow: none;
+      border: 1px solid var(--status);
+    }
+  }
   /*
    * The two halves of the mode switch in the top bar (ReflectionModeSwitch):
    * the current one, whichever kind of aria-current it carries, is the raised
@@ -233,7 +348,7 @@
     @apply inline-flex h-8 min-w-0 shrink items-center gap-1.5 rounded-lg pr-2 pl-2.5 text-sm font-medium text-ink hover:bg-sunken data-[state=open]:bg-sunken;
   }
   .switcher-menu {
-    @apply z-50 max-h-(--radix-dropdown-menu-content-available-height) w-80 overflow-y-auto max-w-[calc(100vw-1rem)] rounded-xl border border-hair bg-raised p-1.5 text-[13.5px] shadow-pop;
+    @apply menu-face max-h-(--radix-dropdown-menu-content-available-height) w-80 overflow-y-auto;
   }
   /* The avatar in the top bar and in its menu (AvatarMenu): the initial in a circle. */
   .avatar {
@@ -249,7 +364,7 @@
     @apply size-10 text-[15px];
   }
   .avatar-menu {
-    @apply z-50 w-[19.5rem] max-w-[calc(100vw-1rem)] max-h-(--radix-dropdown-menu-content-available-height) overflow-y-auto rounded-xl border border-hair bg-raised p-1.5 text-[13.5px] shadow-pop;
+    @apply menu-face w-[19.5rem] max-h-(--radix-dropdown-menu-content-available-height) overflow-y-auto;
   }
   .avatar-grab {
     @apply mx-auto mt-1 mb-2.5 h-1 w-9.5 rounded-sm bg-hair-strong md:hidden;
@@ -405,8 +520,17 @@
    * anything marked .breakout (tables, diagrams, the graph) keeps the full
    * column. Applied to the container of a rendered document.
    */
-  .measured > :not(.breakout) {
+  .measured > :not(.breakout, [data-keep]),
+  .measured > [data-keep] > :not(.breakout) {
     max-width: var(--measure, 720px);
+  }
+
+  /*
+   * A heading and the block after it (`keepWithNext`): one block on paper
+   * that may not break, no box at all on screen.
+   */
+  [data-keep] {
+    display: contents;
   }
 
   /*
@@ -423,7 +547,8 @@
    * would mean two prints of one engram coming out at two measures.
    */
   @media screen {
-    main[data-width="full"] .measured > :not(.breakout) {
+    main[data-width="full"] .measured > :not(.breakout, [data-keep]),
+    main[data-width="full"] .measured > [data-keep] > :not(.breakout) {
       max-width: none;
     }
   }
@@ -570,6 +695,45 @@
     padding: 0 !important;
     gap: 0 !important;
   }
+  /*
+   * A page with a side column (the details, the threads, the domain rail)
+   * prints as one column. The side column is hidden on paper, but Safari
+   * evaluates the width media queries against the window while it prints,
+   * so a wide window would keep the column's grid track and print the text
+   * in what is left. Block layout has no tracks to keep.
+   */
+  [data-print-column] {
+    display: block !important;
+  }
+  [data-print-column] > * + * {
+    margin-top: 1.5rem;
+  }
+
+  /*
+   * What belongs together stays together. `break-after: avoid` on a heading
+   * is honoured by Chrome alone, so a heading and the block after it share
+   * one wrapper (`keepWithNext`), a plain block that may not break, which
+   * WebKit honours too; a block taller than about half a page is left out of
+   * it. A whole section is never kept together: a long one would leave half
+   * empty pages. For the same reason only a short list item and a short
+   * table (`data-short`, set by `keepWithNext`) are kept whole; a longer one
+   * breaks between its lines or rows. `page-break-inside` is the older
+   * spelling WebKit still reads.
+   */
+  [data-keep] {
+    display: block;
+  }
+  [data-keep],
+  .print-title,
+  .measured li[data-short],
+  .measured tr,
+  .measured table[data-short] {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .measured thead {
+    display: table-header-group;
+  }
 
   /* The chrome stays on screen. */
   button,
@@ -612,14 +776,15 @@
     break-inside: avoid;
   }
   pre,
-  table,
   figure,
   img,
   svg,
   blockquote,
+  aside[data-callout],
   .print-note,
   .print-related li {
     break-inside: avoid;
+    page-break-inside: avoid;
   }
 
   /* Code wraps instead of running off the page. */
@@ -642,6 +807,36 @@
   .measured img {
     max-height: 190mm;
     object-fit: contain;
+  }
+
+  /*
+   * A callout prints open and without its tint: a folded one shows its body
+   * under its title, which is a small bold lead. The content of a closed
+   * `<details>` is held back by the element itself, not by its children, so
+   * `::details-content` is opened as well where the browser has it.
+   */
+  details[data-callout] {
+    display: block;
+  }
+  details[data-callout] > *:not(summary) {
+    display: block !important;
+  }
+  details[data-callout]::details-content {
+    content-visibility: visible;
+    display: block;
+  }
+  details[data-callout] > summary {
+    list-style: none;
+    font-size: 0.9em;
+    font-weight: 700;
+  }
+  details[data-callout] > summary svg {
+    display: none;
+  }
+  [data-callout] {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    background: none;
   }
 
   /*

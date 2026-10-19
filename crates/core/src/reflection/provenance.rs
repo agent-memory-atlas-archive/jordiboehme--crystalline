@@ -15,10 +15,101 @@ pub const PROVENANCE_KEY: &str = "reflection";
 /// One engram a section was built from, with its checksum at that time.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceRef {
-    /// The engram's permalink in this domain.
+    /// The engram's domain, by its canonical name, when it is another
+    /// domain than the page's; absent for an engram of the page's own
+    /// domain, so a record written before sources could cross domains reads
+    /// and writes back as it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    /// The engram's permalink in its domain.
     pub engram: String,
     /// SHA-256 hex of the engram file when the section was reflected.
     pub checksum: String,
+}
+
+/// A source as a writer names it in `sources`: a bare permalink names an
+/// engram of the page's own domain, a `crystalline://<domain>/<permalink>`
+/// address an engram of any domain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceName {
+    /// A permalink in the page's own domain.
+    Own(String),
+    /// An engram by its address: the domain as spelled, and the permalink.
+    Address {
+        /// The domain segment as the writer spelled it.
+        domain: String,
+        /// The engram's permalink in that domain.
+        permalink: String,
+    },
+}
+
+/// Read one entry of `sources`. An address must name one engram: a glob, an
+/// address without a permalink and an attachment are refused, each with a
+/// sentence a writer can act on.
+pub fn parse_source_name(name: &str) -> Result<SourceName, String> {
+    if !name.starts_with(crate::address::SCHEME) {
+        return Ok(SourceName::Own(name.to_string()));
+    }
+    let what = "a source is one engram: its permalink in this domain, or its crystalline://<domain>/<permalink> address";
+    let Some(url) = crate::address::CrystallineUrl::parse(name) else {
+        return Err(format!("'{name}' names no domain; {what}"));
+    };
+    if url.glob {
+        return Err(format!("'{name}' names a folder of engrams; {what}"));
+    }
+    if url.permalink.is_empty() {
+        return Err(format!("'{name}' names a domain and no engram; {what}"));
+    }
+    if url.asset_ref().is_some() {
+        return Err(format!("'{name}' names a file, not an engram; {what}"));
+    }
+    Ok(SourceName::Address {
+        domain: url.domain,
+        permalink: url.permalink,
+    })
+}
+
+/// How many sources of `source` store a domain `named` accepts. Beside
+/// [`respell_source_domains`], it tells a page whose sources could not be
+/// rewritten (a frontmatter that cannot be cut key by key) from one that
+/// has none to rewrite.
+pub fn source_domains_named(source: &str, named: &dyn Fn(&str) -> bool) -> usize {
+    read_provenance(source)
+        .values()
+        .flat_map(|record| record.sources.iter())
+        .filter(|src| src.domain.as_deref().is_some_and(named))
+        .count()
+}
+
+/// `source` with the stored `domain` of every source that `rename` answers
+/// a new name for written with that name, and how many were. The text is
+/// returned as it was when nothing changes, so a page without such a source
+/// is never rewritten. What a domain rename runs over every page, beside
+/// the respelling of the links in its body.
+pub fn respell_source_domains(
+    source: &str,
+    rename: &dyn Fn(&str) -> Option<String>,
+) -> (String, usize) {
+    let mut provenance = read_provenance(source);
+    let mut count = 0;
+    for record in provenance.values_mut() {
+        for src in &mut record.sources {
+            let Some(domain) = src.domain.as_deref() else {
+                continue;
+            };
+            if let Some(new) = rename(domain).filter(|new| new != domain) {
+                src.domain = Some(new);
+                count += 1;
+            }
+        }
+    }
+    if count == 0 {
+        return (source.to_string(), 0);
+    }
+    match write_provenance(source, &provenance) {
+        Ok(text) => (text, count),
+        Err(_) => (source.to_string(), 0),
+    }
 }
 
 /// What Crystalline keeps about one section.
@@ -80,6 +171,19 @@ pub fn read_provenance(source: &str) -> Provenance {
                 .map(|record| (id, record))
         })
         .collect()
+}
+
+/// The [`PROVENANCE_KEY`] block of `source` as YAML, in whatever shape it
+/// was written, or `None` when there is none. A write holds the block it was
+/// sent against the stored page's this way: a block a writer made up (`for:`,
+/// `built_from:`) reads as no records at all, so comparing records would take
+/// it for the stored one.
+pub fn block_as_written(source: &str) -> Option<String> {
+    let parts = split_frontmatter(source)?;
+    let serde_yaml_ng::Value::Mapping(map) = serde_yaml_ng::from_str(parts.yaml).ok()? else {
+        return None;
+    };
+    serde_yaml_ng::to_string(map.get(PROVENANCE_KEY)?).ok()
 }
 
 /// `source` with its records replaced by `provenance`: the key block is
@@ -161,9 +265,24 @@ mod tests {
 
     const PAGE: &str = "---\ntitle: Deploying\ntags: [ops]\n---\n\n# Deploying\n\n## Night deploys\n<!-- r:7f3a9c2e -->\n\nDeploys run at night.\n";
 
+    /// The block as it stands, in any shape: what a writer's block is held
+    /// against, so a page sent back as it was read is told nothing.
+    #[test]
+    fn the_block_is_read_as_written() {
+        let theirs = "---\nreflection:\n  for: new operators\n---\n\n# A\n";
+        assert_eq!(
+            block_as_written(theirs).as_deref(),
+            Some("for: new operators\n")
+        );
+        assert!(read_provenance(theirs).is_empty(), "not a record");
+        assert_eq!(block_as_written(PAGE), None);
+        assert_eq!(block_as_written("# No frontmatter\n"), None);
+    }
+
     fn record() -> SectionRecord {
         SectionRecord {
             sources: vec![SourceRef {
+                domain: None,
                 engram: "runbooks/deploy".into(),
                 checksum: "abc".into(),
             }],
@@ -209,6 +328,93 @@ mod tests {
             read_provenance("---\nreflection: [broken\n---\n"),
             Provenance::new()
         );
+    }
+
+    /// A record written before sources could name another domain has no
+    /// `domain`: it reads, and writes back byte for byte.
+    #[test]
+    fn a_record_without_a_domain_writes_back_byte_for_byte() {
+        let old = "---\ntitle: T\nreflection:\n  aaaa1111:\n    sources:\n    - engram: runbooks/deploy\n      checksum: abc\n    reflected: hash\n---\n\n# T\n";
+        let prov = read_provenance(old);
+        assert_eq!(prov["aaaa1111"].sources[0].domain, None);
+        assert_eq!(write_provenance(old, &prov).unwrap(), old);
+    }
+
+    /// A source of another domain keeps its domain through a write and a
+    /// read.
+    #[test]
+    fn a_source_of_another_domain_round_trips() {
+        let mut rec = record();
+        rec.sources.push(SourceRef {
+            domain: Some("harbor".into()),
+            engram: "team/harbor-team".into(),
+            checksum: "def".into(),
+        });
+        let mut prov = Provenance::new();
+        prov.insert("7f3a9c2e".into(), rec);
+        let written = write_provenance(PAGE, &prov).unwrap();
+        assert!(
+            written.contains("  - domain: harbor\n      engram: team/harbor-team\n"),
+            "{written}"
+        );
+        assert!(
+            written.contains("  - engram: runbooks/deploy\n"),
+            "an own source names no domain: {written}"
+        );
+        assert_eq!(read_provenance(&written), prov);
+    }
+
+    #[test]
+    fn a_source_is_a_permalink_or_an_address_of_one_engram() {
+        assert_eq!(
+            parse_source_name("runbooks/deploy"),
+            Ok(SourceName::Own("runbooks/deploy".into()))
+        );
+        assert_eq!(
+            parse_source_name("crystalline://harbor/team/harbor-team"),
+            Ok(SourceName::Address {
+                domain: "harbor".into(),
+                permalink: "team/harbor-team".into(),
+            })
+        );
+        for refused in [
+            "crystalline://harbor/team/*",
+            "crystalline://harbor/*",
+            "crystalline://harbor",
+            "crystalline://harbor/",
+            "crystalline:///team/x",
+            "crystalline://harbor/assets/diagram.png",
+            "crystalline://harbor/reflections/assets/diagram.png",
+        ] {
+            let err = parse_source_name(refused).unwrap_err();
+            assert!(err.contains(refused), "{err}");
+            assert!(err.contains("a source is one engram"), "{err}");
+        }
+    }
+
+    /// A rename rewrites the stored domain of the sources it names and
+    /// leaves every other byte; a page with none is returned as it was.
+    #[test]
+    fn a_rename_respells_the_stored_domain_only() {
+        let page = "---\ntitle: T\nreflection:\n  aaaa1111:\n    sources:\n    - engram: own/one\n      checksum: a\n    - domain: harbor\n      engram: team/x\n      checksum: b\n    - domain: other\n      engram: o/y\n      checksum: c\n---\n\n# T\n\nharbor stays in the body.\n";
+        let rename = |d: &str| (d == "harbor").then(|| "crew".to_string());
+        let (out, n) = respell_source_domains(page, &rename);
+        assert_eq!(n, 1);
+        assert_eq!(out, page.replace("domain: harbor", "domain: crew"));
+        let (again, n) = respell_source_domains(&out, &rename);
+        assert_eq!((again.as_str(), n), (out.as_str(), 0), "idempotent");
+        let plain = "# Plain\n\nharbor\n";
+        assert_eq!(
+            respell_source_domains(plain, &rename),
+            (plain.to_string(), 0)
+        );
+        let named = |d: &str| d == "harbor";
+        assert_eq!(source_domains_named(page, &named), 1);
+        // A flow-style frontmatter reads, but cannot be rewritten: the
+        // count tells it from a page with nothing to rewrite.
+        let flow = "---\n{title: T, reflection: {aaaa1111: {sources: [{domain: harbor, engram: team/x, checksum: b}]}}}\n---\n\n# T\n";
+        assert_eq!(respell_source_domains(flow, &rename), (flow.to_string(), 0));
+        assert_eq!(source_domains_named(flow, &named), 1);
     }
 
     #[test]

@@ -90,6 +90,60 @@ async fn a_viewer_opens_answers_resolves_and_reopens() {
     assert_eq!(listed["threads"].as_array().unwrap().len(), 1);
 }
 
+/// A person's thread stays open until the person resolves it: an agent that
+/// answers and resolves in one call would hide its answer in a closed thread.
+#[tokio::test]
+async fn an_agent_answers_a_persons_thread_and_leaves_it_open() {
+    let (fx, vera) = viewer_engine(&[("MANIFEST.md", &manifest("reflection: on\n"))]).await;
+    fx.engine
+        .write_reflection(&write("d.md", PAGE), &person())
+        .await
+        .unwrap();
+    let viewer = ReflectionCaller::person(vera, "vera");
+    let opened = fx
+        .engine
+        .discuss(&open("aaaa1111", None, "Still true?"), &viewer)
+        .await
+        .unwrap();
+    let id = opened["id"].as_str().unwrap().to_string();
+    let refused = |e: crystalline_service::EngineError| match e {
+        crystalline_service::EngineError::Invalid(why) => {
+            assert!(
+                why.contains("leave it open")
+                    && why.contains("the person who opened it resolves it"),
+                "{why}"
+            );
+        }
+        other => panic!("refused as invalid: {other:?}"),
+    };
+    refused(
+        fx.engine
+            .discuss(&step("resolve", &id, "Yes, still true."), &agent())
+            .await
+            .unwrap_err(),
+    );
+    fx.engine
+        .discuss(&step("answer", &id, "Yes, still true."), &agent())
+        .await
+        .unwrap();
+    refused(
+        fx.engine
+            .discuss(&step("resolve", &id, "Answered."), &agent())
+            .await
+            .unwrap_err(),
+    );
+    fx.engine
+        .discuss(&step("answer", &id, "Thanks, you can close it."), &viewer)
+        .await
+        .unwrap();
+    let resolved = fx
+        .engine
+        .discuss(&step("resolve", &id, "Confirmed by vera."), &agent())
+        .await
+        .unwrap();
+    assert_eq!(resolved["status"], "resolved");
+}
+
 /// The anonymous visitor of a public domain reads the threads and writes none.
 #[tokio::test]
 async fn an_anonymous_visitor_reads_threads_and_cannot_comment() {
@@ -832,5 +886,95 @@ async fn an_off_list_account_comments_and_cannot_answer_feedback() {
     assert_eq!(
         std::fs::read_to_string(fx.root.join("reflections/d.md")).unwrap(),
         page
+    );
+}
+
+/// A heading two sections share does not say which one a thread is on, so a
+/// thread opened by it is refused with the way out, and the same section
+/// opened by its id is not.
+#[tokio::test]
+async fn a_thread_on_a_heading_two_sections_share_is_refused_and_says_to_use_the_id() {
+    let (fx, _vera) = viewer_engine(&[("MANIFEST.md", &manifest("reflection: on\n"))]).await;
+    let page =
+        "# D\n\n## Notes\n<!-- r:aaaa1111 -->\n\nOne.\n\n## Notes\n<!-- r:bbbb2222 -->\n\nTwo.\n";
+    fx.engine
+        .write_reflection(&write("d.md", page), &person())
+        .await
+        .unwrap();
+    let err = fx
+        .engine
+        .discuss(&open("Notes", None, "Which one?"), &person())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("names 2 sections"), "{err}");
+    assert!(err.contains("by the section's id"), "{err}");
+    let opened = fx
+        .engine
+        .discuss(&open("bbbb2222", Some("Two."), "This one."), &person())
+        .await
+        .unwrap();
+    assert_eq!(opened["anchor"]["state"], "found", "{opened}");
+}
+
+/// Two sections a plain editor gave one heading have no ids yet: the
+/// refusal says how to get them instead of pointing at ids that are not
+/// there.
+#[tokio::test]
+async fn a_shared_heading_without_ids_says_how_to_get_them() {
+    let (fx, _vera) = viewer_engine(&[("MANIFEST.md", &manifest("reflection: on\n"))]).await;
+    fx.engine
+        .write_reflection(&write("d.md", "# D\n\nIntro.\n"), &person())
+        .await
+        .unwrap();
+    let path = fx.root.join("reflections/d.md");
+    let page = std::fs::read_to_string(&path).unwrap() + "\n## Notes\n\nOne.\n\n## Notes\n\nTwo.\n";
+    std::fs::write(&path, page).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let err = fx
+        .engine
+        .discuss(&open("Notes", None, "Which one?"), &person())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("names 2 sections"), "{err}");
+    assert!(err.contains("none of them has an id yet"), "{err}");
+    assert!(err.contains("gives each heading its id"), "{err}");
+}
+
+/// When only some of the shared sections lack an id, the refusal says which
+/// ones, by line, and that the others are opened by their id.
+#[tokio::test]
+async fn a_shared_heading_names_the_sections_without_an_id() {
+    let (fx, _vera) = viewer_engine(&[("MANIFEST.md", &manifest("reflection: on\n"))]).await;
+    fx.engine
+        .write_reflection(&write("d.md", "# D\n\n## Notes\n\nOne.\n"), &person())
+        .await
+        .unwrap();
+    let path = fx.root.join("reflections/d.md");
+    let page = std::fs::read_to_string(&path).unwrap() + "\n## Notes\n\nTwo.\n";
+    std::fs::write(&path, &page).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let line = page
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| *l == "## Notes")
+        .map(|(n, _)| n + 1)
+        .last()
+        .unwrap();
+    let err = fx
+        .engine
+        .discuss(&open("Notes", None, "Which one?"), &person())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains(&format!("the one at line {line} has no id yet")),
+        "{err}"
+    );
+    assert!(!err.contains("none of them"), "{err}");
+    assert!(
+        err.contains("for the others, open it by the section's id"),
+        "{err}"
     );
 }

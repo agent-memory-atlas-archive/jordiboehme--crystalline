@@ -8,6 +8,7 @@ use crystalline_core::reflection::{ReflectionHome, ReflectionState};
 use crystalline_core::relink::BodyGate;
 
 use super::fence::{DiskUndo, KeepText, OnRefusal, RowOp};
+use super::sources::SourceFacts;
 use super::*;
 use crate::changes::ReflectionChanged;
 use crate::collab::session::{MovedTo, RoomDoc};
@@ -284,14 +285,14 @@ pub(crate) fn screen_home(after: &str, facts: &SwitchFacts) -> Result<()> {
     Ok(())
 }
 
-/// The PACT a freshly switched-on Reflection starts with: the three things
+/// The PACT a freshly switched-on Reflection starts with: the four things
 /// the pact agrees on, as headings for people and the agent to fill in. Each
 /// heading carries its section id line, the page marker that keeps an
 /// unedited pact the Reflection's: read as an engram it would hold the
 /// switch pending after a rebuild or a switch-off and on again (R48).
 pub(crate) fn pact_starter(domain: &str) -> String {
     let text = format!(
-        "---\ntitle: How we write about {domain}\n---\n\n# How we write about {domain}\n\nThis is the agreement between the people and the agents who work on this domain's Reflection. Change it like any page; the agent reads every change.\n\n## Audience\n\n- Who reads these pages, and what they already know.\n\n## Level of detail\n\n- How deep the pages go, and what they leave to the engrams.\n\n## Structure\n\n- *.md\n"
+        "---\ntitle: How we write about {domain}\n---\n\n# How we write about {domain}\n\nThis is the agreement between the people and the agents who work on this domain's Reflection. Change it like any page; the agent reads every change.\n\n## Audience\n\n- Who reads these pages, and what they already know.\n\n## Level of detail\n\n- How deep the pages go, and what they leave to the engrams.\n\n## Presentation\n\n- Which diagrams, callouts and tables help these readers, and what to avoid.\n\n## Structure\n\n- *.md\n"
     );
     let (with_ids, _) = crystalline_core::reflection::assign_ids(
         &text,
@@ -1070,14 +1071,15 @@ pub(crate) fn without_provenance(text: &str) -> String {
 
 /// A source's state and its engram's title: `current`, `changed` (the
 /// engram's checksum moved), `retired` (its status is in the retirement
-/// set) or `missing` (no such engram any more). The one place a source's
-/// state is decided: the read answers it and the reflect queue
-/// reads it.
-pub(crate) fn source_state(
-    src: &r::SourceRef,
-    facts: &HashMap<String, EngramFact>,
-) -> (&'static str, String) {
-    match facts.get(&src.engram) {
+/// set), `missing` (no such engram any more) or `unavailable` (its domain
+/// cannot be checked here: never read as missing, so nobody drops a source
+/// because a domain is offline). The one place a source's state is decided:
+/// the read answers it and the reflect queue reads it.
+pub(crate) fn source_state(src: &r::SourceRef, facts: &SourceFacts) -> (&'static str, String) {
+    if facts.unavailable(src) {
+        return ("unavailable", String::new());
+    }
+    match facts.fact(src) {
         None => ("missing", String::new()),
         Some(f) if crystalline_index::is_retired_status(&f.status.to_lowercase()) => {
             ("retired", f.title.clone())
@@ -1087,10 +1089,16 @@ pub(crate) fn source_state(
     }
 }
 
-/// A source as the answers show it.
-pub(crate) fn source_view(src: &r::SourceRef, facts: &HashMap<String, EngramFact>) -> Value {
+/// A source as the answers show it; `domain` only for a source of another
+/// domain than the page's, by the local name a reader reaches it by here
+/// ([`SourceFacts::shown_domain`]).
+pub(crate) fn source_view(src: &r::SourceRef, facts: &SourceFacts) -> Value {
     let (state, title) = source_state(src, facts);
-    json!({ "permalink": src.engram, "title": title, "state": state })
+    let mut view = json!({ "permalink": src.engram, "title": title, "state": state });
+    if let Some(domain) = facts.shown_domain(src) {
+        view["domain"] = json!(domain);
+    }
+    view
 }
 
 /// Who a reflection write records as having changed a section.
@@ -1124,14 +1132,21 @@ impl SectionAuthors {
     }
 }
 
+/// The sentence a write receipt carries when the writer made up an id line.
+const WRITTEN_ID_GUIDANCE: &str =
+    "Crystalline gives a new heading its id line; never write one yourself.";
+
+/// The sentence a write receipt carries when the writer made up the
+/// bookkeeping block.
+const WRITTEN_BLOCK_GUIDANCE: &str = "The reflection: frontmatter key is Crystalline's bookkeeping; the one written here was replaced. Never write it: pass sources instead.";
+
 /// Rules 1 to 4 of a reflection write: the engine's bookkeeping block
 /// replaces the incoming one, a heading that lost its id line gets it back
 /// by heading, headings get new ids when `assign_ids`, changed sections
 /// record each of `authors.changed` (one entry each, the on-disk list) and a
 /// section that just got its id also the names carried for its heading,
-/// records of vanished sections go. Answers the text to write (without
-/// the bookkeeping block re-emitted yet), the minted ids and the new
-/// records. A live room composes through it too.
+/// records of vanished sections go. Answers a [`Composed`]. A live room
+/// composes through it too.
 pub(super) fn compose_reflection(
     current: Option<&str>,
     baseline: &str,
@@ -1139,7 +1154,7 @@ pub(super) fn compose_reflection(
     authors: &SectionAuthors,
     assign_ids: bool,
     now: &str,
-) -> Result<(String, Vec<String>, r::Provenance)> {
+) -> Result<Composed> {
     let stored = current.map(r::read_provenance).unwrap_or_default();
     let stripped =
         r::write_provenance(incoming, &r::Provenance::new()).map_err(EngineError::Invalid)?;
@@ -1184,6 +1199,7 @@ pub(super) fn compose_reflection(
     // of its own (pasted from another page) takes no place.
     let minted_ids: BTreeSet<&str> = minted.iter().map(String::as_str).collect();
     let mut new_seen: HashMap<String, usize> = HashMap::new();
+    let mut changed = Vec::new();
     for section in r::split_sections(&text) {
         let Some(id) = section.id.clone() else {
             continue;
@@ -1195,6 +1211,7 @@ pub(super) fn compose_reflection(
         });
         let mut record = stored.get(&id).cloned().unwrap_or_default();
         if before.get(&id) != Some(&r::section_hash(&section.text)) {
+            changed.push(id.clone());
             record.changed_at = Some(now.to_string());
             let carried = place
                 .and_then(|place| {
@@ -1222,7 +1239,92 @@ pub(super) fn compose_reflection(
         }
         prov.insert(id, record);
     }
-    Ok((text, minted, prov))
+    Ok(Composed {
+        text,
+        minted,
+        prov,
+        changed,
+    })
+}
+
+/// What [`compose_reflection`] answers.
+pub(super) struct Composed {
+    /// The text to write, without the bookkeeping block re-emitted yet.
+    pub text: String,
+    /// The ids minted, in page order.
+    pub minted: Vec<String>,
+    /// The new records.
+    pub prov: r::Provenance,
+    /// The ids of the sections this text changed against the stored page
+    /// (the top included), in page order: new ones too.
+    pub changed: Vec<String>,
+}
+
+/// The refusal for a `sources` key that names no single section, worded so
+/// the writer gets it right on the next call: what a key may be, and the
+/// sections this page has.
+fn sources_key_miss(
+    miss: &r::SectionKeyMiss,
+    key: &str,
+    path: &str,
+    sections: &[r::Section],
+) -> EngineError {
+    EngineError::Invalid(match miss {
+        r::SectionKeyMiss::Ambiguous(headings) => format!(
+            "the key '{key}' names {} sections in '{path}' ({}), so it cannot \
+             carry sources: write the page without sources, then write it again \
+             with sources keyed by the ids from ids_assigned or read_reflection",
+            headings.len(),
+            headings
+                .iter()
+                .map(|h| format!("'{h}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        r::SectionKeyMiss::None => {
+            let headings: Vec<String> = sections
+                .iter()
+                .filter(|s| !s.heading.is_empty())
+                .map(|s| format!("'{}'", s.heading))
+                .collect();
+            let has = if headings.is_empty() {
+                "this page has no ## section yet, only _top for the text above them".to_string()
+            } else {
+                format!("this page has {}", headings.join(", "))
+            };
+            format!(
+                "no section '{key}' in '{path}' to set sources on: a key is a ## \
+                 section's id or its heading text, or _top for the text before the \
+                 first ##; the # title and ### headings are not sections, and {has}"
+            )
+        }
+    })
+}
+
+/// The headings of the sections of `stored` that owed feedback against
+/// `baseline` (new or changed, not the top) and that `written` no longer
+/// holds, by id or, for a section without one, by heading. A write that
+/// leaves such a section out says so on its receipt, so a person's change
+/// never leaves the page without a word.
+fn removed_with_feedback(
+    stored: Option<&str>,
+    baseline: &str,
+    written: &[r::Section],
+) -> Vec<String> {
+    let Some(stored) = stored else {
+        return Vec::new();
+    };
+    r::feedback_changes(stored, baseline)
+        .into_iter()
+        .filter(|c| c.kind != r::ChangeKind::Removed && c.id.as_deref() != Some(r::TOP_SECTION))
+        .filter(|c| match &c.id {
+            Some(id) => !written.iter().any(|s| s.id.as_deref() == Some(id.as_str())),
+            None => !written
+                .iter()
+                .any(|s| s.heading.to_lowercase() == c.heading.to_lowercase()),
+        })
+        .map(|c| c.heading)
+        .collect()
 }
 
 /// Move every thread of a page that is anchored by heading onto the id its
@@ -1473,24 +1575,30 @@ impl Engine {
         self.refuse_read_only_domain(&p.domain, &crate::scope::Scope::Unrestricted)
             .await?;
         r::validate_reflection_path(&p.path).map_err(EngineError::Invalid)?;
-        // Rule 7: the whole page, or one section of it.
+        // Rule 7: the whole page, one section of it, or (sources alone) the
+        // stored page as it stands, curated by the sources named.
         let op = match (p.markdown.as_deref(), p.operation.as_deref()) {
             (Some(_), Some(_)) => {
                 return Err(EngineError::Invalid("write takes markdown (the whole reflection) or operation (one section), not both".into()));
             }
-            (None, None) => {
-                return Err(EngineError::Invalid("write needs markdown, the whole reflection, or operation with section and content".into()));
+            (None, None) if p.sources.is_empty() => {
+                return Err(EngineError::Invalid("write needs markdown, the whole reflection, or operation with section and content, or sources alone to curate sections as they stand".into()));
             }
+            (None, None) => None,
             (Some(_), None) => None,
             (None, Some(name)) => Some(crystalline_core::emit::SectionOp::parse(name, p.include_subsections).ok_or_else(|| {
                 EngineError::Invalid(format!("`{name}` is not a section operation; use replace_section, insert_before_section or insert_after_section"))
             })?),
         };
+        // Each source by permalink (this domain) or address (any domain),
+        // resolved in the writer's scope, and their facts read one seek
+        // each before the page lock.
+        let named = self
+            .resolve_source_names(&p.domain, &caller.scope, p.sources.values().flatten())
+            .await?;
+        let wanted: Vec<r::SourceRef> = named.values().map(|n| n.source_ref("")).collect();
         let facts = self
-            .cited_facts(
-                access.domain_id,
-                p.sources.values().flatten().cloned().collect(),
-            )
+            .source_facts(&p.domain, access.domain_id, None, wanted.iter())
             .await?;
         let abs = access.abs(&p.path);
         let baseline_abs = access.abs(&r::baseline_path(&p.path));
@@ -1522,11 +1630,21 @@ impl Engine {
             }
         }
         if current.is_none() {
+            r::validate_new_reflection_path(&p.path).map_err(EngineError::Invalid)?;
             self.refuse_only_elsewhere(&p.domain, access.domain_id, ElsewhereRow::Page(&p.path))
                 .await?;
         }
         let (incoming, heading_stripped) = match op {
-            None => (p.markdown.clone().unwrap_or_default(), None),
+            None => match (&p.markdown, current.as_deref()) {
+                (Some(markdown), _) => (markdown.clone(), None),
+                (None, Some(stored)) => (stored.to_string(), None),
+                (None, None) => {
+                    return Err(EngineError::NotFound(format!(
+                        "no reflection '{}' in domain '{}' to curate by sources; write it with markdown first",
+                        p.path, p.domain
+                    )));
+                }
+            },
             Some(op) => {
                 let stored = current.as_deref().ok_or_else(|| {
                     EngineError::NotFound(format!(
@@ -1551,13 +1669,13 @@ impl Engine {
         // written. An embed the stored page already holds (written by hand
         // or in a room) is the reflect queue's to name, so a change to
         // another section is not held up by it.
-        let held = current
+        let stored_embeds = current
             .as_deref()
             .map(|stored| r::engram_attachment_embeds(stored, &p.path))
             .unwrap_or_default();
         if r::engram_attachment_embeds(&incoming, &p.path)
             .iter()
-            .any(|target| !held.contains(target))
+            .any(|target| !stored_embeds.contains(target))
         {
             r::refuse_engram_attachments(&incoming, &p.path).map_err(EngineError::Invalid)?;
         }
@@ -1589,41 +1707,141 @@ impl Engine {
             }
             None => (None, stored_baseline.clone()),
         };
-        let (text, minted, mut prov) = compose_reflection(
+        // The bookkeeping is Crystalline's (rule 1 replaces the block): a
+        // block the writer made up, and an id line no heading can carry, are
+        // replaced and said, so an agent corrected in silence does not keep
+        // writing them. The page sent back as it was read is told nothing.
+        // A room save does not come here: it keeps a pasted section's id and
+        // takes no stray id line out, which is cosmetic, since Fluid never
+        // writes a made-up one.
+        // A writer is held against the block as it was shown to them: a
+        // reader who may not see a source of another domain read the block
+        // without it, and sends it back that way.
+        let stored_foreign: BTreeSet<String> = current
+            .as_deref()
+            .map(r::read_provenance)
+            .unwrap_or_default()
+            .into_values()
+            .flat_map(|record| record.sources.into_iter().filter_map(|src| src.domain))
+            .collect();
+        let sight = if stored_foreign.is_empty() {
+            None
+        } else {
+            Some(self.source_sight(&caller.scope).await?)
+        };
+        let shown_block = match (&sight, current.as_deref()) {
+            (Some(sight), Some(page)) => r::block_as_written(&sight.shown_text(page)),
+            _ => None,
+        };
+        let made_up_block = r::block_as_written(&incoming).is_some_and(|block| {
+            current.as_deref().and_then(r::block_as_written).as_ref() != Some(&block)
+                && shown_block.as_ref() != Some(&block)
+        });
+
+        // An id is per page, so one only another page carries was copied or
+        // made up: it is replaced too. Asked only for ids this page, its
+        // baseline and its records never had, so a page sent back as it was
+        // read reads no other page. The store lock is taken inside the file
+        // lock, the order `index_reflection` uses.
+        let mut known = r::baseline_ids(&baseline);
+        if let Some(page) = stored.as_deref() {
+            known.extend(r::split_sections(page).into_iter().filter_map(|s| s.id));
+            known.extend(r::read_provenance(page).into_keys());
+        }
+        let unknown: BTreeSet<String> = r::split_sections(&incoming)
+            .into_iter()
+            .skip(1)
+            .filter_map(|s| s.id)
+            .filter(|id| !known.contains(id))
+            .collect();
+        let elsewhere: BTreeSet<String> = if unknown.is_empty() {
+            BTreeSet::new()
+        } else {
+            let rows = self
+                .store
+                .lock()
+                .await
+                .list_reflections(access.domain_id)
+                .await?;
+            rows.iter()
+                .filter(|row| row.path != p.path)
+                .flat_map(|row| r::split_sections(&row.content))
+                .filter_map(|s| s.id)
+                .filter(|id| unknown.contains(id))
+                .collect()
+        };
+        let written = r::drop_written_ids(&incoming, &|id| elsewhere.contains(id));
+        let Composed {
+            text,
+            minted,
+            mut prov,
+            changed,
+        } = compose_reflection(
             stored.as_deref(),
             &baseline,
-            &incoming,
+            &written.text,
             &SectionAuthors::plain(vec![caller.author.name.clone()]),
             true,
             &now(),
         )?;
         let sections = r::split_sections(&text);
+        // Each made-up id the heading it sat under no longer carries, with
+        // the id it carries now; sources keyed by the made-up id follow it.
+        let replaced: Vec<(String, String)> = written
+            .dropped
+            .iter()
+            .filter_map(|(k, made_up)| {
+                let id = sections.get(k + 1)?.id.clone()?;
+                (&id != made_up).then(|| (made_up.clone(), id))
+            })
+            .collect();
         let mut advanced: Vec<String> = Vec::new();
         for (key, engrams) in &p.sources {
-            let section = r::find_section(&sections, key).ok_or_else(|| {
-                EngineError::Invalid(format!(
-                    "no section '{key}' in '{}' to set sources on",
-                    p.path
-                ))
-            })?;
+            let key = replaced
+                .iter()
+                .find(|(made_up, _)| made_up == key)
+                .map_or(key, |(_, id)| id);
+            let section = r::resolve_section_key(&sections, key)
+                .map_err(|miss| sources_key_miss(&miss, key, &p.path, &sections))?;
             let id = section
                 .id
                 .clone()
                 .expect("every heading has an id after assign_ids");
-            let mut refs = Vec::new();
-            for permalink in engrams {
-                let fact = facts.get(permalink).ok_or_else(|| {
-                    EngineError::Invalid(format!(
-                        "no engram '{permalink}' in domain '{}' to name as a source",
-                        p.domain
-                    ))
+            let mut refs: Vec<r::SourceRef> = Vec::new();
+            for name in engrams {
+                let source = &named[name];
+                let fact = facts.fact(&source.source_ref("")).ok_or_else(|| {
+                    EngineError::Invalid(match &source.domain {
+                        None => format!(
+                            "no engram '{}' in domain '{}' to name as a source",
+                            source.permalink, p.domain
+                        ),
+                        Some(_) => format!("no engram '{}' to name as a source", source.said()),
+                    })
                 })?;
-                refs.push(r::SourceRef {
-                    engram: permalink.clone(),
-                    checksum: fact.checksum.clone(),
-                });
+                let src = source.source_ref(&fact.checksum);
+                // One engram named twice (by permalink and by address) is
+                // one source.
+                if !refs
+                    .iter()
+                    .any(|r| r.domain == src.domain && r.engram == src.engram)
+                {
+                    refs.push(src);
+                }
             }
             let record = prov.entry(id.clone()).or_default();
+            // A write never drops what the writer could not see: the
+            // section's sources in a domain hidden from them stay as they
+            // were. A source the writer sees is theirs to keep or leave out,
+            // one whose domain cannot be checked here included: leaving it
+            // out is how a source of a domain that is gone for good goes.
+            // Each kept source goes back to its stored place, so a writer
+            // who cannot see it does not move it on every write.
+            for (at, src) in record.sources.iter().enumerate() {
+                if sight.as_ref().is_some_and(|sight| !sight.sees(src)) {
+                    refs.insert(at.min(refs.len()), src.clone());
+                }
+            }
             record.sources = refs;
             record.reflected = Some(r::section_hash(&section.text));
             record.changed_by.clear();
@@ -1631,7 +1849,75 @@ impl Engine {
             record.answered_by = None;
             advanced.push(id);
         }
+        // An agent's curated write reflects the rest of what it wrote in
+        // this call: its new top while the stored top owes nothing, and a
+        // section neither the stored page nor the baseline held (not its
+        // id, not its heading), which no source names and which would
+        // otherwise come back to it as its own feedback. Every other section
+        // keeps what it owes, whoever changed it and however this write
+        // changed it: a pending change, a person's removal among them, is
+        // settled only by sources, a settle or a thread. An emptied top is a
+        // change too, and it is not settled here.
+        if !advanced.is_empty() && caller.author.agent {
+            // A heading with no id yet (typed in a plain editor) is held by
+            // its heading alone, an id the stored bookkeeping keeps a record
+            // for by its id alone.
+            let mut held: Vec<(Option<String>, String)> = stored
+                .as_deref()
+                .map(r::split_sections)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| (s.id, s.heading))
+                .collect();
+            if let Some(page) = stored.as_deref() {
+                held.extend(
+                    r::read_provenance(page)
+                        .into_keys()
+                        .map(|id| (Some(id), String::new())),
+                );
+            }
+            held.extend(r::parse_baseline(&baseline).into_iter().map(|(id, text)| {
+                let heading = r::split_sections(&text)
+                    .into_iter()
+                    .nth(1)
+                    .map(|s| s.heading)
+                    .unwrap_or_default();
+                (Some(id), heading)
+            }));
+            let top_owes = r::feedback_changes(stored.as_deref().unwrap_or(""), &baseline)
+                .iter()
+                .any(|change| change.id.as_deref() == Some(r::TOP_SECTION));
+            for id in changed {
+                if advanced.contains(&id) {
+                    continue;
+                }
+                let Some(section) = sections
+                    .iter()
+                    .find(|s| s.id.as_deref() == Some(id.as_str()))
+                else {
+                    continue;
+                };
+                let fresh = if id == r::TOP_SECTION {
+                    !top_owes && !section.text.trim().is_empty()
+                } else {
+                    !held.iter().any(|(old_id, old_heading)| {
+                        old_id.as_deref() == Some(id.as_str())
+                            || (!old_heading.is_empty()
+                                && old_heading.to_lowercase() == section.heading.to_lowercase())
+                    })
+                };
+                if !fresh {
+                    continue;
+                }
+                let record = prov.entry(id.clone()).or_default();
+                record.changed_by.clear();
+                record.changed_at = None;
+                record.answered_by = None;
+                advanced.push(id);
+            }
+        }
         let final_text = stamp_reflected(&text, &mut prov, &advanced)?;
+        let removed_with_feedback = removed_with_feedback(stored.as_deref(), &baseline, &sections);
         let threads_abs = access.abs(&r::threads_path(&p.path));
         let mut undo = DiskUndo::default();
         for file in [&abs, &baseline_abs, &threads_abs] {
@@ -1686,9 +1972,46 @@ impl Engine {
             "curated": !advanced.is_empty(),
         });
         note_domain_names_normalized(&mut receipt, normalized);
-        if let Some(heading) = heading_stripped {
-            receipt["heading_stripped"] = json!(heading);
-            receipt["guidance"] = json!(HEADING_STRIPPED_GUIDANCE);
+        note_markdown_findings(
+            &mut receipt,
+            crystalline_core::lint_markdown(&final_text, 1, false),
+            self.content_source(&p.domain)
+                .ok()
+                .and_then(|source| domain_verify_config(&source))
+                .as_ref(),
+        );
+        note_heading_stripped(&mut receipt, heading_stripped);
+        if !replaced.is_empty() {
+            let list: Vec<String> = replaced
+                .iter()
+                .map(|(made_up, id)| format!("{made_up} (now {id})"))
+                .collect();
+            add_guidance(
+                &mut receipt,
+                &format!(
+                    "{WRITTEN_ID_GUIDANCE} The id lines written here were replaced: {}.",
+                    list.join(", ")
+                ),
+            );
+        }
+        if made_up_block {
+            add_guidance(&mut receipt, WRITTEN_BLOCK_GUIDANCE);
+        }
+        if !removed_with_feedback.is_empty() {
+            add_guidance(
+                &mut receipt,
+                &format!(
+                    "This write removed sections a person changed since the last reflection: {}. \
+                     Their change left the page with them; if that was not meant, write them \
+                     back (read_reflection first, and pass expected_checksum on a whole-page \
+                     rewrite).",
+                    removed_with_feedback
+                        .iter()
+                        .map(|h| format!("'{h}'"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
         }
         let doc = RoomDoc::Reflection(p.path.clone());
         if let Some(rooms) = self.collab_rooms()
@@ -1732,6 +2055,32 @@ impl Engine {
             kind,
             from: from.map(str::to_string),
             actor,
+            checksum: None,
+            audience: None,
+        }));
+    }
+
+    /// Announce that the threads of the page at `path` changed, with the
+    /// checksum of the threads file as this write left it on disk (the
+    /// write normalizes line endings to LF): the watcher finds the same
+    /// file a moment later, and the bus drops that echo by it; the next
+    /// complete walk compares with it too.
+    pub(crate) fn announce_threads(
+        &self,
+        domain: &str,
+        path: &str,
+        threads: &str,
+        actor: Option<String>,
+    ) {
+        let checksum = super::sha256_hex(crystalline_core::to_lf(threads).as_bytes());
+        self.remember_threads(domain, path, Some(&checksum));
+        self.announce(Change::Reflection(ReflectionChanged {
+            domain: domain.to_string(),
+            path: path.to_string(),
+            kind: ReflectionChangeKind::Threads,
+            from: None,
+            actor,
+            checksum: Some(checksum),
             audience: None,
         }));
     }
@@ -1899,7 +2248,11 @@ impl Engine {
             }
             None => (None, stored_baseline.clone()),
         };
-        let (composed, _, prov) = compose_reflection(
+        let Composed {
+            text: composed,
+            prov,
+            ..
+        } = compose_reflection(
             stored.as_deref(),
             &baseline,
             &incoming,
@@ -2081,48 +2434,76 @@ impl Engine {
             EngineError::NotFound(format!("no reflection '{inner}' in domain '{domain}'"))
         })?;
         let prov = r::read_provenance(&text);
-        // Only the engrams the page cites are read, one seek each: a page
-        // without sources asks the index nothing.
+        // Only the engrams the page cites are read, one seek each (in their
+        // own domain for a source of another): a page without sources asks
+        // the index nothing. A source in a domain the reader may not open is
+        // neither read nor shown; its section counts it.
+        let sight = if access.engrams_visible
+            && prov
+                .values()
+                .any(|record| record.sources.iter().any(|src| src.domain.is_some()))
+        {
+            Some(self.source_sight(&caller.scope).await?)
+        } else {
+            None
+        };
+        let sees = |src: &r::SourceRef| sight.as_ref().is_none_or(|sight| sight.sees(src));
         let facts = if access.engrams_visible {
-            self.cited_facts(
+            self.source_facts(
+                domain,
                 access.domain_id,
+                None,
                 prov.values()
-                    .flat_map(|record| record.sources.iter().map(|src| src.engram.clone()))
-                    .collect(),
+                    .flat_map(|record| record.sources.iter())
+                    .filter(|src| sees(src)),
             )
             .await?
         } else {
-            HashMap::new()
+            SourceFacts::default()
         };
         // A reader who cannot read engrams gets the page without the block
-        // that names them. The sections, `line` included, are counted on the
-        // markdown answered, so a line always points at its heading there.
-        let markdown = if access.engrams_visible {
-            text.clone()
-        } else {
-            without_provenance(&text)
+        // that names them, and one who may not open a source's domain gets
+        // it without that source. The sections, `line` included, are counted
+        // on the markdown answered, so a line always points at its heading
+        // there.
+        let markdown = match &sight {
+            _ if !access.engrams_visible => without_provenance(&text),
+            Some(sight) => sight.shown_text(&text),
+            None => text.clone(),
         };
+        // A section whose only difference from what was last reflected is a
+        // task box is not changed: ticking a box is not something to weigh.
+        let reflected = r::parse_baseline(
+            &read_opt(&access.abs(&r::baseline_path(inner)))?.unwrap_or_default(),
+        );
         let sections: Vec<Value> = r::split_sections(&markdown)
             .iter()
             .filter(|s| s.id.as_deref() != Some(r::TOP_SECTION))
             .map(|s| {
                 let record = s.id.as_deref().and_then(|id| prov.get(id));
+                let only_boxes = reflected
+                    .iter()
+                    .find(|(id, _)| Some(id.as_str()) == s.id.as_deref())
+                    .is_some_and(|(_, before)| r::same_but_task_boxes(before, &s.text));
                 let mut row = json!({
                     "id": s.id,
                     "heading": s.heading,
                     "line": s.line,
-                    "changed": r::text_changed(record, s),
+                    "changed": r::text_changed(record, s) && !only_boxes,
                 });
                 if access.engrams_visible {
+                    let sources = record.map(|rec| rec.sources.as_slice()).unwrap_or_default();
                     row["sources"] = json!(
-                        record
-                            .map(|rec| rec
-                                .sources
-                                .iter()
-                                .map(|src| source_view(src, &facts))
-                                .collect::<Vec<_>>())
-                            .unwrap_or_default()
+                        sources
+                            .iter()
+                            .filter(|src| sees(src))
+                            .map(|src| source_view(src, &facts))
+                            .collect::<Vec<_>>()
                     );
+                    let hidden = sources.iter().filter(|src| !sees(src)).count();
+                    if hidden > 0 {
+                        row["hidden_sources"] = json!(hidden);
+                    }
                 }
                 row
             })
@@ -2321,9 +2702,8 @@ impl Engine {
             .await?;
         self.refuse_read_only_domain(domain, &crate::scope::Scope::Unrestricted)
             .await?;
-        for path in [from, to] {
-            r::validate_reflection_path(path).map_err(EngineError::Invalid)?;
-        }
+        r::validate_reflection_path(from).map_err(EngineError::Invalid)?;
+        r::validate_new_reflection_path(to).map_err(EngineError::Invalid)?;
         if from == r::PACT_FILE || to == r::PACT_FILE {
             return Err(EngineError::Invalid(
                 "PACT.md is the domain's agreement; edit it instead of moving it".into(),
@@ -2704,16 +3084,30 @@ impl Engine {
         // from the page as it stands under the file lock. The store lock is
         // taken inside the file lock, the order `index_reflection` below
         // already uses.
-        let facts = if outcome == "taken_in" {
-            let cited = ids
-                .iter()
+        // A source in a domain the settler may not open is not refreshed:
+        // they cannot have taken in what they could not read.
+        let cited: Vec<r::SourceRef> = if outcome == "taken_in" {
+            ids.iter()
                 .filter_map(|id| prov.get(id))
-                .flat_map(|record| record.sources.iter().map(|src| src.engram.clone()))
-                .collect();
-            self.cited_facts(access.domain_id, cited).await?
+                .flat_map(|record| record.sources.iter().cloned())
+                .collect()
         } else {
-            HashMap::new()
+            Vec::new()
         };
+        let sight = if cited.iter().any(|src| src.domain.is_some()) {
+            Some(self.source_sight(&caller.scope).await?)
+        } else {
+            None
+        };
+        let sees = |src: &r::SourceRef| sight.as_ref().is_none_or(|sight| sight.sees(src));
+        let facts = self
+            .source_facts(
+                domain,
+                access.domain_id,
+                None,
+                cited.iter().filter(|src| sees(src)),
+            )
+            .await?;
         let known: BTreeSet<String> = sections
             .iter()
             .filter_map(|s| s.id.clone())
@@ -2736,7 +3130,10 @@ impl Engine {
                 record.answered_by = None;
                 if outcome == "taken_in" {
                     for src in &mut record.sources {
-                        if let Some(fact) = facts.get(&src.engram) {
+                        if !sees(src) {
+                            continue;
+                        }
+                        if let Some(fact) = facts.fact(src) {
                             src.checksum = fact.checksum.clone();
                         }
                     }
@@ -2953,7 +3350,9 @@ mod tests {
             )]),
             someone_if_empty: false,
         };
-        let (text, minted, prov) = compose_reflection(
+        let Composed {
+            text, minted, prov, ..
+        } = compose_reflection(
             Some(current),
             "",
             &incoming,
@@ -2990,7 +3389,9 @@ mod tests {
             )]),
             someone_if_empty: false,
         };
-        let (text, minted, prov) = compose_reflection(
+        let Composed {
+            text, minted, prov, ..
+        } = compose_reflection(
             Some(current),
             "",
             &incoming,
@@ -3009,7 +3410,9 @@ mod tests {
     }
 
     /// The seeded pact carries a section id line under every heading, so an
-    /// unedited pact is a marked page and never holds the switch pending.
+    /// unedited pact is a marked page and never holds the switch pending. Its
+    /// four sections come in a fixed order, Structure last, so the globs
+    /// still read from the end of the page.
     #[test]
     fn the_seeded_pact_is_a_marked_page() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3025,12 +3428,19 @@ mod tests {
             ),
             "{pact}"
         );
-        let ids = crystalline_core::reflection::split_sections(&pact)
+        let sections = crystalline_core::reflection::split_sections(&pact);
+        let headings: Vec<&str> = sections
             .iter()
             .skip(1)
-            .filter(|s| s.id.is_some())
-            .count();
-        assert_eq!(ids, 3, "{pact}");
+            .map(|s| s.heading.as_str())
+            .collect();
+        assert_eq!(
+            headings,
+            ["Audience", "Level of detail", "Presentation", "Structure"],
+            "{pact}"
+        );
+        let ids = sections.iter().skip(1).filter(|s| s.id.is_some()).count();
+        assert_eq!(ids, 4, "{pact}");
         assert_eq!(
             crystalline_core::reflection::structure_globs(&pact),
             vec!["*.md".to_string()]

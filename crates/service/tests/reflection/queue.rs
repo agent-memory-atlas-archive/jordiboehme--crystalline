@@ -32,8 +32,9 @@ async fn curated(extra: &[(&str, &str)]) -> Fx {
         "guides/deploying.md",
         "# Deploying\n\n## Night deploys\n\nDeploys run at night.\n\n## Rollback\n\nRoll back with the script.\n",
     );
-    // `_top` with no sources curates the title and intro too, so the queue
-    // starts empty.
+    // `_top` with no sources names the top as curated. An agent's curated
+    // write reflects the top it wrote without it too, so the queue starts
+    // empty either way; the key keeps naming the top explicitly covered.
     p.sources = BTreeMap::from([
         ("_top".to_string(), Vec::new()),
         (
@@ -69,6 +70,24 @@ pub async fn curated_with_a_feedback_item() -> Fx {
         .await
         .unwrap();
     fx
+}
+
+/// Every queue tells the agent how to present what it writes: the guidance
+/// names the presentation skill and where an agent without an install reads
+/// it.
+#[tokio::test]
+async fn the_queue_guidance_points_to_the_presentation_skill() {
+    let fx = curated_with_a_feedback_item().await;
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    let guidance = queue["guidance"].as_str().unwrap();
+    assert!(
+        guidance.contains("crystalline-presentation") && guidance.contains("skills tool"),
+        "{guidance}"
+    );
 }
 
 fn age_file(fx: &Fx, rel: &str, days: u64) {
@@ -156,6 +175,103 @@ async fn feedback_comes_before_update_within_a_section_and_the_oldest_group_firs
     );
     assert_eq!(queue["queue"][0]["changed_by"][0], "jordi");
     assert!(queue["queue"][1]["age_secs"].as_i64().unwrap() >= 9 * 86_400);
+}
+
+#[tokio::test]
+async fn a_change_that_only_ticks_task_boxes_is_not_feedback() {
+    let fx = curated(&[]).await;
+    // The curator turns the rollback into a task list.
+    let steps = "- [ ] stop the job\n- [ ] restore";
+    let page = edit_page(&fx, "Roll back with the script.", steps);
+    let mut curated_page = write("guides/deploying.md", &page);
+    curated_page.sources = BTreeMap::from([(
+        "Rollback".to_string(),
+        vec!["runbooks/rollback".to_string()],
+    )]);
+    fx.engine
+        .write_reflection(&curated_page, &agent())
+        .await
+        .unwrap();
+    let settled = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert!(
+        !rows(&settled).iter().any(|r| r.0 == "feedback"),
+        "{settled}"
+    );
+
+    // A person ticks one box.
+    let ticked = edit_page(&fx, "- [ ] stop the job", "- [x] stop the job");
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &ticked), &person())
+        .await
+        .unwrap();
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert!(
+        !rows(&queue).iter().any(|r| r.0 == "feedback"),
+        "a tick is not feedback: {queue}"
+    );
+
+    // A second write that also changes a word is.
+    let worded = edit_page(&fx, "- [ ] restore", "- [x] restore the data");
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &worded), &person())
+        .await
+        .unwrap();
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert!(
+        rows(&queue).contains(&("feedback".into(), "changed".into(), "Rollback".into())),
+        "{queue}"
+    );
+}
+
+/// The runbook shapes the skill asks for: a checklist inside a callout and
+/// numbered steps with boxes. Ticking either is no more feedback than a tick
+/// in a plain list.
+#[tokio::test]
+async fn ticking_a_box_in_a_callout_or_a_numbered_list_is_not_feedback() {
+    let fx = curated(&[]).await;
+    let steps = "> [!IMPORTANT]\n> - [ ] export the tenant\n\n1. [ ] stop the job\n2. [ ] restore";
+    let page = edit_page(&fx, "Roll back with the script.", steps);
+    let mut curated_page = write("guides/deploying.md", &page);
+    curated_page.sources = BTreeMap::from([(
+        "Rollback".to_string(),
+        vec!["runbooks/rollback".to_string()],
+    )]);
+    fx.engine
+        .write_reflection(&curated_page, &agent())
+        .await
+        .unwrap();
+
+    let ticked = edit_page(
+        &fx,
+        "> - [ ] export the tenant",
+        "> - [x] export the tenant",
+    )
+    .replace("2. [ ] restore", "2. [x] restore");
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &ticked), &person())
+        .await
+        .unwrap();
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert!(
+        !rows(&queue).iter().any(|r| r.0 == "feedback"),
+        "a tick in a callout or a numbered list is not feedback: {queue}"
+    );
 }
 
 #[tokio::test]
@@ -539,6 +655,34 @@ async fn an_answered_feedback_item_waits_while_its_thread_is_open() {
             .unwrap()
             .is_empty()
     );
+    // The agent opened this thread, so the agent may close it, and the
+    // change it answered comes back to the queue.
+    fx.engine
+        .discuss(
+            &DiscussParams {
+                domain: "eng".into(),
+                action: Some("resolve".into()),
+                path: Some("guides/deploying.md".into()),
+                thread: Some(opened["id"].as_str().unwrap().into()),
+                text: Some("Kept at night.".into()),
+                ..Default::default()
+            },
+            &agent(),
+        )
+        .await
+        .unwrap();
+    let resolved = fx
+        .engine
+        .reflect(
+            &ReflectParams {
+                kinds: vec!["feedback".into()],
+                ..Default::default()
+            },
+            &agent(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resolved["total"], 1, "{resolved}");
 }
 
 #[tokio::test]
@@ -1092,5 +1236,896 @@ async fn reflection_summary_timing() {
         "median of {RUNS}: review {:?}, summary {:?}",
         median(review_times),
         median(summary_times)
+    );
+}
+
+/// The cost of a queue pass over pages whose sources are in another
+/// domain, beside the same pages with local sources: 2,000 engrams in each
+/// domain, 100 pages of four sections each citing two engrams. Never a
+/// gate: the numbers go into the task report. Run with
+/// `cargo nextest run -p crystalline-service --test reflection --run-ignored only foreign_sources_timing --no-capture`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "timing evidence for the task report, not a gate"]
+async fn foreign_sources_timing() {
+    use std::time::Instant;
+
+    const ENGRAMS: usize = 2_000;
+    const PAGES: usize = 100;
+    const SECTIONS: usize = 4;
+    const RUNS: usize = 15;
+
+    let notes: Vec<(String, String)> = (0..ENGRAMS)
+        .map(|i| {
+            (
+                format!("notes/d{}/n{i}.md", i % 20),
+                engram(
+                    &format!("Note {i}"),
+                    &format!("note-{i}"),
+                    "- [fact] a note",
+                ),
+            )
+        })
+        .collect();
+    let refs: Vec<(&str, &str)> = notes
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    let fx = crate::fixture::beside(&refs, "harbor", &refs).await;
+    let median = |mut times: Vec<std::time::Duration>| {
+        times.sort();
+        times[times.len() / 2]
+    };
+    let mut results = Vec::new();
+    for (label, prefix) in [("local", ""), ("foreign", "crystalline://harbor/")] {
+        for p in 0..PAGES {
+            let mut markdown = format!("# Page {p}\n\nFor people.\n\n");
+            let mut sources = BTreeMap::new();
+            for s in 0..SECTIONS {
+                markdown.push_str(&format!("## Part {s}\n\nText {s}.\n\n"));
+                let first = (p * SECTIONS + s) * 2 % ENGRAMS;
+                sources.insert(
+                    format!("Part {s}"),
+                    vec![
+                        format!("{prefix}note-{first}"),
+                        format!("{prefix}note-{}", first + 1),
+                    ],
+                );
+            }
+            let mut params = write(&format!("page{p}.md"), &markdown);
+            params.sources = sources;
+            fx.engine.write_reflection(&params, &agent()).await.unwrap();
+        }
+        let mut times = Vec::new();
+        for _ in 0..RUNS {
+            let started = Instant::now();
+            let v = fx.engine.reflect(&eng_only(), &agent()).await.unwrap();
+            let _ = v.to_string();
+            times.push(started.elapsed());
+        }
+        results.push((label, median(times)));
+    }
+    eprintln!("median of {RUNS} reflect passes: {results:?}");
+}
+
+/// An agent's own curated write owes nobody feedback: the intro before the
+/// first `##`, which no source names, and a section it wrote without
+/// sources move to what it wrote. A person's later change of the intro is
+/// feedback again.
+#[tokio::test]
+async fn an_agents_curated_write_owes_no_feedback_on_its_own_intro() {
+    let fx = crate::docs::reflecting().await;
+    let mut p = write(
+        "guides/deploying.md",
+        "# Deploying\n\nFor new people.\n\n## Night deploys\n\nDeploys run at night.\n\n## Questions\n\nAsk in the channel.\n",
+    );
+    p.sources = BTreeMap::from([(
+        "Night deploys".to_string(),
+        vec!["runbooks/deploy".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert_eq!(queue["total"], 0, "the agent's own text: {queue}");
+
+    let text = edit_page(&fx, "For new people.", "For new people and visitors.");
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &text), &person())
+        .await
+        .unwrap();
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows(&queue),
+        [("feedback".into(), "changed".into(), String::new())],
+        "{queue}"
+    );
+    assert_eq!(queue["queue"][0]["section"], "_top", "{queue}");
+    assert_eq!(queue["queue"][0]["changed_by"][0], "jordi", "{queue}");
+}
+
+/// A curated write moves only what it wrote: a person's change to a section
+/// the agent sent back untouched stays a feedback item.
+#[tokio::test]
+async fn a_curated_write_keeps_a_persons_change_it_did_not_touch() {
+    let fx = curated_with_a_feedback_item().await;
+    let text = edit_page(
+        &fx,
+        "Roll back with the script.",
+        "Roll back with the old script.",
+    );
+    let text = text.replace("# Deploying\n", "# Deploying\n\nFor new people.\n");
+    let mut p = write("guides/deploying.md", &text);
+    p.sources = BTreeMap::from([(
+        "Rollback".to_string(),
+        vec!["runbooks/rollback".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows(&queue),
+        [("feedback".into(), "changed".into(), "Night deploys".into())],
+        "{queue}"
+    );
+}
+
+/// A person's change an agent's curated write rewrites without naming its
+/// sources is not settled by it: the feedback item stays until the agent
+/// takes it in, keeps it or answers it.
+#[tokio::test]
+async fn a_curated_write_that_rewrites_a_persons_change_keeps_it_as_feedback() {
+    let fx = curated_with_a_feedback_item().await;
+    let text = edit_page(
+        &fx,
+        "Deploys run at dawn.",
+        "Deploys run at dawn, after the batch.",
+    )
+    .replace(
+        "Roll back with the script.",
+        "Roll back with the old script.",
+    );
+    let mut p = write("guides/deploying.md", &text);
+    p.sources = BTreeMap::from([(
+        "Rollback".to_string(),
+        vec!["runbooks/rollback".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows(&queue),
+        [("feedback".into(), "changed".into(), "Night deploys".into())],
+        "{queue}"
+    );
+    assert_eq!(queue["queue"][0]["changed_by"][0], "jordi", "{queue}");
+}
+
+/// A stray id comment the write takes out of a person's changed section
+/// changes its text, and still does not settle the person's change.
+#[tokio::test]
+async fn a_stray_id_taken_out_of_a_persons_change_keeps_it_as_feedback() {
+    let fx = curated_with_a_feedback_item().await;
+    let path = fx.root.join("reflections/guides/deploying.md");
+    let page = std::fs::read_to_string(&path).unwrap().replace(
+        "\nDeploys run at dawn.",
+        "\n<!-- r:a1b2c3d4 -->\n\nDeploys run at dawn.",
+    );
+    std::fs::write(&path, &page).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let mut p = write("guides/deploying.md", &page);
+    p.sources = BTreeMap::from([(
+        "Rollback".to_string(),
+        vec!["runbooks/rollback".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("a1b2c3d4"), "{text}");
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows(&queue),
+        [("feedback".into(), "changed".into(), "Night deploys".into())],
+        "{queue}"
+    );
+}
+
+/// The agent curates Rollback and sends the rest of the page as `edit`
+/// makes it; the queue's feedback rows after that write, by heading.
+async fn curate_rollback_and_resend(fx: &Fx, edit: impl Fn(String) -> String) -> Vec<String> {
+    let path = fx.root.join("reflections/guides/deploying.md");
+    let text = edit(std::fs::read_to_string(&path).unwrap()).replace(
+        "Roll back with the script.",
+        "Roll back with the old script.",
+    );
+    let mut p = write("guides/deploying.md", &text);
+    p.sources = BTreeMap::from([(
+        "Rollback".to_string(),
+        vec!["runbooks/rollback".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let queue = fx
+        .engine
+        .reflect(
+            &ReflectParams {
+                kinds: vec!["feedback".into()],
+                ..Default::default()
+            },
+            &agent(),
+        )
+        .await
+        .unwrap();
+    queue["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["heading"].as_str().unwrap_or("").to_string())
+        .collect()
+}
+
+/// A section a person typed in a plain editor (no id line yet) stays a
+/// feedback item through an agent's curated write, sent back untouched or
+/// reworded: the write gives it an id and nothing else.
+#[tokio::test]
+async fn a_hand_typed_section_stays_feedback_through_a_curated_write() {
+    for reword in [false, true] {
+        let fx = curated(&[]).await;
+        let path = fx.root.join("reflections/guides/deploying.md");
+        let text = std::fs::read_to_string(&path).unwrap()
+            + "\n## Typed by hand\n\nA person wrote this outside Crystalline.\n";
+        std::fs::write(&path, text).unwrap();
+        fx.engine.sync(None).await.unwrap();
+        let owed = curate_rollback_and_resend(&fx, |t| {
+            if reword {
+                t.replace("A person wrote this", "Someone wrote this")
+            } else {
+                t
+            }
+        })
+        .await;
+        assert_eq!(owed, ["Typed by hand"], "reword {reword}");
+    }
+}
+
+/// A person's on-disk change of a section whose record names only the agent
+/// (its own earlier write, never settled) stays feedback through the agent's
+/// next curated write that rewords it: sync does not touch the record, so the record cannot
+/// tell whose change it is.
+#[tokio::test]
+async fn a_persons_disk_edit_of_the_agents_unsettled_section_stays_feedback() {
+    let fx = curated(&[]).await;
+    let text = edit_page(
+        &fx,
+        "Roll back with the script.\n",
+        "Roll back with the script.\n\n## Notes\n\nAsk first.\n",
+    );
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &text), &agent())
+        .await
+        .unwrap();
+    let path = fx.root.join("reflections/guides/deploying.md");
+    let edited = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("Ask first.", "Ask the on-call first.");
+    std::fs::write(&path, edited).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let owed = curate_rollback_and_resend(&fx, |t| {
+        t.replace("the on-call first.", "the on-call engineer first.")
+    })
+    .await;
+    assert_eq!(owed, ["Notes"]);
+}
+
+/// The agent's own earlier unsourced section stays feedback through its next
+/// curated write, reworded or not, until it settles it.
+#[tokio::test]
+async fn the_agents_own_unsettled_section_stays_feedback_until_it_settles_it() {
+    let fx = curated(&[]).await;
+    let text = edit_page(
+        &fx,
+        "Roll back with the script.\n",
+        "Roll back with the script.\n\n## Notes\n\nAsk first.\n",
+    );
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &text), &agent())
+        .await
+        .unwrap();
+    let owed =
+        curate_rollback_and_resend(&fx, |t| t.replace("Ask first.", "Ask before you start.")).await;
+    assert_eq!(owed, ["Notes"]);
+    let page = std::fs::read_to_string(fx.root.join("reflections/guides/deploying.md")).unwrap();
+    let notes = crystalline_core::reflection::split_sections(&page)
+        .into_iter()
+        .find(|s| s.heading == "Notes")
+        .and_then(|s| s.id)
+        .unwrap();
+    fx.engine
+        .settle_reflection("eng", "guides/deploying.md", &[notes], "kept", &agent())
+        .await
+        .unwrap();
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert_eq!(queue["total"], 0, "{queue}");
+}
+
+/// A person's pending change of the top stays feedback when the agent's
+/// curated write rewrites the top.
+#[tokio::test]
+async fn a_persons_top_change_stays_feedback_through_an_agents_rewrite() {
+    let fx = curated(&[]).await;
+    let text = edit_page(&fx, "# Deploying\n", "# Deploying\n\nFor new people.\n");
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &text), &person())
+        .await
+        .unwrap();
+    let owed = curate_rollback_and_resend(&fx, |t| {
+        t.replace("For new people.", "For new people and visitors.")
+    })
+    .await;
+    assert_eq!(owed, [""], "the top, addressed as _top");
+}
+
+/// A person removed a section; the agent then sends a stale copy that still
+/// holds it (reflowed), without a checksum. The section was reflected
+/// before, so it is not the agent's fresh text: it stays in the queue.
+#[tokio::test]
+async fn a_stale_copy_of_a_section_a_person_removed_is_not_settled() {
+    let fx = curated(&[]).await;
+    let path = fx.root.join("reflections/guides/deploying.md");
+    let stale = std::fs::read_to_string(&path).unwrap();
+    let rollback = stale.find("## Rollback").unwrap();
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &stale[..rollback]), &person())
+        .await
+        .unwrap();
+    let mut p = write(
+        "guides/deploying.md",
+        &stale
+            .replace("Deploys run at night.", "Deploys run at night, late.")
+            .replace(
+                "Roll back with the script.",
+                "Roll back with the script, then check.",
+            ),
+    );
+    p.sources = BTreeMap::from([(
+        "Night deploys".to_string(),
+        vec!["runbooks/deploy".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert!(
+        rows(&queue)
+            .iter()
+            .any(|(kind, _, heading)| kind == "feedback" && heading == "Rollback"),
+        "{queue}"
+    );
+}
+
+/// The page file is gone but its baseline survives; the agent re-creates the
+/// page with the old ids. A section the baseline holds is not fresh text, so
+/// a change of it against the baseline stays in the queue.
+#[tokio::test]
+async fn a_recreated_page_does_not_settle_what_its_baseline_holds() {
+    let fx = curated(&[]).await;
+    let path = fx.root.join("reflections/guides/deploying.md");
+    let stale = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    assert!(
+        fx.root
+            .join("reflections/.reflected/guides/deploying.md")
+            .exists()
+    );
+    let mut p = write(
+        "guides/deploying.md",
+        &stale
+            .replace("Deploys run at night.", "Deploys run at night, late.")
+            .replace(
+                "Roll back with the script.",
+                "Roll back with the script, then check.",
+            ),
+    );
+    p.sources = BTreeMap::from([(
+        "Night deploys".to_string(),
+        vec!["runbooks/deploy".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    assert!(
+        rows(&queue)
+            .iter()
+            .any(|row| row == &("feedback".into(), "changed".into(), "Rollback".into())),
+        "{queue}"
+    );
+}
+
+/// The feedback rows of the queue, by heading.
+async fn feedback_headings(fx: &Fx) -> Vec<String> {
+    let queue = fx
+        .engine
+        .reflect(
+            &ReflectParams {
+                kinds: vec!["feedback".into()],
+                ..Default::default()
+            },
+            &agent(),
+        )
+        .await
+        .unwrap();
+    queue["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["heading"].as_str().unwrap_or("").to_string())
+        .collect()
+}
+
+/// On a page that already has a baseline, a brand-new section the agent's
+/// curated write adds without sources is its own text: it owes no feedback.
+#[tokio::test]
+async fn a_curated_write_settles_a_new_unsourced_section_on_a_page_with_a_baseline() {
+    let fx = curated(&[]).await;
+    let text = edit_page(
+        &fx,
+        "Roll back with the script.\n",
+        "Roll back with the old script.\n\n## Questions\n\nAsk in the channel.\n",
+    );
+    let mut p = write("guides/deploying.md", &text);
+    p.sources = BTreeMap::from([(
+        "Rollback".to_string(),
+        vec!["runbooks/rollback".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    assert!(feedback_headings(&fx).await.is_empty());
+}
+
+/// A person's unreflected section that the agent sends back with its
+/// heading in another case and without its id is held the way every heading
+/// is matched (Unicode case folding), so it is not settled silently.
+#[tokio::test]
+async fn a_persons_section_sent_back_in_another_case_stays_feedback() {
+    let fx = curated(&[]).await;
+    let text = edit_page(
+        &fx,
+        "Roll back with the script.\n",
+        "Roll back with the script.\n\n## Über uns\n\nWe are the ops team.\n",
+    );
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &text), &person())
+        .await
+        .unwrap();
+    let owed = curate_rollback_and_resend(&fx, |t| {
+        let at = t.find("## Über uns").unwrap();
+        let end = t[at..].find("\n\n").unwrap() + at;
+        format!("{}## über uns{}", &t[..at], &t[end..])
+    })
+    .await;
+    assert_eq!(owed, ["über uns"]);
+}
+
+/// A section a person added and then removed again in a plain editor,
+/// before any reflection, keeps its record in the page's bookkeeping (the
+/// editor left the block alone). A stale copy that brings it back with its id
+/// is not the agent's fresh text: it stays feedback.
+#[tokio::test]
+async fn a_stale_copy_of_an_unreflected_section_with_a_record_stays_feedback() {
+    let fx = curated(&[]).await;
+    let added = edit_page(
+        &fx,
+        "Roll back with the script.\n",
+        "Roll back with the script.\n\n## Draft\n\nA person's draft.\n",
+    );
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &added), &person())
+        .await
+        .unwrap();
+    let path = fx.root.join("reflections/guides/deploying.md");
+    let stale = std::fs::read_to_string(&path).unwrap();
+    let draft = stale.find("\n## Draft").unwrap();
+    std::fs::write(&path, format!("{}\n", &stale[..draft])).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let owed = curate_rollback_and_resend(&fx, |_| stale.clone()).await;
+    assert_eq!(owed, ["Draft"]);
+}
+
+/// Sources alone curate the sections as they stand: the page is not
+/// rewritten, the named section's feedback is settled and the rest stays.
+#[tokio::test]
+async fn sources_alone_curate_the_page_as_it_stands() {
+    let fx = curated_with_a_feedback_item().await;
+    let path = fx.root.join("reflections/guides/deploying.md");
+    let before = std::fs::read_to_string(&path).unwrap();
+    let mut p = write("guides/deploying.md", "");
+    p.markdown = None;
+    p.sources = BTreeMap::from([(
+        "Night deploys".to_string(),
+        vec!["runbooks/deploy".to_string()],
+    )]);
+    let receipt = fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    assert_eq!(receipt["curated"], true, "{receipt}");
+    assert!(feedback_headings(&fx).await.is_empty());
+    let after = std::fs::read_to_string(&path).unwrap();
+    let body = |t: &str| t[t.find("# Deploying").unwrap()..].to_string();
+    assert_eq!(
+        body(&after),
+        body(&before),
+        "the page text is not rewritten"
+    );
+
+    let mut missing = write("guides/nowhere.md", "");
+    missing.markdown = None;
+    missing.sources = p.sources.clone();
+    let err = fx
+        .engine
+        .write_reflection(&missing, &agent())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("write it with markdown first"), "{err}");
+}
+
+/// A write that leaves out a section a person changed since the last
+/// reflection says so on its receipt, naming the section.
+#[tokio::test]
+async fn a_write_that_drops_a_persons_unreflected_section_names_it() {
+    let fx = curated(&[]).await;
+    let added = edit_page(
+        &fx,
+        "Roll back with the script.\n",
+        "Roll back with the script.\n\n## Notes\n\nAsk first.\n",
+    );
+    fx.engine
+        .write_reflection(&write("guides/deploying.md", &added), &person())
+        .await
+        .unwrap();
+    let path = fx.root.join("reflections/guides/deploying.md");
+    let page = std::fs::read_to_string(&path).unwrap();
+    let notes = page.find("\n## Notes").unwrap();
+    let receipt = fx
+        .engine
+        .write_reflection(
+            &write("guides/deploying.md", &format!("{}\n", &page[..notes])),
+            &agent(),
+        )
+        .await
+        .unwrap();
+    let guidance = receipt["guidance"].as_str().unwrap_or("");
+    assert!(
+        guidance.contains("removed sections a person changed since the last reflection: 'Notes'"),
+        "{receipt}"
+    );
+
+    let clean = fx
+        .engine
+        .write_reflection(
+            &write(
+                "guides/deploying.md",
+                &std::fs::read_to_string(&path).unwrap(),
+            ),
+            &agent(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !clean["guidance"]
+            .as_str()
+            .unwrap_or("")
+            .contains("removed sections"),
+        "{clean}"
+    );
+}
+
+/// A thread item carries the label of its opening conventional comment, and
+/// a blocking thread comes before the other threads of its section. A plain
+/// comment carries no label at all.
+#[tokio::test]
+async fn a_blocking_thread_comes_first_and_carries_its_label() {
+    let fx = curated(&[]).await;
+    let text = edit_page(&fx, "", "");
+    let id = crystalline_core::reflection::split_sections(&text)[1]
+        .id
+        .clone()
+        .unwrap();
+    let mut opened = Vec::new();
+    for words in [
+        "Is this still true?",
+        "question (non-blocking): is this still true?",
+        "issue (blocking): the batch window moved\nSee the runbook.",
+    ] {
+        let thread = fx
+            .engine
+            .discuss(
+                &DiscussParams {
+                    domain: "eng".into(),
+                    path: Some("guides/deploying.md".into()),
+                    section: Some(id.clone()),
+                    text: Some(words.into()),
+                    ..Default::default()
+                },
+                &person(),
+            )
+            .await
+            .unwrap();
+        opened.push(thread["id"].as_str().unwrap().to_string());
+    }
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    let items = queue["queue"].as_array().unwrap();
+    let threads: Vec<&str> = items
+        .iter()
+        .map(|i| i["thread"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        threads,
+        [&opened[2], &opened[0], &opened[1]],
+        "the blocking thread first, the rest as before: {queue}"
+    );
+    assert_eq!(items[0]["label"], "issue", "{queue}");
+    assert_eq!(items[0]["blocking"], true, "{queue}");
+    let plain = items[1].as_object().unwrap();
+    assert!(
+        !plain.contains_key("label") && !plain.contains_key("blocking"),
+        "{queue}"
+    );
+    assert_eq!(items[2]["label"], "question", "{queue}");
+    assert_eq!(items[2]["blocking"], false, "{queue}");
+    let guidance = queue["guidance"].as_str().unwrap();
+    assert!(guidance.contains("blocking threads first"), "{guidance}");
+    assert!(
+        guidance.contains(
+            "Answer a person's thread and leave it open. The person who opened it resolves it."
+        ),
+        "{guidance}"
+    );
+}
+
+/// `crossing` with `overview.md`: three sections, each built from one
+/// engram of `harbor` (team, rota, pager).
+async fn cross_curated() -> Fx {
+    let fx = crate::sources::crossing().await;
+    let mut p = write(
+        "overview.md",
+        "# Overview\n\nFor people.\n\n## Team\n\nFive.\n\n## Rota\n\nWeekly.\n\n## Pager\n\nOne.\n",
+    );
+    p.sources = BTreeMap::from([
+        (
+            "Team".to_string(),
+            vec!["crystalline://harbor/team/harbor-team".to_string()],
+        ),
+        (
+            "Rota".to_string(),
+            vec!["crystalline://harbor/team/rota".to_string()],
+        ),
+        (
+            "Pager".to_string(),
+            vec!["crystalline://harbor/team/pager".to_string()],
+        ),
+    ]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    fx
+}
+
+fn items_of<'a>(queue: &'a serde_json::Value, what: &str) -> Vec<&'a serde_json::Value> {
+    queue["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["what"] == what)
+        .collect()
+}
+
+fn eng_only() -> ReflectParams {
+    ReflectParams {
+        domains: vec!["eng".into()],
+        ..Default::default()
+    }
+}
+
+/// An engram of another domain that changes, is retired or is deleted
+/// gives the same items a local one gives, each naming the source in its
+/// domain. Citing `harbor` engrams covers nothing of `eng`'s own.
+#[tokio::test]
+async fn a_source_in_another_domain_changes_retires_and_goes() {
+    let fx = cross_curated().await;
+    let harbor = crate::fixture::root_of(&fx, "harbor");
+    std::fs::write(
+        harbor.join("team/harbor-team.md"),
+        engram("Harbor team", "team/harbor-team", "- [fact] six people"),
+    )
+    .unwrap();
+    std::fs::write(
+        harbor.join("team/rota.md"),
+        engram("Rota", "team/rota", "- [fact] weekly")
+            .replace("status: stable", "status: superseded"),
+    )
+    .unwrap();
+    std::fs::remove_file(harbor.join("team/pager.md")).unwrap();
+    fx.engine.sync(None).await.unwrap();
+
+    let queue = fx.engine.reflect(&eng_only(), &agent()).await.unwrap();
+    for (what, heading, permalink) in [
+        ("source_changed", "Team", "team/harbor-team"),
+        ("source_retired", "Rota", "team/rota"),
+        ("source_missing", "Pager", "team/pager"),
+    ] {
+        let items = items_of(&queue, what);
+        assert_eq!(items.len(), 1, "{what}: {queue}");
+        assert_eq!(items[0]["heading"], heading, "{queue}");
+        assert_eq!(items[0]["sources"][0]["permalink"], permalink, "{queue}");
+        assert_eq!(items[0]["sources"][0]["domain"], "harbor", "{queue}");
+    }
+    // eng's runbook is cited by no page of eng: still unreflected.
+    let unreflected = items_of(&queue, "unreflected");
+    assert_eq!(unreflected.len(), 1, "{queue}");
+    assert_eq!(
+        unreflected[0]["engrams"],
+        serde_json::json!(["runbooks/deploy"])
+    );
+
+    // Taking the change in refreshes the foreign checksum.
+    let doc = fx
+        .engine
+        .read_reflection("eng", "overview.md", &agent())
+        .await
+        .unwrap();
+    let team = doc["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["heading"] == "Team")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    fx.engine
+        .settle_reflection("eng", "overview.md", &[team], "taken_in", &agent())
+        .await
+        .unwrap();
+    let queue = fx.engine.reflect(&eng_only(), &agent()).await.unwrap();
+    assert!(items_of(&queue, "source_changed").is_empty(), "{queue}");
+}
+
+/// Sources in a domain this instance does not have are `unavailable`,
+/// never `missing`: one item per page and domain says they cannot be
+/// checked here, a reader who may not open such a name gets the plain
+/// words of any hidden source, a write by such a reader keeps them and a writer who sees the
+/// address may leave one out.
+#[tokio::test]
+async fn sources_in_a_domain_not_here_are_unavailable_never_missing() {
+    let fx = cross_curated().await;
+    let abs = fx.root.join("reflections/overview.md");
+    let text = std::fs::read_to_string(&abs).unwrap();
+    std::fs::write(&abs, text.replace("domain: harbor", "domain: elsewhere")).unwrap();
+    fx.engine.sync(None).await.unwrap();
+
+    let doc = fx
+        .engine
+        .read_reflection("eng", "overview.md", &agent())
+        .await
+        .unwrap();
+    let states: Vec<&str> = doc["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|s| s["sources"].as_array().unwrap())
+        .map(|s| s["state"].as_str().unwrap())
+        .collect();
+    assert_eq!(states, ["unavailable"; 3], "{doc}");
+
+    let queue = fx.engine.reflect(&eng_only(), &agent()).await.unwrap();
+    assert!(items_of(&queue, "source_missing").is_empty(), "{queue}");
+    let items = items_of(&queue, "source_unavailable");
+    assert_eq!(items.len(), 1, "one per page and domain: {queue}");
+    assert_eq!(items[0]["source_domain"], "elsewhere");
+    assert_eq!(items[0]["count"], 3);
+    assert_eq!(
+        items[0]["note"],
+        "sources in elsewhere cannot be checked here; keep them while the domain may come back, or drop one by writing its section's sources without it"
+    );
+    assert_eq!(items[0]["path"], "overview.md");
+
+    // A signed-in account: a name no registration covers is not shown.
+    let auth = std::sync::Arc::new(
+        crystalline_service::rest::AuthStore::open(&fx.tmp.path().join("web-auth.db"))
+            .await
+            .unwrap(),
+    );
+    auth.add_user(
+        "ed",
+        "ed",
+        None,
+        crystalline_service::rest::Role::Editor,
+        "pw12345678",
+    )
+    .await
+    .unwrap();
+    fx.engine
+        .set_domain_access(std::sync::Arc::new(crystalline_service::DomainAccess::new(
+            auth,
+        )));
+    let ed = ReflectionCaller::agent(
+        crystalline_service::Scope::User {
+            account: "ed".into(),
+            admin: false,
+        },
+        "claude-code",
+        false,
+    );
+    let queue = fx.engine.reflect(&eng_only(), &ed).await.unwrap();
+    assert!(!queue.to_string().contains("elsewhere"), "{queue}");
+    assert!(items_of(&queue, "source_unavailable").is_empty(), "{queue}");
+    let items = items_of(&queue, "source_changed");
+    assert_eq!(
+        items.len(),
+        3,
+        "one per section, as any hidden source: {queue}"
+    );
+    for item in items {
+        assert_eq!(item["hidden_sources"], 1);
+        assert_eq!(
+            item["note"],
+            "a source in a domain you cannot open has changed"
+        );
+    }
+
+    // A writer who is not shown the name keeps it: a sources write by the
+    // account leaves the section's unavailable source as it was.
+    let sources_of = |section: &str| {
+        let mut p = crystalline_service::params::WriteReflectionParams {
+            domain: "eng".into(),
+            path: "overview.md".into(),
+            ..Default::default()
+        };
+        p.sources = BTreeMap::from([(section.to_string(), vec!["runbooks/deploy".to_string()])]);
+        p
+    };
+    fx.engine
+        .write_reflection(&sources_of("Team"), &ed)
+        .await
+        .unwrap();
+    let text = std::fs::read_to_string(&abs).unwrap();
+    assert_eq!(text.matches("domain: elsewhere").count(), 3, "{text}");
+
+    // A writer who sees the address drops it by leaving it out: how a
+    // source of a domain that is gone for good goes.
+    fx.engine
+        .write_reflection(&sources_of("Team"), &agent())
+        .await
+        .unwrap();
+    let text = std::fs::read_to_string(&abs).unwrap();
+    assert_eq!(text.matches("domain: elsewhere").count(), 2, "{text}");
+    let queue = fx.engine.reflect(&eng_only(), &agent()).await.unwrap();
+    assert_eq!(
+        items_of(&queue, "source_unavailable")[0]["count"],
+        2,
+        "{queue}"
     );
 }

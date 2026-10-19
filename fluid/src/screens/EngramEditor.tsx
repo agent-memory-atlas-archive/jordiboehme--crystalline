@@ -9,12 +9,10 @@
  * editing a page that now 404s.
  */
 
-import { autocompletion } from "@codemirror/autocomplete";
 import type { Extension } from "@codemirror/state";
 import { Compartment, EditorState } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { keymap } from "@codemirror/view";
-import type { QueryClient } from "@tanstack/react-query";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown } from "lucide-react";
 import type { ReactNode } from "react";
@@ -60,34 +58,21 @@ import { Loading } from "../components/Loading";
 import { BUTTON, FOCUS_RING, TOGGLE, Tooltip } from "../components/primitives";
 import { SimilarEngramsPanel } from "../components/SimilarEngramsPanel";
 import { domainSpellings } from "../domainNames";
+import type { DocumentAdapter } from "../editor/adapter";
+import { engramAdapter } from "../editor/adapter";
 import CmEditor from "../editor/CmEditor";
 import { ConfirmLeaveDialog } from "../editor/ConfirmLeaveDialog";
 import { ConflictDialog } from "../editor/ConflictDialog";
-import {
-  crystallineCompletions,
-  crystallineLines,
-} from "../editor/crystallineLines";
 import { EditorToolbar } from "../editor/EditorToolbar";
-import { fenceMono } from "../editor/fenceMono";
-import { fencePreviews } from "../editor/fencePreviews";
 import { imagePreviews } from "../editor/imagePreviews";
-import { imageContextListener } from "../editor/imageVerbs";
 import { FindingsPanel, jumpToLine } from "../editor/FindingsPanel";
-import { frontmatterFold } from "../editor/frontmatterFold";
 import { FrontmatterForm } from "../editor/FrontmatterForm";
 import { KeptTextNotice } from "../editor/KeptTextNotice";
-import { livePreview } from "../editor/preview";
-import {
-  RAW_MONO,
-  baseExtensions,
-  docText,
-  lineSeparatorFor,
-} from "../editor/setup";
-import { tableContextListener } from "../editor/tableVerbs";
-import { readingTheme } from "../editor/readingTheme";
+import { docText, lineSeparatorFor } from "../editor/setup";
+import type { ElementFace } from "../editor/elementContext";
+import { previewConfig, surfaceExtensions } from "../editor/surface";
 import type { SaveStateKind } from "../editor/SaveState";
 import { SaveState } from "../editor/SaveState";
-import { formattingKeymap } from "../editor/toolbar";
 import {
   UploadScreenContext,
   useAttachmentUploads,
@@ -96,11 +81,7 @@ import {
 import { useCloseFlow, useExitRequest } from "../editor/useCloseFlow";
 import { useRoomExit } from "../editor/useRoomExit";
 import { saveKeymap, useEditorSession } from "../editor/useEditorSession";
-import {
-  wikilinkChips,
-  wikilinkCompletions,
-  wikilinkResolverFacet,
-} from "../editor/wikilinkChips";
+import { wikilinkResolverFacet } from "../editor/wikilinkChips";
 import { useIgnoredEngram } from "../events/ignored";
 import { moveDraft } from "../editor/drafts";
 import { domainRoute, editRoute, engramRoute } from "../paths";
@@ -112,46 +93,6 @@ import NotFound from "./NotFound";
 
 /** The buffer's accessible name - shared with the state a conflict rebuilds. */
 const ARIA_LABEL = "Engram source";
-
-/**
- * What the preview compartment holds, in the one place it is ever spelled.
- *
- * Two sites configure that compartment - `surfaceExtensions`, which every
- * state this screen builds goes through, and the Raw toggle - and a decoration
- * layer added to only one of them would vanish on whichever path was missed.
- * Later layers are appended to this array and reach both at once.
- */
-function previewConfig(
-  off: boolean,
-  dark: boolean,
-  /** The domain the inline image previews load their files from. */
-  domain: string,
-): Extension {
-  return off
-    ? // Raw is deliberately the source view, so the whole buffer goes back to
-      // mono: the shared theme sets prose proportional, and this is the one
-      // place that undoes it.
-      [RAW_MONO]
-    : [
-        livePreview(),
-        wikilinkChips(),
-        crystallineLines(),
-        fencePreviews(dark),
-        // A pasted screenshot is a path in the buffer and a picture on the
-        // page, so the picture is drawn here too: an author placing an image
-        // sees what a reader will see rather than the reference to it.
-        imagePreviews(domain),
-        // The Details rail is the metadata surface, so the block itself is
-        // hidden from the text here rather than being shown twice; Raw shows
-        // it. The MANIFEST editor deliberately does not get this: it has no
-        // form, so its frontmatter is only ever visible in the buffer.
-        frontmatterFold(),
-        // Prose is proportional, code is not. Raw mode does not need this -
-        // the whole buffer is mono there - so it rides the preview branch
-        // with the rest of the read model.
-        fenceMono(),
-      ];
-}
 
 /** Preview is on when the editor opens. */
 const RAW_AT_MOUNT = false;
@@ -259,13 +200,13 @@ interface Room {
 }
 
 /** Everything one buffer on this screen is built from. */
-interface SurfaceOptions {
+interface EngramSurfaceOptions {
   /** The text the buffer opens with, whose line endings it inherits. */
   content: string;
-  /** The cache the completion's title lookup goes through. */
-  client: QueryClient;
+  /** What an engram adds to the shared surface. */
+  adapter: DocumentAdapter;
   dark: boolean;
-  /** The engram's own domain, which decides what a completion prefixes. */
+  /** The engram's own domain, which the image previews load from. */
   domain: string;
   /** The layer switch the Raw toggle reconfigures. */
   preview: Compartment;
@@ -273,47 +214,28 @@ interface SurfaceOptions {
   /** The resolver's own switch, reconfigured when the graph lands. */
   resolverBox: Compartment;
   resolver: WikilinkResolver;
-  /**
-   * The domain's vocabulary, read fresh on every completion rather than
-   * closed over: the fetch behind it lands after the buffer mounts, and a
-   * plain value captured here would go on answering `null` forever once it
-   * did.
-   */
-  vocab: () => Vocabulary | null;
   /** The session this buffer is bound to, or null on the solo surface. */
   room: Room | null;
-  /**
-   * Paste and drop uploads. Inside the options for the same reason the table
-   * listener is: every state this screen builds goes through this function,
-   * and handlers added beside it at one site would go silent the first time a
-   * session rebuilt the buffer.
-   */
+  /** Paste and drop uploads; see `SurfaceOptions`. */
   uploads: Extension;
-  /**
-   * Told when the caret enters or leaves a table, so the format bar can draw
-   * its table verbs. It travels inside the options rather than being added
-   * beside them, because every state this screen builds goes through this
-   * function and a listener added at only one site would go silent the first
-   * time a session rebuilt the buffer.
-   */
+  /** Told when the caret enters or leaves a table; see `SurfaceOptions`. */
   onTableContext: (inTable: boolean) => void;
-  /**
-   * Told when the caret enters or leaves an attachment image, so the format
-   * bar can draw its image menu. It travels with the table listener above and
-   * for the same reason.
-   */
+  /** Told when the caret enters or leaves an image; see `SurfaceOptions`. */
   onImageContext: (onImage: boolean) => void;
+  /** Told what callout or label the caret is in; see `SurfaceOptions`. */
+  onElementContext: (face: ElementFace) => void;
 }
 
 /**
- * The whole extension set of one buffer, in the one place it is ever spelled.
+ * The whole extension set of one buffer, in the one place this screen spells
+ * it: the shared surface plus what only this screen adds.
  *
  * Two sites build a state for this screen - the mount and the wholesale
  * rebuild the session's `replaceWith` performs - and `setState` replaces the
  * configuration entirely, so anything listed in only one of them silently
  * disappears the first time a swap rebuilds the buffer.
  */
-function surfaceExtensions(options: SurfaceOptions): Extension[] {
+function engramSurface(options: EngramSurfaceOptions): Extension[] {
   const room = options.room;
   return [
     // A session buffer pins LF rather than deriving a separator from its
@@ -323,52 +245,33 @@ function surfaceExtensions(options: SurfaceOptions): Extension[] {
     ...(room !== null
       ? [EditorState.lineSeparator.of("\n")]
       : lineSeparatorFor(options.content)),
-    // The room's own undo stack replaces CodeMirror's: see `baseExtensions`.
-    ...baseExtensions(options.dark, { history: room === null }),
-    ...(room !== null
-      ? [
-          yCollab(room.ytext, room.awareness, {
-            undoManager: new Y.UndoManager(room.ytext),
-          }),
-          keymap.of(yUndoManagerKeymap),
-          normalizePastedEndings,
-          cursorFlags,
-        ]
-      : []),
-    // The reading size and no inset, so text and images sit on the column's
-    // own left edge, under the toolbar.
-    readingTheme,
-    saveKeymap,
-    // What the format bar's context segment watches. Outside the preview
-    // compartment: a table is a table in Raw mode too.
-    tableContextListener(options.onTableContext),
-    // The same watch for the image menu. Outside the preview compartment
-    // beside it: the menu edits the target's text, which is as much text in
-    // Raw mode as it is under the previews.
-    imageContextListener(options.onImageContext),
-    // A pasted screenshot and a dropped deck are attachments in Raw mode too,
-    // so these sit outside the compartment beside it.
-    options.uploads,
-    // The toolbar's own shortcuts. Beside `saveKeymap` rather than inside the
-    // preview compartment: Mod-b and Mod-i are typing help like the
-    // completions below, and raw mode is still markdown being written. Its
-    // `Prec.high` wrapper - not its position here - is what beats
-    // defaultKeymap's own Mod-i; see `formattingKeymap`.
-    formattingKeymap,
-    // Typing help rather than preview, so it stays on in raw mode: outside
-    // the compartment the Raw toggle empties.
-    autocompletion({
-      override: [
-        wikilinkCompletions(options.domain, options.client),
-        crystallineCompletions(options.vocab),
+    ...surfaceExtensions({
+      adapter: options.adapter,
+      dark: options.dark,
+      // The room's own undo stack replaces CodeMirror's: see `baseExtensions`.
+      history: room === null,
+      screen: [
+        ...(room !== null
+          ? [
+              yCollab(room.ytext, room.awareness, {
+                undoManager: new Y.UndoManager(room.ytext),
+              }),
+              keymap.of(yUndoManagerKeymap),
+              normalizePastedEndings,
+              cursorFlags,
+            ]
+          : []),
+        saveKeymap,
+        options.resolverBox.of(wikilinkResolverFacet.of(options.resolver)),
       ],
+      preview: options.preview,
+      raw: options.raw,
+      images: imagePreviews(options.domain),
+      uploads: options.uploads,
+      onTableContext: options.onTableContext,
+      onImageContext: options.onImageContext,
+      onElementContext: options.onElementContext,
     }),
-    options.resolverBox.of(wikilinkResolverFacet.of(options.resolver)),
-    // Every later flip goes through the compartment rather than through this
-    // array, which is read once per state.
-    options.preview.of(
-      previewConfig(options.raw, options.dark, options.domain),
-    ),
   ];
 }
 
@@ -555,6 +458,8 @@ function Surface({
   const [tableActive, setTableActive] = useState(false);
   /** The same, for the caret sitting on an attachment image. */
   const [imageActive, setImageActive] = useState(false);
+  /** The callout or status label the caret is in, for their segments. */
+  const [element, setElement] = useState<ElementFace>(null);
   /**
    * WHICH conflict this tab has the resolution view open on, rather than a
    * bare open flag. The conflict itself is the server's - it stands until
@@ -644,6 +549,26 @@ function Surface({
     vocabRef.current = vocabulary.data ?? null;
   }, [vocabulary.data]);
   const readVocab = useCallback(() => vocabRef.current, []);
+  /**
+   * What an engram adds to the shared surface: its chips, lines, fold and
+   * completions. One object for the screen's life, so the Raw toggle hands
+   * the compartment back the same layers it took away.
+   */
+  const adapter = useMemo(
+    () =>
+      // `readVocab` only ever hands `vocabRef` to `crystallineCompletions`,
+      // which stores it in a `CompletionSource` closure CodeMirror calls later
+      // from typing, not here: nothing on this call stack reads `.current`
+      // during this render, but the checker cannot see through the
+      // `crystallineCompletions` call to confirm that.
+      // eslint-disable-next-line react-hooks/refs
+      engramAdapter({
+        domain: engram.domain,
+        client: queryClient,
+        vocab: readVocab,
+      }),
+    [engram.domain, queryClient, readVocab],
+  );
 
   /**
    * The extensions a buffer swapped in mid-session is rebuilt with: this
@@ -651,20 +576,20 @@ function Surface({
    * line separator.
    */
   const extensionsFor = (content: string) =>
-    surfaceExtensions({
+    engramSurface({
       content,
-      client: queryClient,
+      adapter,
       dark: resolved === "dark",
       domain: engram.domain,
       preview,
       raw,
       resolverBox,
       resolver,
-      vocab: readVocab,
       room,
       uploads: uploads.extension,
       onTableContext: setTableActive,
       onImageContext: setImageActive,
+      onElementContext: setElement,
     });
 
   /**
@@ -935,15 +860,9 @@ function Surface({
 
   const extensions = useMemo(
     () =>
-      // `readVocab` only ever hands `vocabRef` to `crystallineCompletions`,
-      // which stores it in a `CompletionSource` closure CodeMirror calls later
-      // from typing, not here: nothing on this call stack reads `.current`
-      // during this render, but the checker cannot see through the
-      // `autocompletion` and `crystallineCompletions` calls to confirm that.
-      // eslint-disable-next-line react-hooks/refs
-      surfaceExtensions({
+      engramSurface({
         content: mountText,
-        client: queryClient,
+        adapter,
         dark: resolved === "dark",
         domain: engram.domain,
         preview,
@@ -952,11 +871,11 @@ function Surface({
         // The graph has not landed at mount; the compartment above carries
         // the real resolver in as soon as it does.
         resolver: NO_RESOLUTION,
-        vocab: readVocab,
         room,
         uploads: uploads.extension,
         onTableContext: setTableActive,
         onImageContext: setImageActive,
+        onElementContext: setElement,
       }),
     // Read once: `CmEditor` snapshots the extensions at mount, so a later
     // theme change reaches the buffer through a remount rather than through
@@ -964,11 +883,10 @@ function Surface({
     [
       mountText,
       engram.domain,
-      queryClient,
+      adapter,
       resolved,
       preview,
       resolverBox,
-      readVocab,
       room,
       uploads.extension,
     ],
@@ -1401,7 +1319,10 @@ function Surface({
             view={view}
             tableActive={tableActive}
             imageActive={imageActive}
+            calloutActive={element?.kind === "callout" ? element : null}
+            statusActive={element?.kind === "status" ? element.colour : null}
             onAttach={uploads.attach}
+            adapter={adapter}
             trailing={
               <Tooltip label="Show the file as Markdown, frontmatter included">
                 <button
@@ -1412,7 +1333,12 @@ function Surface({
                     setRaw(next);
                     session.viewRef.current?.dispatch({
                       effects: preview.reconfigure(
-                        previewConfig(next, resolved === "dark", engram.domain),
+                        previewConfig(
+                          next,
+                          resolved === "dark",
+                          imagePreviews(engram.domain),
+                          adapter,
+                        ),
                       ),
                     });
                   }}

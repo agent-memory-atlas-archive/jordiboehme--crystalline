@@ -15,13 +15,14 @@ import type { Extension } from "@codemirror/state";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { RenderResult } from "@testing-library/react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test } from "vitest";
 
 import { ATTACHMENT_ACCEPT } from "../api/files";
 import { Tooltips } from "../components/primitives";
 import { parsedState } from "../test/parse";
+import { JOIN_SECTIONS, reflectionAdapter } from "./adapter";
 import { AttachButton } from "./AttachButton";
 import { EditorToolbar } from "./EditorToolbar";
 import { frontmatterFold } from "./frontmatterFold";
@@ -110,11 +111,19 @@ async function align(label: string): Promise<void> {
   await user.click(await screen.findByRole("menuitem", { name: label }));
 }
 
+/** Open Insert > Diagram, the diagram menu. */
+async function openDiagrams(): Promise<HTMLElement> {
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Insert" }));
+  await user.click(await screen.findByRole("menuitem", { name: "Diagram" }));
+  return screen.findByRole("menu", { name: "Diagram" });
+}
+
 /** Open the diagram menu and pick one of its starters. */
 async function pickDiagram(label: string): Promise<void> {
   const user = userEvent.setup();
-  await user.click(screen.getByRole("button", { name: "Insert diagram" }));
-  await user.click(await screen.findByRole("menuitem", { name: label }));
+  const diagrams = await openDiagrams();
+  await user.click(within(diagrams).getByRole("menuitem", { name: label }));
 }
 
 describe("the format buttons", () => {
@@ -158,9 +167,23 @@ describe("the format buttons", () => {
     );
   });
 
-  test("Insert code block inserts a bare fence", async () => {
+  test("one Insert button stands where the diagram and code buttons were", () => {
+    mount("prose\n", 5);
+    const names = screen
+      .getAllByRole("button")
+      .map((button) => button.getAttribute("aria-label") ?? button.textContent);
+    expect(names).not.toContain("Insert diagram");
+    expect(names).not.toContain("Insert code block");
+    // Right after the table picker, the other insert verb that asks first.
+    expect(names.indexOf("Insert")).toBe(names.indexOf("Insert table") + 1);
+  });
+
+  test("Insert > Code block inserts a bare fence", async () => {
     const v = mount("prose\n", 5);
-    await press("Insert code block");
+    await press("Insert");
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "Code block" }),
+    );
     // A blank line, the bare fence, its body line and the close - dropped
     // below the cursor's line, which keeps its own trailing break.
     expect(docText(v.state)).toBe("prose\n\n```\n\n```\n\n");
@@ -170,20 +193,21 @@ describe("the format buttons", () => {
 describe("the diagram menu", () => {
   test("offers sixteen starters under three group labels", async () => {
     mount("prose\n", 5);
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Insert diagram" }));
+    const diagrams = await openDiagrams();
     // Sixteen by count rather than by reading the starters module back at
     // itself: a menu that quietly lost an entry would agree with the module
     // and disagree with the decision that named all sixteen.
-    expect(await screen.findAllByRole("menuitem")).toHaveLength(16);
+    expect(within(diagrams).getAllByRole("menuitem")).toHaveLength(16);
     for (const label of ["Everyday", "Planning and product", "Technical"]) {
-      expect(screen.getByText(label)).not.toBeNull();
+      expect(within(diagrams).getByText(label)).not.toBeNull();
     }
     // The labels are headings, not choices: only the sixteen are selectable.
     expect(
-      screen.getByRole("menuitem", { name: "User journey" }),
+      within(diagrams).getByRole("menuitem", { name: "User journey" }),
     ).not.toBeNull();
-    expect(screen.getByRole("menuitem", { name: "Radar" })).not.toBeNull();
+    expect(
+      within(diagrams).getByRole("menuitem", { name: "Radar" }),
+    ).not.toBeNull();
   });
 
   test("User journey inserts its starter with the title selected", async () => {
@@ -199,14 +223,16 @@ describe("the diagram menu", () => {
     expect(v.state.sliceDoc(from, to)).toBe("First visit");
   });
 
-  test("Enter Enter reproduces the old diagram button exactly", async () => {
-    // Decision 16, end to end: opening the menu from the keyboard highlights
-    // the first item, so the shortest route costs one extra keypress and
-    // lands the same bytes the button used to insert on its own.
+  test("the keyboard route to a flowchart lands the old diagram button's text", async () => {
+    // Decision 16, end to end: Enter opens Insert on Callout, Down reaches
+    // Diagram, Right opens it on its first starter, and Enter takes the
+    // flowchart - the same bytes the old one-shape button inserted.
     const v = mount("prose\n", 5);
     const user = userEvent.setup();
-    screen.getByRole("button", { name: "Insert diagram" }).focus();
+    screen.getByRole("button", { name: "Insert" }).focus();
     await user.keyboard("{Enter}");
+    await screen.findByRole("menuitem", { name: "Callout" });
+    await user.keyboard("{ArrowDown}{ArrowRight}");
     await screen.findByRole("menuitem", { name: "Flowchart" });
     await user.keyboard("{Enter}");
     expect(docText(v.state)).toBe(
@@ -222,10 +248,11 @@ describe("the diagram menu", () => {
     // `role="group"` that names nothing announces sixteen flat items, which is
     // the list the grouping was introduced to break up.
     mount("prose\n", 5);
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Insert diagram" }));
+    const diagrams = await openDiagrams();
     for (const label of ["Everyday", "Planning and product", "Technical"]) {
-      expect(await screen.findByRole("group", { name: label })).not.toBeNull();
+      expect(
+        within(diagrams).getByRole("group", { name: label }),
+      ).not.toBeNull();
     }
   });
 
@@ -235,8 +262,7 @@ describe("the diagram menu", () => {
     // would keep that one green and strand the caret on the trigger here.
     const v = mount("prose\n", 5);
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Insert diagram" }));
-    await screen.findByRole("menuitem", { name: "Flowchart" });
+    await openDiagrams();
     await user.keyboard("{Escape}");
     await waitFor(() => {
       expect(screen.queryByRole("menuitem")).toBeNull();
@@ -680,5 +706,220 @@ describe("the image-format menu", () => {
     await waitFor(() => {
       expect(v.hasFocus).toBe(true);
     });
+  });
+});
+
+describe("the callout and status segments", () => {
+  const COLOURS = ["Grey", "Blue", "Green", "Yellow", "Red", "Purple"];
+  const CALLOUT_DOC = "> [!NOTE]\n> body\n";
+  const STATUS_DOC = "Build :status[Done]{green} today\n";
+
+  /** A buffer with the caret at `at`, and the bar drawn for its element. */
+  function mountOn(
+    doc: string,
+    at: number,
+    props: Partial<Parameters<typeof EditorToolbar>[0]>,
+  ): EditorView {
+    view = new EditorView({
+      state: parsedState(
+        EditorState.create({
+          doc,
+          selection: EditorSelection.single(at),
+          extensions: [...lineSeparatorFor(doc), ...baseExtensions(false)],
+        }),
+      ),
+      parent: document.body,
+    });
+    bar = render(<EditorToolbar view={view} {...props} />, {
+      wrapper: Tooltips,
+    });
+    return view;
+  }
+
+  test("neither is there outside a callout or a label", () => {
+    render(<EditorToolbar view={null} />, { wrapper: Tooltips });
+    expect(screen.queryByRole("button", { name: /callout kind/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Starts open" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Starts closed" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Does not fold" })).toBeNull();
+    for (const name of COLOURS) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
+  });
+
+  test("in a callout, the kind and the fold appear, and no colours", () => {
+    render(
+      <EditorToolbar
+        view={null}
+        calloutActive={{ callout: "warning", fold: "closed" }}
+      />,
+      { wrapper: Tooltips },
+    );
+    const kind = screen.getByRole("button", { name: /callout kind/i });
+    // The visible word is part of the name.
+    expect(kind.textContent).toContain("Warning");
+    expect(
+      screen
+        .getByRole("button", { name: "Starts closed" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(
+      screen
+        .getByRole("button", { name: "Starts open" })
+        .getAttribute("aria-pressed"),
+    ).toBe("false");
+    for (const name of COLOURS) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
+    // An addition: the format buttons stay where they were.
+    expect(screen.getByRole("button", { name: "Bold" })).not.toBeNull();
+  });
+
+  test("in a status label, six colours named by their word appear", () => {
+    render(<EditorToolbar view={null} statusActive="green" />, {
+      wrapper: Tooltips,
+    });
+    for (const name of COLOURS) {
+      const button = screen.getByRole("button", { name });
+      expect(button.getAttribute("aria-pressed")).toBe(
+        name === "Green" ? "true" : "false",
+      );
+    }
+    expect(screen.queryByRole("button", { name: /callout kind/i })).toBeNull();
+  });
+
+  test("the kind menu rewrites the kind and hands the caret back", async () => {
+    const user = userEvent.setup();
+    const v = mountOn(CALLOUT_DOC, CALLOUT_DOC.indexOf("body"), {
+      calloutActive: { callout: "note", fold: null },
+    });
+    await user.click(screen.getByRole("button", { name: /callout kind/i }));
+    // Named by its trigger, as Radix names a menu.
+    const menu = await screen.findByRole("menu", { name: /callout kind/i });
+    expect(
+      within(menu)
+        .getByRole("menuitemradio", { name: "Note" })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+    await user.click(within(menu).getByRole("menuitemradio", { name: "Tip" }));
+    expect(docText(v.state)).toBe("> [!TIP]\n> body\n");
+    await waitFor(() => {
+      expect(v.hasFocus).toBe(true);
+    });
+  });
+
+  test("the fold buttons write the sign", async () => {
+    const v = mountOn(CALLOUT_DOC, CALLOUT_DOC.indexOf("body"), {
+      calloutActive: { callout: "note", fold: null },
+    });
+    await press("Starts closed");
+    expect(docText(v.state)).toBe("> [!NOTE]-\n> body\n");
+  });
+
+  test("Does not fold takes the sign out, and a details callout does not offer it", async () => {
+    const doc = "> [!NOTE]-\n> body\n";
+    const v = mountOn(doc, doc.indexOf("body"), {
+      calloutActive: { callout: "note", fold: "closed" },
+    });
+    await press("Does not fold");
+    expect(docText(v.state)).toBe("> [!NOTE]\n> body\n");
+    bar?.rerender(
+      <EditorToolbar
+        view={null}
+        calloutActive={{ callout: "details", fold: null }}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Does not fold" })).toBeNull();
+    expect(
+      screen
+        .getByRole("button", { name: "Starts closed" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+  });
+
+  test("a colour button rewrites the label's colour", async () => {
+    const v = mountOn(STATUS_DOC, STATUS_DOC.indexOf("Done"), {
+      statusActive: "green",
+    });
+    await press("Purple");
+    expect(docText(v.state)).toBe("Build :status[Done]{purple} today\n");
+  });
+});
+
+describe("a heading change the document asks about first", () => {
+  const PAGE =
+    "# P\n\n## A\n<!-- r:aaaa0001 -->\n\none\n\n## B\n<!-- r:bbbb0002 -->\n\ntwo\n";
+
+  /** A reflection buffer with the caret on `## B` and the bar above it. */
+  function mountPage(): EditorView {
+    const adapter = reflectionAdapter();
+    const at = PAGE.indexOf("## B") + 3;
+    view = new EditorView({
+      state: EditorState.create({
+        doc: PAGE,
+        selection: EditorSelection.single(at),
+        extensions: [
+          EditorState.lineSeparator.of("\n"),
+          ...baseExtensions(false, { history: false }),
+          ...adapter.extensions,
+        ],
+      }),
+      parent: document.body,
+    });
+    render(<EditorToolbar view={view} adapter={adapter} />, {
+      wrapper: Tooltips,
+    });
+    return view;
+  }
+
+  async function pickHeading(level: number): Promise<void> {
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Heading" }));
+    await user.click(
+      await screen.findByRole("menuitem", { name: `Heading ${String(level)}` }),
+    );
+  }
+
+  test("says what joining does and changes nothing until it is confirmed", async () => {
+    const v = mountPage();
+    await pickHeading(3);
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent(JOIN_SECTIONS);
+    expect(docText(v.state)).toBe(PAGE);
+    await waitFor(() => {
+      expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    });
+    await userEvent.click(
+      screen.getByRole("button", { name: "Join sections" }),
+    );
+    expect(docText(v.state)).toBe(
+      "# P\n\n## A\n<!-- r:aaaa0001 -->\n\none\n\n### B\n\ntwo\n",
+    );
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await waitFor(() => {
+      expect(v.hasFocus).toBe(true);
+    });
+  });
+
+  test("Cancel leaves the text as it was and the caret in the buffer", async () => {
+    const v = mountPage();
+    await pickHeading(2);
+    await screen.findByRole("alertdialog");
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(docText(v.state)).toBe(PAGE);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await waitFor(() => {
+      expect(v.hasFocus).toBe(true);
+    });
+  });
+
+  test("a heading change that splits no section goes ahead without a question", async () => {
+    const v = mountPage();
+    act(() => {
+      v.dispatch({ selection: { anchor: PAGE.indexOf("one") } });
+    });
+    await pickHeading(2);
+    expect(docText(v.state)).toContain("\n## one\n");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 });

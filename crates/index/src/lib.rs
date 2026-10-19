@@ -92,8 +92,9 @@ pub use sweep::{
     is_pair_scoped, rank, rule_info,
 };
 pub use sync::{
-    DomainScan, NoReindexHooks, PathChange, PathChangeKind, ReindexHooks, ReparseSeam, ReparseStep,
-    SyncReport, apply_scan, apply_scan_with_slab, pending_engrams, reflection_effective,
+    DomainScan, NoReindexHooks, PathChange, PathChangeKind, ReflectionPathChange,
+    ReflectionPathKind, ReflectionWalk, ReindexHooks, ReparseSeam, ReparseStep, SyncReport,
+    apply_scan, apply_scan_with_slab, pending_engrams, reflection_effective,
     reflection_files_on_disk, reflection_mode, refresh_tag_aliases, reindex_domains, reparse_due,
     reparse_stored_domain, reparse_stored_domain_with, resolve_forward_refs, scan_domain,
     scan_paths, sync_domain, sync_domain_with,

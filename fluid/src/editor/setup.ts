@@ -17,6 +17,8 @@ import { EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 
+import { dialectGrammar } from "./dialectHighlight";
+
 /**
  * Round-trip the document's own line endings. CodeMirror splits an incoming
  * string on `/\r\n?|\n/` unless the state names a separator, and rebuilds it
@@ -250,6 +252,8 @@ export const RAW_MONO: Extension = Prec.high(
 export const documentLanguage: Extension = markdown({
   base: markdownLanguage,
   codeLanguages: languages,
+  // The callout marker and the status label, as marks rather than links.
+  extensions: dialectGrammar,
 });
 
 /**

@@ -50,6 +50,13 @@ export interface SectionText {
   text: string;
 }
 
+/** One section's text and where each of its lines stands in the page. */
+interface Cut {
+  section: SectionText;
+  /** The zero-based page line of each line of `section.text`; the id line is the gap. */
+  lines: number[];
+}
+
 /**
  * The page cut into its sections, `_top` first.
  *
@@ -62,6 +69,14 @@ export function sectionTexts(
   markdown: string,
   sections: readonly { id: string | null; heading: string; line: number }[],
 ): SectionText[] {
+  return cutSections(markdown, sections).map((cut) => cut.section);
+}
+
+/** The cut behind {@link sectionTexts}, with each section's line map. */
+function cutSections(
+  markdown: string,
+  sections: readonly { id: string | null; heading: string; line: number }[],
+): Cut[] {
   const lf = markdown.replace(/\r\n/g, "\n");
   const front = FRONTMATTER.exec(lf);
   // One-based, as the engine counts it: the lines the frontmatter took, plus one.
@@ -86,11 +101,17 @@ export function sectionTexts(
     }
   }
   const found = starts.filter((at) => at >= 0);
-  const out: SectionText[] = [
+  const numbers = (from: number, to: number) =>
+    Array.from({ length: Math.max(to - from, 0) }, (_, i) => from + i);
+  const topEnd = found[0] ?? lines.length;
+  const out: Cut[] = [
     {
-      id: TOP_SECTION,
-      heading: "",
-      text: lines.slice(bodyLine - 1, found[0] ?? lines.length).join("\n"),
+      section: {
+        id: TOP_SECTION,
+        heading: "",
+        text: lines.slice(bodyLine - 1, topEnd).join("\n"),
+      },
+      lines: numbers(bodyLine - 1, topEnd),
     },
   ];
   sections.forEach((section, index) => {
@@ -100,16 +121,53 @@ export function sectionTexts(
     }
     const end = found.find((at) => at > start) ?? lines.length;
     const own = lines.slice(start, end);
+    const at = numbers(start, end);
     if (own.length > 1 && isIdLine(own[1] ?? "")) {
       own.splice(1, 1);
+      at.splice(1, 1);
     }
     out.push({
-      id: section.id,
-      heading: section.heading,
-      text: own.join("\n"),
+      section: {
+        id: section.id,
+        heading: section.heading,
+        text: own.join("\n"),
+      },
+      lines: at,
     });
   });
   return out;
+}
+
+/**
+ * Where `offset`, counted into the text of the `index`-th section of
+ * {@link sectionTexts} (`_top` is 0), stands in the page: the frontmatter,
+ * the id lines and any CR before a line break counted, exactly as the GET
+ * answered it. Null when the offset is not inside that section.
+ */
+export function pageOffset(
+  markdown: string,
+  sections: readonly { id: string | null; heading: string; line: number }[],
+  index: number,
+  offset: number,
+): number | null {
+  const cut = cutSections(markdown, sections)[index];
+  if (cut === undefined || offset < 0 || offset > cut.section.text.length) {
+    return null;
+  }
+  const before = cut.section.text.slice(0, offset);
+  const row = before.split("\n").length - 1;
+  const column = offset - (before.lastIndexOf("\n") + 1);
+  const line = cut.lines[row];
+  if (line === undefined) {
+    return null;
+  }
+  const page = markdown.split("\n");
+  let start = 0;
+  for (let i = 0; i < line; i += 1) {
+    start += (page[i]?.length ?? 0) + 1;
+  }
+  const own = (page[line] ?? "").replace(/\r$/, "");
+  return column > own.length ? null : start + column;
 }
 
 /**
@@ -134,7 +192,7 @@ function headingText(line: string | undefined): string | null {
   return /[ \t]$/.test(without) ? without.trim() : text;
 }
 /** Whether a line is a level-two heading at all: the server said one is here. */
-function isLevelTwo(line: string | undefined): boolean {
+export function isLevelTwo(line: string | undefined): boolean {
   return headingText(line) !== null;
 }
 function isHeading(line: string | undefined, heading: string): boolean {

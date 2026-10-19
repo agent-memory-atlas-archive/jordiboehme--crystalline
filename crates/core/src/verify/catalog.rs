@@ -127,6 +127,21 @@ pub const VERIFY_RULES: &[VerifyRule] = &[
         "info",
         "A bullet almost matches the observation or relation grammar.",
     ),
+    rule(
+        "Q006",
+        "warning",
+        "A status label names a colour outside the palette.",
+    ),
+    rule(
+        "Q007",
+        "warning",
+        "A callout names a kind that does not exist; it shows as a plain quote.",
+    ),
+    rule(
+        "Q008",
+        "info",
+        "An observation or relation sits inside a callout, where it is not indexed.",
+    ),
     rule("S001", "error", "A schema names its entity."),
     rule("S002", "error", "A schema declares fields."),
     rule("S003", "error", "A field declaration is well formed."),
@@ -268,7 +283,7 @@ mod tests {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(ids, sorted, "id order, each id once");
-        assert_eq!(ids.len(), 60);
+        assert_eq!(ids.len(), 63);
         for rule in VERIFY_RULES {
             assert!(
                 ["error", "warning", "info"].contains(&rule.default),

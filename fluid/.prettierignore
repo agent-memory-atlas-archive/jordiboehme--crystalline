@@ -19,3 +19,7 @@ playwright-report
 # pinned byte for byte by the tests. Prettier would pull short arrays onto one
 # line and a golden would stop being what the generator writes.
 src/game/world/golden/
+
+# Clipboard samples for rich paste, in the shape other apps write them. A real
+# capture replaces a file as it is, so prettier must not reshape them.
+src/editor/fixtures/paste/

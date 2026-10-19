@@ -29,6 +29,8 @@ import { StateField } from "@codemirror/state";
 import type { DecorationSet } from "@codemirror/view";
 import { Decoration, EditorView, WidgetType } from "@codemirror/view";
 
+import { statusColour } from "../markdown/directives";
+import { labelPlainWords, statusPieces } from "../markdown/statusText";
 import { mermaidConfig } from "../theme/mermaid";
 import { parseAdvanced } from "./parseProgress";
 
@@ -348,7 +350,10 @@ class MermaidPreviewWidget extends WidgetType {
   }
 }
 
-/** A pipe table, parsed just far enough to draw: cells are text, never HTML. */
+/**
+ * A pipe table, parsed just far enough to draw: cells are text, never HTML,
+ * and a status label in a cell is the page's pill.
+ */
 class TablePreviewWidget extends WidgetType {
   readonly source: string;
 
@@ -382,7 +387,18 @@ class TablePreviewWidget extends WidgetType {
       const row = document.createElement("tr");
       for (const cell of cells) {
         const element = document.createElement(index === 0 ? "th" : "td");
-        element.textContent = cell;
+        // A status label draws as the page's pill; everything else is text.
+        for (const piece of statusPieces(cell)) {
+          if ("text" in piece) {
+            element.append(piece.text);
+          } else {
+            const pill = document.createElement("span");
+            pill.className = "status-label";
+            pill.dataset["status"] = statusColour(piece.braces);
+            pill.textContent = labelPlainWords(piece.label);
+            element.append(pill);
+          }
+        }
         row.appendChild(element);
       }
       table.appendChild(row);

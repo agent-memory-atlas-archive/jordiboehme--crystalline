@@ -144,17 +144,56 @@ pub fn split_sections(source: &str) -> Vec<Section> {
     sections
 }
 
-/// A section by id, else by heading (case-insensitive, first match).
+/// A section by id, else by heading, read the way [`resolve_section_key`]
+/// reads a `sources` key: a heading two sections share names neither, so a
+/// thread, an anchor or a queue item never lands on a guess.
 pub fn find_section<'a>(sections: &'a [Section], key: &str) -> Option<&'a Section> {
-    let wanted = key.trim().to_lowercase();
-    sections
-        .iter()
-        .find(|s| s.id.as_deref() == Some(key))
-        .or_else(|| {
-            sections
-                .iter()
-                .find(|s| !s.heading.is_empty() && s.heading.to_lowercase() == wanted)
-        })
+    resolve_section_key(sections, key).ok()
+}
+
+/// Why a `sources` key names no single section.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SectionKeyMiss {
+    /// No section carries that id or heading.
+    None,
+    /// Two or more sections carry that heading; their headings as written,
+    /// in page order.
+    Ambiguous(Vec<String>),
+}
+
+/// The one section a `sources` key names: by id, else by heading text
+/// (case-insensitive), else by heading text after a `## ` the writer copied
+/// in. A `#` title or a `###` heading is no section, so `# T` and `### T`
+/// name none. A heading two sections share names neither, and says which
+/// headings share it; [`find_section`] is this lookup without the reason.
+pub fn resolve_section_key<'a>(
+    sections: &'a [Section],
+    key: &str,
+) -> Result<&'a Section, SectionKeyMiss> {
+    if let Some(section) = sections.iter().find(|s| s.id.as_deref() == Some(key)) {
+        return Ok(section);
+    }
+    let by_heading = |text: &str| {
+        let wanted = text.trim().to_lowercase();
+        let matches: Vec<&'a Section> = sections
+            .iter()
+            .filter(|s| !s.heading.is_empty() && s.heading.to_lowercase() == wanted)
+            .collect();
+        match matches.as_slice() {
+            [] => Err(SectionKeyMiss::None),
+            [one] => Ok(*one),
+            many => Err(SectionKeyMiss::Ambiguous(
+                many.iter().map(|s| s.heading.clone()).collect(),
+            )),
+        }
+    };
+    match by_heading(key) {
+        Err(SectionKeyMiss::None) => match key.trim().strip_prefix("##") {
+            Some(rest) if rest.starts_with(char::is_whitespace) => by_heading(rest),
+            _ => Err(SectionKeyMiss::None),
+        },
+        found => found,
+    }
 }
 
 /// Give every `##` heading without an id (or with an id an earlier heading
@@ -199,6 +238,77 @@ pub fn assign_ids(
     }
     out.push_str(&source[at..]);
     (out, minted)
+}
+
+/// A text with the id lines its writer made up taken out, and what was
+/// taken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrittenIds {
+    /// The text without those lines.
+    pub text: String,
+    /// Each line taken: the zero-based place of the `##` heading it sat
+    /// under, and the id it spelled.
+    pub dropped: Vec<(usize, String)>,
+}
+
+/// What an id-shaped line spells: `<!-- r:X -->` with any X, hex or not.
+fn written_id(line: &str) -> Option<&str> {
+    let id = line
+        .trim()
+        .strip_prefix("<!-- r:")?
+        .strip_suffix("-->")?
+        .trim();
+    (!id.is_empty()).then_some(id)
+}
+
+/// Take out the id lines no heading can carry. An id line is the one right
+/// under a `##` heading that [`parse_id_line`] reads, unless `elsewhere`
+/// holds its id (the caller's answer to "does another page carry it").
+/// Every other id-shaped line in the run of blank and id lines under a
+/// heading goes: one that is not hex, a second one, one a blank line away
+/// from its heading. A blank line before it takes the blank lines after it
+/// along. A fence is never looked into: the run ends at the first other
+/// line. The heading then gets its id back by heading ([`reattach_ids`]) or
+/// a fresh one ([`assign_ids`]).
+pub fn drop_written_ids(source: &str, elsewhere: &dyn Fn(&str) -> bool) -> WrittenIds {
+    let mut out = String::with_capacity(source.len());
+    let mut dropped = Vec::new();
+    let mut at = 0;
+    for (k, h) in level_two(source).iter().enumerate() {
+        let mut pos = h.line_end;
+        let mut first = true;
+        let mut after_blank = false;
+        let mut swallow = false;
+        while pos < source.len() {
+            let rest = &source[pos..];
+            let len = rest.find('\n').map_or(rest.len(), |i| i + 1);
+            let line = rest[..len].trim_end_matches(['\n', '\r']);
+            if line.trim().is_empty() {
+                if swallow {
+                    at = pos + len;
+                }
+                after_blank = true;
+                pos += len;
+                first = false;
+                continue;
+            }
+            let Some(id) = written_id(line) else {
+                break;
+            };
+            let own = first && parse_id_line(line).is_some_and(|id| !elsewhere(id));
+            if !own {
+                out.push_str(&source[at..pos]);
+                at = pos + len;
+                dropped.push((k, id.to_string()));
+                swallow = after_blank;
+            }
+            after_blank = false;
+            pos += len;
+            first = false;
+        }
+    }
+    out.push_str(&source[at..]);
+    WrittenIds { text: out, dropped }
 }
 
 /// Give a heading that lost its id line (an editor or an agent that does
@@ -304,6 +414,41 @@ mod tests {
 
     const PAGE: &str = "---\ntitle: Deploying\n---\n\n# Deploying\n\nIntro.\n\n## Night deploys\n<!-- r:7f3a9c2e -->\n\nDeploys run at night.\n\n```\n## not a heading\n```\n\n## Rollback\n<!-- r:0b1c2d3e -->\n\nRoll back with the script.\n";
 
+    /// An id line no heading can carry (not hex, a second one, one a blank
+    /// line away from its heading, one another page holds) goes; the id
+    /// line right under its heading stays. A fence is never looked into.
+    #[test]
+    fn id_lines_no_heading_can_carry_are_dropped() {
+        let source = "# A\n\n## One\n<!-- r:7f3a9c2e -->\n<!-- r:a1b2c3d4 -->\n\nKept.\n\n## Two\n\n<!-- r:t2u3v4w5 -->\n\nBody.\n\n## Three\n<!-- r:my-intro -->\n\nMore.\n\n```\n<!-- r:not-mine -->\n```\n";
+        let nowhere = |_: &str| false;
+        let out = drop_written_ids(source, &nowhere);
+        assert_eq!(
+            out.text,
+            "# A\n\n## One\n<!-- r:7f3a9c2e -->\n\nKept.\n\n## Two\n\nBody.\n\n## Three\n\nMore.\n\n```\n<!-- r:not-mine -->\n```\n"
+        );
+        assert_eq!(
+            out.dropped,
+            [
+                (0, "a1b2c3d4".to_string()),
+                (1, "t2u3v4w5".to_string()),
+                (2, "my-intro".to_string())
+            ]
+        );
+        let gap = "## One\n\n<!-- r:7f3a9c2e -->\n\nText.\n";
+        let out = drop_written_ids(gap, &nowhere);
+        assert_eq!(
+            out.text, "## One\n\nText.\n",
+            "a hex id off its line goes too"
+        );
+        assert_eq!(out.dropped, [(0, "7f3a9c2e".to_string())]);
+        let clean = "## One\n<!-- r:7f3a9c2e -->\n\nText.\n";
+        assert_eq!(drop_written_ids(clean, &nowhere).text, clean);
+        assert!(drop_written_ids(clean, &nowhere).dropped.is_empty());
+        let held = drop_written_ids(clean, &|id| id == "7f3a9c2e");
+        assert_eq!(held.text, "## One\n\nText.\n", "another page holds it");
+        assert_eq!(held.dropped, [(0, "7f3a9c2e".to_string())]);
+    }
+
     #[test]
     fn sections_split_at_level_two_outside_fences() {
         let sections = split_sections(PAGE);
@@ -375,6 +520,17 @@ mod tests {
         assert!(
             find_section(&sections, "ÄDDED BY HAND").is_none()
                 && find_section(&sections, "ADDED BY HAND").is_some()
+        );
+    }
+
+    #[test]
+    fn a_shared_heading_names_no_section_and_an_id_still_does() {
+        let page = "# D\n\n## Notes\n<!-- r:aaaa1111 -->\n\nOne.\n\n## notes\n<!-- r:bbbb2222 -->\n\nTwo.\n";
+        let sections = split_sections(page);
+        assert!(find_section(&sections, "Notes").is_none());
+        assert_eq!(
+            find_section(&sections, "bbbb2222").map(|s| s.text.contains("Two.")),
+            Some(true)
         );
     }
 
@@ -457,6 +613,8 @@ mod tests {
         }
         assert_eq!(parse_id_line("<!-- r:XYZ -->"), None);
         assert_eq!(parse_id_line("  <!-- r:abcd -->  "), Some("abcd"));
+        // A pasted id-like line arrives escaped, as visible text: never an id.
+        assert_eq!(parse_id_line("\\<!-- r:abcd -->"), None);
     }
 
     /// An id anchors threads and provenance, so it never moves to another
@@ -577,5 +735,57 @@ mod tests {
                 edit.text
             );
         }
+    }
+
+    /// A sources key names one section: its id first, else its heading
+    /// text, case-insensitive, else that text after a copied `## `. A
+    /// heading two sections share names neither, and a `#` title or a
+    /// `###` heading names none.
+    #[test]
+    fn a_sources_key_resolves_to_one_section_or_says_why_not() {
+        let sections = split_sections(PAGE);
+        let by = |key: &str| resolve_section_key(&sections, key).map(|s| s.heading.clone());
+        assert_eq!(by("0b1c2d3e"), Ok("Rollback".to_string()));
+        assert_eq!(by("rollback"), Ok("Rollback".to_string()));
+        assert_eq!(by("## Night deploys"), Ok("Night deploys".to_string()));
+        assert_eq!(by(" ##  Night deploys "), Ok("Night deploys".to_string()));
+        assert_eq!(by("##Night deploys"), Err(SectionKeyMiss::None), "no space");
+        assert_eq!(by("_top"), Ok(String::new()));
+        assert_eq!(by("Deploying"), Err(SectionKeyMiss::None), "the title");
+        assert_eq!(by("# Rollback"), Err(SectionKeyMiss::None), "title marks");
+        assert_eq!(
+            by("### Rollback"),
+            Err(SectionKeyMiss::None),
+            "a ### heading"
+        );
+        assert_eq!(by("not a heading"), Err(SectionKeyMiss::None), "a fence");
+
+        let twice = "# T\n\n## Example\n\nA.\n\n## Other\n\nB.\n\n## example\n\nC.\n";
+        let sections = split_sections(twice);
+        assert_eq!(
+            resolve_section_key(&sections, "## Example"),
+            Err(SectionKeyMiss::Ambiguous(vec![
+                "Example".to_string(),
+                "example".to_string()
+            ]))
+        );
+
+        let hash_in_text = "# T\n\n## #1 priority\n\nA.\n";
+        let sections = split_sections(hash_in_text);
+        for key in ["#1 priority", "## #1 priority"] {
+            assert_eq!(
+                resolve_section_key(&sections, key).map(|s| s.heading.as_str()),
+                Ok("#1 priority"),
+                "a # in the heading text is text: {key}"
+            );
+        }
+
+        let id_named_like_a_heading = "# T\n\n## abcd\n\nA.\n\n## Other\n<!-- r:abcd -->\n\nB.\n";
+        let sections = split_sections(id_named_like_a_heading);
+        assert_eq!(
+            resolve_section_key(&sections, "abcd").map(|s| s.heading.as_str()),
+            Ok("Other"),
+            "an id wins over a heading and is never ambiguous"
+        );
     }
 }
