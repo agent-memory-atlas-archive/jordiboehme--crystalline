@@ -4,7 +4,9 @@
  *
  * Only a slash that starts a line opens it, so a path or a fraction in a
  * sentence never does, and a space right after the slash closes it: `/ ` is
- * text. Words may follow with spaces between them (`/code bl`); a query that
+ * text. It stays shut where no block can start at that line: inside an HTML
+ * block or a comment that runs over lines, and on a line that lazily
+ * continues a quote or callout (no `>`, still the quote's paragraph). Words may follow with spaces between them (`/code bl`); a query that
  * no longer matches anything closes the list and leaves what was typed.
  *
  * The filtering is our own rather than the completion's fuzzy match, which
@@ -23,12 +25,39 @@ import type {
   CompletionSource,
 } from "@codemirror/autocomplete";
 
+import { syntaxTree } from "@codemirror/language";
+import type { EditorState } from "@codemirror/state";
+
 import type { InsertAction } from "./inserts";
 import { INSERT_ACTIONS } from "./inserts";
 import { inCompletableProse } from "./prose";
 
 /** A slash, then nothing or a word and more words: the whole line so far. */
 const QUERY = /^\/(?:\w[\w ]*)?$/;
+
+/** The blocks a line inside of is no place to start an element. */
+const NO_BLOCK_START = new Set([
+  "Blockquote",
+  "HTMLBlock",
+  "CommentBlock",
+  "ProcessingInstructionBlock",
+]);
+
+/** Whether `pos` sits inside a block no element may start in. */
+function insideClosedBlock(state: EditorState, pos: number): boolean {
+  let inside = false;
+  syntaxTree(state).iterate({
+    from: pos,
+    to: pos,
+    enter: (node) => {
+      if (NO_BLOCK_START.has(node.name)) {
+        inside = true;
+        return false;
+      }
+    },
+  });
+  return inside;
+}
 
 /** The sections the full list is drawn in, in the registry's order. */
 const SECTIONS: Record<InsertAction["group"], CompletionSection> = {
@@ -73,7 +102,11 @@ export const slashCompletions: CompletionSource = (
 ): CompletionResult | null => {
   const line = context.state.doc.lineAt(context.pos);
   const before = context.state.sliceDoc(line.from, context.pos);
-  if (!QUERY.test(before) || !inCompletableProse(context.state, context.pos)) {
+  if (
+    !QUERY.test(before) ||
+    !inCompletableProse(context.state, context.pos) ||
+    insideClosedBlock(context.state, context.pos)
+  ) {
     return null;
   }
   const query = before.slice(1).toLowerCase();

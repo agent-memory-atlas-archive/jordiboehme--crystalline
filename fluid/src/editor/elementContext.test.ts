@@ -134,6 +134,15 @@ describe("setCalloutKind", () => {
     expect(v.state.doc.toString()).toBe("> [!DETAILS]+ My title\n> body\n");
   });
 
+  it("keeps a signless details callout folded when it becomes another kind", () => {
+    const doc = "> [!DETAILS] Steps\n> body\n";
+    const v = mount(doc, doc.indexOf("body"));
+    expect(setCalloutKind(v, "note")).toBe(true);
+    expect(v.state.doc.toString()).toBe("> [!NOTE]- Steps\n> body\n");
+    undo(v);
+    expect(v.state.doc.toString()).toBe(doc);
+  });
+
   it("refuses outside a callout", () => {
     const v = mount(CALLOUT, 2);
     expect(setCalloutKind(v, "tip")).toBe(false);
@@ -154,6 +163,20 @@ describe("setCalloutFold", () => {
   it("refuses outside a callout", () => {
     const v = mount(CALLOUT, 2);
     expect(setCalloutFold(v, "open")).toBe(false);
+  });
+
+  it("takes the sign out for a callout that does not fold", () => {
+    const doc = "> [!NOTE]- Read me\n> body\n";
+    const v = mount(doc, doc.indexOf("body"));
+    expect(setCalloutFold(v, null)).toBe(true);
+    expect(v.state.doc.toString()).toBe("> [!NOTE] Read me\n> body\n");
+  });
+
+  it("refuses to make a details callout static, which always folds", () => {
+    const doc = "> [!DETAILS]- More\n> body\n";
+    const v = mount(doc, doc.indexOf("body"));
+    expect(setCalloutFold(v, null)).toBe(false);
+    expect(v.state.doc.toString()).toBe(doc);
   });
 });
 

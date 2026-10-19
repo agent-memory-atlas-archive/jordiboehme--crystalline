@@ -2132,13 +2132,14 @@ describe("the avatar menu", () => {
     const item = within(menu).getByRole("menuitem", { name: "Maintenance" });
     expect(item).toHaveAttribute("aria-current", "page");
     expect(item.className).toContain("font-medium");
-    expect(item.className).toContain("h-11");
+    // The shared menu row (components/menu.ts), the same face as every menu.
+    expect(item.className).toContain("menu-row");
     expect(
       within(menu).getByRole("menuitem", { name: "Profile" }).className,
     ).not.toContain("font-medium");
     expect(
       within(menu).getByRole("menuitem", { name: "Profile" }).className,
-    ).toContain("h-11");
+    ).toContain("menu-row");
     expect(
       within(menu).getByRole("menuitem", { name: "Profile" }),
     ).not.toHaveAttribute("aria-current");

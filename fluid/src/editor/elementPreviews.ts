@@ -47,6 +47,7 @@ import { CALLOUT_ICONS, CALLOUT_WORDS } from "../components/calloutFace";
 import { lazyPart } from "../components/lazyPart";
 import type { CalloutKind } from "../markdown/callouts";
 import type { StatusColour } from "../markdown/directives";
+import { labelPlainWords } from "../markdown/statusText";
 import { SWATCH_CLASSES, colourOf } from "../markdown/swatch";
 import { calloutAt, calloutOf, statusOf } from "./elementContext";
 import { frontmatterRegion } from "./frontmatterRegion";
@@ -426,7 +427,7 @@ function buildInline(view: EditorView): Inline {
             );
             out.push(
               Decoration.replace({
-                widget: new StatusWidget(label, status.colour),
+                widget: new StatusWidget(labelPlainWords(label), status.colour),
               }).range(status.from, status.to),
             );
           }
@@ -647,16 +648,19 @@ function mathBlocks(state: EditorState, sections: boolean): Block[] {
   return blocks;
 }
 
-function buildBlocks(state: EditorState, sections: boolean): DecorationSet {
-  const touched = (block: Block) =>
-    state.selection.ranges.some(
-      (range) => range.from <= block.to && range.to >= block.from,
-    );
-  const out = mathBlocks(state, sections)
-    .filter((block) => block.tex.trim() !== "" && !touched(block))
+/** A display formula as the scan found it: where, what and in which callout. */
+interface Scanned extends Block {
+  callout: CalloutKind | null;
+  edge: string;
+}
+
+/** Every display formula of the text: a walk of the whole tree. */
+function scanBlocks(state: EditorState, sections: boolean): Scanned[] {
+  const doc = state.doc;
+  return mathBlocks(state, sections)
+    .filter((block) => block.tex.trim() !== "")
     .map((block) => {
       const callout = calloutAt(state, block.from + 1);
-      const doc = state.doc;
       const edge =
         callout === null
           ? ""
@@ -669,28 +673,79 @@ function buildBlocks(state: EditorState, sections: boolean): DecorationSet {
               doc.lineAt(callout.quote.to).number
                 ? "cm-callout-last"
                 : "",
-            ].join(" ");
-      return Decoration.replace({
-        widget: new MathWidget(
-          block.tex,
-          true,
-          callout?.callout ?? null,
-          edge.trim(),
-        ),
-        block: true,
-      }).range(block.from, block.to);
+            ]
+              .join(" ")
+              .trim();
+      return { ...block, callout: callout?.callout ?? null, edge };
     });
-  return Decoration.set(out.sort((a, b) => a.from - b.from));
 }
 
+/** Which scanned formulas a selection range touches, as one comparable word. */
+function touchedKey(state: EditorState, blocks: Scanned[]): string {
+  return blocks
+    .map((block, index) =>
+      state.selection.ranges.some(
+        (range) => range.from <= block.to && range.to >= block.from,
+      )
+        ? index
+        : -1,
+    )
+    .filter((index) => index !== -1)
+    .join(",");
+}
+
+/** The formulas drawn: every scanned one the selection does not touch. */
+function drawBlocks(state: EditorState, blocks: Scanned[]): DecorationSet {
+  const touched = new Set(touchedKey(state, blocks).split(","));
+  return Decoration.set(
+    blocks
+      .filter((_block, index) => !touched.has(String(index)))
+      .map((block) =>
+        Decoration.replace({
+          widget: new MathWidget(block.tex, true, block.callout, block.edge),
+          block: true,
+        }).range(block.from, block.to),
+      )
+      .sort((a, b) => a.from - b.from),
+  );
+}
+
+interface BlockPreviews {
+  blocks: Scanned[];
+  touched: string;
+  drawn: DecorationSet;
+}
+
+function previewsOf(state: EditorState, blocks: Scanned[]): BlockPreviews {
+  return {
+    blocks,
+    touched: touchedKey(state, blocks),
+    drawn: drawBlocks(state, blocks),
+  };
+}
+
+/**
+ * The display formulas. The tree is walked when the text or its parse
+ * moves; a caret move only asks which formulas the selection touches now,
+ * and keeps the drawn set when that answer is the same.
+ */
 function blockPreviews(sections: boolean): Extension {
-  return StateField.define<DecorationSet>({
-    create: (state) => buildBlocks(state, sections),
-    update: (value, tr) =>
-      tr.docChanged || tr.selection !== undefined || parseAdvanced(tr)
-        ? buildBlocks(tr.state, sections)
-        : value,
-    provide: (field) => EditorView.decorations.from(field),
+  return StateField.define<BlockPreviews>({
+    create: (state) => previewsOf(state, scanBlocks(state, sections)),
+    update: (value, tr) => {
+      if (tr.docChanged || parseAdvanced(tr)) {
+        return previewsOf(tr.state, scanBlocks(tr.state, sections));
+      }
+      if (
+        tr.selection === undefined ||
+        touchedKey(tr.state, value.blocks) === value.touched
+      ) {
+        return value;
+      }
+      return previewsOf(tr.state, value.blocks);
+    },
+    provide: (field) =>
+      EditorView.decorations.from(field, (value) => value.drawn),
   });
 }
 

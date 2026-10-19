@@ -84,7 +84,7 @@ import type { EngramActionHandlers } from "../components/EngramActions";
 import { LifecycleBanner } from "../components/LifecycleBanner";
 import type { LifecycleLink } from "../components/LifecycleBanner";
 import { Markdown } from "../components/Markdown";
-import { ITEM_CLASSES, MENU_CLASSES } from "../components/menu";
+import { ITEM_CLASSES, MENU_CLASSES, MENU_SEPARATOR } from "../components/menu";
 import { MoveDialog } from "../components/MoveDialog";
 import type { MovedState } from "../components/MoveDialog";
 import { ExploreBlock, GRAPH_PANEL_ID } from "../components/ExploreBlock";
@@ -758,7 +758,7 @@ export default function EngramPage() {
                   )}
                   {canWrite && !capabilities.readOnly && (
                     <>
-                      <DropdownMenu.Separator className="my-1 h-px bg-slate-200 dark:bg-slate-700" />
+                      <DropdownMenu.Separator className={MENU_SEPARATOR} />
                       <DropdownMenu.Item
                         className={`${ITEM_CLASSES} text-red-700 dark:text-red-300`}
                         onSelect={() => {

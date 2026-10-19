@@ -9,11 +9,17 @@
 
 const HEAD = ":status[";
 
-/** The index of the `]` that closes a label whose words start at `from`. */
-function labelEnd(text: string, from: number): number {
+/**
+ * The index of the `]` that closes a label whose words start at `from`, or
+ * -1. A label stays on one line.
+ */
+export function labelEnd(text: string, from: number): number {
   let depth = 0;
   for (let i = from; i < text.length; i += 1) {
     const c = text[i];
+    if (c === "\n") {
+      return -1;
+    }
     if (c === "\\") {
       i += 1;
     } else if (c === "[") {
@@ -52,4 +58,16 @@ export function statusLabelWords(text: string): string {
       }
     }
   }
+}
+
+/**
+ * A label's words as a pill shows them: its inline Markdown read as plain
+ * text (emphasis and code marks dropped, a link as its words, an escape as
+ * the character it escapes).
+ */
+export function labelPlainWords(label: string): string {
+  return label.replace(
+    /\\(.)|!?\[([^\]]*)\]\([^)]*\)|\*\*|__|~~|\*|`/g,
+    (_mark, escaped?: string, link?: string) => escaped ?? link ?? "",
+  );
 }

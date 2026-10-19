@@ -741,6 +741,7 @@ describe("the callout and status segments", () => {
     expect(screen.queryByRole("button", { name: /callout kind/i })).toBeNull();
     expect(screen.queryByRole("button", { name: "Starts open" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Starts closed" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Does not fold" })).toBeNull();
     for (const name of COLOURS) {
       expect(screen.queryByRole("button", { name })).toBeNull();
     }
@@ -813,6 +814,27 @@ describe("the callout and status segments", () => {
     });
     await press("Starts closed");
     expect(docText(v.state)).toBe("> [!NOTE]-\n> body\n");
+  });
+
+  test("Does not fold takes the sign out, and a details callout does not offer it", async () => {
+    const doc = "> [!NOTE]-\n> body\n";
+    const v = mountOn(doc, doc.indexOf("body"), {
+      calloutActive: { callout: "note", fold: "closed" },
+    });
+    await press("Does not fold");
+    expect(docText(v.state)).toBe("> [!NOTE]\n> body\n");
+    bar?.rerender(
+      <EditorToolbar
+        view={null}
+        calloutActive={{ callout: "details", fold: null }}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Does not fold" })).toBeNull();
+    expect(
+      screen
+        .getByRole("button", { name: "Starts closed" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
   });
 
   test("a colour button rewrites the label's colour", async () => {

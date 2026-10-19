@@ -41,6 +41,7 @@ import {
 } from "@codemirror/state";
 import type { DecorationSet } from "@codemirror/view";
 import { Decoration, EditorView, keymap } from "@codemirror/view";
+import { isolateHistory } from "@codemirror/commands";
 
 import { isIdLine, stripIdLines } from "../reflectionText";
 
@@ -85,6 +86,31 @@ export function isIdLineAt(state: EditorState, lineNo: number): boolean {
  */
 export function hidesIdLines(state: EditorState): boolean {
   return state.field(field, false) !== undefined;
+}
+
+/**
+ * The annotations a filter that rebuilds `tr` carries over: its user event
+ * (as `input` when it had none), and whether and how it enters the undo
+ * history and whether it came from elsewhere, so a rebuilt edit is the same
+ * edit to every other part of the editor.
+ */
+function carried(tr: Transaction): Annotation<unknown>[] {
+  const out: Annotation<unknown>[] = [
+    Transaction.userEvent.of(tr.annotation(Transaction.userEvent) ?? "input"),
+  ];
+  const history = tr.annotation(Transaction.addToHistory);
+  if (history !== undefined) {
+    out.push(Transaction.addToHistory.of(history));
+  }
+  const remote = tr.annotation(Transaction.remote);
+  if (remote !== undefined) {
+    out.push(Transaction.remote.of(remote));
+  }
+  const isolate = tr.annotation(isolateHistory);
+  if (isolate !== undefined) {
+    out.push(isolateHistory.of(isolate));
+  }
+  return out;
 }
 
 /** A heading line of any level: what a kept id may sit under. */
@@ -133,6 +159,13 @@ const caretOffIdLines = EditorState.transactionFilter.of((tr) => {
       return range;
     }
     moved = true;
+    // A mapped caret on an id line that ends the page has no line below to
+    // go to, and going up would put the next key into the heading: it stays
+    // at the id line's end, where typing lands after a new line break
+    // (`insertsOffIdLines`).
+    if (!stepped && line.number === doc.lines) {
+      return EditorSelection.cursor(line.to);
+    }
     const down = !stepped
       ? true
       : before < line.from
@@ -215,8 +248,9 @@ const insertsOffIdLines = EditorState.transactionFilter.of((tr) => {
     }
     moved = true;
     // Never up into the heading: a caret at an id line came there by being
-    // mapped, from the line below. (Typing at the heading's own end is
-    // `newLineBelowId`'s.)
+    // mapped from the line below, or it is where the buffer opened, which
+    // no filter has seen (`stepOffIdLines` is for the verbs there). Typing
+    // at the heading's own end is `newLineBelowId`'s.
     if (line.number < doc.lines) {
       specs.push({ from: line.to + 1, to: line.to + 1, insert: inserted });
       spans.push({ fromB, toB, at: line.to + 1, lead: 0 });
@@ -260,9 +294,7 @@ const insertsOffIdLines = EditorState.transactionFilter.of((tr) => {
         }),
     effects: tr.effects,
     scrollIntoView: tr.scrollIntoView,
-    annotations: Transaction.userEvent.of(
-      tr.annotation(Transaction.userEvent) ?? "input",
-    ),
+    annotations: carried(tr),
   };
 });
 
@@ -331,7 +363,7 @@ const newLineBelowId = EditorState.transactionFilter.of((tr) => {
         )
       : EditorSelection.cursor(below.to + only.text.length),
     scrollIntoView: true,
-    userEvent: "input",
+    annotations: carried(tr),
   };
 });
 

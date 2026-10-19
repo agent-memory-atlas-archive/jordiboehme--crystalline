@@ -46,11 +46,9 @@ import { PREFETCH } from "../prefetch";
 import { useTheme } from "../theme/context";
 import { useWide } from "../useWide";
 import type { ThemePreference } from "../theme/context";
+import { ITEM_CLASSES, MENU_SEPARATOR } from "./menu";
 
-const ROW =
-  "flex h-11 cursor-pointer items-center gap-2.5 rounded-[7px] px-2.5 text-ink-2 outline-none select-none data-[highlighted]:bg-sunken md:h-[34px]";
 const ICON = "shrink-0 text-muted";
-const SEP = "my-1.5 h-px bg-hair mx-1";
 const SEGMENT =
   "inline-grid h-8 min-w-[30px] cursor-pointer place-items-center rounded-[5px] px-2 text-[13px] text-muted outline-none select-none data-[highlighted]:text-ink data-[highlighted]:ring-2 data-[highlighted]:ring-accent-600 data-[state=checked]:bg-seg-on data-[state=checked]:text-ink data-[state=checked]:shadow-[0_1px_2px_rgb(15_23_42/0.1)] md:h-6 md:text-xs dark:data-[highlighted]:ring-accent-400";
 
@@ -184,7 +182,7 @@ export default function AvatarMenuBody({
             identity to connect there, which is an answer rather than a door
             that will not open.
           */}
-          <DropdownMenu.Item className={ROW} asChild>
+          <DropdownMenu.Item className={ITEM_CLASSES} asChild>
             <Link to={profileRoute()} {...PREFETCH.profile}>
               <User {...glyph} className={ICON} />
               Profile
@@ -192,7 +190,7 @@ export default function AvatarMenuBody({
           </DropdownMenu.Item>
           {capabilities.canAdminister && (
             <>
-              <DropdownMenu.Item className={ROW} asChild>
+              <DropdownMenu.Item className={ITEM_CLASSES} asChild>
                 <Link to={usersRoute()} {...PREFETCH.users}>
                   <Users {...glyph} className={ICON} />
                   Users
@@ -204,7 +202,7 @@ export default function AvatarMenuBody({
                 the one page of them today is the repository connection team
                 domains are tracked with.
               */}
-              <DropdownMenu.Item className={ROW} asChild>
+              <DropdownMenu.Item className={ITEM_CLASSES} asChild>
                 <Link to={githubSettingsRoute()} {...PREFETCH.github}>
                   <Settings {...glyph} className={ICON} />
                   Settings
@@ -215,7 +213,7 @@ export default function AvatarMenuBody({
         </>
       )}
       {!user && (
-        <DropdownMenu.Item className={ROW} asChild>
+        <DropdownMenu.Item className={ITEM_CLASSES} asChild>
           <Link to="/login">
             <LogIn {...glyph} className={ICON} />
             Log in
@@ -229,7 +227,9 @@ export default function AvatarMenuBody({
       */}
       <DropdownMenu.Item
         className={
-          onMaintenance ? `${ROW} bg-accent-tint font-medium text-ink` : ROW
+          onMaintenance
+            ? `${ITEM_CLASSES} bg-accent-tint font-medium text-ink`
+            : ITEM_CLASSES
         }
         asChild
       >
@@ -243,7 +243,7 @@ export default function AvatarMenuBody({
         </Link>
       </DropdownMenu.Item>
 
-      <DropdownMenu.Separator className={SEP} />
+      <DropdownMenu.Separator className={MENU_SEPARATOR} />
       <DropdownMenu.Group aria-label="Display">
         <div className="hidden px-2.5 pt-1 pb-1 text-[11.5px] font-semibold tracking-wider text-faint uppercase md:block">
           Display
@@ -294,9 +294,9 @@ export default function AvatarMenuBody({
         )}
       </DropdownMenu.Group>
 
-      <DropdownMenu.Separator className={SEP} />
+      <DropdownMenu.Separator className={MENU_SEPARATOR} />
       {/* Kept on a phone too: a tablet in split view and a phone with a hardware keyboard have the keys. */}
-      <DropdownMenu.Item className={ROW} onSelect={onShortcuts}>
+      <DropdownMenu.Item className={ITEM_CLASSES} onSelect={onShortcuts}>
         <Keyboard {...glyph} className={ICON} />
         Keyboard shortcuts
         <kbd
@@ -306,7 +306,7 @@ export default function AvatarMenuBody({
           ?
         </kbd>
       </DropdownMenu.Item>
-      <DropdownMenu.Item className={ROW} asChild>
+      <DropdownMenu.Item className={ITEM_CLASSES} asChild>
         <a href={HANDBOOK_URL} target="_blank" rel="noreferrer">
           <BookOpen {...glyph} className={ICON} />
           Handbook <span className="sr-only">(opens in a new tab)</span>
@@ -320,9 +320,9 @@ export default function AvatarMenuBody({
       </DropdownMenu.Item>
       {user && (
         <>
-          <DropdownMenu.Separator className={SEP} />
+          <DropdownMenu.Separator className={MENU_SEPARATOR} />
           <DropdownMenu.Item
-            className={ROW}
+            className={ITEM_CLASSES}
             onSelect={() => {
               void logout();
             }}

@@ -252,6 +252,19 @@
  * the same `data-theme` attribute every other themed thing follows, and no
  * stylesheet the bundle has to reach through the dependency tree for.
  */
+/*
+ * The one menu face (overhaul spec 5.6), drawn by `MENU_CLASSES` and
+ * `ITEM_CLASSES` (components/menu.ts) and by the switcher and avatar menus
+ * below. The rows take their ink from the surface, so a destructive row's own
+ * red is never fought over.
+ */
+@utility menu-face {
+  @apply z-50 max-w-[calc(100vw-1rem)] rounded-xl border border-hair bg-raised p-1.5 text-[13.5px] text-ink-2 shadow-pop;
+}
+@utility menu-row {
+  @apply flex h-11 cursor-pointer items-center gap-2.5 rounded-[7px] px-2.5 outline-none select-none data-[highlighted]:bg-sunken data-[state=open]:bg-sunken md:h-[34px];
+}
+
 @layer components {
   /*
    * A callout (`Callout.tsx`): a 3px rule and a light tint in its kind's
@@ -332,7 +345,7 @@
     @apply inline-flex h-8 min-w-0 shrink items-center gap-1.5 rounded-lg pr-2 pl-2.5 text-sm font-medium text-ink hover:bg-sunken data-[state=open]:bg-sunken;
   }
   .switcher-menu {
-    @apply z-50 max-h-(--radix-dropdown-menu-content-available-height) w-80 overflow-y-auto max-w-[calc(100vw-1rem)] rounded-xl border border-hair bg-raised p-1.5 text-[13.5px] shadow-pop;
+    @apply menu-face max-h-(--radix-dropdown-menu-content-available-height) w-80 overflow-y-auto;
   }
   /* The avatar in the top bar and in its menu (AvatarMenu): the initial in a circle. */
   .avatar {
@@ -348,7 +361,7 @@
     @apply size-10 text-[15px];
   }
   .avatar-menu {
-    @apply z-50 w-[19.5rem] max-w-[calc(100vw-1rem)] max-h-(--radix-dropdown-menu-content-available-height) overflow-y-auto rounded-xl border border-hair bg-raised p-1.5 text-[13.5px] shadow-pop;
+    @apply menu-face w-[19.5rem] max-h-(--radix-dropdown-menu-content-available-height) overflow-y-auto;
   }
   .avatar-grab {
     @apply mx-auto mt-1 mb-2.5 h-1 w-9.5 rounded-sm bg-hair-strong md:hidden;

@@ -47,7 +47,7 @@ import type { MouseEvent, ReactElement, ReactNode } from "react";
 import { useRef, useState } from "react";
 
 import { CALLOUT_WORDS } from "../components/calloutFace";
-import { ITEM_CLASSES, MENU_CLASSES } from "../components/menu";
+import { ITEM_CLASSES, MENU_CLASSES, MENU_SEPARATOR } from "../components/menu";
 import { BUTTON, FOCUS_RING, IconButton } from "../components/primitives";
 import type { CalloutKind } from "../markdown/callouts";
 import { CALLOUT_KINDS } from "../markdown/callouts";
@@ -62,7 +62,7 @@ import {
   setStatusColour,
 } from "./elementContext";
 import { stepOffIdLines } from "./hiddenIdLines";
-import { InsertMenu, ROW, SURFACE, TRIGGER } from "./InsertMenu";
+import { InsertMenu, TRIGGER } from "./InsertMenu";
 import { TableSizePicker } from "./TableSizePicker";
 import type { ImageAlign } from "./imageFormat";
 import {
@@ -187,8 +187,9 @@ export interface CalloutFace {
 
 /**
  * The callout segment: its kind, as a menu that reads like a select, and
- * whether it starts open or closed. A callout that does not fold presses
- * neither; a details callout with no sign is closed, as the page draws it.
+ * whether it starts open, starts closed or does not fold. A details callout
+ * always folds (with no sign it is closed, as the page draws it), so it has
+ * no "Does not fold".
  */
 function CalloutSegment({
   face,
@@ -223,7 +224,7 @@ function CalloutSegment({
           <DropdownMenu.Content
             align="start"
             sideOffset={6}
-            className={SURFACE}
+            className={MENU_CLASSES}
             // The bar's discipline: back to the buffer when the menu closes.
             onCloseAutoFocus={(event) => {
               event.preventDefault();
@@ -237,7 +238,11 @@ function CalloutSegment({
               }}
             >
               {CALLOUT_KINDS.map((kind) => (
-                <DropdownMenu.RadioItem key={kind} value={kind} className={ROW}>
+                <DropdownMenu.RadioItem
+                  key={kind}
+                  value={kind}
+                  className={ITEM_CLASSES}
+                >
                   <span className="inline-flex w-3.5 shrink-0">
                     <DropdownMenu.ItemIndicator>
                       <Check aria-hidden="true" size={14} strokeWidth={2} />
@@ -273,6 +278,19 @@ function CalloutSegment({
         >
           Starts closed
         </button>
+        {face.callout === "details" ? null : (
+          <button
+            type="button"
+            className={SEGMENT}
+            disabled={view === null}
+            aria-pressed={fold === null}
+            onClick={() => {
+              run((v) => setCalloutFold(v, null));
+            }}
+          >
+            Does not fold
+          </button>
+        )}
       </div>
     </>
   );
@@ -670,7 +688,7 @@ export function EditorToolbar({
                       {label}
                     </DropdownMenu.Item>
                   ))}
-                  <DropdownMenu.Separator className="my-1 h-px bg-slate-200 dark:bg-slate-700" />
+                  <DropdownMenu.Separator className={MENU_SEPARATOR} />
                   {WIDTHS.map(({ width, label, icon: Icon }) => (
                     <DropdownMenu.Item
                       key={width}

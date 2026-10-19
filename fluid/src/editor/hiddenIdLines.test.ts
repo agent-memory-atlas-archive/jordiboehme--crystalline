@@ -10,9 +10,15 @@ import {
   redo,
   selectLine,
   undo,
+  undoDepth,
 } from "@codemirror/commands";
 import type { Extension } from "@codemirror/state";
-import { Annotation, EditorSelection, EditorState } from "@codemirror/state";
+import {
+  Annotation,
+  EditorSelection,
+  EditorState,
+  Transaction,
+} from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -689,6 +695,70 @@ describe("a caret on an id line", () => {
     expect(two.state.doc.toString()).toBe(
       "## A\n<!-- r:aaaa0001 -->\np\none\n",
     );
+  });
+
+  it("leaves a remote-mapped caret at the end of an id line that ends the page", () => {
+    const remote = Annotation.define<boolean>();
+    const v = mount("## A\nmore");
+    v.dispatch({ selection: EditorSelection.cursor(v.state.doc.length) });
+    v.dispatch({
+      changes: {
+        from: "## A\n".length,
+        to: v.state.doc.length,
+        insert: "<!-- r:aaaa0001 -->",
+      },
+      annotations: remote.of(true),
+    });
+    expect(v.state.selection.main.head).toBe(v.state.doc.length);
+    v.dispatch(v.state.replaceSelection("x"), { userEvent: "input.type" });
+    expect(v.state.doc.toString()).toBe("## A\n<!-- r:aaaa0001 -->\nx");
+  });
+
+  it("keeps what the moved insert says about the undo history", () => {
+    view = new EditorView({
+      state: EditorState.create({
+        doc: DOC,
+        selection: EditorSelection.cursor(ID_FROM),
+        extensions: [
+          EditorState.lineSeparator.of("\n"),
+          history(),
+          hiddenIdLines(),
+        ],
+      }),
+      parent: document.body,
+    });
+    view.dispatch(view.state.replaceSelection("x"), {
+      userEvent: "input.type",
+      annotations: Transaction.addToHistory.of(false),
+    });
+    expect(view.state.doc.toString()).toBe(
+      "## A\n<!-- r:aaaa0001 -->\nx\none\n",
+    );
+    expect(undoDepth(view.state)).toBe(0);
+  });
+
+  it("keeps the history flag of a block moved below an id", () => {
+    view = new EditorView({
+      state: EditorState.create({
+        doc: "## One\n<!-- r:aaaa1111 -->\nFirst.\n",
+        selection: EditorSelection.cursor("## One".length),
+        extensions: [
+          EditorState.lineSeparator.of("\n"),
+          history(),
+          hiddenIdLines(),
+        ],
+      }),
+      parent: document.body,
+    });
+    view.dispatch({
+      changes: { from: "## One".length, insert: "\nnew" },
+      userEvent: "input.paste",
+      annotations: Transaction.addToHistory.of(false),
+    });
+    expect(view.state.doc.toString()).toBe(
+      "## One\n<!-- r:aaaa1111 -->\nnew\nFirst.\n",
+    );
+    expect(undoDepth(view.state)).toBe(0);
   });
 
   it("puts text typed on an id line that ends the page after a new line", () => {

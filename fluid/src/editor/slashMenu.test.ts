@@ -196,6 +196,29 @@ describe("the slash menu", () => {
     expect(completionStatus(v.state)).toBeNull();
   });
 
+  test("stays quiet inside a code fence in the Reflection editor", async () => {
+    const doc = "## One\n<!-- r:aaaa1111 -->\n\n```\n\n```\n";
+    const v = open(doc, doc.indexOf("```\n") + 4, reflectionAdapter());
+    type(v, "/usr");
+    await settle();
+    expect(completionStatus(v.state)).toBeNull();
+  });
+
+  test("stays quiet inside a comment that runs over lines", async () => {
+    const v = open("<!--\n\n-->\n", "<!--\n".length);
+    type(v, "/note");
+    await settle();
+    expect(completionStatus(v.state)).toBeNull();
+  });
+
+  test("stays quiet on a line that lazily continues a callout", async () => {
+    const doc = "> [!NOTE]\n> Read this\n";
+    const v = open(doc, doc.length - 1);
+    type(v, "\n/code");
+    await settle();
+    expect(completionStatus(v.state)).toBeNull();
+  });
+
   test("works in the Reflection editor too, below a section", async () => {
     const v = open(
       "## One\n<!-- r:aaaa1111 -->\n\n",

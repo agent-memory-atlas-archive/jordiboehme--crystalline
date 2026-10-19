@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { statusLabelWords } from "./statusText";
+import { labelPlainWords, statusLabelWords } from "./statusText";
 
 describe("statusLabelWords", () => {
   it("keeps a label's words and drops its syntax", () => {
@@ -13,6 +13,14 @@ describe("statusLabelWords", () => {
   it("leaves an unclosed label and ordinary colons as written", () => {
     expect(statusLabelWords("At 10:30 :status[open")).toBe(
       "At 10:30 :status[open",
+    );
+  });
+});
+
+describe("labelPlainWords", () => {
+  it("reads a label's inline Markdown as plain words", () => {
+    expect(labelPlainWords("**Done** in `v2` [see](https://x.test) \\*")).toBe(
+      "Done in v2 see *",
     );
   });
 });

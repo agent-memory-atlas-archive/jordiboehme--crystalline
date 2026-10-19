@@ -255,7 +255,12 @@ function write(
   return true;
 }
 
-/** Give the callout the caret is in another kind, or refuse. */
+/**
+ * Give the callout the caret is in another kind, or refuse. A details
+ * callout with no sign folds closed by its kind alone, so leaving that kind
+ * writes the `-` that keeps it folded: a kind change never changes how the
+ * block opens.
+ */
 export function setCalloutKind(view: EditorView, kind: CalloutKind): boolean {
   if (!clearOfFoldedFrontmatter(view)) {
     return false;
@@ -264,13 +269,33 @@ export function setCalloutKind(view: EditorView, kind: CalloutKind): boolean {
   if (callout === null) {
     return false;
   }
-  return write(view, callout.kindFrom, callout.kindTo, kind.toUpperCase());
+  const word = kind.toUpperCase();
+  if (
+    callout.callout === "details" &&
+    callout.signAt === null &&
+    kind !== "details"
+  ) {
+    view.dispatch({
+      changes: [
+        { from: callout.kindFrom, to: callout.kindTo, insert: word },
+        { from: callout.markTo, insert: "-" },
+      ],
+      userEvent: "input",
+    });
+    view.focus();
+    return true;
+  }
+  return write(view, callout.kindFrom, callout.kindTo, word);
 }
 
-/** Make the callout the caret is in start open or closed, or refuse. */
+/**
+ * Make the callout the caret is in start open or closed, or (`null`) not
+ * fold at all, or refuse. A details callout always folds, so it has no
+ * "does not fold": `null` there is refused.
+ */
 export function setCalloutFold(
   view: EditorView,
-  fold: "open" | "closed",
+  fold: "open" | "closed" | null,
 ): boolean {
   if (!clearOfFoldedFrontmatter(view)) {
     return false;
@@ -278,6 +303,14 @@ export function setCalloutFold(
   const callout = calloutAtCaret(view.state);
   if (callout === null) {
     return false;
+  }
+  if (fold === null) {
+    if (callout.callout === "details") {
+      return false;
+    }
+    return callout.signAt === null
+      ? write(view, callout.markTo, callout.markTo, "")
+      : write(view, callout.signAt, callout.signAt + 1, "");
   }
   const sign = fold === "open" ? "+" : "-";
   return callout.signAt === null

@@ -134,6 +134,14 @@ describe("a status label", () => {
     expect(lineText(v, 1)).toBe("Build Done today");
   });
 
+  it("draws a label's inline Markdown as its words, and a bracket inside it", () => {
+    const doc = "Build :status[**Done** [now]]{blue} today\n\nEnd\n";
+    const v = editor(doc, doc.length);
+    const pill = v.dom.querySelector('.status-label[data-status="blue"]');
+    expect(pill?.textContent).toBe("Done [now]");
+    expect(lineText(v, 1)).toBe("Build Done [now] today");
+  });
+
   it("shows as written on the active line", () => {
     const v = editor(DOC, 2);
     expect(v.dom.querySelector(".status-label")).toBeNull();
@@ -184,6 +192,21 @@ describe("math", () => {
     expect(v.dom.querySelectorAll(".cm-math-block")).toHaveLength(1);
     expect(v.dom.textContent).toContain("a^2 + b^2");
     expect(v.state.doc.toString()).toBe(doc);
+  });
+
+  it("keeps the drawn formulas when a caret move touches none of them", () => {
+    const doc = "Intro words\n\n$$\na^2\n$$\n\nEnd words\n";
+    const v = editor(doc, doc.length);
+    const drawn = () =>
+      v.state
+        .facet(EditorView.decorations)
+        .map((d) => (typeof d === "function" ? d(v) : d));
+    const before = drawn();
+    v.dispatch({ selection: EditorSelection.cursor(2) });
+    expect(drawn()).toEqual(before);
+    expect(drawn().every((set, i) => set === before[i])).toBe(true);
+    v.dispatch({ selection: EditorSelection.cursor(doc.indexOf("a^2")) });
+    expect(v.dom.querySelector(".cm-math-block")).toBeNull();
   });
 
   it("leaves a single dollar pair alone", () => {

@@ -33,6 +33,7 @@ import type { markdown } from "@codemirror/lang-markdown";
 import { tags } from "@lezer/highlight";
 
 import { CALLOUT_KINDS } from "../markdown/callouts";
+import { labelEnd } from "../markdown/statusText";
 
 /** The parser extension type `markdown()` takes, named without the package. */
 type MarkdownExtension = NonNullable<
@@ -74,8 +75,25 @@ const CALLOUT_MARK = /^\[!([A-Za-z0-9_-]+)\][+-]?/;
 /** The opening of a label, the only directive this dialect has. */
 export const STATUS_OPEN = ":status[";
 
-/** A whole label: words, then optional braces, on one line. */
-export const STATUS_LABEL = /^:status\[([^\]\n]+)\](?:\{([^}\n]*)\})?/;
+/**
+ * A whole label at the start of `text`: words up to their balanced `]` (the
+ * way the reader and core close it), then optional braces, on one line. The
+ * length of the whole label and of its words, or null.
+ */
+export function statusLabelAt(
+  text: string,
+): { length: number; words: number } | null {
+  if (!text.startsWith(STATUS_OPEN)) {
+    return null;
+  }
+  const close = labelEnd(text, STATUS_OPEN.length);
+  const words = close - STATUS_OPEN.length;
+  if (close === -1 || words === 0) {
+    return null;
+  }
+  const braces = /^\{[^}\n]*\}/.exec(text.slice(close + 1));
+  return { length: close + 1 + (braces?.[0].length ?? 0), words };
+}
 
 /** The marker at the start of `content`, or null when it is no callout's. */
 function calloutMarkIn(content: string): number | null {
@@ -198,12 +216,12 @@ export const dialectGrammar = {
         ) {
           return -1;
         }
-        const label = STATUS_LABEL.exec(cx.slice(pos, cx.end));
+        const label = statusLabelAt(cx.slice(pos, cx.end));
         if (label === null) {
           return -1;
         }
-        const end = pos + label[0].length;
-        const close = pos + STATUS_OPEN.length + (label[1] ?? "").length;
+        const end = pos + label.length;
+        const close = pos + STATUS_OPEN.length + label.words;
         return cx.addElement(
           cx.elt("StatusLabel", pos, end, [
             cx.elt("StatusMark", pos, pos + STATUS_OPEN.length),
