@@ -90,6 +90,60 @@ async fn a_viewer_opens_answers_resolves_and_reopens() {
     assert_eq!(listed["threads"].as_array().unwrap().len(), 1);
 }
 
+/// A person's thread stays open until the person resolves it: an agent that
+/// answers and resolves in one call would hide its answer in a closed thread.
+#[tokio::test]
+async fn an_agent_answers_a_persons_thread_and_leaves_it_open() {
+    let (fx, vera) = viewer_engine(&[("MANIFEST.md", &manifest("reflection: on\n"))]).await;
+    fx.engine
+        .write_reflection(&write("d.md", PAGE), &person())
+        .await
+        .unwrap();
+    let viewer = ReflectionCaller::person(vera, "vera");
+    let opened = fx
+        .engine
+        .discuss(&open("aaaa1111", None, "Still true?"), &viewer)
+        .await
+        .unwrap();
+    let id = opened["id"].as_str().unwrap().to_string();
+    let refused = |e: crystalline_service::EngineError| match e {
+        crystalline_service::EngineError::Invalid(why) => {
+            assert!(
+                why.contains("leave it open")
+                    && why.contains("the person who opened it resolves it"),
+                "{why}"
+            );
+        }
+        other => panic!("refused as invalid: {other:?}"),
+    };
+    refused(
+        fx.engine
+            .discuss(&step("resolve", &id, "Yes, still true."), &agent())
+            .await
+            .unwrap_err(),
+    );
+    fx.engine
+        .discuss(&step("answer", &id, "Yes, still true."), &agent())
+        .await
+        .unwrap();
+    refused(
+        fx.engine
+            .discuss(&step("resolve", &id, "Answered."), &agent())
+            .await
+            .unwrap_err(),
+    );
+    fx.engine
+        .discuss(&step("answer", &id, "Thanks, you can close it."), &viewer)
+        .await
+        .unwrap();
+    let resolved = fx
+        .engine
+        .discuss(&step("resolve", &id, "Confirmed by vera."), &agent())
+        .await
+        .unwrap();
+    assert_eq!(resolved["status"], "resolved");
+}
+
 /// The anonymous visitor of a public domain reads the threads and writes none.
 #[tokio::test]
 async fn an_anonymous_visitor_reads_threads_and_cannot_comment() {

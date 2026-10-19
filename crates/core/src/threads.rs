@@ -658,6 +658,34 @@ pub fn waiting_on(thread: &Thread) -> Waiting {
     }
 }
 
+/// What an agent is told when it tries to close a person's thread itself.
+pub const PERSON_RESOLVES: &str = "answer a person's thread and leave it open: the person who opened it resolves it. Resolve it only after the person wrote back below your answer, for example to say it can be closed";
+
+/// Whether an agent may resolve `thread` now. A thread a person opened
+/// stays open until the person resolves it, or until the person wrote again
+/// after an agent's answer (for example "thanks, you can close it"). Only
+/// the entries since the last reopen count: a reopen asks again. A thread an
+/// agent opened is any agent's to resolve. People are never asked.
+pub fn agent_may_resolve(thread: &Thread) -> bool {
+    let Some(first) = thread.entries.first() else {
+        return true;
+    };
+    if first.author.agent {
+        return true;
+    }
+    let since = thread
+        .entries
+        .iter()
+        .rposition(|e| e.kind == EntryKind::Reopen)
+        .map_or(&thread.entries[..], |at| &thread.entries[at..]);
+    let Some(answer) = since.iter().rposition(|e| e.author.agent) else {
+        return false;
+    };
+    since[answer + 1..]
+        .iter()
+        .any(|e| !e.author.agent && e.kind == EntryKind::Comment)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1103,6 +1131,34 @@ mod tests {
         assert_eq!(waiting_on(&t), Waiting::People);
         assert_eq!(t.opened_at(), "2026-09-30T10:00:00Z");
         assert_eq!(t.last_at(), "2026-09-30T11:00:00Z");
+    }
+
+    #[test]
+    fn an_agent_leaves_a_persons_thread_to_the_person() {
+        let at = "2026-09-30T11:00:00Z";
+        let mut t = thread(None, 1);
+        assert!(
+            !agent_may_resolve(&t),
+            "answering and resolving in one call is refused"
+        );
+        t.entries.push(agent("Yes.", EntryKind::Comment, at));
+        assert!(!agent_may_resolve(&t), "the agent's answer waits");
+        t.entries
+            .push(person("Thanks, close it.", EntryKind::Comment, at));
+        assert!(agent_may_resolve(&t), "the person wrote back");
+        t.entries.push(person("Done.", EntryKind::Resolve, at));
+        t.entries.push(person("It changed.", EntryKind::Reopen, at));
+        assert!(!agent_may_resolve(&t), "a reopen asks again");
+        t.entries.push(agent("Fixed.", EntryKind::Comment, at));
+        assert!(!agent_may_resolve(&t));
+        t.entries.push(person("Good.", EntryKind::Comment, at));
+        assert!(agent_may_resolve(&t));
+
+        let mut mine = thread(None, 1);
+        mine.entries = vec![agent("Is this right?", EntryKind::Comment, at)];
+        assert!(agent_may_resolve(&mine), "an agent's own thread");
+        mine.entries.push(person("Yes.", EntryKind::Comment, at));
+        assert!(agent_may_resolve(&mine));
     }
 
     #[test]

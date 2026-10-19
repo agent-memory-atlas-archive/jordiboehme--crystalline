@@ -406,6 +406,17 @@ impl Engine {
         };
         let file = read_opt(&threads_abs)?
             .ok_or_else(|| EngineError::NotFound(format!("no thread {id} here")))?;
+        // A person's thread is the person's to close: an agent's answer in a
+        // resolved thread is hidden from them until they ask to see it.
+        if kind == EntryKind::Resolve
+            && caller.author.agent
+            && th::parse_threads(&file)
+                .iter()
+                .find(|t| t.id == id)
+                .is_some_and(|t| !th::agent_may_resolve(t))
+        {
+            return Err(EngineError::Invalid(th::PERSON_RESOLVES.to_string()));
+        }
         let updated =
             th::append_entry(&file, id, &entry(kind, caller, text)).map_err(thread_error)?;
         let mut undo = DiskUndo::default();

@@ -655,6 +655,34 @@ async fn an_answered_feedback_item_waits_while_its_thread_is_open() {
             .unwrap()
             .is_empty()
     );
+    // The agent opened this thread, so the agent may close it, and the
+    // change it answered comes back to the queue.
+    fx.engine
+        .discuss(
+            &DiscussParams {
+                domain: "eng".into(),
+                action: Some("resolve".into()),
+                path: Some("guides/deploying.md".into()),
+                thread: Some(opened["id"].as_str().unwrap().into()),
+                text: Some("Kept at night.".into()),
+                ..Default::default()
+            },
+            &agent(),
+        )
+        .await
+        .unwrap();
+    let resolved = fx
+        .engine
+        .reflect(
+            &ReflectParams {
+                kinds: vec!["feedback".into()],
+                ..Default::default()
+            },
+            &agent(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resolved["total"], 1, "{resolved}");
 }
 
 #[tokio::test]
@@ -1803,4 +1831,10 @@ async fn a_blocking_thread_comes_first_and_carries_its_label() {
     assert_eq!(items[2]["blocking"], false, "{queue}");
     let guidance = queue["guidance"].as_str().unwrap();
     assert!(guidance.contains("blocking threads first"), "{guidance}");
+    assert!(
+        guidance.contains(
+            "Answer a person's thread and leave it open. The person who opened it resolves it."
+        ),
+        "{guidance}"
+    );
 }

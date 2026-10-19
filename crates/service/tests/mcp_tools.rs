@@ -750,6 +750,13 @@ async fn the_descriptions_of_the_call_time_gated_tools_state_their_condition() {
         discuss.contains("`<label> [decorations]: <subject>`") && discuss.contains("non-blocking"),
         "discuss must teach conventional comments: {discuss}"
     );
+    // And who closes a person's thread.
+    assert!(
+        discuss.contains(
+            "Answer a person's thread and leave it open. The person who opened it resolves it."
+        ),
+        "discuss must say who resolves a thread: {discuss}"
+    );
 }
 
 /// T8-a: configure says up front which domain calls it refuses, so an agent
