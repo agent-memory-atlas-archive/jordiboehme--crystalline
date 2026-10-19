@@ -237,16 +237,35 @@ impl Engine {
                     Err(r::SectionKeyMiss::Ambiguous(headings)) => {
                         // Headings typed in a plain editor have no id until
                         // the page's next write through Crystalline.
-                        let idless = sections
+                        let shared: Vec<&r::Section> = sections
                             .iter()
-                            .any(|s| s.id.is_none() && headings.contains(&s.heading));
-                        let way = if idless {
-                            "they have no id yet: save or write the page once so Crystalline \
-                             gives each heading its id, then open the thread by the id \
-                             (the write's ids_assigned, or read_reflection under the heading)"
-                        } else {
-                            "open it by the section's id (read_reflection shows each id under \
-                             its heading)"
+                            .filter(|s| headings.contains(&s.heading))
+                            .collect();
+                        let idless: Vec<String> = shared
+                            .iter()
+                            .filter(|s| s.id.is_none())
+                            .map(|s| s.line.to_string())
+                            .collect();
+                        const BY_ID: &str = "open it by the section's id (read_reflection \
+                                             shows each id under its heading)";
+                        const GIVE_IDS: &str = "save or write the page once so Crystalline \
+                             gives each heading its id, then open the thread by the id (the \
+                             write's ids_assigned, or read_reflection under the heading)";
+                        let way = match idless.len() {
+                            0 => BY_ID.to_string(),
+                            n if n == shared.len() => {
+                                format!("none of them has an id yet: {GIVE_IDS}")
+                            }
+                            1 => format!(
+                                "the one at line {} has no id yet: {GIVE_IDS}; for the others, \
+                                 {BY_ID}",
+                                idless[0]
+                            ),
+                            _ => format!(
+                                "the ones at lines {} have no id yet: {GIVE_IDS}; for the \
+                                 others, {BY_ID}",
+                                idless.join(", ")
+                            ),
                         };
                         return Err(EngineError::Invalid(format!(
                             "the heading '{key}' names {} sections in '{path}', so the thread \

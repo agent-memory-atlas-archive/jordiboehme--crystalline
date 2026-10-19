@@ -938,5 +938,43 @@ async fn a_shared_heading_without_ids_says_how_to_get_them() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("names 2 sections"), "{err}");
+    assert!(err.contains("none of them has an id yet"), "{err}");
     assert!(err.contains("gives each heading its id"), "{err}");
+}
+
+/// When only some of the shared sections lack an id, the refusal says which
+/// ones, by line, and that the others are opened by their id.
+#[tokio::test]
+async fn a_shared_heading_names_the_sections_without_an_id() {
+    let (fx, _vera) = viewer_engine(&[("MANIFEST.md", &manifest("reflection: on\n"))]).await;
+    fx.engine
+        .write_reflection(&write("d.md", "# D\n\n## Notes\n\nOne.\n"), &person())
+        .await
+        .unwrap();
+    let path = fx.root.join("reflections/d.md");
+    let page = std::fs::read_to_string(&path).unwrap() + "\n## Notes\n\nTwo.\n";
+    std::fs::write(&path, &page).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let line = page
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| *l == "## Notes")
+        .map(|(n, _)| n + 1)
+        .last()
+        .unwrap();
+    let err = fx
+        .engine
+        .discuss(&open("Notes", None, "Which one?"), &person())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains(&format!("the one at line {line} has no id yet")),
+        "{err}"
+    );
+    assert!(!err.contains("none of them"), "{err}");
+    assert!(
+        err.contains("for the others, open it by the section's id"),
+        "{err}"
+    );
 }
