@@ -11,6 +11,7 @@ mod address;
 mod asset_ref_corpus;
 mod base_routes;
 mod config;
+mod conventional_corpus;
 mod editing;
 mod manifest;
 mod names;

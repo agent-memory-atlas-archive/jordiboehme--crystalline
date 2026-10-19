@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use crystalline_core::conventional::parse_conventional;
 use crystalline_core::reflection::{self as r, ReflectionState, Structure};
 use crystalline_core::threads::{self as th, SectionRef, ThreadStatus, Waiting};
 
@@ -13,7 +14,7 @@ use super::*;
 use crate::scope::{ReflectionCaller, ReflectionRight};
 
 /// How an agent works the queue, returned with every page.
-pub const REFLECT_GUIDANCE: &str = "Work feedback items first: read what the person changed and decide - take it into the engrams (change them, then write_reflection the section with its sources), keep it as their text (write_reflection action=settle outcome=kept), or answer it in a thread (discuss with answers_feedback). Then update items: bring changed engrams into their sections and write them with sources; cover unreflected engrams with a new section or reflection; move pages the pact's structure does not fit; apply a changed pact to the pages it affects. Files under reflections/assets/: link an unreferenced file from the section it belongs to, or remove it with write_reflection action=delete_asset (ask first: removing is irreversible); for a missing file, ask a person to add it or correct the link; an engram attachment cannot be embedded, so ask a person to copy the file into reflections/assets/ and point the link there. A host_moved item means this instance took the domain over on a shared database and its disk lacks files the previous host wrote: their rows are kept and counted, never written here, so do not rewrite or delete those pages and files; ask a person to copy the domain folder over (or restore it) and sync, or to run the sync with --accept-disk if the files are gone for good. Answer review threads in plain words - the people reading them may not see engrams. Present every page you write with the crystalline-presentation skill (the skills tool serves it).";
+pub const REFLECT_GUIDANCE: &str = "Work feedback items first: read what the person changed and decide - take it into the engrams (change them, then write_reflection the section with its sources), keep it as their text (write_reflection action=settle outcome=kept), or answer it in a thread (discuss with answers_feedback). Then update items: bring changed engrams into their sections and write them with sources; cover unreflected engrams with a new section or reflection; move pages the pact's structure does not fit; apply a changed pact to the pages it affects. Files under reflections/assets/: link an unreferenced file from the section it belongs to, or remove it with write_reflection action=delete_asset (ask first: removing is irreversible); for a missing file, ask a person to add it or correct the link; an engram attachment cannot be embedded, so ask a person to copy the file into reflections/assets/ and point the link there. A host_moved item means this instance took the domain over on a shared database and its disk lacks files the previous host wrote: their rows are kept and counted, never written here, so do not rewrite or delete those pages and files; ask a person to copy the domain folder over (or restore it) and sync, or to run the sync with --accept-disk if the files are gone for good. Answer review threads in plain words - the people reading them may not see engrams. A thread item carries the label of its opening comment and whether it blocks: answer blocking threads first; a praise needs no answer unless it asks something. Present every page you write with the crystalline-presentation skill (the skills tool serves it).";
 
 const DEFAULT_LIMIT: usize = 10;
 const MAX_LIMIT: usize = 100;
@@ -60,6 +61,12 @@ impl Item {
             _ => 2,
         }
     }
+
+    /// Whether the item is a thread whose opening comment blocks: it comes
+    /// before the other items of its rank in its group.
+    fn blocks(&self) -> bool {
+        self.extra.get("blocking") == Some(&Value::Bool(true))
+    }
 }
 
 fn secs_since_rfc3339(at: Option<&str>) -> Option<i64> {
@@ -75,7 +82,8 @@ fn secs_since_epoch(mtime: i64) -> i64 {
     (chrono::Utc::now().timestamp() - mtime).max(0)
 }
 
-/// Rank items: groups oldest first, feedback before update before review inside.
+/// Rank items: groups oldest first, feedback before update before review
+/// inside, and a blocking thread before the other threads of its group.
 fn rank(items: Vec<Item>) -> Vec<Item> {
     let mut groups: Vec<Vec<Item>> = Vec::new();
     let mut index: HashMap<(String, String, SectionKey), usize> = HashMap::new();
@@ -92,7 +100,7 @@ fn rank(items: Vec<Item>) -> Vec<Item> {
         }
     }
     for group in &mut groups {
-        group.sort_by_key(Item::rank);
+        group.sort_by_key(|item| (item.rank(), !item.blocks()));
     }
     let oldest = |g: &Vec<Item>| g.iter().map(|i| i.age_secs).max().unwrap_or(0);
     groups.sort_by(|a, b| {
@@ -101,6 +109,25 @@ fn rank(items: Vec<Item>) -> Vec<Item> {
             .then_with(|| a[0].path.cmp(&b[0].path))
     });
     groups.into_iter().flatten().collect()
+}
+
+/// What a thread item carries beside its place: the thread's id and, when
+/// its opening comment is a conventional comment, that comment's label and
+/// whether it blocks. A plain opening comment adds neither key.
+fn thread_extra(thread: &th::Thread) -> Value {
+    let opening = thread
+        .entries
+        .first()
+        .filter(|entry| entry.kind == th::EntryKind::Comment)
+        .and_then(|entry| parse_conventional(&entry.text));
+    match opening {
+        Some(comment) => json!({
+            "thread": thread.id,
+            "label": comment.label.as_str(),
+            "blocking": comment.is_blocking(),
+        }),
+        None => json!({ "thread": thread.id }),
+    }
 }
 
 /// The text of `sections`, each normalized as the hash sees it, empty ones
@@ -469,7 +496,7 @@ impl Engine {
                 section,
                 heading,
                 age_secs: secs_since_rfc3339(Some(thread.last_at())).unwrap_or(0),
-                extra: json!({ "thread": thread.id }),
+                extra: thread_extra(thread),
             });
         }
         Ok(items)

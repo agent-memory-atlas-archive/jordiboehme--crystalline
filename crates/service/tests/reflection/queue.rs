@@ -1743,3 +1743,64 @@ async fn a_write_that_drops_a_persons_unreflected_section_names_it() {
         "{clean}"
     );
 }
+
+/// A thread item carries the label of its opening conventional comment, and
+/// a blocking thread comes before the other threads of its section. A plain
+/// comment carries no label at all.
+#[tokio::test]
+async fn a_blocking_thread_comes_first_and_carries_its_label() {
+    let fx = curated(&[]).await;
+    let text = edit_page(&fx, "", "");
+    let id = crystalline_core::reflection::split_sections(&text)[1]
+        .id
+        .clone()
+        .unwrap();
+    let mut opened = Vec::new();
+    for words in [
+        "Is this still true?",
+        "question (non-blocking): is this still true?",
+        "issue (blocking): the batch window moved\nSee the runbook.",
+    ] {
+        let thread = fx
+            .engine
+            .discuss(
+                &DiscussParams {
+                    domain: "eng".into(),
+                    path: Some("guides/deploying.md".into()),
+                    section: Some(id.clone()),
+                    text: Some(words.into()),
+                    ..Default::default()
+                },
+                &person(),
+            )
+            .await
+            .unwrap();
+        opened.push(thread["id"].as_str().unwrap().to_string());
+    }
+    let queue = fx
+        .engine
+        .reflect(&ReflectParams::default(), &agent())
+        .await
+        .unwrap();
+    let items = queue["queue"].as_array().unwrap();
+    let threads: Vec<&str> = items
+        .iter()
+        .map(|i| i["thread"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        threads,
+        [&opened[2], &opened[0], &opened[1]],
+        "the blocking thread first, the rest as before: {queue}"
+    );
+    assert_eq!(items[0]["label"], "issue", "{queue}");
+    assert_eq!(items[0]["blocking"], true, "{queue}");
+    let plain = items[1].as_object().unwrap();
+    assert!(
+        !plain.contains_key("label") && !plain.contains_key("blocking"),
+        "{queue}"
+    );
+    assert_eq!(items[2]["label"], "question", "{queue}");
+    assert_eq!(items[2]["blocking"], false, "{queue}");
+    let guidance = queue["guidance"].as_str().unwrap();
+    assert!(guidance.contains("blocking threads first"), "{guidance}");
+}
