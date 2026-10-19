@@ -311,7 +311,11 @@ describe("the doors into the Reflection", () => {
   });
 
   it("a stranger still gets domain not found", async () => {
-    asContributor({ "/reflection/domains": () => ({ domains: [] }) });
+    // A stranger's status read is refused the way the tree is.
+    asContributor({
+      "/reflection/domains": () => ({ domains: [] }),
+      "/domains/eng/reflection": missing,
+    });
     renderApp("/d/eng");
     expect(
       await screen.findByRole("heading", { name: "Domain not found" }),
@@ -320,7 +324,7 @@ describe("the doors into the Reflection", () => {
 
   it("offers both modes to a reader of engrams and marks the one on screen", async () => {
     asEditor();
-    renderApp("/d/eng");
+    renderApp("/d/eng/engrams");
     const modes = await screen.findByRole("navigation", {
       name: "Domain view",
     });
@@ -423,6 +427,14 @@ describe("the doors into the Reflection", () => {
           },
         ],
       }),
+      "/domains/eng/reflection": () =>
+        status({
+          state: "elsewhere",
+          right: "edit",
+          engrams_visible: false,
+          home: "elsewhere",
+          home_url: "https://team.example.com",
+        }),
     });
     renderApp("/d/eng");
     expect(
@@ -1170,7 +1182,7 @@ describe("the mode switch in the top bar", () => {
     ).toHaveAttribute("aria-current", "true");
     expect(within(nav).getByRole("link", { name: "Engrams" })).toHaveAttribute(
       "href",
-      "/d/eng",
+      "/d/eng/engrams",
     );
   });
 

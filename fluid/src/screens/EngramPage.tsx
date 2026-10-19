@@ -123,9 +123,9 @@ import { formatActor, plural } from "../format";
 import { useFullWidth } from "../layoutWidth";
 import { useWide } from "../useWide";
 import {
-  domainRoute,
   editRoute,
   engramRoute,
+  engramsRoute,
   graphRoute,
   isDomainManifestPath,
 } from "../paths";
@@ -501,7 +501,10 @@ export default function EngramPage() {
         void queryClient.invalidateQueries({
           queryKey: domainEngramsRoot(domain),
         });
-        void navigate(domainRoute(domain), {
+        // The engram view, not the domain's address: that may open on the
+        // Reflection, and the note about the discarded change is the engram
+        // view's to show.
+        void navigate(engramsRoute(domain), {
           state: { discarded: changePath },
         });
         return;
@@ -1203,7 +1206,7 @@ function EngramNotFound({
         No engram at {`"${permalink}"`} in {`"${domain}"`}.
       </p>
       <Link
-        to={domainRoute(domain)}
+        to={engramsRoute(domain)}
         className="text-sm text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline"
       >
         See what {domain} does hold

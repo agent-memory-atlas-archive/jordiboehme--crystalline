@@ -84,7 +84,7 @@ import { saveKeymap, useEditorSession } from "../editor/useEditorSession";
 import { wikilinkResolverFacet } from "../editor/wikilinkChips";
 import { useIgnoredEngram } from "../events/ignored";
 import { moveDraft } from "../editor/drafts";
-import { domainRoute, editRoute, engramRoute } from "../paths";
+import { editRoute, engramRoute, engramsRoute } from "../paths";
 import { ENGRAM_PREFETCH } from "../prefetch";
 import { useTheme } from "../theme/context";
 import type { WikilinkResolver } from "../wikilinks";
@@ -792,7 +792,9 @@ function Surface({
       return;
     }
     const timer = setTimeout(() => {
-      void navigate(domainRoute(engram.domain), { replace: true });
+      // The engram view, not the domain's address, which may open on the
+      // Reflection: the reader was working on engrams.
+      void navigate(engramsRoute(engram.domain), { replace: true });
     }, CLOSED_NOTICE_MS);
     return () => {
       clearTimeout(timer);

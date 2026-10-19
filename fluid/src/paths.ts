@@ -22,23 +22,37 @@ export function isDomainManifestPath(path: string): boolean {
   return path.replace(/[A-Z]/g, (c) => c.toLowerCase()) === "manifest.md";
 }
 
-/** The address of one domain. */
+/**
+ * The address of one domain: the link that just opens it. The route decides
+ * the view (`DomainEntry`): the Reflection when it is in effect here and the
+ * caller may read it, the engrams otherwise.
+ */
 export function domainRoute(domain: string): string {
   return `/d/${encodeSegment(domain)}`;
 }
 
 /**
- * One folder of a domain, browsed on the domain's own screen.
+ * A domain's engram view: its MANIFEST, its folders and its engrams. A
+ * segment of its own since 0.28.1, when a domain started to open on its
+ * Reflection, so a link that means the engrams says so.
+ */
+export function engramsRoute(domain: string): string {
+  return `${domainRoute(domain)}/engrams`;
+}
+
+/**
+ * One folder of a domain, browsed on the engram view.
  *
  * A query parameter rather than a segment of the path, because the browse view
  * is one of the states that screen holds in its URL beside the frontmatter
- * filters, and the root folder is the domain itself rather than a folder named
- * nothing.
+ * filters, and the root folder is the engram view itself rather than a folder
+ * named nothing. An older `/d/<domain>?path=` link still lands here: the
+ * domain's own address sends any query on to the engram view.
  */
 export function folderRoute(domain: string, folder: string): string {
   return folder === ""
-    ? domainRoute(domain)
-    : `${domainRoute(domain)}?path=${encodeURIComponent(folder)}`;
+    ? engramsRoute(domain)
+    : `${engramsRoute(domain)}?path=${encodeURIComponent(folder)}`;
 }
 
 /**
@@ -139,7 +153,7 @@ export function reflectionPathOf(rest: string): string | null {
 
 /**
  * The route is kept as the base of the editor's address and redirects to
- * the domain page, where the MANIFEST is now read.
+ * the engram view, where the MANIFEST is now read.
  */
 export function manifestRoute(domain: string): string {
   return `${domainRoute(domain)}/manifest`;

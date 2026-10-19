@@ -325,7 +325,10 @@ describe("the login screen", () => {
       "/vocabulary": () => ({ domain: "eng", tags: [] }),
     });
 
-    renderApp("/d/eng");
+    // The engram view's own address rather than the domain's: the domain's
+    // address waits for the Reflection status before it draws anything, and
+    // that answer lands after the held notifications below are let through.
+    renderApp("/d/eng/engrams");
     // Let the initial bounce to /login settle on the real scheduler first -
     // taking it over before the boot probe has delivered would strand that
     // too, and there would be nothing on screen to sign in from.

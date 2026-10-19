@@ -1,5 +1,5 @@
 /**
- * The two ways of looking at a domain, Engrams and Reflection, and the one
+ * The two ways of looking at a domain, Reflection and Engrams, and the one
  * notice that stands in for them when the Reflection lives on another
  * instance.
  *
@@ -27,7 +27,7 @@ import {
   reflectionStatusKey,
 } from "../api/reflectionDomains";
 import { isWebAddress } from "../format";
-import { domainRoute, reflectionRoute } from "../paths";
+import { domainRoute, engramsRoute, reflectionRoute } from "../paths";
 import { FOCUS_RING } from "./primitives";
 
 const LINK =
@@ -90,12 +90,13 @@ export function switchHome(s: SwitchFacts): false | null | string {
 }
 
 /**
- * The mode switch in the top bar: "Engrams | Reflection" as a segmented
+ * The mode switch in the top bar: "Reflection | Engrams" as a segmented
  * control, the selected half a raised pill, `aria-current` and bold weight so
- * the pill is never the only cue (spec 4.1, 4.2, 6).
+ * the pill is never the only cue (spec 4.1, 4.2, 6). Reflection comes first
+ * since 0.28.1, when a domain started to open on it.
  *
  * `aria-current` is "page" only on the link whose address is on screen (the
- * domain page, the Reflection home) and "true" on the mode an engram page, an
+ * engram view, the Reflection home) and "true" on the mode an engram page, an
  * editor or a Reflection page belongs to: the reader is in that mode, not on
  * that page.
  *
@@ -127,21 +128,18 @@ export function ReflectionModeSwitch({
   }
   // The look lives in index.css (`.mode-half`), keyed on aria-current.
   const half = `mode-half ${fill ? "h-8 flex-1" : ""} ${FOCUS_RING}`;
-  const here = (name: "engrams" | "reflection", to: string) =>
-    current === name ? (pathname === to ? "page" : "true") : undefined;
+  const here = (name: "engrams" | "reflection", ...at: string[]) =>
+    current === name ? (at.includes(pathname) ? "page" : "true") : undefined;
   const reflection = reflectionRoute(domain);
+  const engrams = engramsRoute(domain);
+  // The domain's own address shows the engram view in place whenever it does
+  // not open on the Reflection (`DomainEntry`), so it is that page too.
+  const opened = domainRoute(domain);
   return (
     <nav
       aria-label="Domain view"
       className={`${fill ? "flex" : "ml-1.5 inline-flex"} shrink-0 gap-0.5 rounded-[9px] bg-seg p-[3px]`}
     >
-      <Link
-        to={domainRoute(domain)}
-        aria-current={here("engrams", domainRoute(domain))}
-        className={half}
-      >
-        Engrams
-      </Link>
       {away === null ? (
         <Link
           to={reflection}
@@ -161,6 +159,13 @@ export function ReflectionModeSwitch({
           <ExternalLink aria-hidden="true" size={12} strokeWidth={1.75} />
         </a>
       )}
+      <Link
+        to={engrams}
+        aria-current={here("engrams", engrams, opened)}
+        className={half}
+      >
+        Engrams
+      </Link>
     </nav>
   );
 }

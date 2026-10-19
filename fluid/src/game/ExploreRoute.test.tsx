@@ -1062,7 +1062,7 @@ describe("ExploreRoute", () => {
       made.openFluid?.();
     });
     expect(open).toHaveBeenCalledWith(
-      "/d/eng?path=notes",
+      "/d/eng/engrams?path=notes",
       "_blank",
       "noopener",
     );
@@ -1177,7 +1177,7 @@ describe("ExploreRoute", () => {
       url: "/%CF%80/d/eng?path=notes",
       current: { kind: "deck", domain: "eng", folder: "notes", section: 0 },
       where: "NOTES",
-      to: "/d/eng?path=notes",
+      to: "/d/eng/engrams?path=notes",
     },
     {
       name: "the airlock",

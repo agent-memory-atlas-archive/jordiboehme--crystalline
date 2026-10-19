@@ -96,7 +96,7 @@ describe("the domain settings screen", () => {
     ).toBeVisible();
     expect(
       screen.getByRole("link", { name: "Back to the domain" }),
-    ).toHaveAttribute("href", "/d/eng");
+    ).toHaveAttribute("href", "/d/eng/engrams");
     const members = await screen.findByRole("region", { name: "Members" });
     const review = await screen.findByRole("region", { name: "Review mode" });
     const policies = await screen.findByRole("region", {

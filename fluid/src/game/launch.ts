@@ -33,14 +33,16 @@ export const GAME_PREFIX = "/%CF%80";
  * path, the search.
  *
  * The app's root is the bare prefix, never the prefix with a trailing
- * slash, which is the form `gameRouteOf` writes for the airlock. Every other
+ * slash, which is the form `gameRouteOf` writes for the airlock. Fluid's
+ * engram view (`/d/<domain>/engrams`, since 0.28.1) is the domain's own
+ * address to the station, a bridge, or a deck with its `?path=`. Every other
  * path is appended as it is, so a deck's `?path=` survives and a page the
  * station has no place for lands in the airlock.
  */
 export function gamePathOf(pathname: string, search: string): string {
   return pathname === "/" && search === ""
     ? GAME_PREFIX
-    : GAME_PREFIX + pathname + search;
+    : GAME_PREFIX + pathname.replace(/^(\/d\/[^/]+)\/engrams$/, "$1") + search;
 }
 
 /** The context the last launch primed, lent to the mixer until the next prime. */

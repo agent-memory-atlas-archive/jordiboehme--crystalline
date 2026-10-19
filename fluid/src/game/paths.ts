@@ -164,11 +164,12 @@ export function addressOfRoute(href: string): PlaceAddress | null {
  * builder that also encodes the permalink's segments one by one for the
  * plain Fluid route `fluidRouteOfStation` gives the same address.
  *
- * A deck's `folder` goes through `folderRoute`, which already encodes it
- * with `encodeURIComponent` and writes `?path=<folder>` for every folder but
- * the root; the root deck has no folder for `folderRoute` to write a
- * `?path=` for (it returns the bare domain route there), so that one case is
- * built by hand instead. A resolved section above the first is appended as
+ * A deck's `folder` is written as `?path=<folder>` on the bridge's own
+ * route, encoded with `encodeURIComponent` as Fluid's `folderRoute` encodes
+ * it, the root deck included (an empty `?path=`). Not through `folderRoute`
+ * itself: that one moved to Fluid's engram view (`/d/<domain>/engrams`) in
+ * 0.28.1, and a station address keeps the shape it always had. A resolved
+ * section above the first is appended as
  * `&section=<n+1>`, 1-based like the rest of the app's URLs, which never
  * carry a 0; a deck at its first section or with an unresolved one (`null`,
  * C1) writes none, since both land on the same page.
@@ -186,10 +187,7 @@ export function gameRouteOf(address: StationAddress): string {
     case "bridge":
       return `${GAME_PREFIX}${domainRoute(address.domain)}`;
     case "deck": {
-      const base =
-        address.folder === ""
-          ? `${domainRoute(address.domain)}?path=`
-          : folderRoute(address.domain, address.folder);
+      const base = `${domainRoute(address.domain)}?path=${encodeURIComponent(address.folder)}`;
       const section =
         address.section !== null && address.section > 0
           ? `&section=${String(address.section + 1)}`
@@ -203,9 +201,10 @@ export function gameRouteOf(address: StationAddress): string {
 
 /**
  * The Fluid route a station address mirrors (M3 C2): the same builders
- * `gameRouteOf` defers to, minus the `π` prefix, minus a section (Fluid has
- * no notion of one) and minus the hand-written `?path=` for a deck's root
- * folder, since `folderRoute` already answers the bare domain route there.
+ * `gameRouteOf` defers to, minus the `π` prefix and minus a section (Fluid
+ * has no notion of one). A bridge opens the domain, which decides its own
+ * view; a deck is a folder, so it opens on Fluid's engram view through
+ * `folderRoute`, the root deck on the engram view itself.
  */
 export function fluidRouteOfStation(address: StationAddress): string {
   switch (address.kind) {

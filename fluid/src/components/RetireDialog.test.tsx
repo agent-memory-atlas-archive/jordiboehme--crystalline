@@ -12,9 +12,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import App from "../App";
 import { api } from "../api/client";
 import { RetireDialog } from "./RetireDialog";
 import { domainEngramsRoot, singlePage } from "../api/engrams";
@@ -234,6 +235,50 @@ describe("the retire dialog", () => {
       ([, init]) => init?.method === "DELETE",
     );
     expect(call?.[1]?.headers).toEqual({ "If-Match": '"3f8a1c05e2"' });
+  });
+
+  it("a delete lands on the engram view, even when the domain opens on its Reflection", async () => {
+    serve({
+      "/domains/eng/engrams/alpha": (_path, init) =>
+        init?.method === "DELETE" ? undefined : detailResponse(),
+      "/domains/eng/reflection": () => ({
+        domain: "eng",
+        state: "on",
+        home: "local",
+        home_url: null,
+        right: "curate",
+        engrams_visible: true,
+        pending_engrams: [],
+      }),
+    });
+    function LocationProbe() {
+      const location = useLocation();
+      return <div data-testid="probe">{location.pathname}</div>;
+    }
+    render(
+      <MemoryRouter initialEntries={["/d/eng/e/alpha"]}>
+        <App />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+    await userEvent.click(
+      await screen.findByRole("button", { name: "More actions" }),
+    );
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "Retire" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: /retire/i });
+    await userEvent.click(
+      within(dialog).getByRole("button", {
+        name: "Delete permanently instead",
+      }),
+    );
+    await userEvent.click(
+      await within(dialog).findByRole("button", { name: "Delete permanently" }),
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId("probe")).toHaveTextContent("/d/eng/engrams");
+    });
   });
 
   it("moves the tree and the listings on, so nothing keeps showing what was retired", async () => {

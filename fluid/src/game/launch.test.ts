@@ -43,6 +43,12 @@ describe("the launch path (M4 C1)", () => {
           "?path=My%20Notes",
           { kind: "deck", domain: "eng", folder: "My Notes", section: 0 },
         ],
+        ["/d/eng/engrams", "", { kind: "bridge", domain: "eng" }],
+        [
+          "/d/eng/engrams",
+          "?path=My%20Notes",
+          { kind: "deck", domain: "eng", folder: "My Notes", section: 0 },
+        ],
         [
           "/d/eng/e/notes/deep/gamma",
           "",

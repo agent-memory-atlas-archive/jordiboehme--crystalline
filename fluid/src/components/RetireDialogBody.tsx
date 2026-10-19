@@ -42,7 +42,7 @@ import {
 import { deleteEngram, retireEngram } from "../api/writes";
 import { plural } from "../format";
 import { isRetired } from "../lifecycle";
-import { domainRoute } from "../paths";
+import { engramsRoute } from "../paths";
 import { RETIREMENT_STATUSES } from "../retirement";
 import type { RetireDialogProps } from "./RetireDialog";
 
@@ -192,7 +192,9 @@ export default function RetireDialogBody({
       void queryClient.invalidateQueries({
         queryKey: domainEngramsRoot(engram.domain),
       });
-      void navigate(domainRoute(engram.domain));
+      // The engram view the reader was browsing, not the domain's address,
+      // which may open on the Reflection.
+      void navigate(engramsRoute(engram.domain));
     },
     onError: (error: Error) => {
       // A conflict here is reported, never retried: the engram changed since

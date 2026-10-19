@@ -948,7 +948,7 @@ describe("the engram page", () => {
     const trail = await screen.findByRole("navigation", { name: "Breadcrumb" });
     expect(within(trail).getByRole("link", { name: "deploy" })).toHaveAttribute(
       "href",
-      "/d/eng?path=deploy",
+      "/d/eng/engrams?path=deploy",
     );
     expect(within(trail).getByText("Night Deploys")).toHaveAttribute(
       "aria-current",
@@ -1819,6 +1819,65 @@ describe("what changed on this page", () => {
               reindexed: 1,
             }
           : null,
+      "/domains/eng/manifest": () => ({ domain: "eng", markdown: "# eng\n" }),
+      "/domains/eng/engrams": () => ({
+        mode: "text",
+        total: 0,
+        page: 1,
+        limit: 50,
+        count: 0,
+        hits: [],
+      }),
+      "/vocabulary": () => ({
+        domain: "eng",
+        tags: [],
+        categories: [],
+        relation_types: [],
+      }),
+    });
+
+    renderApp("/d/eng/e/alpha");
+
+    await userEvent.click(await screen.findByRole("button", { name: "Added" }));
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "Discard" }),
+    );
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Confirm discard" }),
+    );
+
+    // The page it was standing on is gone, so it lands where the file was and
+    // the landing says what happened to it.
+    expect(
+      await screen.findByRole("heading", { name: "eng", level: 1 }),
+    ).toBeVisible();
+    expect(await screen.findByText("Discarded alpha.md.")).toBeVisible();
+  });
+
+  it("discarding an addition lands on the engram view when the domain opens on its Reflection", async () => {
+    serve({
+      "/domains/eng/engrams/alpha": () =>
+        detailResponse({ local_change: "added" }),
+      "/domains/eng/changes/discard": (_path, init) =>
+        init?.method === "POST"
+          ? {
+              domain: "eng",
+              restored: [],
+              deleted: ["alpha.md"],
+              cleared: [],
+              refused: [],
+              reindexed: 1,
+            }
+          : null,
+      "/domains/eng/reflection": () => ({
+        domain: "eng",
+        state: "on",
+        home: "local",
+        home_url: null,
+        right: "curate",
+        engrams_visible: true,
+        pending_engrams: [],
+      }),
       "/domains/eng/manifest": () => ({ domain: "eng", markdown: "# eng\n" }),
       "/domains/eng/engrams": () => ({
         mode: "text",

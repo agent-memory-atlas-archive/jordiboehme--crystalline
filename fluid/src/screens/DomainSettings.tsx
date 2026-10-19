@@ -45,7 +45,7 @@ import { Loading } from "../components/Loading";
 import { CHROME_LINK, FIELD, RAIL_LABEL, SIDE } from "../components/primitives";
 import { useDomainWritable } from "../domainWritable";
 import { isMissing, useDomainRights } from "../domainRights";
-import { domainRoute, manifestEditRoute } from "../paths";
+import { engramsRoute, manifestEditRoute } from "../paths";
 import { MissingOrReflection } from "./DomainMissing";
 
 export default function DomainSettings() {
@@ -191,8 +191,13 @@ function Settings({
         Settings
       </p>
       <h1 className="text-display">{domain}</h1>
+      {/*
+        The engram view rather than the domain's address: settings are
+        opened from the engram view's rail, so "back" returns there even when
+        the domain would open on its Reflection.
+      */}
       <Link
-        to={domainRoute(domain)}
+        to={engramsRoute(domain)}
         className={`mt-2 inline-block text-sm ${CHROME_LINK}`}
       >
         Back to the domain

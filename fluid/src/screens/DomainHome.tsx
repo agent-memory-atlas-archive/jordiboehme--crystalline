@@ -126,8 +126,8 @@ import {
 import type { ManifestProse } from "../manifestProse";
 import {
   WHOLE_MANIFEST,
-  domainRoute,
   domainSettingsRoute,
+  engramsRoute,
   folderRoute,
   manifestEditRoute,
 } from "../paths";
@@ -1248,7 +1248,7 @@ function FolderHeading({ domain, path }: { domain: string; path: string }) {
   const link = `rounded underline underline-offset-4 hover:no-underline ${FOCUS_RING}`;
   return (
     <h1 className="text-display">
-      <Link to={domainRoute(domain)} className={link}>
+      <Link to={engramsRoute(domain)} className={link}>
         {domain}
       </Link>
       {segments.map((segment, index) => {

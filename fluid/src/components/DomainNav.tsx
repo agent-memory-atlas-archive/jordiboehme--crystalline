@@ -55,7 +55,7 @@ import { useDomainWritable } from "../domainWritable";
 import { frontmatterFilters } from "../filters";
 import { plural } from "../format";
 import { isRetired } from "../lifecycle";
-import { domainRoute, engramRoute, folderRoute } from "../paths";
+import { engramRoute, engramsRoute, folderRoute } from "../paths";
 import { ENGRAM_PREFETCH, PREFETCH } from "../prefetch";
 import { Loading } from "./Loading";
 import { FOCUS_RING, SIDE } from "./primitives";
@@ -75,11 +75,14 @@ export function DomainNav({ domain, permalink }: DomainNavProps) {
   const { canWrite } = useDomainWritable(domain);
   const sidebar = useSidebarState();
   const [params] = useSearchParams();
-  // Whether the domain's own page is what stands beside the tree: the exact
-  // route, no engram, no editor. Only that page writes `path`, so the folder
-  // being browsed is read from the URL there and nowhere else, and the pair
-  // is one state rather than two that could contradict each other.
-  const onDomainPage = useMatch("/d/:domain") !== null;
+  // Whether the engram view's front page is what stands beside the tree: its
+  // own address, or the domain's address when that opened on the engrams;
+  // no engram, no editor. Only that page writes `path`, so the folder being
+  // browsed is read from the URL there and nowhere else, and the pair is one
+  // state rather than two that could contradict each other.
+  const atEngrams = useMatch("/d/:domain/engrams") !== null;
+  const atDomain = useMatch("/d/:domain") !== null;
+  const onDomainPage = atEngrams || atDomain;
   const browsing = onDomainPage ? (params.get("path") ?? "") : "";
   // Which folder may call itself the page the reader is on - not the same
   // question. Under a frontmatter filter the screen leaves the folder and
@@ -96,7 +99,7 @@ export function DomainNav({ domain, permalink }: DomainNavProps) {
   return (
     <div className="flex flex-col gap-0.5">
       <Link
-        to={domainRoute(domain)}
+        to={engramsRoute(domain)}
         {...PREFETCH.domain}
         // Current while the domain's front page is open: no folder, whatever
         // filter. A folder is its own page and its own row in the tree says

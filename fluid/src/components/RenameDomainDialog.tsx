@@ -72,7 +72,7 @@ import { DOMAINS_QUERY_KEY } from "../api/domains";
 import type { DomainListing } from "../api/domains";
 import type { RenameReport } from "../api/admin";
 import { renameDomain, renameReportKey } from "../api/admin";
-import { domainRoute } from "../paths";
+import { engramsRoute } from "../paths";
 import { BUTTON, FIELD } from "./primitives";
 
 export interface RenameDomainDialogProps {
@@ -122,7 +122,10 @@ export function RenameDomainDialog({
       // See the module doc above for why this is not `location.state`.
       queryClient.setQueryData(renameReportKey(report.domain), report);
       onClose();
-      void navigate(domainRoute(report.domain), { replace: true });
+      // The engram view, not the domain's address: only the engram view
+      // shows the report, and the domain's address may open on the
+      // Reflection, which would leave the report waiting for a later visit.
+      void navigate(engramsRoute(report.domain), { replace: true });
       // The full truth, in the background, for anything the patch above
       // could not know (a shadow the new name now carries, say): by the
       // time this resolves the reader is already on the right address, so

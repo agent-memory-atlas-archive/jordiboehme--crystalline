@@ -13,11 +13,12 @@
  * not-found screen rather than existing as a second address for one page.
  */
 
-import { Suspense, lazy } from "react";
+import { Suspense, lazy, useState } from "react";
 import {
   Navigate,
   Route,
   Routes,
+  useLocation,
   useParams,
   useSearchParams,
 } from "react-router";
@@ -28,7 +29,8 @@ import { Layout } from "./components/Layout";
 import { LazyBoundary } from "./components/LazyBoundary";
 import { Loading } from "./components/Loading";
 import { lazyChunk } from "./lazyChunk";
-import { domainRoute } from "./paths";
+import { useReflectionStatus } from "./components/ReflectionModeSwitch";
+import { engramsRoute, reflectionRoute } from "./paths";
 import Home from "./screens/Home";
 import NotFound from "./screens/NotFound";
 import OauthConsent from "./screens/OauthConsent";
@@ -170,13 +172,63 @@ const SoundBoard = import.meta.env.DEV
   : null;
 
 /**
- * The MANIFEST's old address. The document is read on the domain page now,
+ * The MANIFEST's old address. The document is read on the engram view now,
  * so a link that still points here lands there rather than on the not-found
  * screen; the editor keeps its own segment beneath it.
  */
 function ManifestRedirect() {
   const { domain = "" } = useParams();
-  return <Navigate to={domainRoute(domain)} replace />;
+  return <Navigate to={engramsRoute(domain)} replace />;
+}
+
+/**
+ * The domain's own address, `/d/<domain>`, and the one place that decides
+ * which view a domain opens on (0.28.1).
+ *
+ * A query means the engram view: folders (`?path=`) and frontmatter filters
+ * lived on this address before the engram view had one of its own, so a link
+ * somebody saved goes on to `/d/<domain>/engrams` with its query, fragment
+ * and state, before the status is asked. Otherwise the Reflection status
+ * decides: in effect here (`on`) and readable, the domain opens on its
+ * Reflection. A contributor, who cannot read engrams, goes there too, since
+ * it is their only view. Every other answer (off, pending, elsewhere, hosted
+ * elsewhere, homeless, no right, a failed read) shows the engram view in
+ * place, which answers a missing domain or a pending Reflection as it always
+ * did. While the status loads, the domain's loader stands, so the engram
+ * view never flashes before a forward.
+ */
+function DomainEntry() {
+  const { domain = "" } = useParams();
+  const location = useLocation();
+  const status = useReflectionStatus(domain);
+  // The domain this address already decided to show on its engrams. Once
+  // decided it holds: a later read of the status (the engram view mounts its
+  // own observer, which asks again after a failure, and the status goes back
+  // to pending while it does) must not take the page away and put it back.
+  const [stayed, setStayed] = useState<string | null>(null);
+  if (location.search !== "") {
+    return (
+      <Navigate
+        to={`${engramsRoute(domain)}${location.search}${location.hash}`}
+        state={location.state as unknown}
+        replace
+      />
+    );
+  }
+  if (stayed !== domain) {
+    if (status.isPending) {
+      return DOMAIN_FALLBACK;
+    }
+    if (status.data?.state === "on" && status.data.right !== "none") {
+      return <Navigate to={reflectionRoute(domain)} replace />;
+    }
+    setStayed(domain);
+  }
+  return (
+    <LazyBoundary fallback={DOMAIN_FALLBACK}>
+      <DomainHome />
+    </LazyBoundary>
+  );
 }
 
 /*
@@ -317,8 +369,14 @@ export function AppRoutes() {
         />
         <Route element={<Layout />}>
           <Route index element={<Home />} />
+          <Route path="/d/:domain" element={<DomainEntry />} />
+          {/*
+            The engram view: the domain's MANIFEST, folders and engrams. The
+            bare domain address above opens on the Reflection when it is on,
+            so a link that means the engrams comes here.
+          */}
           <Route
-            path="/d/:domain"
+            path="/d/:domain/engrams"
             element={
               <LazyBoundary fallback={DOMAIN_FALLBACK}>
                 <DomainHome />

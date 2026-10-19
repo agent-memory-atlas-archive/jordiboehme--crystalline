@@ -127,17 +127,17 @@ describe("station addresses (M3 C1 to C5)", () => {
     [
       { kind: "deck", domain: "eng", folder: "", section: 0 },
       "/%CF%80/d/eng?path=",
-      "/d/eng",
+      "/d/eng/engrams",
     ],
     [
       { kind: "deck", domain: "eng", folder: "My Notes", section: 0 },
       "/%CF%80/d/eng?path=My%20Notes",
-      "/d/eng?path=My%20Notes",
+      "/d/eng/engrams?path=My%20Notes",
     ],
     [
       { kind: "deck", domain: "eng", folder: "a&b#c", section: 2 },
       "/%CF%80/d/eng?path=a%26b%23c&section=3",
-      "/d/eng?path=a%26b%23c",
+      "/d/eng/engrams?path=a%26b%23c",
     ],
     [
       { kind: "engram", domain: "e", permalink: "e/x" },
@@ -147,27 +147,27 @@ describe("station addresses (M3 C1 to C5)", () => {
     [
       { kind: "deck", domain: "eng", folder: "?", section: 0 },
       "/%CF%80/d/eng?path=%3F",
-      "/d/eng?path=%3F",
+      "/d/eng/engrams?path=%3F",
     ],
     [
       { kind: "deck", domain: "eng", folder: "%", section: 0 },
       "/%CF%80/d/eng?path=%25",
-      "/d/eng?path=%25",
+      "/d/eng/engrams?path=%25",
     ],
     [
       { kind: "deck", domain: "eng", folder: "'", section: 0 },
       "/%CF%80/d/eng?path=%27",
-      "/d/eng?path='",
+      "/d/eng/engrams?path='",
     ],
     [
       { kind: "deck", domain: "eng", folder: "a/b c/d", section: 0 },
       "/%CF%80/d/eng?path=a%2Fb%20c%2Fd",
-      "/d/eng?path=a%2Fb%20c%2Fd",
+      "/d/eng/engrams?path=a%2Fb%20c%2Fd",
     ],
     [
       { kind: "deck", domain: "eng", folder: "x.md", section: 0 },
       "/%CF%80/d/eng?path=x.md",
-      "/d/eng?path=x.md",
+      "/d/eng/engrams?path=x.md",
     ],
   ];
 
