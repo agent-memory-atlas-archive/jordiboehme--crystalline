@@ -78,6 +78,18 @@ export function opensOnReflection(
   return s.state === "on" && s.right !== "none";
 }
 
+/**
+ * Where the domain's bare address put down its decision to stay on the
+ * engrams (`DomainEntry` in routes.tsx), for the switch to read: `true`
+ * while a page on `/d/<domain>` shows the engrams, absent otherwise. The
+ * decision sticks for the page, so the switch reads it rather than the
+ * latest status, which may have changed since.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function domainStayKey(domain: string): readonly unknown[] {
+  return ["domain-stay", domain];
+}
+
 /** The four fields that decide the switch, on the status and the listing. */
 type SwitchFacts = Pick<
   ReflectionStatus,
@@ -133,6 +145,12 @@ export function ReflectionModeSwitch({
 }): ReactElement | null {
   const status = useReflectionStatus(domain);
   const { pathname } = useLocation();
+  // Read from the cache only: `DomainEntry` writes it, nothing fetches it.
+  const stayed = useQuery({
+    queryKey: domainStayKey(domain),
+    queryFn: () => false,
+    enabled: false,
+  });
   const facts = status.data ?? listed;
   const away = facts === undefined ? false : switchHome(facts);
   if (away === false) {
@@ -142,13 +160,12 @@ export function ReflectionModeSwitch({
   const half = `mode-half ${fill ? "h-8 flex-1" : ""} ${FOCUS_RING}`;
   const reflection = reflectionRoute(domain);
   const engrams = engramsRoute(domain);
-  // The domain's own address shows the engram view in place once its status
-  // says it does not open on the Reflection (`DomainEntry`), so it is that
-  // page too. Until then it is neither: no half is current before a forward.
+  // The domain's own address shows the engram view in place once
+  // `DomainEntry` decided to stay there, so it is that page too. Until then
+  // it is neither: no half is current before a forward. The decision is the
+  // page's own and sticks, so a later status read does not change the mark.
   const opened = domainRoute(domain);
-  const undecided =
-    pathname === opened &&
-    (status.data === undefined || opensOnReflection(status.data));
+  const undecided = pathname === opened && stayed.data !== true;
   const here = (name: "engrams" | "reflection", ...at: string[]) =>
     undecided || current !== name
       ? undefined

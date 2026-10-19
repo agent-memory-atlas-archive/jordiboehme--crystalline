@@ -13,7 +13,8 @@
  * not-found screen rather than existing as a second address for one page.
  */
 
-import { Suspense, lazy, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { Suspense, lazy, useEffect, useState } from "react";
 import {
   Navigate,
   Route,
@@ -30,6 +31,7 @@ import { LazyBoundary } from "./components/LazyBoundary";
 import { Loading } from "./components/Loading";
 import { lazyChunk } from "./lazyChunk";
 import {
+  domainStayKey,
   opensOnReflection,
   useReflectionStatus,
 } from "./components/ReflectionModeSwitch";
@@ -215,6 +217,20 @@ function DomainEntry({ engramsView = false }: { engramsView?: boolean }) {
   // own observer, which asks again after a failure, and the status goes back
   // to pending while it does) must not take the page away and put it back.
   const [stayed, setStayed] = useState<string | null>(null);
+  // The decision, told to the mode switch in the frame, which marks the half
+  // this page shows; cleared when the page goes, so the next visit to the
+  // bare address marks nothing until it has decided again.
+  const queryClient = useQueryClient();
+  const staying = stayed === domain;
+  useEffect(() => {
+    if (!staying) {
+      return;
+    }
+    queryClient.setQueryData(domainStayKey(domain), true);
+    return () => {
+      queryClient.removeQueries({ queryKey: domainStayKey(domain) });
+    };
+  }, [domain, queryClient, staying]);
   if (!engramsView && location.search !== "") {
     return (
       <Navigate

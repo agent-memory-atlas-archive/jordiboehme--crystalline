@@ -261,6 +261,40 @@ describe("opening a domain", () => {
     ).toHaveAttribute("aria-current", "page");
   });
 
+  it("keeps Engrams current on a page that stayed, when a later read says the Reflection is on", async () => {
+    let state = "elsewhere";
+    serve({ "/domains/eng/reflection": () => status(state)() });
+    open("/d/eng");
+    await expectEngramView();
+    const modes = await screen.findByRole("navigation", {
+      name: "Domain view",
+    });
+    expect(
+      within(modes).getByRole("link", { name: "Engrams" }),
+    ).toHaveAttribute("aria-current", "page");
+    const before = statusReads();
+    state = "on";
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+    await waitFor(() => {
+      expect(statusReads()).toBeGreaterThan(before);
+    });
+    // The Reflection half is now a link on this instance: the read landed.
+    const again = await screen.findByRole("navigation", {
+      name: "Domain view",
+    });
+    await within(again).findByRole("link", { name: "Reflection" });
+    expect(screen.getByTestId("probe").textContent).toBe("/d/eng");
+    expect(
+      within(again).getByRole("link", { name: "Engrams" }),
+    ).toHaveAttribute("aria-current", "page");
+    act(() => {
+      focusManager.setFocused(undefined);
+    });
+  });
+
   it("marks no half current on the domain's address before it has decided", async () => {
     // A phone: the switch has a row of its own, drawn from the listing
     // before the status answers.
