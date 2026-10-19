@@ -35,5 +35,8 @@
   { "name": "a label inside a word", "line": "questions: why?", "label": null },
   { "name": "a label on the second line only", "line": "Hello\nquestion: why?", "label": null },
   { "name": "plain text", "line": "Is this still true after the migration?", "label": null },
-  { "name": "empty", "line": "", "label": null }
+  { "name": "empty", "line": "", "label": null },
+  { "name": "the Kelvin sign is not a k", "line": "nitpic\u212a: a typo", "label": null },
+  { "name": "a byte order mark is no space", "line": "note: \ufeff", "label": "note", "decorations": [], "subject": "\ufeff" },
+  { "name": "a next line character is a space", "line": "note: \u0085", "label": null }
 ]

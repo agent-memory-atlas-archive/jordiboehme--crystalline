@@ -179,7 +179,9 @@ function useForget(): (key: string) => void {
  * text, so no label is forgotten rather than kept), and how typed words
  * reach the box. The exact head typed or pasted at the very start of the box
  * becomes the chip while the box has none; once a person takes a chip off,
- * what they type stays text.
+ * what they type stays text. That choice is kept beside the label (under
+ * `${keep}-removed`), so a sheet shut and opened again never turns their
+ * plain words into a chip.
  */
 function useLabel(
   keep: string,
@@ -193,7 +195,7 @@ function useLabel(
   type: (value: string) => void;
 } {
   const [raw, setRaw] = useKept(keep, "");
-  const [removed, setRemoved] = useState(false);
+  const [removed, setRemoved] = useKept(`${keep}-removed`, false);
   const head = raw === "" ? null : parseHead(raw);
   const setHead = (next: ConventionalHead | null) => {
     setRaw(next === null ? "" : formatHead(next));
@@ -692,6 +694,9 @@ export function ReflectionThreads({
   const backToComment = useRef(false);
   // The painted quotes by thread, for a tap on one in the text.
   const painted = useRef(new Map<string, Range>());
+  // The threads the column lists now, for a tap on a quote whose card a
+  // filter hides.
+  const listedIds = useRef(new Set<string>());
   // Whether the page is printing, while the numbers are in its text.
   const printing = useRef(false);
   // The thread the sheet opens at, once, when a tap or a link asked for it.
@@ -1033,6 +1038,12 @@ export function ReflectionThreads({
         setPicked(null);
         return;
       }
+      // Blocking only lists the blocking threads, and every quote stays
+      // painted: a tap on another one shows all threads again, so its card
+      // is there to be picked.
+      if (!listedIds.current.has(hit[0])) {
+        setBlockingOnly(false);
+      }
       setPicked(hit[0]);
       if (!column) {
         setOpenAt(hit[0]);
@@ -1058,7 +1069,10 @@ export function ReflectionThreads({
     onSuccess: (thread) => {
       kept.store.delete(commentKey);
       kept.store.delete(commentLabelKey);
+      kept.store.delete(`${commentLabelKey}-removed`);
       focusNew.current = thread?.id ?? null;
+      // The new thread must be listed to take the keyboard.
+      setBlockingOnly(false);
       say("Comment posted.");
       hadCapture.current = false;
       backToComment.current = true;
@@ -1095,6 +1109,9 @@ export function ReflectionThreads({
           .filter((t) => t.status === "resolved" && !openIds.has(t.id))
           .map(list),
       ];
+  useEffect(() => {
+    listedIds.current = new Set(listed.map((item) => item.thread.id));
+  });
   const bySection = new Map<string, Listed[]>();
   for (const item of listed) {
     const key = item.state === "section_gone" ? "" : item.thread.anchor.section;
@@ -1211,6 +1228,7 @@ export function ReflectionThreads({
           onCancel={() => {
             kept.store.delete(commentKey);
             kept.store.delete(commentLabelKey);
+            kept.store.delete(`${commentLabelKey}-removed`);
             comment.reset();
             backToComment.current = true;
             setDrafting(null);
@@ -1587,6 +1605,7 @@ function OpenActions({
   const close = (step: Step) => {
     forget(`${thread.id}:${step}`);
     forget(`${thread.id}:${step}-label`);
+    forget(`${thread.id}:${step}-label-removed`);
     backTo.current = step;
     setForm(null);
   };
@@ -1599,6 +1618,7 @@ function OpenActions({
     onSuccess: () => {
       forget(`${thread.id}:answer`);
       forget(`${thread.id}:answer-label`);
+      forget(`${thread.id}:answer-label-removed`);
       forget(`${thread.id}:form`);
       void onAnswered();
     },

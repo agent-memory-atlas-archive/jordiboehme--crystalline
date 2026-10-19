@@ -49,8 +49,29 @@ export interface ConventionalComment extends ConventionalHead {
 
 const DECORATION = /^[A-Za-z0-9-]+$/;
 
+/**
+ * `word` with only its ASCII letters lowercased, as the core compares
+ * (`eq_ignore_ascii_case`): `toLowerCase` would also read the Kelvin sign as
+ * a `k`.
+ */
+function asciiLower(word: string): string {
+  return word.replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
+
+/**
+ * The white space the core's `trim` takes off (Unicode White_Space): unlike
+ * JavaScript's `trim` it keeps a byte order mark and takes a next line
+ * character (U+0085).
+ */
+const EDGE_SPACE =
+  /^[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/g;
+
+function trimLikeCore(text: string): string {
+  return text.replace(EDGE_SPACE, "");
+}
+
 function labelOf(word: string): Label | null {
-  const lower = word.toLowerCase();
+  const lower = asciiLower(word);
   return LABELS.find((label) => label === lower) ?? null;
 }
 
@@ -98,7 +119,7 @@ export function parseConventional(text: string): ConventionalComment | null {
   }
   const newline = text.indexOf("\n");
   const first = newline === -1 ? text : text.slice(0, newline);
-  const subject = first.slice(match.end).trim();
+  const subject = trimLikeCore(first.slice(match.end));
   if (subject === "") {
     return null;
   }
@@ -142,7 +163,7 @@ export function toggleDecoration(
   decorations: readonly string[],
   decoration: string,
 ): string[] {
-  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  const same = (a: string, b: string) => asciiLower(a) === asciiLower(b);
   if (decorations.some((d) => same(d, decoration))) {
     return decorations.filter((d) => !same(d, decoration));
   }
@@ -163,7 +184,5 @@ export function hasDecoration(
   head: ConventionalHead,
   decoration: string,
 ): boolean {
-  return head.decorations.some(
-    (d) => d.toLowerCase() === decoration.toLowerCase(),
-  );
+  return head.decorations.some((d) => asciiLower(d) === asciiLower(decoration));
 }

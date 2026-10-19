@@ -1887,6 +1887,41 @@ describe("threads on a narrow screen", () => {
     ).toHaveValue("Half a th");
   });
 
+  it("keeps a label taken off when the sheet is shut and opened again", async () => {
+    serve([thread("t-00000001")]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Show 1 thread" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Threads" });
+    await userEvent.click(
+      within(sheet).getByRole("button", { name: "Answer" }),
+    );
+    const field = within(sheet).getByRole("textbox", { name: "Your answer" });
+    await userEvent.type(field, "note: ");
+    await userEvent.click(
+      within(sheet).getByRole("button", { name: "Remove the label" }),
+    );
+    await userEvent.type(field, "Note: plain");
+    await userEvent.click(
+      within(sheet).getByRole("button", { name: "Close the threads" }),
+    );
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Threads" })).toBeNull();
+    });
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show 1 thread" }),
+    );
+    const again = await screen.findByRole("dialog", { name: "Threads" });
+    const kept = within(again).getByRole("textbox", { name: "Your answer" });
+    await userEvent.type(kept, " words");
+    // Still the person's plain words, never a chip.
+    expect(kept).toHaveValue("Note: plain words");
+    expect(
+      within(again).queryByRole("button", { name: "Remove the label" }),
+    ).toBeNull();
+  });
+
   it("comments on a passage selected on the page from inside the sheet", async () => {
     const opened = vi.fn((_path: string, _init?: RequestInit) =>
       thread("t-00000001"),
@@ -2290,6 +2325,10 @@ describe("conventional comment labels", () => {
         labelled("issue (blocking): the window moved\nSee the runbook."),
       ),
       thread("t-00000002", labelled("Plain words: here.")),
+      thread(
+        "t-00000003",
+        labelled("question (non-blocking): is this still true?"),
+      ),
     ]);
     renderApp("/d/eng/reflection/guides/deploying.md");
     const subject = await screen.findByText("the window moved");
@@ -2301,13 +2340,26 @@ describe("conventional comment labels", () => {
     expect(pill?.querySelector("[data-blocking]")).not.toBeNull();
     expect(screen.getByText("See the runbook.")).toBeVisible();
     expect((await findOnScreen("Plain words: here.")).tagName).toBe("P");
-    expect(document.querySelectorAll("[data-label-pill]")).toHaveLength(1);
-    // The card shows the opening comment's label icon beside its passage.
-    const [first, second] = screen.getAllByRole("article", {
+    expect(document.querySelectorAll("[data-label-pill]")).toHaveLength(2);
+    // A non-blocking pill gets no red dot.
+    const calm = screen
+      .getByText("is this still true?")
+      .parentElement?.querySelector("[data-label-pill]");
+    expect(calm).toHaveTextContent("non-blocking");
+    expect(calm?.querySelector("[data-blocking]")).toBeNull();
+    // The card shows the opening comment's label icon beside its passage,
+    // red only for a blocking thread.
+    const [first, second, third] = screen.getAllByRole("article", {
       name: "Thread on Night deploys",
     });
-    expect(first?.querySelector("blockquote svg")).not.toBeNull();
+    expect(first?.querySelector("blockquote svg")).toHaveClass(
+      "text-(--blocking)",
+    );
     expect(second?.querySelector("blockquote svg")).toBeNull();
+    const quiet = third?.querySelector("blockquote svg");
+    expect(quiet).not.toBeNull();
+    expect(quiet).not.toHaveClass("text-(--blocking)");
+    expect(quiet).toHaveClass("text-muted");
   });
 
   it("filters to blocking threads behind a switch that is there only when one is open", async () => {
@@ -2325,6 +2377,88 @@ describe("conventional comment labels", () => {
     expect(toggle).toHaveAttribute("aria-checked", "true");
     expect(screen.queryByText("still true?")).toBeNull();
     expect(screen.getByText("the window moved")).toBeVisible();
+  });
+
+  it("shows every thread again when a hidden thread's quote is tapped", async () => {
+    serve([
+      thread(
+        "t-00000001",
+        labelled("issue (blocking): the window moved", {
+          anchor: {
+            section: "7f3a9c2e",
+            quote: "after the batch",
+            occurrence: 1,
+            state: "found",
+          },
+        }),
+      ),
+      thread("t-00000002", labelled("question: still true?")),
+    ]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const toggle = await screen.findByRole("switch", {
+      name: "Show blocking threads only",
+    });
+    await waitFor(() => {
+      expect(registry.get(QUOTE_HIGHLIGHT)?.ranges ?? []).toHaveLength(2);
+    });
+    await userEvent.click(toggle);
+    expect(screen.queryByText("still true?")).toBeNull();
+    const { node: words, at } = pageText("Deploys run at night, after");
+    const doc = document as unknown as { caretRangeFromPoint?: unknown };
+    doc.caretRangeFromPoint = () => {
+      const range = document.createRange();
+      range.setStart(words, at + 3);
+      range.collapse(true);
+      return range;
+    };
+    try {
+      fireEvent.click(words.parentElement as HTMLElement);
+    } finally {
+      delete doc.caretRangeFromPoint;
+    }
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    const card = await screen.findByText("still true?");
+    expect(card.closest("article")?.parentElement).toHaveAttribute(
+      "data-picked",
+    );
+  });
+
+  it("shows every thread again when a comment is posted under Blocking only", async () => {
+    const blocking = thread(
+      "t-00000001",
+      labelled("issue (blocking): the window moved"),
+    );
+    let posted = false;
+    serve([], {
+      "/domains/eng/reflection/threads": () => {
+        posted = true;
+        return thread("t-00000007");
+      },
+      "/domains/eng/reflections/guides/deploying.md": docWith(() =>
+        posted ? [blocking, thread("t-00000007")] : [blocking],
+      ),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const toggle = await screen.findByRole("switch", {
+      name: "Show blocking threads only",
+    });
+    await userEvent.click(toggle);
+    select(textNode("Deploys run "), textNode(" night."), 6);
+    await userEvent.click(screen.getByRole("button", { name: "Comment" }));
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "Your comment" }),
+      "Still true?",
+    );
+    await userEvent.click(
+      within(screen.getByRole("form", { name: "New comment" })).getByRole(
+        "button",
+        { name: "Comment" },
+      ),
+    );
+    await waitFor(() => {
+      expect(document.getElementById("t-00000007")).toHaveFocus();
+    });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
   });
 
   it("offers no blocking switch on a page without a blocking thread", async () => {
