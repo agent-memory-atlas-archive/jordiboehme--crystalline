@@ -12,6 +12,7 @@ import {
   spanPieces,
 } from "./reflectionQuotes";
 import type { SectionText } from "./reflectionText";
+import { locateQuote } from "./reflectionText";
 
 /**
  * The DOM `MarkdownBody` renders with `sourceSpans` for the section text
@@ -352,6 +353,19 @@ function shown(source: string, quote: string): string {
 }
 
 describe("displayQuote", () => {
+  it("leaves out an HTML comment the quote holds, and the quote still anchors", () => {
+    const source = "Deploys run <!-- checked --> at night.";
+    const quote = "run <!-- checked --> at";
+    expect(shown(source, quote)).toBe("run  at");
+    // Display only: the stored quote is still found where it was.
+    expect(locateQuote(source, quote, 1)).toEqual({
+      start: source.indexOf(quote),
+      end: source.indexOf(quote) + quote.length,
+    });
+    // A quote of nothing but a comment is shown as it is.
+    expect(shown(source, "<!-- checked -->")).toBe("<!-- checked -->");
+  });
+
   it("drops the markers whose partner the quote cut off", () => {
     expect(shown("Deploys run **at** night.", "at** night")).toBe("at night");
     expect(shown("Deploys run **at** night.", "Deploys run **at")).toBe(

@@ -1085,6 +1085,17 @@ describe("comments on a reflection", () => {
     expect(
       waitingWords(view([person("vera"), agent], "people"), null).words,
     ).toBe("Answered, waiting for vera");
+    // The same white space as the core: U+0085 splits, a byte order mark
+    // does not.
+    expect(
+      waitingWords(
+        view([person("Ada Lovelace"), agent], "people"),
+        "Ada\u0085Lovelace",
+      ).words,
+    ).toBe("Answered, waiting for you");
+    expect(
+      waitingWords(view([person("\ufeff"), agent], "people"), "\ufeff").words,
+    ).toBe("Answered, waiting for you");
   });
 
   it("draws a thread as quote, avatar, name and time, quiet actions and who it waits on", async () => {

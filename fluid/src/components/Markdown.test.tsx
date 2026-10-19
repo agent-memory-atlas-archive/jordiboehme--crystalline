@@ -337,6 +337,30 @@ describe("the markdown renderer", () => {
     expect(text).toContain("<div>not a comment</div>");
   });
 
+  it("marks a short list item and a short table for the print sheet", async () => {
+    const { container } = await renderMarkdown(
+      [
+        "- Check the lamp.",
+        "- Hand it over.",
+        "  - Sign the log.",
+        "",
+        "| a |",
+        "| - |",
+        "| 1 |",
+        "",
+      ].join("\n"),
+    );
+    // `.measured li[data-short]` keeps an item whole on paper: the mark has
+    // to reach the drawn element, or the rule is lost without a word.
+    const items = Array.from(container.querySelectorAll("li"));
+    expect(items.map((li) => li.hasAttribute("data-short"))).toEqual([
+      true,
+      false,
+      true,
+    ]);
+    expect(container.querySelector("table")).toHaveAttribute("data-short", "");
+  });
+
   it("drops the frontmatter block rather than drawing it", async () => {
     await renderMarkdown(
       ["---", "title: Alpha", "status: stable", "---", "", "# Alpha", ""].join(

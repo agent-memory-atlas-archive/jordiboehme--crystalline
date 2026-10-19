@@ -422,9 +422,12 @@ function shownQuote(
   source: string | null,
 ): string {
   const at = source === null ? null : locateQuote(source, quote, occurrence);
-  return source === null || at === null
-    ? quote
-    : displayQuote(source, at.start, at.end);
+  if (source === null || at === null) {
+    // As stored, less a comment the page would not draw.
+    const shown = withoutHtmlComments(quote);
+    return shown.trim() === "" ? quote : shown;
+  }
+  return displayQuote(source, at.start, at.end);
 }
 
 /** Colours a person's initial is drawn on; white text reads on each. */
@@ -476,6 +479,13 @@ export function Avatar({
 }
 
 /**
+ * The white space Rust's `split_whitespace` splits on (Unicode White_Space):
+ * unlike JavaScript's `\s` it splits on U+0085 and not on a byte order mark.
+ */
+const CORE_SPACE =
+  /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/;
+
+/**
  * An account name as a thread entry stores it (core `sanitize_name`):
  * parentheses, colons, commas and line breaks become spaces, runs of spaces
  * collapse, and an empty name is `someone`.
@@ -483,7 +493,7 @@ export function Avatar({
 function entryName(name: string): string {
   const joined = name
     .replace(/[():,\n\r]/g, " ")
-    .split(/\s+/)
+    .split(CORE_SPACE)
     .filter((word) => word !== "")
     .join(" ");
   return joined === "" ? "someone" : joined;

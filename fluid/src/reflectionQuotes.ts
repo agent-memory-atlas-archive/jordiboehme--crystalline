@@ -16,6 +16,7 @@
  * section they were in.
  */
 
+import { withoutHtmlComments } from "./markdown/htmlComments";
 import { occurrenceAt } from "./reflectionText";
 import type { SectionText } from "./reflectionText";
 
@@ -618,7 +619,8 @@ function markupPairs(text: string): Pair[] {
  * as a person is shown it: a marker or link part whose partner the quote
  * cut off is left out (`at** night` reads `at night`). Markup the quote
  * holds whole, code spans, escapes and markers with no partner stay as
- * they are. For display only: the stored quote is what the engine finds,
+ * they are. An HTML comment in the quote is left out too, as the page never
+ * draws it. For display only: the stored quote is what the engine finds,
  * so it is never changed. A quote that would show nothing is shown as is.
  */
 export function displayQuote(text: string, start: number, end: number): string {
@@ -647,5 +649,6 @@ export function displayQuote(text: string, start: number, end: number): string {
     at = Math.max(at, to);
   }
   out += text.slice(at, end);
-  return out.trim() === "" ? raw : out;
+  const shown = withoutHtmlComments(out);
+  return shown.trim() === "" ? raw : shown;
 }
