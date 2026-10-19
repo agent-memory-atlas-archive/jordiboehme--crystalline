@@ -63,6 +63,18 @@ A thread is a discussion about one passage. It is anchored on a section and, if 
 
 Agents write each comment as a conventional comment: a first line `<label> [decorations]: <subject>`, for example `question (non-blocking): is this still true after the migration?`. An agent never puts engram links into a thread, because some readers cannot see engrams.
 
+### Labels on comments
+
+A label says what a comment wants. Crystalline follows [conventional comments](https://conventionalcomments.org): the first line of a comment is `<label> (<decorations>): <subject>`, and the lines after it are the discussion. The labels are praise, nitpick, suggestion, issue, todo, question, thought, chore and note. The decorations are blocking, non-blocking and if-minor. Blocking and non-blocking exclude each other, and if-minor goes with either. Other decorations, for example `(security)`, are kept and shown as they are.
+
+For people a label is optional. In Fluid the comment box and the answer box have a Label menu beside the send button. Pick a label there, and then the decorations. The choice shows as a chip above the box, and the box holds only your words. Its first line becomes the subject. You can also type the label at the very start, for example `issue (blocking): `, and it turns into the chip. Pasting a whole conventional comment does the same. The remove button on the chip takes the label off again. A resolve outcome has no label.
+
+Only the exact form is a label. An unknown label, a missing `: ` or an empty subject leave the comment as plain text, and old comments stay as they are. A comment is stored exactly as it was sent, so the label is part of its text.
+
+A thread draws a labelled comment with its label, its decorations and its subject in bold. The thread card shows the icon of the opening comment's label beside the passage. Only blocking is red. When a page has open blocking threads, a Blocking only switch next to Show resolved lists just those.
+
+Agents keep writing every comment as a conventional comment. The `reflect` queue names the label of each thread's opening comment and whether it blocks, and lists a blocking thread before the other threads of its section. Agents answer blocking threads first.
+
 ## Who may do what
 
 Access has two axes. They are set side by side: per account for every shared domain, and per member on a private domain.
