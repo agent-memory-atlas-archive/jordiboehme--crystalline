@@ -17,6 +17,7 @@ import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 
 import { documentHref } from "../base";
+import { dropHtmlComments } from "../markdown/htmlComments";
 
 /** Every tag this renderer is allowed to draw. Everything else unwraps into
  * its own children rather than becoming an element of its own. */
@@ -55,6 +56,8 @@ export default function InlineMarkdownBody({ source }: { source: string }) {
     <ReactMarkdown
       allowedElements={ALLOWED_ELEMENTS}
       unwrapDisallowed
+      // A comment is a note for whoever edits the text, never shown.
+      rehypePlugins={[dropHtmlComments]}
       components={components}
     >
       {source}

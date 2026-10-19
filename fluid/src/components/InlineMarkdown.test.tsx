@@ -76,6 +76,16 @@ describe("InlineMarkdown", () => {
     expect(container.querySelector("img")).toBeNull();
   });
 
+  it("never draws an HTML comment", async () => {
+    const { container } = render(
+      <InlineMarkdown source="Route here <!-- not for agents --> for eng." />,
+    );
+
+    await waitFor(() => {
+      expect(container.textContent).toMatch(/^Route here\s+for eng\.$/);
+    });
+  });
+
   it("unwraps a block construct instead of drawing it", async () => {
     // A bullet that happens to start with `#` is still one line of prose to
     // this renderer: the heading it would become in a block context loses

@@ -283,6 +283,59 @@ describe("the markdown renderer", () => {
     expect(screen.getByText("A <b>bold</b> claim.")).toBeVisible();
   });
 
+  it("never draws an HTML comment, and leaves code and other HTML as text", async () => {
+    const { container } = await renderMarkdown(
+      [
+        "# Notes",
+        "",
+        "<!-- sources: the harbor master's log -->",
+        "",
+        "A line <!-- an aside --> that goes on.",
+        "",
+        "<!--",
+        "  a note over",
+        "  three lines",
+        "-->",
+        "",
+        "- An item <!-- in a list -->",
+        "",
+        "> Quoted <!-- in a quote -->",
+        "",
+        "<!-- before --> <span>after</span>",
+        "",
+        "Code `<!-- in a span -->` stays.",
+        "",
+        "```html",
+        "<!-- in a fence -->",
+        "```",
+        "",
+        "<div>not a comment</div>",
+        "",
+      ].join("\n"),
+    );
+    const text = container.textContent ?? "";
+    for (const gone of [
+      "sources:",
+      "an aside",
+      "a note over",
+      "in a list",
+      "in a quote",
+      "before",
+    ]) {
+      expect(text).not.toContain(gone);
+    }
+    expect(screen.getByText(/A line\s+that goes on\./)).toBeVisible();
+    // What is not a comment in a raw block stays, as its text.
+    expect(text).toContain("<span>after</span>");
+    // Code is code: the comment in it is what was written.
+    expect(text).toContain("<!-- in a span -->");
+    expect(container.querySelector("pre")).toHaveTextContent(
+      "<!-- in a fence -->",
+    );
+    // Any other raw HTML is drawn as text, as before.
+    expect(text).toContain("<div>not a comment</div>");
+  });
+
   it("drops the frontmatter block rather than drawing it", async () => {
     await renderMarkdown(
       ["---", "title: Alpha", "status: stable", "---", "", "# Alpha", ""].join(

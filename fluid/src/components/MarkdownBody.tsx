@@ -79,11 +79,11 @@ import {
   remarkMathOptions,
 } from "../markdown/math";
 import { SWATCH_CLASSES, colourOf } from "../markdown/swatch";
+import { dropHtmlComments } from "../markdown/htmlComments";
 import { keepWithNext } from "../markdown/keepWithNext";
 import { remarkTaskState } from "../markdown/taskState";
 import { printUrl } from "../printUrl";
 import { SOURCE_ATTR, spanPieces } from "../reflectionQuotes";
-import { isIdLine } from "../reflectionText";
 import { WIKILINK, parseWikiTarget, referenceState } from "../wikilinks";
 import type { WikilinkResolution, WikilinkResolver } from "../wikilinks";
 import Callout from "./Callout";
@@ -305,8 +305,7 @@ function element(resolution: WikilinkResolution, literal: string): HastNode {
  * continuation line) stays unstamped, and a selection that ends there becomes
  * a section comment rather than a guessed quote.
  *
- * A section id comment is dropped on the way: it is bookkeeping, and the
- * renderer would otherwise draw it as the text it was written as.
+ * A section id comment is gone by then (`dropHtmlComments`).
  */
 function sourceSpanStamp(source: string) {
   return function plugin() {
@@ -321,33 +320,31 @@ function stamp(node: HastNode, source: string): void {
   if (!node.children) {
     return;
   }
-  node.children = node.children
-    .filter((child) => !(child.type === "raw" && isIdLine(child.value ?? "")))
-    .flatMap((child) => {
-      if (child.type !== "text") {
-        stamp(child, source);
-        return [child];
-      }
-      const pieces = spanPieces(
-        source,
-        child.position?.start?.offset,
-        child.position?.end?.offset,
-        child.value ?? "",
-      );
-      if (pieces.length === 1 && pieces[0]?.base === null) {
-        return [child];
-      }
-      return pieces.map(({ value, base }) =>
-        base === null
-          ? { type: "text", value }
-          : {
-              type: "element",
-              tagName: "span",
-              properties: { [SOURCE_ATTR]: String(base) },
-              children: [{ type: "text", value }],
-            },
-      );
-    });
+  node.children = node.children.flatMap((child) => {
+    if (child.type !== "text") {
+      stamp(child, source);
+      return [child];
+    }
+    const pieces = spanPieces(
+      source,
+      child.position?.start?.offset,
+      child.position?.end?.offset,
+      child.value ?? "",
+    );
+    if (pieces.length === 1 && pieces[0]?.base === null) {
+      return [child];
+    }
+    return pieces.map(({ value, base }) =>
+      base === null
+        ? { type: "text", value }
+        : {
+            type: "element",
+            tagName: "span",
+            properties: { [SOURCE_ATTR]: String(base) },
+            children: [{ type: "text", value }],
+          },
+    );
+  });
 }
 
 /**
@@ -1799,7 +1796,11 @@ export default function MarkdownBody({
   );
   const rehypePlugins = useMemo<RehypePlugins>(
     () => [
-      // First, so the positions it reads are the parser's own.
+      // HTML comments (a section's id line, a `<!-- sources: ... -->` note)
+      // are for whoever edits the file: drawn as text they would show on
+      // the page. Dropping a node moves no position the next steps read.
+      dropHtmlComments,
+      // First of the rest, so the positions it reads are the parser's own.
       // Always, so the plugin chain never depends on the note's text: a
       // changing note re-renders its own line and remounts nothing.
       markFirstTitle,

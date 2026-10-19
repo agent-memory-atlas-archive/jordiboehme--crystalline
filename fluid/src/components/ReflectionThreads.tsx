@@ -69,6 +69,7 @@ import { atLeast } from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
 import { plural, relativeTime } from "../format";
 import { REVEAL_EVENT } from "../markdown/callouts";
+import { withoutHtmlComments } from "../markdown/htmlComments";
 import type { RevealDetail } from "../markdown/callouts";
 import type { ConventionalHead } from "../markdown/conventionalComment";
 import {
@@ -1120,7 +1121,7 @@ export function ReflectionThreads({
       : [
           {
             id: s.id === null ? `s-h${String(index)}` : `s-${s.id}`,
-            text: s.heading,
+            text: withoutHtmlComments(s.heading).trim(),
             level: 2 as const,
           },
         ],

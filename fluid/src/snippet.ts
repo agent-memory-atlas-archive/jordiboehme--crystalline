@@ -14,6 +14,8 @@
  * that happens to contain `<script>` is shown as the text it is.
  */
 
+import { stripHtmlComments } from "./markdown/htmlComments";
+
 /**
  * A snippet with the markdown syntax taken back out.
  *
@@ -27,7 +29,7 @@
  * anything that is not markdown at all comes back exactly as it was written.
  */
 export function stripSnippetMarkup(text: string): string {
-  return text
+  return stripHtmlComments(text)
     .replace(/```[^\n]*/g, " ")
     .replace(/^#{1,6}[ \t]+/gm, "")
     .replace(/(^|\s)#{1,6}[ \t]+/g, "$1")

@@ -48,6 +48,10 @@ describe("a snippet's markup", () => {
     expect(stripSnippetMarkup("uses `docText` and **bold** text")).toBe(
       "uses docText and bold text",
     );
+    // A comment is a note for whoever edits the file.
+    expect(
+      stripSnippetMarkup("at night <!-- sources: the log --> after the batch"),
+    ).toBe("at night after the batch");
   });
 
   it("leaves the words a search matches on where they were", () => {
