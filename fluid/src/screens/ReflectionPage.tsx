@@ -500,7 +500,10 @@ function PageBody({
   return (
     // Below the width where the threads column fits, its pill floats over
     // the foot of the page: the padding keeps the last line clear of it.
-    <div className="grid gap-6 pb-16 xl:grid-cols-[minmax(0,1fr)_340px] xl:gap-14 xl:pb-0">
+    <div
+      data-print-column=""
+      className="grid gap-6 pb-16 xl:grid-cols-[minmax(0,1fr)_340px] xl:gap-14 xl:pb-0"
+    >
       <div className="flex min-w-0 flex-col gap-6">
         {/*
           On paper the header gives way to a title block, which carries the

@@ -682,6 +682,35 @@
     padding: 0 !important;
     gap: 0 !important;
   }
+  /*
+   * A page with a side column (the details, the threads, the domain rail)
+   * prints as one column. The side column is hidden on paper, but Safari
+   * evaluates the width media queries against the window while it prints,
+   * so a wide window would keep the column's grid track and print the text
+   * in what is left. Block layout has no tracks to keep.
+   */
+  [data-print-column] {
+    display: block !important;
+  }
+  [data-print-column] > * + * {
+    margin-top: 1.5rem;
+  }
+
+  /*
+   * A heading stays with what follows it. `break-after: avoid` is honoured
+   * by Chrome alone; the heading's box is stretched over the next lines by an
+   * empty block that takes its own height back, and a box that may not
+   * break moves to the next page whole, in WebKit too.
+   */
+  h1::after,
+  h2::after,
+  h3::after,
+  h4::after {
+    content: "";
+    display: block;
+    height: 5em;
+    margin-bottom: -5em;
+  }
 
   /* The chrome stays on screen. */
   button,

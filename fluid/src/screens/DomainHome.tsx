@@ -466,7 +466,10 @@ function DomainPage({
       : Math.max(0, engramTotal - (hasManifest ? 1 : 0));
 
   return (
-    <div className="grid gap-x-14 gap-y-10 lg:grid-cols-[minmax(0,1fr)_18.75rem]">
+    <div
+      data-print-column=""
+      className="grid gap-x-14 gap-y-10 lg:grid-cols-[minmax(0,1fr)_18.75rem]"
+    >
       {/* The lead sits close under the heading, as in the mockup. */}
       <div className="flex min-w-0 flex-col gap-3">
         <header>

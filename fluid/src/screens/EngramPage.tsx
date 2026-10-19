@@ -890,6 +890,7 @@ export default function EngramPage() {
         the files into this column under the body.
       */}
       <div
+        data-print-column=""
         className={`grid gap-8 ${
           fullWidth ? "" : "lg:grid-cols-[minmax(0,1fr)_18.75rem] lg:gap-14"
         }`}
