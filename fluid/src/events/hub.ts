@@ -679,11 +679,16 @@ export class ChangeHub {
       forgetAccount();
       before = known;
       const source = factory(`${API_BASE}/events`);
+      // Whether a frame with an id came on this source: only then does the
+      // browser's own reconnect send `Last-Event-ID`, which the daemon
+      // answers with a replay or a `reset`.
+      let resumable = false;
       const frames = EVENT_NAMES.map(
         (name) =>
           [
             name,
             (message: MessageEvent<string>) => {
+              if (message.lastEventId) resumable = true;
               const event = parseFrame(name, message.data);
               if (event) this.broadcast(event);
             },
@@ -712,7 +717,10 @@ export class ChangeHub {
         if (source.readyState !== CLOSED) {
           // CONNECTING is the browser mid-reconnect, with `Last-Event-ID`,
           // and with whatever cookie it holds then: its request is
-          // bracketed like a new one, from here to its `open`.
+          // bracketed like a new one, from here to its `open`. With no id
+          // to send (only comments came), a restarted daemon cannot say
+          // what was missed, so the reopen resets.
+          if (!resumable) gap = true;
           askBefore();
           return;
         }
