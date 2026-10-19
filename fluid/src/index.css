@@ -715,15 +715,17 @@
    * one wrapper (`keepWithNext`), a plain block that may not break, which
    * WebKit honours too; a block taller than about half a page is left out of
    * it. A whole section is never kept together: a long one would leave half
-   * empty pages. `page-break-inside` is the older spelling WebKit still
-   * reads.
+   * empty pages. For the same reason only a short list item and a short
+   * table (`data-short`, set by `keepWithNext`) are kept whole; a longer one
+   * breaks between its lines or rows. `page-break-inside` is the older
+   * spelling WebKit still reads.
    */
   [data-keep] {
     display: block;
   }
   [data-keep],
   .print-title,
-  .measured li,
+  .measured li[data-short],
   .measured tr,
   .measured table[data-short] {
     break-inside: avoid;

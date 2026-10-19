@@ -20,6 +20,7 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useEffect, useState } from "react";
 import { Link, MemoryRouter, useLocation } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 
@@ -1099,6 +1100,55 @@ describe("callouts", () => {
     // The reader closed it again before following the link.
     container.querySelector("details")!.open = false;
     await userEvent.click(screen.getByRole("link", { name: "Next page" }));
+    await screen.findByText("Run B.");
+    await waitFor(() => {
+      expect(container.querySelector("details")?.open).toBe(true);
+    });
+  });
+
+  it("opens the next document's fold when its text arrives after the path", async () => {
+    // The engram page's way: the router names the next page at once, and the
+    // last page's text stays on screen until the next one has loaded.
+    const pages: Record<string, string> = {
+      "/e/a": "> [!DETAILS]- Steps\n>\n> ### Restore\n>\n> Run A.\n",
+      "/e/b": "> [!DETAILS]- Steps\n>\n> ### Restore\n>\n> Run B.\n",
+    };
+    function Page() {
+      const { pathname } = useLocation();
+      const [shown, setShown] = useState(pathname);
+      useEffect(() => {
+        const timer = setTimeout(() => {
+          setShown(pathname);
+        }, 50);
+        return () => {
+          clearTimeout(timer);
+        };
+      }, [pathname]);
+      return (
+        <>
+          <Link to="/e/b#restore">Next page</Link>
+          <Markdown
+            source={pages[shown] ?? ""}
+            anchors={{ pageUrl: `https://kb.example.com/d/eng${shown}` }}
+          />
+        </>
+      );
+    }
+    const { container } = render(
+      <MemoryRouter initialEntries={["/e/a#restore"]}>
+        <ThemeProvider>
+          <Page />
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(container.querySelector("details")?.open).toBe(true);
+    });
+    container.querySelector("details")!.open = false;
+    await userEvent.click(screen.getByRole("link", { name: "Next page" }));
+    // Still the first page: the fold the reader closed stays closed.
+    expect(screen.getByText("Run A.")).toBeInTheDocument();
+    expect(container.querySelector("details")?.open).toBe(false);
     await screen.findByText("Run B.");
     await waitFor(() => {
       expect(container.querySelector("details")?.open).toBe(true);

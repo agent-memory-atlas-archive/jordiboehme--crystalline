@@ -24,6 +24,15 @@ flowchart TD
     C --> D[Next watch signs]
 ```
 
+<!-- sources: the harbor master's handover notes -->
+
+> ### Night handover
+>
+> The light stays lit while it changes hands. <!-- checked in March -->
+
+- ### Sign the log
+  The next watch signs before the light moves.
+
 ## Observations
 
 - [requirement] The reading is logged before the lantern changes hands #protocol

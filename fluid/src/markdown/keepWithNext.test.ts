@@ -81,13 +81,75 @@ describe("keepWithNext", () => {
 });
 
 describe("short tables", () => {
-  it("marks a table of at most 25 rows short, and no longer one", () => {
+  it("marks a table of at most 12 rows short, and no longer one", () => {
     const rows = (n: number) =>
       Array.from({ length: n }, () => el("tr", [el("td", [text("x")])]));
-    const small = el("table", [el("tbody", rows(3))]);
-    const long = el("table", [el("tbody", rows(40))]);
+    const small = el("table", [el("tbody", rows(12))]);
+    const long = el("table", [el("tbody", rows(13))]);
     keepWithNext()({ type: "root", children: [small, long] });
     expect(small.properties).toHaveProperty("dataShort", "");
     expect(long.properties).not.toHaveProperty("dataShort");
+  });
+});
+
+describe("short list items", () => {
+  it("keeps a short item whole, and not one holding a list or a long one", () => {
+    const short = el("li", [text("Check the lamp.")]);
+    const long = el("li", [text("word ".repeat(200))]);
+    const inner = el("li", [text("Sub step.")]);
+    const outer = el("li", [text("Step."), el("ul", [inner])]);
+    keepWithNext()({
+      type: "root",
+      children: [el("ul", [short, long, outer])],
+    });
+    expect(short.properties).toHaveProperty("dataShort", "");
+    expect(long.properties).not.toHaveProperty("dataShort");
+    expect(outer.properties).not.toHaveProperty("dataShort");
+    expect(inner.properties).toHaveProperty("dataShort", "");
+  });
+});
+
+describe("the height estimate", () => {
+  const items = (n: number) =>
+    el(
+      "ul",
+      Array.from({ length: n }, () => el("li", [el("p", [text("Short.")])])),
+    );
+
+  it("counts what a quote or a callout holds, not only its characters", () => {
+    // Thirty short items are few characters and many lines.
+    const quote = el("blockquote", [items(30)]);
+    expect(linesOf(quote)!).toBeGreaterThan(30);
+    const callout = el("div", [el("div", [text("Note")]), items(30)]);
+    expect(linesOf(callout)!).toBeGreaterThan(30);
+  });
+
+  it("counts every hard break and every wrapped code line", () => {
+    const breaks = el(
+      "p",
+      Array.from({ length: 20 }, () => [text("x"), el("br")]).flat(),
+    );
+    expect(linesOf(breaks)!).toBeGreaterThanOrEqual(20);
+    const code = el("pre", [el("code", [text(`${"y".repeat(800)}\n`)])]);
+    expect(linesOf(code)!).toBeGreaterThanOrEqual(10);
+  });
+
+  it("counts a table row as tall as its longest cell", () => {
+    const row = (cell: string) =>
+      el("tr", [el("td", [text(cell)]), el("td", [text("x")])]);
+    const narrow = el("table", [el("tbody", [row("x"), row("x")])]);
+    const wide = el("table", [el("tbody", [row("z ".repeat(300)), row("x")])]);
+    expect(linesOf(wide)!).toBeGreaterThan(linesOf(narrow)! + 5);
+  });
+
+  it("leaves a heading alone before a quote too tall to keep", () => {
+    const tree = {
+      type: "root",
+      children: [el("h2", [text("Steps")]), el("blockquote", [items(30)])],
+    };
+    keepWithNext()(tree);
+    expect(
+      tree.children.map((c) => (c as { tagName?: string }).tagName),
+    ).toEqual(["h2", "blockquote"]);
   });
 });

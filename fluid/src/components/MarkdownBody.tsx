@@ -795,9 +795,11 @@ const components: Components = {
   ),
   // The id is what a footnote reference jumps to. A task item draws its
   // box where the bullet would be, so it has no bullet of its own.
-  li: ({ children, id, className, ...props }) => (
+  // `data-short` from `keepWithNext`: an item the print sheet keeps whole.
+  li: ({ children, id, className, node, ...props }) => (
     <li
       id={id}
+      data-short={node?.properties["dataShort"] === undefined ? undefined : ""}
       className={
         className?.includes("task-list-item") === true ||
         (props as Record<string, unknown>)["data-task"] === "na"
@@ -1560,10 +1562,10 @@ function heading(
  * body's own size, weight and spacing. Nothing about them moves here.
  */
 const HEADING_SIZES = [
-  "mt-6 mb-3 text-display [.measured>&:first-child]:mt-0 [.measured>[data-keep]:first-child>&:first-child]:mt-0",
-  "mt-[38px] mb-3 text-prose-h2 [.measured>&:first-child]:mt-0 [.measured>[data-keep]:first-child>&:first-child]:mt-0",
-  "mt-6 mb-2 text-prose-h3 [.measured>&:first-child]:mt-0 [.measured>[data-keep]:first-child>&:first-child]:mt-0",
-  "mt-4 mb-2 font-semibold [.measured>&:first-child]:mt-0 [.measured>[data-keep]:first-child>&:first-child]:mt-0",
+  "mt-6 mb-3 text-display [&:first-child:not([data-keep]>*)]:mt-0 [.measured>[data-keep]:first-child>&:first-child]:mt-0",
+  "mt-[38px] mb-3 text-prose-h2 [&:first-child:not([data-keep]>*)]:mt-0 [.measured>[data-keep]:first-child>&:first-child]:mt-0",
+  "mt-6 mb-2 text-prose-h3 [&:first-child:not([data-keep]>*)]:mt-0 [.measured>[data-keep]:first-child>&:first-child]:mt-0",
+  "mt-4 mb-2 font-semibold [&:first-child:not([data-keep]>*)]:mt-0 [.measured>[data-keep]:first-child>&:first-child]:mt-0",
   "",
   "",
 ] as const;
@@ -1839,18 +1841,22 @@ export default function MarkdownBody({
   // The location's fragment opens its fold once: a source change re-runs
   // this only until the target exists, so a fold the reader closed again
   // stays closed while the text changes underneath.
-  // Keyed by the page too: a link to the same fragment on another document
-  // reuses this renderer while the next page loads, and its fold must open.
+  // Keyed by the document too: a link to the same fragment on another
+  // document reuses this renderer, and its fold must open. The key is the
+  // document drawn (its page address), not the router's path: while the next
+  // page loads, the router already names it and this still draws the last
+  // one, whose fold the reader may have closed.
   const revealedHash = useRef<string | null>(null);
+  const shownPage = anchors?.pageUrl ?? pathname;
   useEffect(() => {
-    const at = `${pathname}${hash}`;
+    const at = `${shownPage}${hash}`;
     if (revealedHash.current === at) {
       return;
     }
     if (revealFragment(rootRef.current, hash)) {
       revealedHash.current = at;
     }
-  }, [hash, pathname, source]);
+  }, [hash, shownPage, source]);
   useEffect(() => {
     const root = rootRef.current;
     const onHash = () => {
