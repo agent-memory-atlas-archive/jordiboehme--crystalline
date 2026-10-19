@@ -12,20 +12,31 @@ use crystalline_service::mcp::McpServer;
 use crate::assets::PNG;
 use crate::docs::{person, reflecting, write};
 
-async fn connect(
+pub async fn connect(
     engine: std::sync::Arc<crystalline_service::Engine>,
 ) -> (
     RunningService<RoleClient, ()>,
     RunningService<rmcp::RoleServer, McpServer>,
 ) {
+    serve_mcp(McpServer::new(engine)).await
+}
+
+/// A client on `server` over an in-memory pipe. A server made with
+/// `McpServer::new_http` sees no signed-in identity there: the anonymous
+/// caller, which is the open tier while MCP sign-in is off.
+pub async fn serve_mcp(
+    server: McpServer,
+) -> (
+    RunningService<RoleClient, ()>,
+    RunningService<rmcp::RoleServer, McpServer>,
+) {
     let (client_io, server_io) = tokio::io::duplex(1 << 18);
-    let server_task =
-        tokio::spawn(async move { rmcp::serve_server(McpServer::new(engine), server_io).await });
+    let server_task = tokio::spawn(async move { rmcp::serve_server(server, server_io).await });
     let client = rmcp::serve_client((), client_io).await.unwrap();
     (client, server_task.await.unwrap().unwrap())
 }
 
-async fn call(peer: &Peer<RoleClient>, tool: &str, args: Value) -> Value {
+pub async fn call(peer: &Peer<RoleClient>, tool: &str, args: Value) -> Value {
     let mut params = CallToolRequestParams::new(tool.to_string());
     if let Value::Object(map) = args {
         params = params.with_arguments(map);

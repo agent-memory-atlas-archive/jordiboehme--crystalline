@@ -132,6 +132,16 @@ test.describe.serial("the Reflection journeys", () => {
     await expect(foreign.locator("xpath=..")).toContainText(
       `Tide Tables in domain ${ENGRAM_DOMAIN}`,
     );
+    // On a phone, in light and in dark, the list with the marker fits.
+    await page.setViewportSize({ width: 390, height: 844 });
+    for (const colorScheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme });
+      await expect(foreign).toBeVisible();
+      const box = await foreign.locator("xpath=ancestor::ul[1]").boundingBox();
+      expect(box).not.toBeNull();
+      expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
+      expect(box?.x ?? -1).toBeGreaterThanOrEqual(0);
+    }
   });
 
   test("a curator writes the pact in the live editor", async ({ page }) => {

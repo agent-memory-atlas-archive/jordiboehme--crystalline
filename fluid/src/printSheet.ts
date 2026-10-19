@@ -4,6 +4,7 @@
  * of an engram's title block.
  */
 
+import { distinctSources } from "./reflectionSources";
 import type { ReflectionDoc } from "./api/reflection";
 import { formatDayLong, plural } from "./format";
 
@@ -84,13 +85,11 @@ export function reflectionFacts(
     { label: "Sections", value: String(page.sections.length) },
   ];
   if (engramsVisible) {
-    const sources = new Set(
-      page.sections.flatMap((s) => (s.sources ?? []).map((x) => x.permalink)),
-    );
-    if (sources.size > 0) {
+    const sources = distinctSources(page.sections);
+    if (sources > 0) {
       facts.push({
         label: "Built from",
-        value: plural(sources.size, "engram", "engrams"),
+        value: plural(sources, "engram", "engrams"),
       });
     }
   }

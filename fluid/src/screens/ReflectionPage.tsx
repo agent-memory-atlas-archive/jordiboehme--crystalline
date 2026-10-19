@@ -89,7 +89,11 @@ import { tickAt } from "../taskTick";
 import { printNotes } from "../printNotes";
 import { reflectionFacts } from "../printSheet";
 import { SECTION_ATTR } from "../reflectionQuotes";
-import { hiddenSourcesText, sourceKey } from "../reflectionSources";
+import {
+  distinctSources,
+  hiddenSourcesText,
+  sourceKey,
+} from "../reflectionSources";
 import type { SectionText } from "../reflectionText";
 import {
   TOP_SECTION,
@@ -136,13 +140,9 @@ export function reflectionMetaLine(
     parts.push(plural(page.sections.length, "section", "sections"));
   }
   if (engramsVisible) {
-    const sources = new Set(
-      page.sections.flatMap((s) =>
-        (s.sources ?? []).map((x) => `${x.domain ?? ""}/${x.permalink}`),
-      ),
-    );
-    if (sources.size > 0) {
-      parts.push(`Built from ${plural(sources.size, "engram", "engrams")}`);
+    const sources = distinctSources(page.sections);
+    if (sources > 0) {
+      parts.push(`Built from ${plural(sources, "engram", "engrams")}`);
     }
   }
   const open = page.threads.filter((t) => t.status === "open").length;

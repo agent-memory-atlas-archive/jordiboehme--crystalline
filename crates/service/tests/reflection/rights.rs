@@ -610,3 +610,92 @@ async fn a_write_never_drops_a_source_the_writer_cannot_see() {
         .unwrap();
     assert_eq!(stored_team(&fx), after);
 }
+
+/// A tool call's answer as text: the result, or the error the server sent.
+async fn answer_of(
+    peer: &rmcp::service::Peer<rmcp::RoleClient>,
+    tool: &str,
+    args: serde_json::Value,
+) -> String {
+    let mut params = rmcp::model::CallToolRequestParams::new(tool.to_string());
+    if let serde_json::Value::Object(map) = args {
+        params = params.with_arguments(map);
+    }
+    match peer.call_tool(params).await {
+        Ok(result) => serde_json::to_string(&result).unwrap(),
+        Err(e) => format!("{e:?}"),
+    }
+}
+
+/// Over MCP, the open tier (anonymous, MCP sign-in off) may not open the
+/// private `scotty`: a write naming it is refused in the bytes a domain
+/// nobody registered and a domain a connected server serves get, and a read
+/// shows the section built from it with a count only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn over_mcp_the_open_tier_is_refused_alike_and_sees_only_a_count() {
+    use crate::assets_mcp::{call, connect, serve_mcp};
+    use crystalline_service::mcp::McpServer;
+    let args = serde_json::json!({
+        "domain": "eng",
+        "path": "b.md",
+        "markdown": "# B\n\nFor people.\n\n## Only\n\nText.\n",
+        "sources": { "Only": ["crystalline://scotty/team/scotty-team"] },
+    });
+
+    let (fx, _, _) = crossing_rights().await;
+    let (client, _server) = serve_mcp(McpServer::new_http(fx.engine.clone())).await;
+    let hidden = answer_of(client.peer(), "write_reflection", args.clone()).await;
+    let read = call(
+        client.peer(),
+        "read_reflection",
+        serde_json::json!({ "domain": "eng", "path": "overview.md" }),
+    )
+    .await;
+
+    let lone = crate::docs::reflecting().await;
+    let (lone_client, _lone_server) = connect(lone.engine.clone()).await;
+    let unknown = answer_of(lone_client.peer(), "write_reflection", args.clone()).await;
+
+    let mounted = crate::docs::reflecting().await;
+    let remote = mounted.tmp.path().join("remote");
+    crystalline_remote::update_sources(&remote, |file| {
+        file.upsert(crystalline_remote::SourceRecord {
+            url: "http://127.0.0.1:9".to_string(),
+            name: "acme".to_string(),
+            account: "ada".to_string(),
+            kind: crystalline_remote::CredentialKind::Token,
+            token_endpoint: None,
+            revocation_endpoint: None,
+            connected_at: chrono::Utc::now(),
+            mounts: vec![crystalline_remote::MountRecord {
+                remote: "scotty".to_string(),
+                local: "scotty".to_string(),
+            }],
+            domains: None,
+            from_env: false,
+        });
+        Ok(())
+    })
+    .unwrap();
+    mounted
+        .engine
+        .set_sources(Arc::new(crystalline_remote::SourceSet::load(
+            remote,
+            mounted.engine.local_domains(),
+            |_| None,
+        )));
+    let (mounted_client, _mounted_server) = connect(mounted.engine.clone()).await;
+    let served = answer_of(mounted_client.peer(), "write_reflection", args).await;
+
+    assert!(
+        hidden.contains("domain 'scotty' not registered"),
+        "{hidden}"
+    );
+    assert_eq!(hidden, unknown);
+    assert_eq!(unknown, served);
+
+    let text = read.to_string();
+    assert!(!text.contains("scotty"), "{read}");
+    assert!(!text.contains("team/scotty-team"), "{read}");
+    assert!(text.contains("hidden_sources"), "{read}");
+}

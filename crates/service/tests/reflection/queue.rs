@@ -1239,6 +1239,74 @@ async fn reflection_summary_timing() {
     );
 }
 
+/// The cost of a queue pass over pages whose sources are in another
+/// domain, beside the same pages with local sources: 2,000 engrams in each
+/// domain, 100 pages of four sections each citing two engrams. Never a
+/// gate: the numbers go into the task report. Run with
+/// `cargo nextest run -p crystalline-service --test reflection --run-ignored only foreign_sources_timing --no-capture`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "timing evidence for the task report, not a gate"]
+async fn foreign_sources_timing() {
+    use std::time::Instant;
+
+    const ENGRAMS: usize = 2_000;
+    const PAGES: usize = 100;
+    const SECTIONS: usize = 4;
+    const RUNS: usize = 15;
+
+    let notes: Vec<(String, String)> = (0..ENGRAMS)
+        .map(|i| {
+            (
+                format!("notes/d{}/n{i}.md", i % 20),
+                engram(
+                    &format!("Note {i}"),
+                    &format!("note-{i}"),
+                    "- [fact] a note",
+                ),
+            )
+        })
+        .collect();
+    let refs: Vec<(&str, &str)> = notes
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    let fx = crate::fixture::beside(&refs, "scotty", &refs).await;
+    let median = |mut times: Vec<std::time::Duration>| {
+        times.sort();
+        times[times.len() / 2]
+    };
+    let mut results = Vec::new();
+    for (label, prefix) in [("local", ""), ("foreign", "crystalline://scotty/")] {
+        for p in 0..PAGES {
+            let mut markdown = format!("# Page {p}\n\nFor people.\n\n");
+            let mut sources = BTreeMap::new();
+            for s in 0..SECTIONS {
+                markdown.push_str(&format!("## Part {s}\n\nText {s}.\n\n"));
+                let first = (p * SECTIONS + s) * 2 % ENGRAMS;
+                sources.insert(
+                    format!("Part {s}"),
+                    vec![
+                        format!("{prefix}note-{first}"),
+                        format!("{prefix}note-{}", first + 1),
+                    ],
+                );
+            }
+            let mut params = write(&format!("page{p}.md"), &markdown);
+            params.sources = sources;
+            fx.engine.write_reflection(&params, &agent()).await.unwrap();
+        }
+        let mut times = Vec::new();
+        for _ in 0..RUNS {
+            let started = Instant::now();
+            let v = fx.engine.reflect(&eng_only(), &agent()).await.unwrap();
+            let _ = v.to_string();
+            times.push(started.elapsed());
+        }
+        results.push((label, median(times)));
+    }
+    eprintln!("median of {RUNS} reflect passes: {results:?}");
+}
+
 /// An agent's own curated write owes nobody feedback: the intro before the
 /// first `##`, which no source names, and a section it wrote without
 /// sources move to what it wrote. A person's later change of the intro is
