@@ -1567,8 +1567,8 @@ async fn sources_in_another_domain_cost_no_scan_of_it() {
         (
             "Team".to_string(),
             vec![
-                "crystalline://scotty/team/scotty-team".to_string(),
-                "crystalline://scotty/team/rota".to_string(),
+                "crystalline://harbor/team/harbor-team".to_string(),
+                "crystalline://harbor/team/rota".to_string(),
             ],
         ),
         ("Local".to_string(), vec!["runbooks/deploy".to_string()]),

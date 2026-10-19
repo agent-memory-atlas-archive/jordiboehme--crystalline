@@ -385,7 +385,7 @@ mod tests {
         assert_eq!(result, FileMerge::Converged);
     }
 
-    const SCOTTY: &str = "---\ntype: manifest\ntitle: Scotty\npermalink: manifest\ntags:\n  - manifest\nstatus: stable\n---\n\n# Scotty\n\n## Scope\n\n- Engineering\n";
+    const HARBOR: &str = "---\ntype: manifest\ntitle: Harbor\npermalink: manifest\ntags:\n  - manifest\nstatus: stable\n---\n\n# Harbor\n\n## Scope\n\n- Engineering\n";
 
     fn with(text: &str, after: &str, line: &str) -> String {
         text.replacen(after, &format!("{after}{line}"), 1)
@@ -401,48 +401,48 @@ mod tests {
 
     #[test]
     fn a_key_both_sides_added_with_one_value_applies_upstream() {
-        let local = with(SCOTTY, "status: stable\n", "domain_name: scotty\n");
-        let upstream = with(SCOTTY, "title: Scotty\n", "domain_name: scotty\n");
+        let local = with(HARBOR, "status: stable\n", "domain_name: harbor\n");
+        let upstream = with(HARBOR, "title: Harbor\n", "domain_name: harbor\n");
         assert_eq!(
-            merge(Some(SCOTTY), &local, &upstream),
+            merge(Some(HARBOR), &local, &upstream),
             FileMerge::Apply(upstream.into_bytes())
         );
     }
 
     #[test]
     fn a_key_both_sides_added_with_different_values_conflicts_edit_edit() {
-        let local = with(SCOTTY, "status: stable\n", "domain_name: scotty\n");
-        let upstream = with(SCOTTY, "title: Scotty\n", "domain_name: scotty-eng\n");
+        let local = with(HARBOR, "status: stable\n", "domain_name: harbor\n");
+        let upstream = with(HARBOR, "title: Harbor\n", "domain_name: harbor-eng\n");
         assert_eq!(
-            merge(Some(SCOTTY), &local, &upstream),
+            merge(Some(HARBOR), &local, &upstream),
             FileMerge::Conflict(ConflictKind::EditEdit)
         );
     }
 
     #[test]
     fn salience_added_on_both_sides_with_different_values_conflicts() {
-        let local = with(SCOTTY, "status: stable\n", "salience: 7\n");
-        let upstream = with(SCOTTY, "type: manifest\n", "salience: 5\n");
+        let local = with(HARBOR, "status: stable\n", "salience: 7\n");
+        let upstream = with(HARBOR, "type: manifest\n", "salience: 5\n");
         assert_eq!(
-            merge(Some(SCOTTY), &local, &upstream),
+            merge(Some(HARBOR), &local, &upstream),
             FileMerge::Conflict(ConflictKind::EditEdit)
         );
     }
 
     #[test]
     fn sharing_added_on_both_sides_with_one_value_applies_upstream() {
-        let local = with(SCOTTY, "status: stable\n", "sharing: direct\n");
-        let upstream = with(SCOTTY, "title: Scotty\n", "sharing: direct\n");
+        let local = with(HARBOR, "status: stable\n", "sharing: direct\n");
+        let upstream = with(HARBOR, "title: Harbor\n", "sharing: direct\n");
         assert_eq!(
-            merge(Some(SCOTTY), &local, &upstream),
+            merge(Some(HARBOR), &local, &upstream),
             FileMerge::Apply(upstream.into_bytes())
         );
     }
 
     #[test]
     fn a_local_repeat_is_repaired_by_the_next_pull_that_touches_the_file() {
-        let base = with(SCOTTY, "title: Scotty\n", "domain_name: scotty\n");
-        let local = with(&base, "status: stable\n", "domain_name: scotty\n");
+        let base = with(HARBOR, "title: Harbor\n", "domain_name: harbor\n");
+        let local = with(&base, "status: stable\n", "domain_name: harbor\n");
         let upstream = with(&base, "- Engineering\n", "- Warp\n");
         assert_eq!(
             merge(Some(&base), &local, &upstream),
@@ -452,46 +452,46 @@ mod tests {
 
     #[test]
     fn a_key_deleted_locally_and_changed_upstream_conflicts() {
-        let local = SCOTTY.replace("status: stable\n", "");
-        let upstream = SCOTTY.replace("status: stable", "status: archived");
+        let local = HARBOR.replace("status: stable\n", "");
+        let upstream = HARBOR.replace("status: stable", "status: archived");
         assert_eq!(
-            merge(Some(SCOTTY), &local, &upstream),
+            merge(Some(HARBOR), &local, &upstream),
             FileMerge::Conflict(ConflictKind::EditEdit)
         );
     }
 
     #[test]
     fn a_local_only_key_keeps_its_place_and_upstream_quoting_stays() {
-        let local = with(SCOTTY, "permalink: manifest\n", "owner: kim\n");
-        let upstream = SCOTTY.replace("status: stable", "status: 'archived'");
+        let local = with(HARBOR, "permalink: manifest\n", "owner: kim\n");
+        let upstream = HARBOR.replace("status: stable", "status: 'archived'");
         let expected = with(&upstream, "permalink: manifest\n", "owner: kim\n");
         assert_eq!(
-            merge(Some(SCOTTY), &local, &upstream),
+            merge(Some(HARBOR), &local, &upstream),
             FileMerge::Apply(expected.into_bytes())
         );
     }
 
     #[test]
     fn a_tags_list_extended_on_both_sides_merges_cleanly() {
-        let local = SCOTTY.replace("  - manifest\n", "  - manifest\n  - c\n");
-        let upstream = SCOTTY.replace("tags:\n  - manifest\n", "tags:\n  - z\n  - manifest\n");
-        let expected = SCOTTY.replace(
+        let local = HARBOR.replace("  - manifest\n", "  - manifest\n  - c\n");
+        let upstream = HARBOR.replace("tags:\n  - manifest\n", "tags:\n  - z\n  - manifest\n");
+        let expected = HARBOR.replace(
             "tags:\n  - manifest\n",
             "tags:\n  - z\n  - manifest\n  - c\n",
         );
         assert_eq!(
-            merge(Some(SCOTTY), &local, &upstream),
+            merge(Some(HARBOR), &local, &upstream),
             FileMerge::Apply(expected.into_bytes())
         );
     }
 
     #[test]
     fn an_unparseable_local_frontmatter_falls_back_to_todays_text_merge() {
-        let local = SCOTTY.replace("title: Scotty", "title: \"Scotty");
-        let upstream = with(SCOTTY, "- Engineering\n", "- Warp\n");
+        let local = HARBOR.replace("title: Harbor", "title: \"Harbor");
+        let upstream = with(HARBOR, "- Engineering\n", "- Warp\n");
         let expected = with(&local, "- Engineering\n", "- Warp\n");
         assert_eq!(
-            merge(Some(SCOTTY), &local, &upstream),
+            merge(Some(HARBOR), &local, &upstream),
             FileMerge::Apply(expected.into_bytes())
         );
     }
@@ -512,9 +512,9 @@ mod tests {
 
     #[test]
     fn both_sides_added_a_file_with_one_extra_key_locally_applies_the_union() {
-        let local = with(SCOTTY, "permalink: manifest\n", "owner: kim\n");
+        let local = with(HARBOR, "permalink: manifest\n", "owner: kim\n");
         assert_eq!(
-            merge(None, &local, SCOTTY),
+            merge(None, &local, HARBOR),
             FileMerge::Apply(local.into_bytes())
         );
     }

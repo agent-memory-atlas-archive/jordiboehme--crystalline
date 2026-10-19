@@ -606,10 +606,10 @@ describe("the reflection page", () => {
                   state: "current",
                 },
                 {
-                  permalink: "team/scotty-team",
-                  title: "Scotty team",
+                  permalink: "team/harbor-team",
+                  title: "Harbor team",
                   state: "unavailable",
-                  domain: "scotty",
+                  domain: "harbor",
                 },
               ],
             },
@@ -632,12 +632,12 @@ describe("the reflection page", () => {
     ).toHaveAttribute("href", "/d/eng/e/runbooks/deploy");
     // Its domain cannot be checked here: named, not linked.
     expect(
-      within(list).queryByRole("link", { name: /Scotty team/ }),
+      within(list).queryByRole("link", { name: /Harbor team/ }),
     ).toBeNull();
     const row = within(list)
-      .getByText("Scotty team")
+      .getByText("Harbor team")
       .closest("li") as HTMLElement;
-    expect(row).toHaveTextContent("Scotty team in domain scotty");
+    expect(row).toHaveTextContent("Harbor team in domain harbor");
     expect(within(row).getByText("not checked here")).toBeVisible();
   });
 

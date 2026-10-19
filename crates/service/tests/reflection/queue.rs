@@ -1270,13 +1270,13 @@ async fn foreign_sources_timing() {
         .iter()
         .map(|(p, c)| (p.as_str(), c.as_str()))
         .collect();
-    let fx = crate::fixture::beside(&refs, "scotty", &refs).await;
+    let fx = crate::fixture::beside(&refs, "harbor", &refs).await;
     let median = |mut times: Vec<std::time::Duration>| {
         times.sort();
         times[times.len() / 2]
     };
     let mut results = Vec::new();
-    for (label, prefix) in [("local", ""), ("foreign", "crystalline://scotty/")] {
+    for (label, prefix) in [("local", ""), ("foreign", "crystalline://harbor/")] {
         for p in 0..PAGES {
             let mut markdown = format!("# Page {p}\n\nFor people.\n\n");
             let mut sources = BTreeMap::new();
@@ -1908,7 +1908,7 @@ async fn a_blocking_thread_comes_first_and_carries_its_label() {
 }
 
 /// `crossing` with `overview.md`: three sections, each built from one
-/// engram of `scotty` (team, rota, pager).
+/// engram of `harbor` (team, rota, pager).
 async fn cross_curated() -> Fx {
     let fx = crate::sources::crossing().await;
     let mut p = write(
@@ -1918,15 +1918,15 @@ async fn cross_curated() -> Fx {
     p.sources = BTreeMap::from([
         (
             "Team".to_string(),
-            vec!["crystalline://scotty/team/scotty-team".to_string()],
+            vec!["crystalline://harbor/team/harbor-team".to_string()],
         ),
         (
             "Rota".to_string(),
-            vec!["crystalline://scotty/team/rota".to_string()],
+            vec!["crystalline://harbor/team/rota".to_string()],
         ),
         (
             "Pager".to_string(),
-            vec!["crystalline://scotty/team/pager".to_string()],
+            vec!["crystalline://harbor/team/pager".to_string()],
         ),
     ]);
     fx.engine.write_reflection(&p, &agent()).await.unwrap();
@@ -1951,28 +1951,28 @@ fn eng_only() -> ReflectParams {
 
 /// An engram of another domain that changes, is retired or is deleted
 /// gives the same items a local one gives, each naming the source in its
-/// domain. Citing `scotty` engrams covers nothing of `eng`'s own.
+/// domain. Citing `harbor` engrams covers nothing of `eng`'s own.
 #[tokio::test]
 async fn a_source_in_another_domain_changes_retires_and_goes() {
     let fx = cross_curated().await;
-    let scotty = crate::fixture::root_of(&fx, "scotty");
+    let harbor = crate::fixture::root_of(&fx, "harbor");
     std::fs::write(
-        scotty.join("team/scotty-team.md"),
-        engram("Scotty team", "team/scotty-team", "- [fact] six people"),
+        harbor.join("team/harbor-team.md"),
+        engram("Harbor team", "team/harbor-team", "- [fact] six people"),
     )
     .unwrap();
     std::fs::write(
-        scotty.join("team/rota.md"),
+        harbor.join("team/rota.md"),
         engram("Rota", "team/rota", "- [fact] weekly")
             .replace("status: stable", "status: superseded"),
     )
     .unwrap();
-    std::fs::remove_file(scotty.join("team/pager.md")).unwrap();
+    std::fs::remove_file(harbor.join("team/pager.md")).unwrap();
     fx.engine.sync(None).await.unwrap();
 
     let queue = fx.engine.reflect(&eng_only(), &agent()).await.unwrap();
     for (what, heading, permalink) in [
-        ("source_changed", "Team", "team/scotty-team"),
+        ("source_changed", "Team", "team/harbor-team"),
         ("source_retired", "Rota", "team/rota"),
         ("source_missing", "Pager", "team/pager"),
     ] {
@@ -1980,7 +1980,7 @@ async fn a_source_in_another_domain_changes_retires_and_goes() {
         assert_eq!(items.len(), 1, "{what}: {queue}");
         assert_eq!(items[0]["heading"], heading, "{queue}");
         assert_eq!(items[0]["sources"][0]["permalink"], permalink, "{queue}");
-        assert_eq!(items[0]["sources"][0]["domain"], "scotty", "{queue}");
+        assert_eq!(items[0]["sources"][0]["domain"], "harbor", "{queue}");
     }
     // eng's runbook is cited by no page of eng: still unreflected.
     let unreflected = items_of(&queue, "unreflected");
@@ -2023,7 +2023,7 @@ async fn sources_in_a_domain_not_here_are_unavailable_never_missing() {
     let fx = cross_curated().await;
     let abs = fx.root.join("reflections/overview.md");
     let text = std::fs::read_to_string(&abs).unwrap();
-    std::fs::write(&abs, text.replace("domain: scotty", "domain: elsewhere")).unwrap();
+    std::fs::write(&abs, text.replace("domain: harbor", "domain: elsewhere")).unwrap();
     fx.engine.sync(None).await.unwrap();
 
     let doc = fx

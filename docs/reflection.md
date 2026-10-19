@@ -59,7 +59,7 @@ An agent can write a whole page or one section. `write_reflection` takes the sam
 
 ### Sources from other domains
 
-A page can also be built from engrams of other domains. So one page can sum up several domains. In `sources`, name an engram of this domain by its permalink and an engram of another domain by its address, for example `crystalline://scotty/team/scotty-team`. An address of the page's own domain is the same as the permalink. Never write sources into the page as HTML comments or text: only `sources` lets the queue notice a change.
+A page can also be built from engrams of other domains. So one page can sum up several domains. In `sources`, name an engram of this domain by its permalink and an engram of another domain by its address, for example `crystalline://harbor/team/harbor-team`. An address of the page's own domain is the same as the permalink. Never write sources into the page as HTML comments or text: only `sources` lets the queue notice a change.
 
 The writer needs the right to read engrams in the other domain. A domain the writer cannot see, a domain this instance does not have and a domain of a connected server are refused with the same words as a domain that does not exist. So a private domain never shows. The `reflection:` block stores the other domain by its name. Rename a domain with `crystalline domain rename`: it also renames the domain in the sources of every page, and a rename with `--local` keeps the old names as aliases, so the sources still resolve. A name changed only by editing `domain_name` in the MANIFEST is not followed. The sources that use the old name then read as `unavailable`.
 

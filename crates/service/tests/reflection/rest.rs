@@ -2156,21 +2156,21 @@ async fn a_source_in_another_domain_reaches_only_its_readers() {
     );
     p.sources = std::collections::BTreeMap::from([(
         "Team".to_string(),
-        vec!["crystalline://scotty/team/scotty-team".to_string()],
+        vec!["crystalline://harbor/team/harbor-team".to_string()],
     )]);
     fx.engine
         .write_reflection(&p, &crystalline_service::ReflectionCaller::owner())
         .await
         .unwrap();
     std::fs::write(
-        crate::fixture::root_of(&fx, "scotty").join("team/scotty-team.md"),
-        engram("Scotty team", "team/scotty-team", "- [fact] six people"),
+        crate::fixture::root_of(&fx, "harbor").join("team/harbor-team.md"),
+        engram("Harbor team", "team/harbor-team", "- [fact] six people"),
     )
     .unwrap();
     fx.engine.sync(None).await.unwrap();
     let s = serve_fx(fx, false).await;
     s.auth
-        .set_domain_visibility("scotty", true, "keeper")
+        .set_domain_visibility("harbor", true, "keeper")
         .await
         .unwrap();
     let (ed, keeper) = (
@@ -2185,10 +2185,10 @@ async fn a_source_in_another_domain_reaches_only_its_readers() {
     ] {
         let (status, body) = ed.get(path).await;
         assert_eq!(status, 200, "{path}: {body}");
-        assert!(!body.to_string().contains("scotty"), "{path}: {body}");
+        assert!(!body.to_string().contains("harbor"), "{path}: {body}");
         let (status, body) = keeper.get(path).await;
         assert_eq!(status, 200, "{path}: {body}");
-        assert!(body.to_string().contains("scotty"), "{path}: {body}");
+        assert!(body.to_string().contains("harbor"), "{path}: {body}");
     }
     let (_, doc) = ed.get(page).await;
     let team = &doc["sections"][0];
@@ -2215,6 +2215,6 @@ async fn a_source_in_another_domain_reaches_only_its_readers() {
         .await;
     assert_eq!(status, 200, "{saved}");
     let stored = std::fs::read_to_string(s.fx.root.join("reflections/overview.md")).unwrap();
-    assert!(stored.contains("domain: scotty"), "kept: {stored}");
+    assert!(stored.contains("domain: harbor"), "kept: {stored}");
     assert!(stored.contains("Six people"), "{stored}");
 }

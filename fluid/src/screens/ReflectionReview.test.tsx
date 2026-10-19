@@ -429,10 +429,10 @@ describe("the review screen", () => {
             age_secs: 3600,
             sources: [
               {
-                permalink: "team/scotty-team",
-                title: "Scotty team",
+                permalink: "team/harbor-team",
+                title: "Harbor team",
                 state: "changed",
-                domain: "scotty",
+                domain: "harbor",
               },
             ],
             hidden_sources: 1,
@@ -458,9 +458,9 @@ describe("the review screen", () => {
     // The link's name carries the domain, so two titles in two domains differ.
     expect(
       await within(queue).findByRole("link", {
-        name: "Scotty team in domain scotty",
+        name: "Harbor team in domain harbor",
       }),
-    ).toHaveAttribute("href", "/d/scotty/e/team/scotty-team");
+    ).toHaveAttribute("href", "/d/harbor/e/team/harbor-team");
     expect(
       within(queue).getByText("1 source in a domain you cannot open"),
     ).toBeVisible();

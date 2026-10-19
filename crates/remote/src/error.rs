@@ -696,7 +696,7 @@ mod tests {
     #[test]
     fn not_a_domain_names_a_manifest_found_one_folder_down() {
         let err = RemoteError::NotADomain {
-            repo: "planview-dev/scotty-knowledge".to_string(),
+            repo: "planview-dev/harbor-knowledge".to_string(),
             path: None,
             candidates: vec!["memory".to_string()],
             more_candidates: 0,

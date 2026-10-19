@@ -970,7 +970,11 @@ pub struct QueueQuery {
                            `changed`, `removed`), `update` (`source_changed`, \
                            `source_retired`, `source_missing`, `unreflected`, \
                            `off_structure`, `pact_changed`) or `review` \
-                           (`thread`). `sources`, an `unreflected` item's \
+                           (`thread`, with `thread`, the thread's id, and, \
+                           when its opening comment is a conventional \
+                           comment, `label` and `blocking`; a blocking thread \
+                           comes first among the threads of its section). \
+                           `sources`, an `unreflected` item's \
                            `folder` and `engrams`, and an `engram_attachment` \
                            item's `targets` are absent for a caller who \
                            cannot read engrams. The MCP `reflect` tool answers \
@@ -994,12 +998,14 @@ pub struct QueueQuery {
                            domain that cannot be checked here, `section` null, \
                            with `source_domain`, `count`, `sections` and \
                            `note`). A source in `sources` may carry `domain`, \
-                           the local name of another domain than the page's. Sources \
-                           in a domain the caller may not open are never named: \
-                           the item carries `hidden_sources`, their count, and \
-                           `note`, one plain sentence whatever their state; \
-                           such an item is always `source_changed` and aged by \
-                           its page.",
+                           the local name of another domain than the page's. \
+                           Sources in a domain the caller may not open are \
+                           never named. A feedback item and an update item \
+                           then carry `hidden_sources`, their count, and \
+                           `note`, one plain sentence whatever their state. \
+                           A feedback item keeps its own `what`; for update \
+                           items such sources are always on the section's \
+                           `source_changed` item, aged by its page.",
             body = Object,
             example = json!({ "domain": "eng", "total": 1, "page": 1, "limit": 10,
                 "count": 1, "kinds": { "feedback": 0, "update": 1, "review": 0 },

@@ -346,15 +346,15 @@ mod tests {
     fn a_source_of_another_domain_round_trips() {
         let mut rec = record();
         rec.sources.push(SourceRef {
-            domain: Some("scotty".into()),
-            engram: "team/scotty-team".into(),
+            domain: Some("harbor".into()),
+            engram: "team/harbor-team".into(),
             checksum: "def".into(),
         });
         let mut prov = Provenance::new();
         prov.insert("7f3a9c2e".into(), rec);
         let written = write_provenance(PAGE, &prov).unwrap();
         assert!(
-            written.contains("  - domain: scotty\n      engram: team/scotty-team\n"),
+            written.contains("  - domain: harbor\n      engram: team/harbor-team\n"),
             "{written}"
         );
         assert!(
@@ -371,20 +371,20 @@ mod tests {
             Ok(SourceName::Own("runbooks/deploy".into()))
         );
         assert_eq!(
-            parse_source_name("crystalline://scotty/team/scotty-team"),
+            parse_source_name("crystalline://harbor/team/harbor-team"),
             Ok(SourceName::Address {
-                domain: "scotty".into(),
-                permalink: "team/scotty-team".into(),
+                domain: "harbor".into(),
+                permalink: "team/harbor-team".into(),
             })
         );
         for refused in [
-            "crystalline://scotty/team/*",
-            "crystalline://scotty/*",
-            "crystalline://scotty",
-            "crystalline://scotty/",
+            "crystalline://harbor/team/*",
+            "crystalline://harbor/*",
+            "crystalline://harbor",
+            "crystalline://harbor/",
             "crystalline:///team/x",
-            "crystalline://scotty/assets/diagram.png",
-            "crystalline://scotty/reflections/assets/diagram.png",
+            "crystalline://harbor/assets/diagram.png",
+            "crystalline://harbor/reflections/assets/diagram.png",
         ] {
             let err = parse_source_name(refused).unwrap_err();
             assert!(err.contains(refused), "{err}");
@@ -396,23 +396,23 @@ mod tests {
     /// leaves every other byte; a page with none is returned as it was.
     #[test]
     fn a_rename_respells_the_stored_domain_only() {
-        let page = "---\ntitle: T\nreflection:\n  aaaa1111:\n    sources:\n    - engram: own/one\n      checksum: a\n    - domain: scotty\n      engram: team/x\n      checksum: b\n    - domain: other\n      engram: o/y\n      checksum: c\n---\n\n# T\n\nscotty stays in the body.\n";
-        let rename = |d: &str| (d == "scotty").then(|| "crew".to_string());
+        let page = "---\ntitle: T\nreflection:\n  aaaa1111:\n    sources:\n    - engram: own/one\n      checksum: a\n    - domain: harbor\n      engram: team/x\n      checksum: b\n    - domain: other\n      engram: o/y\n      checksum: c\n---\n\n# T\n\nharbor stays in the body.\n";
+        let rename = |d: &str| (d == "harbor").then(|| "crew".to_string());
         let (out, n) = respell_source_domains(page, &rename);
         assert_eq!(n, 1);
-        assert_eq!(out, page.replace("domain: scotty", "domain: crew"));
+        assert_eq!(out, page.replace("domain: harbor", "domain: crew"));
         let (again, n) = respell_source_domains(&out, &rename);
         assert_eq!((again.as_str(), n), (out.as_str(), 0), "idempotent");
-        let plain = "# Plain\n\nscotty\n";
+        let plain = "# Plain\n\nharbor\n";
         assert_eq!(
             respell_source_domains(plain, &rename),
             (plain.to_string(), 0)
         );
-        let named = |d: &str| d == "scotty";
+        let named = |d: &str| d == "harbor";
         assert_eq!(source_domains_named(page, &named), 1);
         // A flow-style frontmatter reads, but cannot be rewritten: the
         // count tells it from a page with nothing to rewrite.
-        let flow = "---\n{title: T, reflection: {aaaa1111: {sources: [{domain: scotty, engram: team/x, checksum: b}]}}}\n---\n\n# T\n";
+        let flow = "---\n{title: T, reflection: {aaaa1111: {sources: [{domain: harbor, engram: team/x, checksum: b}]}}}\n---\n\n# T\n";
         assert_eq!(respell_source_domains(flow, &rename), (flow.to_string(), 0));
         assert_eq!(source_domains_named(flow, &named), 1);
     }

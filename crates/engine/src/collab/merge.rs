@@ -161,7 +161,7 @@ mod tests {
         assert_eq!(text.get_string(&doc.transact()), "b\n");
     }
 
-    const SCOTTY: &str = "---\ntype: manifest\ntitle: Scotty\npermalink: manifest\ntags:\n  - manifest\nstatus: stable\n---\n\n# Scotty\n\n## Scope\n\n- Engineering\n";
+    const HARBOR: &str = "---\ntype: manifest\ntitle: Harbor\npermalink: manifest\ntags:\n  - manifest\nstatus: stable\n---\n\n# Harbor\n\n## Scope\n\n- Engineering\n";
 
     fn with(text: &str, after: &str, line: &str) -> String {
         text.replacen(after, &format!("{after}{line}"), 1)
@@ -169,9 +169,9 @@ mod tests {
 
     #[test]
     fn a_key_both_sides_added_with_one_value_lands_once() {
-        let mine = with(SCOTTY, "status: stable\n", "domain_name: scotty\n");
-        let theirs = with(SCOTTY, "title: Scotty\n", "domain_name: scotty\n");
-        let MergeOutcome::Clean(merged) = three_way(SCOTTY, &mine, &theirs) else {
+        let mine = with(HARBOR, "status: stable\n", "domain_name: harbor\n");
+        let theirs = with(HARBOR, "title: Harbor\n", "domain_name: harbor\n");
+        let MergeOutcome::Clean(merged) = three_way(HARBOR, &mine, &theirs) else {
             panic!("one value lands once");
         };
         assert_eq!(merged, theirs);
@@ -179,9 +179,9 @@ mod tests {
 
     #[test]
     fn a_crlf_file_merges_by_key_in_session_space() {
-        let base = SCOTTY.replace('\n', "\r\n");
-        let theirs = with(SCOTTY, "title: Scotty\n", "domain_name: scotty\n").replace('\n', "\r\n");
-        let mine = with(SCOTTY, "status: stable\n", "domain_name: scotty\n");
+        let base = HARBOR.replace('\n', "\r\n");
+        let theirs = with(HARBOR, "title: Harbor\n", "domain_name: harbor\n").replace('\n', "\r\n");
+        let mine = with(HARBOR, "status: stable\n", "domain_name: harbor\n");
         let MergeOutcome::Clean(merged) = three_way(&base, &mine, &theirs) else {
             panic!("every side is merged as LF");
         };
@@ -201,49 +201,49 @@ mod tests {
 
     #[test]
     fn a_comment_typed_on_a_key_line_upstream_changed_is_a_conflict() {
-        let mine = SCOTTY.replace("status: stable", "status: stable # reviewed by kim");
-        let theirs = SCOTTY.replace("status: stable", "status: archived");
+        let mine = HARBOR.replace("status: stable", "status: stable # reviewed by kim");
+        let theirs = HARBOR.replace("status: stable", "status: archived");
         assert!(matches!(
-            three_way(SCOTTY, &mine, &theirs),
+            three_way(HARBOR, &mine, &theirs),
             MergeOutcome::Conflict
         ));
     }
 
     #[test]
     fn a_comment_typed_under_a_key_upstream_changed_is_a_conflict() {
-        let mine = with(SCOTTY, "title: Scotty\n", "# the ship's engineer\n");
-        let theirs = SCOTTY.replace("title: Scotty", "title: Montgomery Scott");
+        let mine = with(HARBOR, "title: Harbor\n", "# the ship's engineer\n");
+        let theirs = HARBOR.replace("title: Harbor", "title: Montgomery Scott");
         assert!(matches!(
-            three_way(SCOTTY, &mine, &theirs),
+            three_way(HARBOR, &mine, &theirs),
             MergeOutcome::Conflict
         ));
     }
 
     #[test]
     fn an_outside_comment_on_a_key_line_typed_over_is_a_conflict() {
-        let mine = SCOTTY.replace("status: stable", "status: archived");
-        let theirs = SCOTTY.replace("status: stable", "status: stable # reviewed by kim");
+        let mine = HARBOR.replace("status: stable", "status: archived");
+        let theirs = HARBOR.replace("status: stable", "status: stable # reviewed by kim");
         assert!(matches!(
-            three_way(SCOTTY, &mine, &theirs),
+            three_way(HARBOR, &mine, &theirs),
             MergeOutcome::Conflict
         ));
     }
 
     #[test]
     fn an_outside_comment_under_a_key_typed_over_is_a_conflict() {
-        let mine = SCOTTY.replace("title: Scotty", "title: Montgomery Scott");
-        let theirs = with(SCOTTY, "title: Scotty\n", "# the ship's engineer\n");
+        let mine = HARBOR.replace("title: Harbor", "title: Montgomery Scott");
+        let theirs = with(HARBOR, "title: Harbor\n", "# the ship's engineer\n");
         assert!(matches!(
-            three_way(SCOTTY, &mine, &theirs),
+            three_way(HARBOR, &mine, &theirs),
             MergeOutcome::Conflict
         ));
     }
 
     #[test]
     fn a_half_typed_frontmatter_keeps_todays_merge() {
-        let mine = SCOTTY.replace("title: Scotty", "title: \"Scotty");
-        let theirs = with(SCOTTY, "- Engineering\n", "- Warp\n");
-        let MergeOutcome::Clean(merged) = three_way(SCOTTY, &mine, &theirs) else {
+        let mine = HARBOR.replace("title: Harbor", "title: \"Harbor");
+        let theirs = with(HARBOR, "- Engineering\n", "- Warp\n");
+        let MergeOutcome::Clean(merged) = three_way(HARBOR, &mine, &theirs) else {
             panic!("the person's unfinished quote is not the merge's business");
         };
         assert_eq!(merged, with(&mine, "- Engineering\n", "- Warp\n"));

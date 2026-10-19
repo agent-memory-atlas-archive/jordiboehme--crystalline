@@ -316,6 +316,7 @@ impl Engine {
                     let hidden = all.iter().filter(|s| !sees(s)).count();
                     if hidden > 0 {
                         extra["hidden_sources"] = json!(hidden);
+                        extra["note"] = json!(HIDDEN_SOURCE_NOTE);
                     }
                     extra
                 } else {

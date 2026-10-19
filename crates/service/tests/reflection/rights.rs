@@ -287,10 +287,10 @@ async fn searches_night(fx: &crate::fixture::Fx, who: &ReflectionCaller) {
     assert_eq!(found["hits"][0]["path"], "guides/night.md", "{found}");
 }
 
-/// `eng` shared with a page citing an engram of `scotty`, private to
+/// `eng` shared with a page citing an engram of `harbor`, private to
 /// keeper: `ann` an instance editor who curates `eng` and may not open
-/// `scotty`, `sam` an instance editor who is also a viewer of `scotty`. The
-/// page `overview.md` has a section `Team` built from `scotty`'s team
+/// `harbor`, `sam` an instance editor who is also a viewer of `harbor`. The
+/// page `overview.md` has a section `Team` built from `harbor`'s team
 /// engram and one `Deploys` built from `eng`'s runbook.
 pub async fn crossing_rights() -> (crate::fixture::Fx, Scope, Scope) {
     let fx = crate::sources::crossing().await;
@@ -301,7 +301,7 @@ pub async fn crossing_rights() -> (crate::fixture::Fx, Scope, Scope) {
     p.sources = std::collections::BTreeMap::from([
         (
             "Team".to_string(),
-            vec!["crystalline://scotty/team/scotty-team".to_string()],
+            vec!["crystalline://harbor/team/harbor-team".to_string()],
         ),
         ("Deploys".to_string(), vec!["runbooks/deploy".to_string()]),
     ]);
@@ -319,10 +319,10 @@ pub async fn crossing_rights() -> (crate::fixture::Fx, Scope, Scope) {
             .await
             .unwrap();
     }
-    auth.set_domain_visibility("scotty", true, "keeper")
+    auth.set_domain_visibility("harbor", true, "keeper")
         .await
         .unwrap();
-    auth.upsert_domain_member("scotty", "sam", MemberLevel::Viewer, None, "keeper")
+    auth.upsert_domain_member("harbor", "sam", MemberLevel::Viewer, None, "keeper")
         .await
         .unwrap();
     fx.engine
@@ -347,7 +347,7 @@ async fn a_hidden_an_unknown_and_a_mounted_domain_are_refused_alike() {
         let mut p = crate::docs::write("b.md", "# B\n\nFor people.\n\n## Only\n\nText.\n");
         p.sources = std::collections::BTreeMap::from([(
             "Only".to_string(),
-            vec!["crystalline://scotty/team/scotty-team".to_string()],
+            vec!["crystalline://harbor/team/harbor-team".to_string()],
         )]);
         p
     };
@@ -368,7 +368,38 @@ async fn a_hidden_an_unknown_and_a_mounted_domain_are_refused_alike() {
         .to_string();
 
     let mounted = crate::docs::reflecting().await;
-    let remote = mounted.tmp.path().join("remote");
+    mount_harbor(&mounted);
+    let served = mounted
+        .engine
+        .write_reflection(&page(), &ReflectionCaller::owner())
+        .await
+        .unwrap_err()
+        .to_string();
+
+    // A local harbor that a connected server's harbor hides answers as one
+    // nobody registered too, as every write into a hidden copy does.
+    let shadowed = crate::sources::crossing().await;
+    mount_harbor(&shadowed);
+    assert!(shadowed.engine.shadowed_domains().contains("harbor"));
+    let copy = shadowed
+        .engine
+        .write_reflection(&page(), &ReflectionCaller::owner())
+        .await
+        .unwrap_err()
+        .to_string();
+
+    assert!(hidden.contains("harbor"), "{hidden}");
+    assert_eq!(hidden, unknown);
+    assert_eq!(unknown, served);
+    assert_eq!(unknown, copy);
+    assert!(!fx.root.join("reflections/b.md").exists());
+}
+
+/// Connect `fx`'s engine to a server `acme` that hands out the name
+/// `harbor` and has never answered: a pure mount when `fx` registers no
+/// `harbor`, and a hidden copy when it does.
+fn mount_harbor(fx: &crate::fixture::Fx) {
+    let remote = fx.tmp.path().join("remote");
     crystalline_remote::update_sources(&remote, |file| {
         file.upsert(crystalline_remote::SourceRecord {
             url: "http://127.0.0.1:9".to_string(),
@@ -379,8 +410,8 @@ async fn a_hidden_an_unknown_and_a_mounted_domain_are_refused_alike() {
             revocation_endpoint: None,
             connected_at: chrono::Utc::now(),
             mounts: vec![crystalline_remote::MountRecord {
-                remote: "scotty".to_string(),
-                local: "scotty".to_string(),
+                remote: "harbor".to_string(),
+                local: "harbor".to_string(),
             }],
             domains: None,
             from_env: false,
@@ -388,30 +419,18 @@ async fn a_hidden_an_unknown_and_a_mounted_domain_are_refused_alike() {
         Ok(())
     })
     .unwrap();
-    mounted
-        .engine
+    fx.engine
         .set_sources(Arc::new(crystalline_remote::SourceSet::load(
             remote,
-            mounted.engine.local_domains(),
+            fx.engine.local_domains(),
             |_| None,
         )));
-    let served = mounted
-        .engine
-        .write_reflection(&page(), &ReflectionCaller::owner())
-        .await
-        .unwrap_err()
-        .to_string();
-
-    assert!(hidden.contains("scotty"), "{hidden}");
-    assert_eq!(hidden, unknown);
-    assert_eq!(unknown, served);
-    assert!(!fx.root.join("reflections/b.md").exists());
 }
 
-/// A reader who may not open `scotty` sees the page's own sources and, for
-/// the section built from `scotty`, only a count: no title, permalink,
+/// A reader who may not open `harbor` sees the page's own sources and, for
+/// the section built from `harbor`, only a count: no title, permalink,
 /// domain or state, in the sections and in the raw block. A reader of
-/// `scotty` sees the source in full.
+/// `harbor` sees the source in full.
 #[tokio::test]
 async fn a_reader_who_may_not_open_a_domain_sees_only_a_count() {
     let (fx, ann, sam) = crossing_rights().await;
@@ -421,7 +440,7 @@ async fn a_reader_who_may_not_open_a_domain_sees_only_a_count() {
         .await
         .unwrap();
     let text = doc.to_string();
-    assert!(!text.contains("scotty"), "{doc}");
+    assert!(!text.contains("harbor"), "{doc}");
     assert!(!text.contains("team/"), "{doc}");
     let team = doc["sections"]
         .as_array()
@@ -459,26 +478,26 @@ async fn a_reader_who_may_not_open_a_domain_sees_only_a_count() {
         .iter()
         .find(|s| s["heading"] == "Team")
         .unwrap();
-    assert_eq!(team["sources"][0]["domain"], "scotty", "{full}");
-    assert_eq!(team["sources"][0]["title"], "Scotty team", "{full}");
+    assert_eq!(team["sources"][0]["domain"], "harbor", "{full}");
+    assert_eq!(team["sources"][0]["title"], "Harbor team", "{full}");
     assert!(team.get("hidden_sources").is_none(), "{full}");
     assert!(
         full["markdown"]
             .as_str()
             .unwrap()
-            .contains("domain: scotty")
+            .contains("domain: harbor")
     );
 }
 
-/// The queue names a changed source in `scotty` only to a caller who may
-/// open `scotty`; a curator who may not gets the item with a count and the
+/// The queue names a changed source in `harbor` only to a caller who may
+/// open `harbor`; a curator who may not gets the item with a count and the
 /// plain words, so it asks a person instead of updating blind.
 #[tokio::test]
 async fn the_queue_names_a_source_only_to_a_reader_of_its_domain() {
     let (fx, ann, sam) = crossing_rights().await;
     std::fs::write(
-        crate::fixture::root_of(&fx, "scotty").join("team/scotty-team.md"),
-        engram("Scotty team", "team/scotty-team", "- [fact] six people"),
+        crate::fixture::root_of(&fx, "harbor").join("team/harbor-team.md"),
+        engram("Harbor team", "team/harbor-team", "- [fact] six people"),
     )
     .unwrap();
     fx.engine.sync(None).await.unwrap();
@@ -487,7 +506,7 @@ async fn the_queue_names_a_source_only_to_a_reader_of_its_domain() {
         ..Default::default()
     };
     let queue = fx.engine.reflect(&params, &agent_as(&ann)).await.unwrap();
-    assert!(!queue.to_string().contains("scotty"), "{queue}");
+    assert!(!queue.to_string().contains("harbor"), "{queue}");
     let item = queue["queue"]
         .as_array()
         .unwrap()
@@ -509,13 +528,13 @@ async fn the_queue_names_a_source_only_to_a_reader_of_its_domain() {
         .iter()
         .find(|i| i["what"] == "source_changed")
         .unwrap_or_else(|| panic!("{queue}"));
-    assert_eq!(item["sources"][0]["domain"], "scotty", "{queue}");
+    assert_eq!(item["sources"][0]["domain"], "harbor", "{queue}");
     assert_eq!(item["sources"][0]["state"], "changed", "{queue}");
     assert!(item.get("hidden_sources").is_none(), "{queue}");
 }
 
-/// A write by a curator who may not open `scotty` keeps the section's
-/// `scotty` source as it was: a sources write, a whole-page write sent back
+/// A write by a curator who may not open `harbor` keeps the section's
+/// `harbor` source as it was: a sources write, a whole-page write sent back
 /// as it was read (told nothing about a made-up block), a section
 /// operation and a room's save.
 #[tokio::test]
@@ -536,9 +555,9 @@ async fn a_write_never_drops_a_source_the_writer_cannot_see() {
     };
     let before = stored_team(&fx);
     assert_eq!(before.len(), 1);
-    assert_eq!(before[0].domain.as_deref(), Some("scotty"));
+    assert_eq!(before[0].domain.as_deref(), Some("harbor"));
 
-    // Sources alone: the writer names the runbook; scotty's stays beside it.
+    // Sources alone: the writer names the runbook; harbor's stays beside it.
     let mut p = crystalline_service::params::WriteReflectionParams {
         domain: "eng".into(),
         path: "overview.md".into(),
@@ -557,7 +576,7 @@ async fn a_write_never_drops_a_source_the_writer_cannot_see() {
     assert_eq!(after[0], before[0], "kept as it was, in its place");
     assert_eq!(after[1].engram, "runbooks/deploy");
 
-    // The page sent back as it was read: the block it read had no scotty.
+    // The page sent back as it was read: the block it read had no harbor.
     let doc = fx
         .engine
         .read_reflection("eng", "overview.md", &agent_as(&ann))
@@ -628,7 +647,7 @@ async fn answer_of(
 }
 
 /// Over MCP, the open tier (anonymous, MCP sign-in off) may not open the
-/// private `scotty`: a write naming it is refused in the bytes a domain
+/// private `harbor`: a write naming it is refused in the bytes a domain
 /// nobody registered and a domain a connected server serves get, and a read
 /// shows the section built from it with a count only.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -639,7 +658,7 @@ async fn over_mcp_the_open_tier_is_refused_alike_and_sees_only_a_count() {
         "domain": "eng",
         "path": "b.md",
         "markdown": "# B\n\nFor people.\n\n## Only\n\nText.\n",
-        "sources": { "Only": ["crystalline://scotty/team/scotty-team"] },
+        "sources": { "Only": ["crystalline://harbor/team/harbor-team"] },
     });
 
     let (fx, _, _) = crossing_rights().await;
@@ -668,8 +687,8 @@ async fn over_mcp_the_open_tier_is_refused_alike_and_sees_only_a_count() {
             revocation_endpoint: None,
             connected_at: chrono::Utc::now(),
             mounts: vec![crystalline_remote::MountRecord {
-                remote: "scotty".to_string(),
-                local: "scotty".to_string(),
+                remote: "harbor".to_string(),
+                local: "harbor".to_string(),
             }],
             domains: None,
             from_env: false,
@@ -688,19 +707,19 @@ async fn over_mcp_the_open_tier_is_refused_alike_and_sees_only_a_count() {
     let served = answer_of(mounted_client.peer(), "write_reflection", args).await;
 
     assert!(
-        hidden.contains("domain 'scotty' not registered"),
+        hidden.contains("domain 'harbor' not registered"),
         "{hidden}"
     );
     assert_eq!(hidden, unknown);
     assert_eq!(unknown, served);
 
     let text = read.to_string();
-    assert!(!text.contains("scotty"), "{read}");
-    assert!(!text.contains("team/scotty-team"), "{read}");
+    assert!(!text.contains("harbor"), "{read}");
+    assert!(!text.contains("team/harbor-team"), "{read}");
     assert!(text.contains("hidden_sources"), "{read}");
 }
 
-/// What the queue tells `ann` (who may not open `scotty`) about the `Team`
+/// What the queue tells `ann` (who may not open `harbor`) about the `Team`
 /// section of `overview.md` after `change` ran on the fixture, without the
 /// row's position: every member, `age_secs` included.
 async fn hidden_team_item(change: impl FnOnce(&crate::fixture::Fx)) -> serde_json::Value {
@@ -708,7 +727,7 @@ async fn hidden_team_item(change: impl FnOnce(&crate::fixture::Fx)) -> serde_jso
     change(&fx);
     // The engram behind the source last changed ten days ago: a hidden
     // item is aged by its page, never by the engram.
-    let team = crate::fixture::root_of(&fx, "scotty").join("team/scotty-team.md");
+    let team = crate::fixture::root_of(&fx, "harbor").join("team/harbor-team.md");
     if team.exists() {
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(10 * 86_400);
         std::fs::File::options()
@@ -746,33 +765,33 @@ async fn hidden_team_item(change: impl FnOnce(&crate::fixture::Fx)) -> serde_jso
 /// the item is the same, aged by the page.
 #[tokio::test]
 async fn a_hidden_source_looks_the_same_in_every_state() {
-    let scotty_team =
-        |fx: &crate::fixture::Fx| crate::fixture::root_of(fx, "scotty").join("team/scotty-team.md");
+    let harbor_team =
+        |fx: &crate::fixture::Fx| crate::fixture::root_of(fx, "harbor").join("team/harbor-team.md");
     let changed = hidden_team_item(|fx| {
         std::fs::write(
-            scotty_team(fx),
-            engram("Scotty team", "team/scotty-team", "- [fact] six people"),
+            harbor_team(fx),
+            engram("Harbor team", "team/harbor-team", "- [fact] six people"),
         )
         .unwrap();
     })
     .await;
     let retired = hidden_team_item(|fx| {
         std::fs::write(
-            scotty_team(fx),
-            engram("Scotty team", "team/scotty-team", "- [fact] five people")
+            harbor_team(fx),
+            engram("Harbor team", "team/harbor-team", "- [fact] five people")
                 .replace("status: stable", "status: superseded"),
         )
         .unwrap();
     })
     .await;
     let missing = hidden_team_item(|fx| {
-        std::fs::remove_file(scotty_team(fx)).unwrap();
+        std::fs::remove_file(harbor_team(fx)).unwrap();
     })
     .await;
     let unregistered = hidden_team_item(|fx| {
         let abs = fx.root.join("reflections/overview.md");
         let text = std::fs::read_to_string(&abs).unwrap();
-        std::fs::write(&abs, text.replace("domain: scotty", "domain: elsewhere")).unwrap();
+        std::fs::write(&abs, text.replace("domain: harbor", "domain: elsewhere")).unwrap();
     })
     .await;
     assert_eq!(changed["what"], "source_changed", "{changed}");
@@ -795,7 +814,7 @@ async fn a_missing_engram_in_a_hidden_domain_is_refused_as_the_domain() {
     let held = fx
         .engine
         .write_reflection(
-            &refusal("crystalline://scotty/team/scotty-team"),
+            &refusal("crystalline://harbor/team/harbor-team"),
             &agent_as(&ann),
         )
         .await
@@ -804,13 +823,13 @@ async fn a_missing_engram_in_a_hidden_domain_is_refused_as_the_domain() {
     let lacking = fx
         .engine
         .write_reflection(
-            &refusal("crystalline://scotty/team/nobody"),
+            &refusal("crystalline://harbor/team/nobody"),
             &agent_as(&ann),
         )
         .await
         .unwrap_err()
         .to_string();
-    assert!(held.contains("domain 'scotty' not registered"), "{held}");
+    assert!(held.contains("domain 'harbor' not registered"), "{held}");
     assert_eq!(held, lacking);
 }
 
@@ -840,7 +859,7 @@ async fn a_feedback_item_counts_a_hidden_source() {
         ..Default::default()
     };
     let queue = fx.engine.reflect(&params, &agent_as(&ann)).await.unwrap();
-    assert!(!queue.to_string().contains("scotty"), "{queue}");
+    assert!(!queue.to_string().contains("harbor"), "{queue}");
     let item = queue["queue"]
         .as_array()
         .unwrap()
@@ -849,4 +868,8 @@ async fn a_feedback_item_counts_a_hidden_source() {
         .unwrap_or_else(|| panic!("{queue}"));
     assert_eq!(item["sources"], serde_json::json!([]), "{item}");
     assert_eq!(item["hidden_sources"], 1, "{item}");
+    assert_eq!(
+        item["note"], "a source in a domain you cannot open has changed",
+        "the same words an update item carries: {item}"
+    );
 }

@@ -121,7 +121,7 @@ describe("readers", () => {
               permalink: "team/x",
               title: "X",
               state: "unavailable",
-              domain: "scotty",
+              domain: "harbor",
             },
           ],
           hidden_sources: 2,
@@ -134,7 +134,7 @@ describe("readers", () => {
         permalink: "team/x",
         title: "X",
         state: "unavailable",
-        domain: "scotty",
+        domain: "harbor",
       },
     ]);
     expect(doc.sections[0]?.hiddenSources).toBe(2);

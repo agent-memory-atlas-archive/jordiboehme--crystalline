@@ -128,10 +128,10 @@ async fn a_key_that_names_the_title_is_refused_with_the_sections_the_page_has() 
     assert!(!exists(&fx, "a.md"), "nothing written");
 }
 
-/// The address of an engram in the second domain `scotty`.
-const TEAM: &str = "crystalline://scotty/team/scotty-team";
+/// The address of an engram in the second domain `harbor`.
+const TEAM: &str = "crystalline://harbor/team/harbor-team";
 
-/// `eng` with Reflection on and its deploy runbook, beside `scotty` with
+/// `eng` with Reflection on and its deploy runbook, beside `harbor` with
 /// three engrams a page of `eng` can cite.
 pub async fn crossing() -> Fx {
     crate::fixture::beside(
@@ -139,11 +139,11 @@ pub async fn crossing() -> Fx {
             "runbooks/deploy.md",
             &crate::fixture::engram("Deploy", "runbooks/deploy", "- [fact] deploys run at night"),
         )],
-        "scotty",
+        "harbor",
         &[
             (
-                "team/scotty-team.md",
-                &crate::fixture::engram("Scotty team", "team/scotty-team", "- [fact] five people"),
+                "team/harbor-team.md",
+                &crate::fixture::engram("Harbor team", "team/harbor-team", "- [fact] five people"),
             ),
             (
                 "team/rota.md",
@@ -198,8 +198,8 @@ async fn a_source_in_another_domain_is_named_by_its_address() {
         .unwrap();
     assert_eq!(
         sources_by_heading(&doc, "Team"),
-        serde_json::json!([{ "permalink": "team/scotty-team", "domain": "scotty",
-            "title": "Scotty team", "state": "current" }]),
+        serde_json::json!([{ "permalink": "team/harbor-team", "domain": "harbor",
+            "title": "Harbor team", "state": "current" }]),
         "{doc}"
     );
     assert_eq!(
@@ -209,7 +209,7 @@ async fn a_source_in_another_domain_is_named_by_its_address() {
         "{doc}"
     );
     let stored = std::fs::read_to_string(fx.root.join("reflections/overview.md")).unwrap();
-    assert_eq!(stored.matches("domain: scotty").count(), 1, "{stored}");
+    assert_eq!(stored.matches("domain: harbor").count(), 1, "{stored}");
     assert!(!stored.contains("domain: eng"), "{stored}");
 
     // By id: the section's sources are replaced, again by address.
@@ -227,7 +227,7 @@ async fn a_source_in_another_domain_is_named_by_its_address() {
         path: "overview.md".into(),
         ..Default::default()
     };
-    by_id.sources = BTreeMap::from([(team_id, vec!["crystalline://scotty/team/rota".to_string()])]);
+    by_id.sources = BTreeMap::from([(team_id, vec!["crystalline://harbor/team/rota".to_string()])]);
     fx.engine.write_reflection(&by_id, &agent()).await.unwrap();
     let doc = fx
         .engine
@@ -249,11 +249,11 @@ async fn a_source_another_domain_lacks_is_refused_by_its_address() {
     let fx = crossing().await;
     for (source, words) in [
         (
-            "crystalline://scotty/team/nobody",
-            "no engram 'crystalline://scotty/team/nobody' to name as a source",
+            "crystalline://harbor/team/nobody",
+            "no engram 'crystalline://harbor/team/nobody' to name as a source",
         ),
-        ("crystalline://scotty/team/*", "a source is one engram"),
-        ("crystalline://scotty", "a source is one engram"),
+        ("crystalline://harbor/team/*", "a source is one engram"),
+        ("crystalline://harbor", "a source is one engram"),
     ] {
         let mut p = write("b.md", "# B\n\nFor people.\n\n## Only\n\nText.\n");
         p.sources = BTreeMap::from([("Only".to_string(), vec![source.to_string()])]);
@@ -278,9 +278,9 @@ async fn a_source_is_shown_by_the_local_name_its_domain_is_reached_by() {
     fx.engine
         .edit_engram(&crystalline_service::params::EditParams {
             identifier: "manifest".to_string(),
-            domain: "scotty".to_string(),
+            domain: "harbor".to_string(),
             operation: "find_replace".to_string(),
-            find_text: Some("domain_name: scotty\n".to_string()),
+            find_text: Some("domain_name: harbor\n".to_string()),
             content: Some("domain_name: crew\n".to_string()),
             expected_replacements: Some(1),
             ..Default::default()
@@ -294,7 +294,7 @@ async fn a_source_is_shown_by_the_local_name_its_domain_is_reached_by() {
     );
     p.sources = BTreeMap::from([(
         "Team".to_string(),
-        vec!["crystalline://crew/team/scotty-team".to_string()],
+        vec!["crystalline://crew/team/harbor-team".to_string()],
     )]);
     fx.engine.write_reflection(&p, &agent()).await.unwrap();
     let stored = std::fs::read_to_string(fx.root.join("reflections/overview.md")).unwrap();
@@ -308,7 +308,7 @@ async fn a_source_is_shown_by_the_local_name_its_domain_is_reached_by() {
         .await
         .unwrap();
     let source = &sources_by_heading(&doc, "Team")[0];
-    assert_eq!(source["domain"], "scotty", "{doc}");
+    assert_eq!(source["domain"], "harbor", "{doc}");
     // The link a reader follows: the engram by the name shown.
     let engram = fx
         .engine
@@ -322,7 +322,7 @@ async fn a_source_is_shown_by_the_local_name_its_domain_is_reached_by() {
         )
         .await
         .unwrap();
-    assert_eq!(engram["title"], "Scotty team", "{engram}");
+    assert_eq!(engram["title"], "Harbor team", "{engram}");
 }
 
 /// What carries a page beyond its readers. The admin's domain archive holds
@@ -346,11 +346,11 @@ async fn the_archive_keeps_the_names_and_search_and_events_carry_none() {
         .find(|(path, _)| path == "reflections/overview.md")
         .expect("the archive carries the page");
     assert!(
-        String::from_utf8_lossy(&page.1).contains("domain: scotty"),
+        String::from_utf8_lossy(&page.1).contains("domain: harbor"),
         "as stored"
     );
 
-    for query in ["scotty", "team/scotty-team", "people"] {
+    for query in ["harbor", "team/harbor-team", "people"] {
         let hits = fx
             .engine
             .search_reflection(
@@ -367,7 +367,7 @@ async fn the_archive_keeps_the_names_and_search_and_events_carry_none() {
             .unwrap();
         // The answer repeats the query; the hits are what the index holds.
         let text = hits["hits"].to_string();
-        assert!(!text.contains("scotty"), "{query}: {hits}");
+        assert!(!text.contains("harbor"), "{query}: {hits}");
         assert!(!text.contains("reflection:"), "{query}: {hits}");
         if query == "people" {
             assert!(hits["total"].as_u64().unwrap() > 0, "{hits}");
@@ -377,7 +377,7 @@ async fn the_archive_keeps_the_names_and_search_and_events_carry_none() {
     let mut seen = 0;
     while let Ok(envelope) = rx.try_recv() {
         let text = format!("{envelope:?}");
-        assert!(!text.contains("scotty"), "{text}");
+        assert!(!text.contains("harbor"), "{text}");
         seen += 1;
     }
     assert!(seen > 0, "the write was announced");
@@ -396,22 +396,22 @@ async fn a_domain_only_another_instance_registers_is_unavailable_here() {
                 .await
                 .unwrap(),
         ));
-    // The other instance registers scotty and indexes it into the store.
-    let team = crate::fixture::engram("Scotty team", "team/scotty-team", "- [fact] five");
+    // The other instance registers harbor and indexes it into the store.
+    let team = crate::fixture::engram("Harbor team", "team/harbor-team", "- [fact] five");
     let other = crate::fixture::fixture_on(
         store.clone(),
         &[],
         |cfg, base| {
-            let root = base.join("scotty");
+            let root = base.join("harbor");
             std::fs::create_dir_all(root.join("team")).unwrap();
             std::fs::write(
                 root.join("MANIFEST.md"),
-                crystalline_core::manifest_template("scotty", "2026-01-01"),
+                crystalline_core::manifest_template("harbor", "2026-01-01"),
             )
             .unwrap();
-            std::fs::write(root.join("team/scotty-team.md"), &team).unwrap();
+            std::fs::write(root.join("team/harbor-team.md"), &team).unwrap();
             cfg.domains.insert(
-                "scotty".into(),
+                "harbor".into(),
                 crystalline_core::config::DomainEntry::file(root),
             );
         },
@@ -420,8 +420,8 @@ async fn a_domain_only_another_instance_registers_is_unavailable_here() {
         None,
     )
     .await;
-    // This instance serves eng's Reflection and registers no scotty. Its
-    // page names a scotty source by hand, with the indexed checksum.
+    // This instance serves eng's Reflection and registers no harbor. Its
+    // page names a harbor source by hand, with the indexed checksum.
     let host = crate::fixture::fixture_on(
         store.clone(),
         &[("MANIFEST.md", &crate::fixture::manifest("reflection: on\n"))],
@@ -432,7 +432,7 @@ async fn a_domain_only_another_instance_registers_is_unavailable_here() {
     )
     .await;
     let checksum = crystalline_core::provision::receipt::sha256_hex(
-        std::fs::read(other.tmp.path().join("scotty/team/scotty-team.md"))
+        std::fs::read(other.tmp.path().join("harbor/team/harbor-team.md"))
             .unwrap()
             .as_slice(),
     );
@@ -440,7 +440,7 @@ async fn a_domain_only_another_instance_registers_is_unavailable_here() {
     std::fs::write(
         host.root.join("reflections/overview.md"),
         format!(
-            "---\nreflection:\n  aaaa1111:\n    sources:\n    - domain: scotty\n      engram: team/scotty-team\n      checksum: {checksum}\n---\n\n# Overview\n\n## Team\n<!-- r:aaaa1111 -->\n\nFive.\n"
+            "---\nreflection:\n  aaaa1111:\n    sources:\n    - domain: harbor\n      engram: team/harbor-team\n      checksum: {checksum}\n---\n\n# Overview\n\n## Team\n<!-- r:aaaa1111 -->\n\nFive.\n"
         ),
     )
     .unwrap();
@@ -458,7 +458,7 @@ async fn a_domain_only_another_instance_registers_is_unavailable_here() {
 }
 
 /// A source in a domain that resolves here but cannot be checked (here a
-/// connected server serves the local `scotty` in its place) is named in
+/// connected server serves the local `harbor` in its place) is named in
 /// the queue by the same local name the read view shows, not by the
 /// canonical name the page stores.
 #[tokio::test]
@@ -468,9 +468,9 @@ async fn an_unavailable_source_is_named_in_the_queue_as_on_the_page() {
     fx.engine
         .edit_engram(&crystalline_service::params::EditParams {
             identifier: "manifest".to_string(),
-            domain: "scotty".to_string(),
+            domain: "harbor".to_string(),
             operation: "find_replace".to_string(),
-            find_text: Some("domain_name: scotty\n".to_string()),
+            find_text: Some("domain_name: harbor\n".to_string()),
             content: Some("domain_name: crew\n".to_string()),
             expected_replacements: Some(1),
             ..Default::default()
@@ -484,7 +484,7 @@ async fn an_unavailable_source_is_named_in_the_queue_as_on_the_page() {
     );
     p.sources = BTreeMap::from([(
         "Team".to_string(),
-        vec!["crystalline://crew/team/scotty-team".to_string()],
+        vec!["crystalline://crew/team/harbor-team".to_string()],
     )]);
     fx.engine.write_reflection(&p, &agent()).await.unwrap();
 
@@ -499,8 +499,8 @@ async fn an_unavailable_source_is_named_in_the_queue_as_on_the_page() {
             revocation_endpoint: None,
             connected_at: chrono::Utc::now(),
             mounts: vec![crystalline_remote::MountRecord {
-                remote: "scotty".to_string(),
-                local: "scotty".to_string(),
+                remote: "harbor".to_string(),
+                local: "harbor".to_string(),
             }],
             domains: None,
             from_env: false,
