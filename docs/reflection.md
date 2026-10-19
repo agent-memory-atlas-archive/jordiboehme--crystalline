@@ -12,7 +12,7 @@ A reflection is not an engram. It needs no frontmatter, `search_engrams` never r
 
 ## Switch it on
 
-Set the MANIFEST key `reflection: on`. Do it in the domain policies card in Fluid, with `PATCH /api/v1/domains/{domain}/manifest`, or ask your agent (the `configure` tool with `domain`). Switching it on writes a first `reflections/PACT.md` with the four headings to fill in. Switching it off again is always allowed, and the files stay where they are.
+Set the MANIFEST key `reflection: on`. Do it in the domain policies card in Fluid, with `PATCH /api/v1/domains/{domain}/manifest`, or ask your agent (the `configure` tool with `domain`). Switching it on writes a first `reflections/PACT.md` with the four headings to fill in. Switching it off again is always allowed, and the files stay where they are. In Fluid the domain then opens on its Reflection. The Engrams half of the switch at the top shows the engrams.
 
 On a domain connected to GitHub, switching it off has one more effect. The folder `reflections/` is then ordinary engram content, so "share changes" offers its pages, their threads and `PACT.md`. Threads can hold comments from people who may not see engrams. So do not share changes while the switch is off. Once these files are in the team's copy, switching on again is refused until the team's copy no longer holds them. The answer to the switch-off says this too.
 
