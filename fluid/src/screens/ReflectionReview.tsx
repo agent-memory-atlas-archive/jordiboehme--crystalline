@@ -28,6 +28,7 @@ import {
   reflectionReviewKey,
   reflectionTreeKey,
 } from "../api/reflection";
+import { useAuth } from "../auth/AuthContext";
 import { useReflectionStatus } from "../components/ReflectionModeSwitch";
 import { ReflectionStateNotice } from "../components/ReflectionStateNotice";
 import { ThreadCard, sourceChip } from "../components/ReflectionThreads";
@@ -180,6 +181,7 @@ function Waiting({
   title: string;
   groups: ReviewGroup[];
 }): ReactElement {
+  const { user } = useAuth();
   return (
     <section aria-labelledby={id} className="flex flex-col">
       <h3 id={id} className={`mb-1 ${RAIL_LABEL}`}>
@@ -200,6 +202,7 @@ function Waiting({
                 thread={thread}
                 heading={null}
                 state={thread.anchor.state}
+                viewer={user?.name ?? null}
                 actions={
                   <p className="text-caption text-muted">
                     <Link

@@ -874,6 +874,29 @@ test.describe.serial("the Reflection journeys", () => {
     ).toBeVisible();
   });
 
+  test("a thread an agent answered waits for the person who opened it, at 390 in light and dark", async ({
+    page,
+  }) => {
+    await signIn(page, USER, PASSWORD);
+    await page.setViewportSize({ width: 390, height: 844 });
+    for (const scheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme: scheme });
+      await page.goto(`${HOME}/guides/diagram.md`);
+      await page.getByRole("button", { name: "Show 1 thread" }).click();
+      const card = page.getByRole("article", { name: "Thread on Old diagram" });
+      // Open, so it shows without Show resolved.
+      const cue = card.getByText("Answered, waiting for you");
+      await expect(cue).toBeVisible();
+      const box = await cue.boundingBox();
+      expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
+      const colour = await cue.evaluate((el) => getComputedStyle(el).color);
+      const background = await page.evaluate(
+        () => getComputedStyle(document.body).backgroundColor,
+      );
+      expect(colour).not.toBe(background);
+    }
+  });
+
   test("a page refuses to show an engram's file", async ({ page }) => {
     await signIn(page, USER, PASSWORD);
     await page.goto(`${HOME}/guides/diagram.md`);

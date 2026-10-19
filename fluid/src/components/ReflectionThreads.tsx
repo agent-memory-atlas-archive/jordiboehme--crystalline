@@ -28,7 +28,13 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Clock, MessageSquarePlus, MessagesSquare, X } from "lucide-react";
+import {
+  Clock,
+  MessageSquarePlus,
+  MessagesSquare,
+  Reply,
+  X,
+} from "lucide-react";
 import type { ReactElement, ReactNode, RefObject } from "react";
 import {
   createContext,
@@ -465,6 +471,51 @@ export function Avatar({
   );
 }
 
+/**
+ * An account name as a thread entry stores it (core `sanitize_name`):
+ * parentheses, colons, commas and line breaks become spaces, runs of spaces
+ * collapse, and an empty name is `someone`.
+ */
+function entryName(name: string): string {
+  const joined = name
+    .replace(/[():,\n\r]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word !== "")
+    .join(" ");
+  return joined === "" ? "someone" : joined;
+}
+
+/**
+ * Who an open thread waits on, in words. A thread a person opened and an
+ * agent answered last waits for that person, who resolves it: the cue says
+ * so, to them as "you".
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function waitingWords(
+  thread: ThreadView,
+  viewer: string | null,
+): { words: string; answered: boolean } {
+  if (thread.waitingOn === "agent") {
+    return { words: "Waiting for the agent", answered: false };
+  }
+  const opener = thread.entries[0];
+  const last = thread.entries.at(-1);
+  if (
+    opener === undefined ||
+    opener.author.agent ||
+    last === undefined ||
+    !last.author.agent ||
+    last.kind !== "comment"
+  ) {
+    return { words: "Waiting for people", answered: false };
+  }
+  const you = viewer !== null && entryName(viewer) === opener.author.name;
+  return {
+    words: `Answered, waiting for ${you ? "you" : opener.author.name}`,
+    answered: true,
+  };
+}
+
 export function ThreadCard({
   thread,
   heading,
@@ -472,6 +523,7 @@ export function ThreadCard({
   actions,
   source = null,
   picked = false,
+  viewer = null,
 }: {
   thread: ThreadView;
   heading: string | null;
@@ -481,17 +533,23 @@ export function ThreadCard({
   source?: string | null;
   /** The thread the reader picked: its quote rule turns accent. */
   picked?: boolean;
+  /** The signed-in account's name, so a thread waiting on them says "you". */
+  viewer?: string | null;
 }): ReactElement {
   const now = new Date();
   const quote = quoteOf(thread.anchor.quote);
   const opening = openingHead(thread);
+  const cue = waitingWords(thread, viewer);
+  const Icon = cue.answered ? Reply : Clock;
   const waiting =
     thread.status === "open" ? (
-      <span className="ml-auto inline-flex items-center gap-1.5 text-xs text-muted">
-        <Clock aria-hidden size={14} />
-        {thread.waitingOn === "agent"
-          ? "Waiting for the agent"
-          : "Waiting for people"}
+      <span
+        className={`ml-auto inline-flex items-center gap-1.5 text-xs ${
+          cue.answered ? "text-ink-3" : "text-muted"
+        }`}
+      >
+        <Icon aria-hidden size={14} />
+        {cue.words}
       </span>
     ) : null;
   return (
@@ -1200,6 +1258,7 @@ export function ReflectionThreads({
                     state={state}
                     source={source}
                     picked={picked === thread.id}
+                    viewer={user?.name ?? null}
                     actions={
                       !mayComment ? null : thread.status === "open" ? (
                         <OpenActions

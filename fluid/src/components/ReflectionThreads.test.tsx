@@ -16,7 +16,9 @@ import {
   renderApp,
   userFixture,
 } from "../test/harness";
+import type { ThreadView } from "../api/reflection";
 import { ACTIVE_HIGHLIGHT, QUOTE_HIGHLIGHT } from "../reflectionQuotes";
+import { waitingWords } from "./ReflectionThreads";
 
 vi.setConfig({ testTimeout: 15000 });
 vi.mock("../api/client", async (importOriginal) => {
@@ -1013,6 +1015,76 @@ describe("comments on a reflection", () => {
     await userEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-checked", "false");
     expect(screen.queryByText("Resolved: Done.")).toBeNull();
+  });
+
+  it("says a person's thread was answered and waits for them, without Show resolved", async () => {
+    const answered = (who: string) => [
+      {
+        at: "2026-09-30T10:00:00Z",
+        kind: "comment",
+        author: { name: who, agent: false },
+        text: "Still true?",
+      },
+      {
+        at: "2026-09-30T11:00:00Z",
+        kind: "comment",
+        author: { name: "scribe", agent: true },
+        text: "Yes, still true.",
+      },
+    ];
+    serve([
+      thread("t-00000001", { waiting_on: "people", entries: answered("vera") }),
+      thread("t-00000002", { waiting_on: "people", entries: answered("ann") }),
+    ]);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const [mine, theirs] = (await screen.findAllByRole("article", {
+      name: "Thread on Night deploys",
+    })) as [HTMLElement, HTMLElement];
+    expect(
+      screen.getByRole("switch", { name: "Show resolved threads" }),
+    ).toHaveAttribute("aria-checked", "false");
+    expect(within(mine).getByText("Answered, waiting for you")).toBeVisible();
+    expect(within(theirs).getByText("Answered, waiting for ann")).toBeVisible();
+    expect(within(mine).queryByText("Waiting for people")).toBeNull();
+  });
+
+  it("words who a thread waits on", () => {
+    const view = (entries: unknown[], waitingOn: "people" | "agent") =>
+      ({
+        id: "t-1",
+        path: "a.md",
+        anchor: { section: "s", quote: null, occurrence: 1, state: "found" },
+        status: "open",
+        waitingOn,
+        entries,
+      }) as unknown as ThreadView;
+    const person = (name: string, kind = "comment") => ({
+      at: "",
+      kind,
+      author: { name, agent: false },
+      text: "x",
+    });
+    const agent = {
+      at: "",
+      kind: "comment",
+      author: { name: "a", agent: true },
+      text: "y",
+    };
+    expect(waitingWords(view([person("vera")], "agent"), "vera").words).toBe(
+      "Waiting for the agent",
+    );
+    // An agent's own thread waits for people in general.
+    expect(waitingWords(view([agent], "people"), "vera").words).toBe(
+      "Waiting for people",
+    );
+    // The stored name is the sanitized account name.
+    expect(
+      waitingWords(view([person("Ada ops"), agent], "people"), "Ada (ops)")
+        .words,
+    ).toBe("Answered, waiting for you");
+    expect(
+      waitingWords(view([person("vera"), agent], "people"), null).words,
+    ).toBe("Answered, waiting for vera");
   });
 
   it("draws a thread as quote, avatar, name and time, quiet actions and who it waits on", async () => {
