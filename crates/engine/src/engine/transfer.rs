@@ -67,7 +67,11 @@ impl Engine {
     /// that needs nothing is stored byte for byte. The files the notes link
     /// to are stored as attachments under `assets/` and the links rewritten
     /// to them; `files_linked`, `not_linked` (other files no note links,
-    /// which are not imported) and `not_taken` report how that went.
+    /// which are not imported) and `not_taken` report how that went. Files
+    /// under the source's `assets/` (an export carries the domain's own
+    /// attachments there) are stored as attachments at the same path,
+    /// counted in `attachments_written` and `attachments_skipped`; one the
+    /// attachment rules refuse is named in `warnings`.
     /// Collisions on an existing path or permalink are skipped unless
     /// `overwrite`; `dry_run` reports without writing. Where the source's own
     /// MANIFEST declares `reflection: on`, nothing under `reflections/` is read
@@ -123,8 +127,10 @@ impl Engine {
             ReflectionMode::declared(crystalline_core::reflection_at(src)),
         );
         let mut warnings: Vec<String> = Vec::new();
-        // Every other file is not imported as it is; a note can still take
-        // it in as an attachment by linking it.
+        // A file under `assets/` is an attachment (an export carries the
+        // domain's own there) and is stored as one. Every other file is not
+        // imported as it is; a note can still take it in by linking it.
+        let mut assets: Vec<String> = Vec::new();
         let mut others: Vec<String> = Vec::new();
         let files: Vec<(String, PathBuf)> = walk_classified(src, &layout)
             .into_iter()
@@ -133,7 +139,10 @@ impl Engine {
                     warnings.push(format!("{rel}: {REFLECTION_NOT_IMPORTED}"));
                     return None;
                 }
-                if rel.to_lowercase().ends_with(".md") {
+                if crystalline_core::is_under_assets(&rel) {
+                    assets.push(rel);
+                    None
+                } else if rel.to_lowercase().ends_with(".md") {
                     Some((rel, abs))
                 } else {
                     others.push(rel);
@@ -219,20 +228,67 @@ impl Engine {
             .into_iter()
             .map(|row| (row.path, row.sha256))
             .collect();
-        let outcome = crystalline_core::linked::take_linked_files(
-            &mut notes,
-            &crystalline_core::linked::DirSource {
-                root: src.to_path_buf(),
-            },
-            &|dest| held.get(dest).cloned(),
-        );
+        let source = crystalline_core::linked::DirSource {
+            root: src.to_path_buf(),
+        };
+        // The source's own `assets/` files that will be stored, by path and
+        // sha256, each with the reason it is refused when it cannot be.
+        let mut incoming: HashMap<String, String> = HashMap::new();
+        let mut refused: Vec<(String, &'static str)> = Vec::new();
+        for rel in &assets {
+            let len = std::fs::metadata(src.join(rel)).map_or(0, |m| m.len());
+            if let Some(reason) = crystalline_core::attachment::asset_refusal(rel, len) {
+                refused.push((rel.clone(), reason));
+                continue;
+            }
+            match crystalline_core::linked::LinkedSource::sha256(&source, rel) {
+                Ok(sha) => {
+                    incoming.insert(rel.clone(), sha);
+                }
+                Err(e) => warnings.push(format!("{rel}: could not read: {e}")),
+            }
+        }
+        // A dest one of them claims holds its bytes once it is stored, unless
+        // the attachment already there is kept because `overwrite` is off.
+        let outcome =
+            crystalline_core::linked::take_linked_files(&mut notes, &source, &|dest| match (
+                held.get(dest),
+                incoming.get(dest),
+            ) {
+                (Some(kept), _) if !overwrite => Some(kept.clone()),
+                (kept, new) => new.or(kept).cloned(),
+            });
         let not_linked = others
             .iter()
             .filter(|rel| !outcome.linked_sources.contains(*rel))
             .count();
 
-        // Phase 3: store the taken files first, so a failed write leaves no
-        // note that links a missing attachment; then the notes.
+        // Phase 3: store the attachments first, the source's own and the
+        // taken ones, so a failed write leaves no note that links a missing
+        // attachment; then the notes. An attachment already at a path is
+        // replaced only under `overwrite`, and the same bytes are not written
+        // again.
+        let mut attachments_written = 0usize;
+        let mut attachments_skipped = 0usize;
+        for (rel, reason) in refused {
+            warnings.push(format!("{rel}: {reason}"));
+            attachments_skipped += 1;
+        }
+        for rel in assets.iter().filter(|rel| incoming.contains_key(*rel)) {
+            let same = held.get(rel) == incoming.get(rel);
+            if same || (held.contains_key(rel) && !overwrite) {
+                attachments_skipped += 1;
+                continue;
+            }
+            if !dry_run {
+                let from = src.join(rel);
+                let bytes = std::fs::read(&from).map_err(|e| {
+                    EngineError::Invalid(format!("could not read {}: {e}", from.display()))
+                })?;
+                self.attachment_write(domain, rel, bytes).await?;
+            }
+            attachments_written += 1;
+        }
         if !dry_run {
             for taken in outcome.taken.iter().filter(|taken| !taken.reused) {
                 let from = src.join(&taken.source_rel);
@@ -304,6 +360,8 @@ impl Engine {
             "files_skipped": skipped,
             "files_linked": outcome.taken.len(),
             "not_linked": not_linked,
+            "attachments_written": attachments_written,
+            "attachments_skipped": attachments_skipped,
             "not_taken": outcome.not_taken,
             "collisions": collisions,
             "warnings": warnings,

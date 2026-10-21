@@ -117,16 +117,19 @@ const MAX_ENTRY_BYTES: u64 = 1024 * 1024;
 /// a 4 MiB screenshot is not.
 const MAX_ASSET_ENTRY_BYTES: u64 = crystalline_core::MAX_ATTACHMENT_BYTES;
 
-/// Why an `assets/` entry was refused, in the words this surface reports.
-/// Named constants because the same strings are asserted by the tests and read
-/// by a user in the preview dialog.
-const ASSET_PATH_REASON: &str = "path is not a valid assets path";
-const ASSET_EXTENSION_REASON: &str = "extension is not an allowed attachment type";
-const ASSET_SIZE_REASON: &str = "attachment exceeds the size limit";
-const ASSET_MARKDOWN_REASON: &str = "assets entries must be attachments, not markdown";
+// Why an `assets/` entry was refused, in the words every import route
+// reports: named constants in core, because the same strings are asserted by
+// the tests and read by a user in the preview dialog.
+use crystalline_core::attachment::{
+    ASSET_EXTENSION_REASON, ASSET_MARKDOWN_REASON, ASSET_PATH_REASON, ASSET_SIZE_REASON,
+};
 /// Why a linked file is not written: the domain holds the same bytes at the
 /// attachment path it would take.
 const SAME_FILE_REASON: &str = "the same file is already there";
+/// Why a linked file of the archive is not stored on its own: another file
+/// of the archive has the same bytes, and the attachment path that follows
+/// holds them.
+const SAME_BYTES_REASON: &str = "the same bytes are stored at";
 
 /// The largest a whole archive may be once decompressed, in bytes.
 ///
@@ -922,7 +925,7 @@ async fn run_archive(
     // it inline would park a runtime worker for the whole of it. `Bytes` is
     // cheap to move here - it hands the shared buffer over rather than copying
     // the body.
-    let (screened, loose) = tokio::task::spawn_blocking(move || read_archive(&bytes))
+    let (screened, mut loose) = tokio::task::spawn_blocking(move || read_archive(&bytes))
         .await
         .map_err(|e| ApiError::internal(format!("archive screening task failed: {e}")))??;
     // What the domain already holds under `assets/`, by path and sha256, so
@@ -1113,8 +1116,26 @@ async fn run_archive(
             Pending::Loose { path, reason } => {
                 let Some(file) = taken.get(path.as_str()) else {
                     // The same bytes as a file already taken: every link to
-                    // it points at that file's attachment, which is listed.
+                    // it points at that file's attachment, which is listed
+                    // on its own row; this one says which.
                     if linked.linked_sources.contains(&path) {
+                        let bytes = loose.read.files.remove(&path).unwrap_or_default();
+                        let sha = crystalline_index::hex_lower(
+                            &<sha2::Sha256 as sha2::Digest>::digest(&bytes),
+                        );
+                        let shared = linked
+                            .taken
+                            .iter()
+                            .find(|file| file.sha256 == sha)
+                            .map_or_else(String::new, |file| file.dest.clone());
+                        slots.push(Slot::Decided(ArchiveEntryReport {
+                            path,
+                            status: "skipped".to_string(),
+                            permalink: None,
+                            reason: Some(format!("{SAME_BYTES_REASON} {shared}")),
+                            bytes: Some(bytes.len() as u64),
+                            findings: Vec::new(),
+                        }));
                         continue;
                     }
                     slots.push(Slot::Decided(ArchiveEntryReport {
@@ -1127,7 +1148,7 @@ async fn run_archive(
                     }));
                     continue;
                 };
-                let bytes = loose.read.files.get(&path).cloned().unwrap_or_default();
+                let bytes = loose.read.files.remove(&path).unwrap_or_default();
                 let size = bytes.len() as u64;
                 let (status, reason) = if file.reused {
                     (

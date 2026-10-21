@@ -54,6 +54,8 @@ fn virtual_engine(store: Arc<Mutex<dyn Store>>) -> Engine {
     let mut cfg = GlobalConfig::default();
     cfg.domains
         .insert("notes".to_string(), DomainEntry::virtual_domain());
+    cfg.domains
+        .insert("copy".to_string(), DomainEntry::virtual_domain());
     Engine::new(store, cfg, None, None)
 }
 
@@ -66,11 +68,15 @@ fn converted_tree(root: &Path) {
 }
 
 async fn stored_text(engine: &Engine, identifier: &str) -> String {
+    stored_text_in(engine, "notes", identifier).await
+}
+
+async fn stored_text_in(engine: &Engine, domain: &str, identifier: &str) -> String {
     let read = engine
         .read_engram(
             &ReadParams {
                 identifier: identifier.to_string(),
-                domain: Some("notes".to_string()),
+                domain: Some(domain.to_string()),
                 share_link: None,
             },
             &Scope::Unrestricted,
@@ -177,3 +183,60 @@ async fn completes_files(store: Arc<Mutex<dyn Store>>) {
     );
 }
 both_backends!(a_virtual_import_completes_files, completes_files);
+
+/// An export of a virtual domain carries its attachments under `assets/`.
+/// Imported into another virtual domain they are stored at the same paths,
+/// the completed note comes back byte for byte, and no file is reported as
+/// left unlinked.
+async fn export_round_trip(store: Arc<Mutex<dyn Store>>) {
+    let engine = virtual_engine(store);
+    let src = tempfile::tempdir().unwrap();
+    converted_tree(src.path());
+    std::fs::remove_file(src.path().join("unlinked.png")).unwrap();
+    engine
+        .import_domain("notes", src.path(), false, false)
+        .await
+        .unwrap();
+
+    let exported = tempfile::tempdir().unwrap();
+    engine
+        .export_domain("notes", exported.path(), true, false)
+        .await
+        .unwrap();
+    assert!(
+        exported
+            .path()
+            .join("assets/report.pdf/page-3.png")
+            .exists()
+    );
+
+    let report = engine
+        .import_domain("copy", exported.path(), false, false)
+        .await
+        .unwrap();
+    assert_eq!(report["not_linked"], 0, "{report}");
+    assert_eq!(report["attachments_written"], 1, "{report}");
+    assert_eq!(report["files_linked"], 0, "{report}");
+    let (bytes, _) = engine
+        .attachment_read("copy", "assets/report.pdf/page-3.png")
+        .await
+        .unwrap();
+    assert_eq!(bytes, PNG);
+    assert_eq!(
+        stored_text_in(&engine, "copy", "report-pdf").await,
+        stored_text(&engine, "report-pdf").await,
+        "a complete note is stored as it is"
+    );
+
+    // Again: the attachment is already there with the same bytes.
+    let again = engine
+        .import_domain("copy", exported.path(), true, false)
+        .await
+        .unwrap();
+    assert_eq!(again["attachments_written"], 0, "{again}");
+    assert_eq!(again["attachments_skipped"], 1, "{again}");
+}
+both_backends!(
+    an_export_round_trip_keeps_the_attachments,
+    export_round_trip
+);

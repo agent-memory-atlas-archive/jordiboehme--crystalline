@@ -725,7 +725,8 @@ pub fn complete_engram(source: &str, opts: &CompleteOptions) -> Result<Completed
 }
 
 /// The text `domain import` and the archive upload store for one note: the
-/// note completed by [`complete_engram`] with the default type map, no
+/// note completed by [`complete_engram`] with no type map (a `type` is free
+/// form, so a present one is never remapped; only a missing one is set), no
 /// prefix to strip and a missing status read as `stable`, or `None` when the
 /// note needs nothing and is kept byte for byte.
 ///
@@ -739,7 +740,7 @@ pub fn complete_for_import(
     rel_path: &str,
     now: DateTime<FixedOffset>,
 ) -> Result<Option<String>, ParseError> {
-    let type_map = default_type_map();
+    let type_map = IndexMap::new();
     let completed = complete_engram(
         source,
         &CompleteOptions {
@@ -1503,6 +1504,21 @@ mod tests {
         let source = "---\ntitle: Alpha\ntype: engram\npermalink: alpha\ntags:\n  - eng\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# Alpha\n";
         let now = Utc::now().fixed_offset();
         assert_eq!(complete_for_import(source, "alpha.md", now).unwrap(), None);
+    }
+
+    #[test]
+    fn a_legacy_type_is_never_remapped_for_import() {
+        let source = "---\ntype: note\ntitle: Alpha\npermalink: alpha\ntags:\n  - eng\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# Alpha\n";
+        let now = Utc::now().fixed_offset();
+        assert_eq!(complete_for_import(source, "alpha.md", now).unwrap(), None);
+        // A file that needs completing keeps its type too.
+        let text = complete_for_import("---\ntype: howto\ntitle: H\n---\n\nbody\n", "h.md", now)
+            .unwrap()
+            .expect("the file needs completing");
+        assert_eq!(
+            parse_engram(&text).unwrap().frontmatter.engram_type,
+            "howto"
+        );
     }
 
     #[test]

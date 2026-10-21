@@ -4375,16 +4375,18 @@ async fn the_archive_round_trip_reproduces_the_files() {
 /// there instead of as ignored entries; a link to a file the archive lacks is
 /// reported as not taken, by the preview and the import alike.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_archive_with_rezzer_layout_is_accepted() {
+async fn an_archive_of_converted_documents_is_accepted() {
     let fx = serve(Options::default()).await;
     let admin = login(fx.addr, "root", "rootpw").await;
     let report_md = "---\ntype: document\ntitle: Report\n---\n\n# Report\n\n![p3](report.pdf.assets/page-3.png)\n\n![gone](missing.png)\n";
-    let memo_md = "---\ntype: document\ntitle: Memo\n---\n\n# Memo\n\nSee [the scan](memo.docx.assets/scan%201.png).\n";
+    let memo_md = "---\ntype: document\ntitle: Memo\n---\n\n# Memo\n\nSee [the scan](memo.docx.assets/scan%201.png) and ![again](memo.docx.assets/copy.png).\n";
     let archive = zip_of_bytes(&[
         ("report.pdf.md", report_md.as_bytes()),
         ("report.pdf.assets/page-3.png", PNG),
         ("memo.docx.md", memo_md.as_bytes()),
         ("memo.docx.assets/scan 1.png", b"\x89PNG scan"),
+        // The same bytes as page-3.png, linked from the second note.
+        ("memo.docx.assets/copy.png", PNG),
         ("readme.txt", b"no note links this"),
     ]);
 
@@ -4425,6 +4427,10 @@ async fn an_archive_with_rezzer_layout_is_accepted() {
             (
                 "assets/report.pdf/page-3.png".to_string(),
                 "new".to_string()
+            ),
+            (
+                "memo.docx.assets/copy.png".to_string(),
+                "skipped".to_string()
             ),
             ("memo.docx.md".to_string(), "new".to_string()),
             ("readme.txt".to_string(), "ignored".to_string()),
@@ -4468,6 +4474,10 @@ async fn an_archive_with_rezzer_layout_is_accepted() {
                 "assets/report.pdf/page-3.png".to_string(),
                 "created".to_string()
             ),
+            (
+                "memo.docx.assets/copy.png".to_string(),
+                "skipped".to_string()
+            ),
             ("memo.docx.md".to_string(), "created".to_string()),
             ("readme.txt".to_string(), "ignored".to_string()),
             ("report.pdf.md".to_string(), "created".to_string()),
@@ -4475,6 +4485,16 @@ async fn an_archive_with_rezzer_layout_is_accepted() {
         "{done}"
     );
     assert_eq!(done["written"], 4, "{done}");
+    let copy = done["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["path"] == "memo.docx.assets/copy.png")
+        .unwrap();
+    assert_eq!(
+        copy["reason"], "the same bytes are stored at assets/report.pdf/page-3.png",
+        "{done}"
+    );
     assert_eq!(done["files_linked"], 2, "{done}");
     assert_eq!(done["not_taken"], missing, "{done}");
     assert!(no_completion_error(&done), "{done}");
@@ -4501,6 +4521,37 @@ async fn an_archive_with_rezzer_layout_is_accepted() {
     );
     assert!(content.contains("status: stable"), "{content}");
     assert!(content.contains("- imported"), "{content}");
+}
+
+/// A restore of an export never rewrites an engram that is complete: a
+/// `type` is free form, so `note` is not mapped to another type on the way
+/// back in, and the engram lands byte for byte.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_archive_restore_keeps_a_note_typed_engram_as_it_is() {
+    let fx = serve(Options::default()).await;
+    let admin = login(fx.addr, "root", "rootpw").await;
+    let note = "---\ntype: note\ntitle: Tide\npermalink: tide\ntags:\n  - eng\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# Tide\n\nHigh water is at noon.\n";
+    let resp = post_zip(
+        fx.addr,
+        "/api/v1/domains/eng/archive/import",
+        &admin,
+        zip_of(&[("tide.md", note)]),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let done: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(done["written"], 1, "{done}");
+    let detail = as_session(
+        fx.addr,
+        reqwest::Method::GET,
+        "/api/v1/domains/eng/engrams/tide",
+        &admin,
+    )
+    .send()
+    .await
+    .unwrap();
+    let detail: serde_json::Value = detail.json().await.unwrap();
+    assert_eq!(detail["content"].as_str().unwrap(), note);
 }
 
 /// An archive whose own MANIFEST keeps a Reflection never hands that

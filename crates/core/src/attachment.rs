@@ -140,6 +140,31 @@ pub enum AssetPathError {
     DisallowedExtension,
 }
 
+/// Why an imported `assets/` file was refused: its path breaks the asset
+/// path rules. Named here so every import route reports it in one wording.
+pub const ASSET_PATH_REASON: &str = "path is not a valid assets path";
+/// Why an imported `assets/` file was refused: its type is not allowed.
+pub const ASSET_EXTENSION_REASON: &str = "extension is not an allowed attachment type";
+/// Why an imported `assets/` file was refused: it is past the size limit.
+pub const ASSET_SIZE_REASON: &str = "attachment exceeds the size limit";
+/// Why an imported `assets/` file was refused: it is markdown.
+pub const ASSET_MARKDOWN_REASON: &str = "assets entries must be attachments, not markdown";
+
+/// Why an imported file at `path` under `assets/`, `len` bytes long, cannot
+/// be stored as an attachment, in the words of the constants above, or
+/// `None` when it can.
+pub fn asset_refusal(path: &str, len: u64) -> Option<&'static str> {
+    match validate_asset_path(path) {
+        Ok(()) if len > MAX_ATTACHMENT_BYTES => Some(ASSET_SIZE_REASON),
+        Ok(()) => None,
+        Err(AssetPathError::DisallowedExtension) if path.to_lowercase().ends_with(".md") => {
+            Some(ASSET_MARKDOWN_REASON)
+        }
+        Err(AssetPathError::DisallowedExtension) => Some(ASSET_EXTENSION_REASON),
+        Err(_) => Some(ASSET_PATH_REASON),
+    }
+}
+
 /// Check a domain-relative attachment path against every rule.
 ///
 /// Asset paths are never slugified - a filename a human recognizes is the
