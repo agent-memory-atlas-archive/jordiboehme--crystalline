@@ -85,4 +85,17 @@ describe("the print sheet", () => {
     expect(reduced).toContain(".ready-flash");
     expect(reduced).toContain("animation: none;");
   });
+
+  it("lays the page stacks out as blocks, not flex columns, so WebKit breaks pages whole", () => {
+    const print = block("@media print {\n  /* Every rem");
+    for (const rule of [
+      "[data-print-column] > div:has(> article) {\n    --stack-gap: 2rem;\n    display: block;",
+      "article:has(> section[data-section]) {\n    display: block;",
+      "article > section[data-section] {\n    display: flow-root;",
+      ".print-notes > ol {\n    display: block;",
+      ".print-notes > ol > .print-note + .print-note {\n    margin-top: 1rem;",
+    ]) {
+      expect(print).toContain(rule);
+    }
+  });
 });

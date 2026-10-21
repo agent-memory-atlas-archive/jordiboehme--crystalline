@@ -708,6 +708,47 @@
   [data-print-column] > * + * {
     margin-top: 1.5rem;
   }
+  /*
+   * The column's stack (a Reflection page's title block, article and notes,
+   * an engram page's body and related list) and, on a Reflection page, the
+   * article's sections are column flex containers on screen. WebKit does not
+   * break pages well inside the items of such a stack: a kept heading and
+   * table, or a single table row, is cut at the page edge, or the table moves
+   * to the next page and the next section stays where it was, on top of it.
+   * On paper they are block layout, and margins of the same size stand in for
+   * the gaps. `flow-root` keeps a section's margins inside it, as the flex
+   * item did, and `--stack-gap` is the stack's own gap: 2rem, 1.5rem on a
+   * Reflection page.
+   */
+  [data-print-column] > div:has(> article) {
+    --stack-gap: 2rem;
+    display: block;
+  }
+  [data-print-column] > div:has(> article > section[data-section]) {
+    --stack-gap: 1.5rem;
+  }
+  [data-print-column] > div:has(> article > section[data-section]) > article {
+    margin-top: var(--stack-gap);
+  }
+  /* The notes and the related list keep their own top margin and the gap. */
+  [data-print-column] > div:has(> article) > :is(.print-notes, .print-related) {
+    margin-top: calc(2.5rem + var(--stack-gap));
+  }
+  article:has(> section[data-section]) {
+    display: block;
+  }
+  article > section[data-section] {
+    display: flow-root;
+  }
+  article > section[data-section] + section[data-section] {
+    margin-top: 1rem;
+  }
+  .print-notes > ol {
+    display: block;
+  }
+  .print-notes > ol > .print-note + .print-note {
+    margin-top: 1rem;
+  }
 
   /*
    * What belongs together stays together. `break-after: avoid` on a heading
