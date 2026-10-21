@@ -543,3 +543,56 @@ async fn an_unavailable_source_is_named_in_the_queue_as_on_the_page() {
     assert_eq!(item["source_domain"], shown.as_str(), "{queue}");
     assert!(item["note"].as_str().unwrap().contains(&shown), "{queue}");
 }
+
+const TWO_SECTIONS: &str = "# Deploying\n\nFor new people.\n\n## Night deploys\n\nAt night.\n\n## Rollback\n\nRoll back.\n";
+
+#[tokio::test]
+async fn a_section_written_without_sources_is_named_in_the_receipt() {
+    let fx = reflecting().await;
+    let written = fx
+        .engine
+        .write_reflection(&sourced("a.md", TWO_SECTIONS, &["Night deploys"]), &agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        written["unsourced_sections"],
+        serde_json::json!(["Rollback"]),
+        "{written}"
+    );
+    assert!(
+        written["guidance"]
+            .to_string()
+            .contains("These sections name no source engrams: pass sources for each section you built from engrams, so the queue can follow them."),
+        "{written}"
+    );
+}
+
+#[tokio::test]
+async fn a_sourced_write_has_no_unsourced_sections() {
+    let fx = reflecting().await;
+    let written = fx
+        .engine
+        .write_reflection(
+            &sourced("a.md", TWO_SECTIONS, &["Night deploys", "Rollback"]),
+            &agent(),
+        )
+        .await
+        .unwrap();
+    assert!(written.get("unsourced_sections").is_none(), "{written}");
+    assert!(
+        !written.to_string().contains("name no source engrams"),
+        "{written}"
+    );
+}
+
+#[tokio::test]
+async fn a_pact_write_never_reports_unsourced_sections() {
+    let fx = reflecting().await;
+    let pact = "# How we write\n\n## Audience\n\n- New people.\n\n## Pages\n\n- guides/*.md: a guide, asked by Ada\n";
+    let written = fx
+        .engine
+        .write_reflection(&write("PACT.md", pact), &crate::docs::person())
+        .await
+        .unwrap();
+    assert!(written.get("unsourced_sections").is_none(), "{written}");
+}

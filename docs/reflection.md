@@ -32,14 +32,15 @@ A plain editor or a pull can still write `reflection: on` into the MANIFEST. If 
 
 ## The pact
 
-`reflections/PACT.md` is the agreement between the people and the agents who work on the Reflection. It has four parts:
+`reflections/PACT.md` is the agreement between the people and the agents who work on the Reflection. It has five parts:
 
 - `## Audience`: who reads these pages and what they already know.
 - `## Level of detail`: how deep the pages go, and what they leave to the engrams.
 - `## Presentation`: which diagrams, callouts, tables and status labels help these readers, and what to avoid.
 - `## Structure`: one bullet per glob, for example `- guides/*.md`.
+- `## Pages`: one bullet per page or space a person asked for: its path or glob, what they asked for in their words, who asked and when. The agent adds the bullet when it is asked, and reads it to place new engrams or to recreate a page from the request.
 
-The agent reads the pact before it writes. A page that fits none of the `## Structure` globs is reported to the agent as an update item. A change to the pact is reported too, so the agent applies it to the pages it affects.
+The agent reads the pact before it writes. A page that fits none of the `## Structure` globs is reported to the agent as an update item. A change to the pact is reported too, so the agent applies it to the pages it affects. A `write_reflection` receipt names `unsourced_sections` (the headings) when the write created or changed a `##` section that has no sources, with a sentence asking the agent to pass them. It is a hint, never a refusal, and the pact is not a page, so it never reports it.
 
 ## Presentation
 

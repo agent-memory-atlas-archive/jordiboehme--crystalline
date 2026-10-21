@@ -1500,7 +1500,16 @@ async fn an_id_line_no_heading_can_carry_is_replaced_and_said() {
         .await
         .unwrap();
     assert_eq!(again["ids_assigned"], serde_json::json!([]), "{again}");
-    assert!(again.get("guidance").is_none(), "{again}");
+    // Nothing is said about ids; the one section it changed names no source.
+    assert!(
+        !again["guidance"].to_string().contains("replaced"),
+        "{again}"
+    );
+    assert_eq!(
+        again["unsourced_sections"],
+        serde_json::json!(["Elsewhere"]),
+        "{again}"
+    );
 }
 
 /// The page sent back as it was read, block and ids included, is told
