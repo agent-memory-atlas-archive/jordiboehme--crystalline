@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::emit::emit_engram;
 use crate::engram::{Engram, Generated};
+use crate::linked::{DirSource, LinkedNote, LinkedSource, NotTaken, take_linked_files};
 use crate::parse::{ParseError, parse_engram, parse_engram_lossless};
 
 /// The OKF actor the importer records as the writer of the engrams it
@@ -155,6 +156,13 @@ pub struct ImportReport {
     pub files_copied: usize,
     /// Files that could not be processed.
     pub files_skipped: usize,
+    /// Distinct files notes link to that were taken into `assets/`, files the
+    /// domain already held included.
+    pub files_linked: usize,
+    /// Non-markdown files no note links, copied verbatim to their own path.
+    pub not_linked: usize,
+    /// Links to local files that were not taken, with the reason.
+    pub not_taken: Vec<NotTaken>,
     /// Files whose `type` was set or remapped.
     pub type_mapped: usize,
     /// Temporal fields backfilled (each of `status` and `recorded_at` counts
@@ -240,6 +248,8 @@ pub fn import_tree(options: &ImportOptions) -> Result<ImportReport, ImportError>
         crate::layout::ReflectionMode::Off
     });
 
+    // Phase 1: complete every note, so the linked-file step sees them all.
+    let mut planned: Vec<Planned> = Vec::new();
     for entry in &entries {
         if matches!(
             layout.classify(&entry.rel),
@@ -251,29 +261,108 @@ pub fn import_tree(options: &ImportOptions) -> Result<ImportReport, ImportError>
                 entry.rel,
                 crate::reflection::REFLECTION_NOT_IMPORTED
             ));
-            report.files.push(FileChange {
-                path: entry.rel.clone(),
-                action: FileAction::Skipped,
-                changes: Vec::new(),
-            });
+            planned.push(Planned::Skipped(skipped_change(&entry.rel)));
             continue;
         }
         if !entry.is_md {
-            copy_verbatim(entry, options, &mut report)?;
+            planned.push(Planned::Verbatim(entry));
             continue;
         }
-        convert_markdown(
+        planned.push(prepare_markdown(
             entry,
             options,
             &strip_prefix,
-            &options.type_map,
             now,
             &mut permalinks,
             &mut report,
-        )?;
+        ));
     }
 
+    // Phase 2: take the files the notes link to and rewrite the links.
+    let mut notes: Vec<LinkedNote> = planned
+        .iter()
+        .filter_map(|p| match p {
+            Planned::Markdown(m) => Some(LinkedNote {
+                rel: m.rel.clone(),
+                text: m.text.clone(),
+            }),
+            _ => None,
+        })
+        .collect();
+    let domain_files = DirSource {
+        root: options.domain_dir.clone(),
+    };
+    let outcome = take_linked_files(
+        &mut notes,
+        &DirSource {
+            root: options.src_dir.clone(),
+        },
+        &|dest| domain_files.sha256(dest).ok(),
+    );
+    let mut rewritten = notes.into_iter();
+
+    // Phase 3: write the notes and the taken files, copy the rest.
+    for item in planned {
+        match item {
+            Planned::Skipped(change) => report.files.push(change),
+            Planned::Verbatim(entry) => {
+                if outcome.linked_sources.contains(&entry.rel) {
+                    continue;
+                }
+                copy_verbatim(entry, options, &mut report)?;
+                report.not_linked += 1;
+            }
+            Planned::Markdown(m) => {
+                let note = rewritten.next().expect("one rewritten note per note");
+                write_markdown(*m, note.text, options, &mut report)?;
+            }
+        }
+    }
+    for taken in &outcome.taken {
+        if taken.reused || options.dry_run {
+            continue;
+        }
+        let from = options.src_dir.join(&taken.source_rel);
+        let dest = options.domain_dir.join(&taken.dest);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(io_err(parent))?;
+        }
+        crate::config::copy_atomic(&from, &dest).map_err(io_err(&from))?;
+    }
+    report.files_linked = outcome.taken.len();
+    report.not_taken = outcome.not_taken;
+
     Ok(report)
+}
+
+/// One source entry after phase 1.
+enum Planned<'a> {
+    /// Already counted and warned about; only its report line is left.
+    Skipped(FileChange),
+    /// A non-markdown file, copied as it is unless a note links it.
+    Verbatim(&'a Entry),
+    /// A completed note waiting for its links to be settled.
+    Markdown(Box<PreparedNote>),
+}
+
+/// A note completed in memory.
+struct PreparedNote {
+    rel: String,
+    /// The emitted text, LF line endings.
+    text: String,
+    changes: Vec<String>,
+    type_mapped: bool,
+    temporal_backfilled: usize,
+    sentinels_dropped: usize,
+    prefix_stripped: bool,
+}
+
+fn skipped_change(rel: &str) -> FileChange {
+    FileChange {
+        path: rel.to_string(),
+        action: FileAction::Skipped,
+        changes: Vec::new(),
+    }
 }
 
 fn copy_verbatim(
@@ -307,16 +396,14 @@ fn copy_verbatim(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn convert_markdown(
-    entry: &Entry,
+fn prepare_markdown<'a>(
+    entry: &'a Entry,
     options: &ImportOptions,
     strip_prefix: &str,
-    type_map: &IndexMap<String, String>,
     now: DateTime<FixedOffset>,
     permalinks: &mut HashMap<String, String>,
     report: &mut ImportReport,
-) -> Result<(), ImportError> {
+) -> Planned<'a> {
     let source = match std::fs::read_to_string(&entry.abs) {
         Ok(s) => s,
         Err(e) => {
@@ -324,21 +411,15 @@ fn convert_markdown(
             report
                 .warnings
                 .push(format!("{}: could not read file: {e}", entry.rel));
-            report.files.push(FileChange {
-                path: entry.rel.clone(),
-                action: FileAction::Skipped,
-                changes: Vec::new(),
-            });
-            return Ok(());
+            return Planned::Skipped(skipped_change(&entry.rel));
         }
     };
 
-    let mtime = mtime_date(&entry.abs);
     let complete_opts = CompleteOptions {
         rel_path: &entry.rel,
-        type_map,
+        type_map: &options.type_map,
         strip_prefix,
-        mtime,
+        mtime: mtime_date(&entry.abs),
         now,
         missing_status: options.missing_status,
     };
@@ -347,12 +428,7 @@ fn convert_markdown(
         Err(e) => {
             report.files_skipped += 1;
             report.warnings.push(format!("{}: {e}", entry.rel));
-            report.files.push(FileChange {
-                path: entry.rel.clone(),
-                action: FileAction::Skipped,
-                changes: Vec::new(),
-            });
-            return Ok(());
+            return Planned::Skipped(skipped_change(&entry.rel));
         }
     };
 
@@ -367,34 +443,50 @@ fn convert_markdown(
         permalinks.insert(final_permalink, entry.rel.clone());
     }
 
-    let output = emit_engram(&transformed.engram);
+    // Written as LF, the one line ending Crystalline stores: the body is
+    // carried over verbatim apart from its line endings.
+    let text = crate::to_lf(&emit_engram(&transformed.engram)).into_owned();
+    Planned::Markdown(Box::new(PreparedNote {
+        rel: entry.rel.clone(),
+        text,
+        changes: transformed.changes,
+        type_mapped: transformed.type_mapped,
+        temporal_backfilled: transformed.temporal_backfilled,
+        sentinels_dropped: transformed.sentinels_dropped,
+        prefix_stripped: transformed.prefix_stripped,
+    }))
+}
+
+fn write_markdown(
+    note: PreparedNote,
+    text: String,
+    options: &ImportOptions,
+    report: &mut ImportReport,
+) -> Result<(), ImportError> {
     if !options.dry_run {
-        let dest = options.domain_dir.join(&entry.rel);
+        let dest = options.domain_dir.join(&note.rel);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(io_err(parent))?;
         }
         // Write-then-rename (crate::config::write_atomic), not a direct
         // write: a crash mid-write can no longer leave a truncated engram
         // file at `dest`.
-        // Written as LF, the one line ending Crystalline stores: the body is
-        // carried over verbatim apart from its line endings.
-        let output = crate::to_lf(&output);
-        crate::config::write_atomic(&dest, output.as_bytes()).map_err(io_err(&dest))?;
+        crate::config::write_atomic(&dest, text.as_bytes()).map_err(io_err(&dest))?;
     }
 
     report.files_converted += 1;
-    if transformed.type_mapped {
+    if note.type_mapped {
         report.type_mapped += 1;
     }
-    report.temporal_backfilled += transformed.temporal_backfilled;
-    report.sentinels_dropped += transformed.sentinels_dropped;
-    if transformed.prefix_stripped {
+    report.temporal_backfilled += note.temporal_backfilled;
+    report.sentinels_dropped += note.sentinels_dropped;
+    if note.prefix_stripped {
         report.prefixes_stripped += 1;
     }
     report.files.push(FileChange {
-        path: entry.rel.clone(),
+        path: note.rel,
         action: FileAction::Converted,
-        changes: transformed.changes,
+        changes: note.changes,
     });
     Ok(())
 }
@@ -534,12 +626,16 @@ pub fn complete_engram(source: &str, opts: &CompleteOptions) -> Result<Completed
         }
         temporal_backfilled += 1;
     }
-    if fm.recorded_at.is_none()
-        && let Some(date) = mtime
-    {
+    if fm.recorded_at.is_none() {
+        // The file's own date where there is one, else the day of the import:
+        // no route can leave `recorded_at` out by passing no mtime.
+        let (date, from) = match mtime {
+            Some(date) => (date, "file mtime"),
+            None => (now.date_naive(), "import date"),
+        };
         fm.recorded_at = Some(date);
         temporal_backfilled += 1;
-        changes.push(format!("recorded_at: missing -> `{date}` (file mtime)"));
+        changes.push(format!("recorded_at: missing -> `{date}` ({from})"));
     }
 
     // c. Drop sentinel far-future `valid_to` and far-past `valid_from`
@@ -576,9 +672,18 @@ pub fn complete_engram(source: &str, opts: &CompleteOptions) -> Result<Completed
     // d2. A permalink still missing is written the way sync derives it.
     if fm.permalink.as_deref().is_none_or(str::is_empty) {
         let derived = crate::slugify(opts.rel_path);
-        changes.push(format!("permalink: missing -> `{derived}`"));
-        fm.permalink = Some(derived);
-        permalink_backfilled = true;
+        if derived.is_empty() {
+            // A name with no ASCII letter or digit slugifies to nothing, and
+            // an empty permalink is worse than none: leave it missing.
+            changes.push(format!(
+                "warning: no permalink could be derived from `{}`, none written",
+                opts.rel_path
+            ));
+        } else {
+            changes.push(format!("permalink: missing -> `{derived}`"));
+            fm.permalink = Some(derived);
+            permalink_backfilled = true;
+        }
     }
 
     // e. Add write provenance only when the file carries none. A file that
@@ -1167,5 +1272,177 @@ mod tests {
         );
         // Untouched defaults survive the merge.
         assert_eq!(merged.get("howto").map(String::as_str), Some("guide"));
+    }
+
+    fn copy_dir_all(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for e in std::fs::read_dir(from).unwrap() {
+            let e = e.unwrap();
+            let target = to.join(e.file_name());
+            if e.path().is_dir() {
+                copy_dir_all(&e.path(), &target);
+            } else {
+                std::fs::copy(e.path(), target).unwrap();
+            }
+        }
+    }
+
+    fn linked_options(src: &Path, domain: &Path, dry_run: bool) -> ImportOptions {
+        ImportOptions {
+            src_dir: src.to_path_buf(),
+            domain_dir: domain.to_path_buf(),
+            type_map: default_type_map(),
+            strip_prefix: None,
+            dry_run,
+            missing_status: MissingStatus::Stable,
+        }
+    }
+
+    fn all_files(dir: &Path) -> Vec<(String, Vec<u8>)> {
+        fn walk(base: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    walk(base, &p, out);
+                } else {
+                    let rel = p
+                        .strip_prefix(base)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    out.push((rel, std::fs::read(&p).unwrap()));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(dir, dir, &mut out);
+        out.sort();
+        out
+    }
+
+    fn linked_fixture() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/linked")
+    }
+
+    #[test]
+    fn import_tree_takes_linked_files_and_rewrites_links() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let domain = tmp.path().join("domain");
+        copy_dir_all(&linked_fixture(), &src);
+        std::fs::create_dir_all(&domain).unwrap();
+
+        let report = import_tree(&linked_options(&src, &domain, false)).unwrap();
+
+        let bytes = std::fs::read(src.join("report.pdf.assets/page-3.png")).unwrap();
+        assert_eq!(
+            std::fs::read(domain.join("assets/report.pdf/page-3.png")).unwrap(),
+            bytes
+        );
+        assert!(
+            !domain.join("report.pdf.assets/page-3.png").exists(),
+            "a taken file is not also copied to its old path"
+        );
+        let note = std::fs::read_to_string(domain.join("report.pdf.md")).unwrap();
+        assert!(
+            note.contains("](assets/report.pdf/page-3.png)"),
+            "link not rewritten: {note}"
+        );
+        assert!(report.files_linked >= 1);
+    }
+
+    #[test]
+    fn files_no_note_links_are_still_copied_verbatim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let domain = tmp.path().join("domain");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&domain).unwrap();
+        std::fs::write(
+            src.join("a.md"),
+            "---\ntype: engram\n---\n\n![p](pic.png)\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("pic.png"), b"png").unwrap();
+        std::fs::write(src.join("extra.txt"), b"extra").unwrap();
+
+        let report = import_tree(&linked_options(&src, &domain, false)).unwrap();
+
+        assert_eq!(std::fs::read(domain.join("extra.txt")).unwrap(), b"extra");
+        assert_eq!(report.not_linked, 1);
+        assert_eq!(report.files_linked, 1);
+        assert_eq!(report.files_copied, 1);
+        assert!(!domain.join("pic.png").exists());
+    }
+
+    #[test]
+    fn a_second_import_reuses_the_assets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let domain = tmp.path().join("domain");
+        copy_dir_all(&linked_fixture(), &src);
+        std::fs::create_dir_all(&domain).unwrap();
+
+        let first = import_tree(&linked_options(&src, &domain, false)).unwrap();
+        let before = all_files(&domain);
+        let second = import_tree(&linked_options(&src, &domain, false)).unwrap();
+        let after = all_files(&domain);
+
+        assert_eq!(first.files_linked, second.files_linked);
+        assert!(second.files_linked >= 1);
+        assert!(
+            after.iter().all(|(rel, _)| !rel.contains("-2.")),
+            "a duplicate was stored: {after:?}"
+        );
+        // No new files and no changed asset bytes (a note's `generated.at`
+        // moves with the clock, so the notes are compared by name only).
+        let names = |f: &[(String, Vec<u8>)]| f.iter().map(|(r, _)| r.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&before), names(&after));
+        let assets = |f: Vec<(String, Vec<u8>)>| {
+            f.into_iter()
+                .filter(|(r, _)| r.starts_with("assets/"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(assets(before), assets(after));
+    }
+
+    #[test]
+    fn dry_run_writes_nothing_and_reports_the_plan() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let domain = tmp.path().join("domain");
+        copy_dir_all(&linked_fixture(), &src);
+        std::fs::create_dir_all(&domain).unwrap();
+
+        let report = import_tree(&linked_options(&src, &domain, true)).unwrap();
+
+        assert!(all_files(&domain).is_empty(), "dry run wrote files");
+        assert!(report.files_linked >= 1);
+        assert!(!report.not_taken.is_empty());
+    }
+
+    #[test]
+    fn a_missing_mtime_falls_back_to_the_import_date() {
+        let r = complete_engram(
+            "---\ntype: engram\nstatus: current\ntags:\n- t\n---\n\nbody\n",
+            &opts(&default_type_map(), MissingStatus::Stable, None),
+        )
+        .unwrap();
+        assert_eq!(
+            r.engram.frontmatter.recorded_at,
+            Some(NaiveDate::from_ymd_opt(2026, 7, 2).unwrap())
+        );
+        assert!(r.changes.iter().any(|c| c.contains("import date")));
+    }
+
+    #[test]
+    fn a_name_that_slugifies_to_nothing_leaves_the_permalink_missing() {
+        let map = default_type_map();
+        let mut o = opts(&map, MissingStatus::Stable, None);
+        o.rel_path = "日本語.md";
+        let r = complete_engram("---\ntype: engram\ntags:\n- t\n---\n\nbody\n", &o).unwrap();
+        assert_eq!(r.engram.frontmatter.permalink, None);
+        assert!(!r.permalink_backfilled);
+        assert!(r.changes.iter().any(|c| c.starts_with("warning:")));
     }
 }

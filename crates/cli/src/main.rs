@@ -327,6 +327,10 @@ enum Command {
         /// directory's own final path component.
         #[arg(long)]
         strip_prefix: Option<String>,
+        /// The status given to a file that has none: `stable` (the default) or
+        /// `legacy`, the rule before 0.29.0.
+        #[arg(long, value_enum, default_value_t = ImportStatus::Stable)]
+        status: ImportStatus,
         /// Print the full change report without writing anything.
         #[arg(long)]
         dry_run: bool,
@@ -920,6 +924,15 @@ enum PromptKind {
     /// satisfying the prompt module's determinism and latency contracts by
     /// construction.
     Connector,
+}
+
+/// The `status` `crystalline import` gives a file that has none.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum ImportStatus {
+    /// `stable`, the default.
+    Stable,
+    /// `legacy` with `temporal_confidence: inferred`, the rule before 0.29.0.
+    Legacy,
 }
 
 /// How `prompt system` renders its output. `Text` and `Json` are the two
@@ -2137,6 +2150,7 @@ fn run() -> anyhow::Result<()> {
             domain,
             map,
             strip_prefix,
+            status,
             dry_run,
             config,
         }) => cmd::import(
@@ -2144,6 +2158,10 @@ fn run() -> anyhow::Result<()> {
             &domain,
             map.as_deref(),
             strip_prefix.as_deref(),
+            match status {
+                ImportStatus::Stable => crystalline_core::import::MissingStatus::Stable,
+                ImportStatus::Legacy => crystalline_core::import::MissingStatus::Legacy,
+            },
             dry_run,
             config.as_deref(),
             cli.json,

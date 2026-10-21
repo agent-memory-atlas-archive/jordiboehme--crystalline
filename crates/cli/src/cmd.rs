@@ -3415,6 +3415,7 @@ pub fn import(
     domain: &str,
     map: Option<&Path>,
     strip_prefix: Option<&str>,
+    missing_status: crystalline_core::import::MissingStatus,
     dry_run: bool,
     config_override: Option<&Path>,
     json: bool,
@@ -3448,7 +3449,7 @@ pub fn import(
         type_map,
         strip_prefix: strip_prefix.map(str::to_string),
         dry_run,
-        missing_status: crystalline_core::import::MissingStatus::Stable,
+        missing_status,
     };
     let report = crystalline_core::import::import_tree(&options)
         .map_err(|e| anyhow!("import failed: {e}"))?;
@@ -3483,6 +3484,12 @@ fn print_import_report(r: &crystalline_core::import::ImportReport, dry_run: bool
     .unwrap();
     writeln!(
         out,
+        "{} linked files taken into assets/, {} files no note links copied as they are",
+        r.files_linked, r.not_linked
+    )
+    .unwrap();
+    writeln!(
+        out,
         "type mapped: {}, temporal backfilled: {}, sentinels dropped: {}, prefixes stripped: {}, collisions: {}",
         r.type_mapped,
         r.temporal_backfilled,
@@ -3491,6 +3498,26 @@ fn print_import_report(r: &crystalline_core::import::ImportReport, dry_run: bool
         r.collisions
     )
     .unwrap();
+    if !r.not_taken.is_empty() {
+        use crystalline_core::linked::NotTakenReason as Reason;
+        writeln!(out, "Not taken:").unwrap();
+        for (reason, label) in [
+            (Reason::Missing, "no such file"),
+            (Reason::Outside, "outside the source folder"),
+            (Reason::NotAllowed, "file type not allowed"),
+            (Reason::TooLarge, "file too large"),
+            (Reason::BadName, "no valid asset name"),
+        ] {
+            let group: Vec<_> = r.not_taken.iter().filter(|n| n.reason == reason).collect();
+            if group.is_empty() {
+                continue;
+            }
+            writeln!(out, "  {label}:").unwrap();
+            for n in group {
+                writeln!(out, "    {} -> {}", n.note, n.target).unwrap();
+            }
+        }
+    }
     for w in &r.warnings {
         writeln!(out, "  warning: {w}").unwrap();
     }
