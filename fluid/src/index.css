@@ -734,14 +734,18 @@
   [data-print-column] > div:has(> article) > :is(.print-notes, .print-related) {
     margin-top: calc(2.5rem + var(--stack-gap));
   }
-  article:has(> section[data-section]) {
+  [data-print-column] article:has(> section[data-section]) {
     display: block;
   }
-  article > section[data-section] {
+  [data-print-column] article > section[data-section] {
     display: flow-root;
   }
-  article > section[data-section] + section[data-section] {
+  [data-print-column] article > section[data-section] + section[data-section] {
     margin-top: 1rem;
+  }
+  /* The section's own gap (gap-1) between its heading, body and sources. */
+  [data-print-column] article > section[data-section] > * + * {
+    margin-top: 0.25rem;
   }
   .print-notes > ol {
     display: block;

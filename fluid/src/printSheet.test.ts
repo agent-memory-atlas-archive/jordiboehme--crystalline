@@ -90,8 +90,11 @@ describe("the print sheet", () => {
     const print = block("@media print {\n  /* Every rem");
     for (const rule of [
       "[data-print-column] > div:has(> article) {\n    --stack-gap: 2rem;\n    display: block;",
-      "article:has(> section[data-section]) {\n    display: block;",
-      "article > section[data-section] {\n    display: flow-root;",
+      "[data-print-column] > div:has(> article > section[data-section]) {\n    --stack-gap: 1.5rem;",
+      "[data-print-column] > div:has(> article) > :is(.print-notes, .print-related) {\n    margin-top: calc(2.5rem + var(--stack-gap));",
+      "[data-print-column] article:has(> section[data-section]) {\n    display: block;",
+      "[data-print-column] article > section[data-section] {\n    display: flow-root;",
+      "[data-print-column] article > section[data-section] > * + * {\n    margin-top: 0.25rem;",
       ".print-notes > ol {\n    display: block;",
       ".print-notes > ol > .print-note + .print-note {\n    margin-top: 1rem;",
     ]) {
