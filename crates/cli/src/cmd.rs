@@ -3448,6 +3448,7 @@ pub fn import(
         type_map,
         strip_prefix: strip_prefix.map(str::to_string),
         dry_run,
+        missing_status: crystalline_core::import::MissingStatus::Stable,
     };
     let report = crystalline_core::import::import_tree(&options)
         .map_err(|e| anyhow!("import failed: {e}"))?;

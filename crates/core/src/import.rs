@@ -103,7 +103,23 @@ pub struct ImportOptions {
     pub strip_prefix: Option<String>,
     /// When set, nothing is written; the report describes what would happen.
     pub dry_run: bool,
+    /// The `status` given to a file that has none.
+    pub missing_status: MissingStatus,
 }
+
+/// The `status` an import gives a file that carries none.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MissingStatus {
+    /// `stable`: the file is taken as it is, and its `temporal_confidence`
+    /// is kept where it has a valid one.
+    #[default]
+    Stable,
+    /// `legacy` with `temporal_confidence: inferred`, the rule before 0.29.0.
+    Legacy,
+}
+
+/// The tag an import adds to a file that has no tags at all.
+pub const IMPORTED_TAG: &str = "imported";
 
 /// What an importer did with one source file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -318,7 +334,15 @@ fn convert_markdown(
     };
 
     let mtime = mtime_date(&entry.abs);
-    let mut transformed = match transform_engram(&source, type_map, strip_prefix, mtime, now) {
+    let complete_opts = CompleteOptions {
+        rel_path: &entry.rel,
+        type_map,
+        strip_prefix,
+        mtime,
+        now,
+        missing_status: options.missing_status,
+    };
+    let mut transformed = match complete_engram(&source, &complete_opts) {
         Ok(t) => t,
         Err(e) => {
             report.files_skipped += 1;
@@ -399,28 +423,55 @@ fn resolve_collision(
     }
 }
 
-/// The result of transforming one Engram's frontmatter. `engram` is ready to
-/// pass to [`emit_engram`] once any permalink collision is resolved by the
-/// caller.
-struct Transformed {
-    engram: Engram,
-    changes: Vec<String>,
-    type_mapped: bool,
-    temporal_backfilled: usize,
-    sentinels_dropped: usize,
-    prefix_stripped: bool,
+/// What [`complete_engram`] needs besides the file's text.
+#[derive(Debug, Clone)]
+pub struct CompleteOptions<'a> {
+    /// The file's path relative to the domain root, forward-slashed, with its
+    /// `.md`. A missing permalink is derived from it the way sync does.
+    pub rel_path: &'a str,
+    /// Legacy `type` to Crystalline `type` mapping.
+    pub type_map: &'a IndexMap<String, String>,
+    /// The leading permalink segment to strip.
+    pub strip_prefix: &'a str,
+    /// The file's modification date, used for a missing `recorded_at`.
+    pub mtime: Option<NaiveDate>,
+    /// The time recorded as the write time of the provenance.
+    pub now: DateTime<FixedOffset>,
+    /// The `status` given to a file that has none.
+    pub missing_status: MissingStatus,
 }
 
-/// Apply every per-file transformation rule to one Engram's source text.
-/// Pure function, no filesystem access, so it is exercised directly in unit
-/// tests without a source tree on disk.
-fn transform_engram(
-    source: &str,
-    type_map: &IndexMap<String, String>,
-    strip_prefix: &str,
-    mtime: Option<NaiveDate>,
-    now: DateTime<FixedOffset>,
-) -> Result<Transformed, ParseError> {
+/// The result of completing one Engram's frontmatter. `engram` is ready to
+/// pass to [`emit_engram`] once any permalink collision is resolved by the
+/// caller.
+#[derive(Debug, Clone)]
+pub struct Completed {
+    /// The completed Engram.
+    pub engram: Engram,
+    /// A human description of each change, in order.
+    pub changes: Vec<String>,
+    /// `type` was set or remapped.
+    pub type_mapped: bool,
+    /// Temporal fields backfilled (`status` and `recorded_at` count apart).
+    pub temporal_backfilled: usize,
+    /// Sentinel dates dropped.
+    pub sentinels_dropped: usize,
+    /// A source-tree permalink prefix was stripped.
+    pub prefix_stripped: bool,
+    /// A missing permalink was derived from the path.
+    pub permalink_backfilled: bool,
+    /// The file had no tags and got [`IMPORTED_TAG`].
+    pub tagged_imported: bool,
+}
+
+/// Complete one Engram's frontmatter so OKF readers accept it: every
+/// per-file rule shared by all import routes. Pure function, no filesystem
+/// access, so it is exercised directly in unit tests.
+pub fn complete_engram(source: &str, opts: &CompleteOptions) -> Result<Completed, ParseError> {
+    let type_map = opts.type_map;
+    let strip_prefix = opts.strip_prefix;
+    let mtime = opts.mtime;
+    let now = opts.now;
     let lossless = parse_engram_lossless(source)?;
     let mut engram = lossless.engram;
     let mut changes = Vec::new();
@@ -428,6 +479,8 @@ fn transform_engram(
     let mut temporal_backfilled = 0usize;
     let mut sentinels_dropped = 0usize;
     let mut prefix_stripped = false;
+    let mut permalink_backfilled = false;
+    let mut tagged_imported = false;
 
     // a. Ensure `type`: missing becomes the default; a legacy value is
     // remapped and the original value is kept as a deduped tag.
@@ -450,10 +503,36 @@ fn transform_engram(
 
     // b. Temporal backfill only where absent.
     if fm.status.as_deref().map(str::trim).unwrap_or("").is_empty() {
-        fm.status = Some("legacy".to_string());
-        fm.temporal_confidence = Some("inferred".to_string());
+        match opts.missing_status {
+            MissingStatus::Stable => {
+                fm.status = Some("stable".to_string());
+                let kept = fm
+                    .temporal_confidence
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|c| matches!(*c, "explicit" | "inferred"));
+                match kept {
+                    Some(c) => changes.push(format!(
+                        "status: missing -> `stable` (temporal_confidence: {c} kept)"
+                    )),
+                    None => {
+                        fm.temporal_confidence = Some("inferred".to_string());
+                        changes.push(
+                            "status: missing -> `stable` (temporal_confidence: inferred)"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            MissingStatus::Legacy => {
+                fm.status = Some("legacy".to_string());
+                fm.temporal_confidence = Some("inferred".to_string());
+                changes.push(
+                    "status: missing -> `legacy` (temporal_confidence: inferred)".to_string(),
+                );
+            }
+        }
         temporal_backfilled += 1;
-        changes.push("status: missing -> `legacy` (temporal_confidence: inferred)".to_string());
     }
     if fm.recorded_at.is_none()
         && let Some(date) = mtime
@@ -480,8 +559,7 @@ fn transform_engram(
         changes.push(format!("valid_from: dropped sentinel `{from}`"));
     }
 
-    // d. Strip a leading source-prefix permalink segment. A missing
-    // permalink stays missing; sync derives one later.
+    // d. Strip a leading source-prefix permalink segment.
     if let Some(p) = &fm.permalink
         && let Some((first, rest)) = p.split_once('/')
         && first == strip_prefix
@@ -493,6 +571,14 @@ fn transform_engram(
         ));
         fm.permalink = Some(stripped);
         prefix_stripped = true;
+    }
+
+    // d2. A permalink still missing is written the way sync derives it.
+    if fm.permalink.as_deref().is_none_or(str::is_empty) {
+        let derived = crate::slugify(opts.rel_path);
+        changes.push(format!("permalink: missing -> `{derived}`"));
+        fm.permalink = Some(derived);
+        permalink_backfilled = true;
     }
 
     // e. Add write provenance only when the file carries none. A file that
@@ -512,15 +598,23 @@ fn transform_engram(
     }
 
     // f. Tags: `parse_engram_lossless` already normalizes a comma-separated
-    // string into a list, so nothing further is needed here.
+    // string into a list. A file with none gets the `imported` tag; a file
+    // with tags is never changed.
+    if fm.tags.is_empty() {
+        fm.tags.push(IMPORTED_TAG.to_string());
+        tagged_imported = true;
+        changes.push(format!("tags: none -> `{IMPORTED_TAG}`"));
+    }
 
-    Ok(Transformed {
+    Ok(Completed {
         engram,
         changes,
         type_mapped,
         temporal_backfilled,
         sentinels_dropped,
         prefix_stripped,
+        permalink_backfilled,
+        tagged_imported,
     })
 }
 
@@ -638,8 +732,35 @@ mod tests {
         DateTime::parse_from_rfc3339("2026-07-02T00:00:00+00:00").unwrap()
     }
 
-    fn t(source: &str) -> Transformed {
-        transform_engram(source, &default_type_map(), "legacy-kb", None, now()).unwrap()
+    fn opts<'a>(
+        map: &'a IndexMap<String, String>,
+        status: MissingStatus,
+        mtime: Option<NaiveDate>,
+    ) -> CompleteOptions<'a> {
+        CompleteOptions {
+            rel_path: "Notes/My Pump.md",
+            type_map: map,
+            strip_prefix: "legacy-kb",
+            mtime,
+            now: now(),
+            missing_status: status,
+        }
+    }
+
+    fn t(source: &str) -> Completed {
+        complete_engram(
+            source,
+            &opts(&default_type_map(), MissingStatus::Stable, None),
+        )
+        .unwrap()
+    }
+
+    fn t_legacy(source: &str) -> Completed {
+        complete_engram(
+            source,
+            &opts(&default_type_map(), MissingStatus::Legacy, None),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -689,15 +810,40 @@ mod tests {
     }
 
     #[test]
-    fn missing_status_backfills_legacy_and_inferred() {
+    fn missing_status_becomes_stable_and_keeps_temporal_confidence() {
+        let r = t(
+            "---\ntype: engram\ntitle: X\ntags:\n  - t\ntemporal_confidence: explicit\nrecorded_at: 2026-01-01\n---\n\nbody\n",
+        );
+        assert_eq!(r.engram.frontmatter.status.as_deref(), Some("stable"));
+        assert_eq!(
+            r.engram.frontmatter.temporal_confidence.as_deref(),
+            Some("explicit")
+        );
+        assert_eq!(r.temporal_backfilled, 1);
+    }
+
+    #[test]
+    fn missing_status_and_confidence_give_stable_and_inferred() {
         let r =
             t("---\ntype: engram\ntitle: X\ntags:\n  - t\nrecorded_at: 2026-01-01\n---\n\nbody\n");
-        assert_eq!(r.engram.frontmatter.status.as_deref(), Some("legacy"));
+        assert_eq!(r.engram.frontmatter.status.as_deref(), Some("stable"));
         assert_eq!(
             r.engram.frontmatter.temporal_confidence.as_deref(),
             Some("inferred")
         );
         assert_eq!(r.temporal_backfilled, 1);
+    }
+
+    #[test]
+    fn legacy_on_request_keeps_the_old_rule() {
+        let r = t_legacy(
+            "---\ntype: engram\ntitle: X\ntags:\n  - t\ntemporal_confidence: explicit\nrecorded_at: 2026-01-01\n---\n\nbody\n",
+        );
+        assert_eq!(r.engram.frontmatter.status.as_deref(), Some("legacy"));
+        assert_eq!(
+            r.engram.frontmatter.temporal_confidence.as_deref(),
+            Some("inferred")
+        );
     }
 
     #[test]
@@ -712,12 +858,9 @@ mod tests {
     #[test]
     fn missing_recorded_at_backfills_from_mtime() {
         let date = NaiveDate::from_ymd_opt(2026, 3, 4).unwrap();
-        let r = transform_engram(
+        let r = complete_engram(
             "---\ntype: engram\ntitle: X\ntags:\n  - t\nstatus: current\n---\n\nbody\n",
-            &default_type_map(),
-            "legacy-kb",
-            Some(date),
-            now(),
+            &opts(&default_type_map(), MissingStatus::Stable, Some(date)),
         )
         .unwrap();
         assert_eq!(r.engram.frontmatter.recorded_at, Some(date));
@@ -779,11 +922,64 @@ mod tests {
     }
 
     #[test]
-    fn missing_permalink_stays_missing() {
+    fn missing_permalink_is_backfilled_as_sync_derives_it() {
         let r = t(
             "---\ntype: engram\ntitle: X\ntags:\n  - t\nstatus: current\nrecorded_at: 2026-01-01\n---\n\nbody\n",
         );
-        assert_eq!(r.engram.frontmatter.permalink, None);
+        // Sync derives `slugify(path)` from the domain-relative path.
+        assert_eq!(
+            r.engram.frontmatter.permalink.as_deref(),
+            Some(crate::slugify("Notes/My Pump.md").as_str())
+        );
+        assert_eq!(
+            r.engram.frontmatter.permalink.as_deref(),
+            Some("notes/my-pump")
+        );
+        assert!(r.permalink_backfilled);
+        assert!(
+            r.changes
+                .iter()
+                .any(|c| c.starts_with("permalink: missing"))
+        );
+    }
+
+    #[test]
+    fn a_file_without_tags_gets_the_imported_tag() {
+        let r = t(
+            "---\ntype: engram\ntitle: X\nstatus: current\nrecorded_at: 2026-01-01\n---\n\nbody\n",
+        );
+        assert_eq!(r.engram.frontmatter.tags, vec![IMPORTED_TAG.to_string()]);
+        assert!(r.tagged_imported);
+        assert!(r.changes.iter().any(|c| c.starts_with("tags:")));
+    }
+
+    #[test]
+    fn existing_tags_are_never_changed() {
+        let r = t(
+            "---\ntype: engram\ntitle: X\ntags:\n  - a\n  - b\nstatus: current\nrecorded_at: 2026-01-01\n---\n\nbody\n",
+        );
+        assert_eq!(
+            r.engram.frontmatter.tags,
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert!(!r.tagged_imported);
+    }
+
+    #[test]
+    fn a_completed_file_passes_verify() {
+        let date = NaiveDate::from_ymd_opt(2026, 3, 4);
+        let r = complete_engram(
+            "---\ntype: document\ntitle: Pump\n---\n\nbody text\n",
+            &opts(&default_type_map(), MissingStatus::Stable, date),
+        )
+        .unwrap();
+        let out = emit_engram(&r.engram);
+        let issues = crate::verify::check_document("d", Path::new("Notes/My Pump.md"), &out);
+        let errors: Vec<_> = issues
+            .iter()
+            .filter(|i| i.severity == crate::verify::Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}");
     }
 
     #[test]
@@ -866,6 +1062,7 @@ mod tests {
             type_map: default_type_map(),
             strip_prefix: None,
             dry_run: true,
+            missing_status: MissingStatus::Stable,
         };
         let report = import_tree(&options).unwrap();
         assert_eq!(report.files_converted, 1);
@@ -896,6 +1093,7 @@ mod tests {
             type_map: default_type_map(),
             strip_prefix: None,
             dry_run: false,
+            missing_status: MissingStatus::Stable,
         };
         let first = import_tree(&options).unwrap();
         assert_eq!(first.files_converted, 1);
@@ -946,6 +1144,7 @@ mod tests {
             type_map: default_type_map(),
             strip_prefix: None,
             dry_run: false,
+            missing_status: MissingStatus::Stable,
         };
         let report = import_tree(&options).unwrap();
         assert_eq!(report.collisions, 1);
