@@ -36,7 +36,8 @@ pub use baseline::{
     parse_baseline, relink, render_baseline, same_but_task_boxes,
 };
 pub use layout::{
-    BASELINE_DIR, PACT_FILE, REFLECTIONS_DIR, ReflectionFile, Structure, StructureFinding,
+    BASELINE_DIR, MATCHES_NO_PAGE, NESTED_NOT_READ, NOT_A_VALID_GLOB, PACT_FILE,
+    READS_AS_A_SENTENCE, REFLECTIONS_DIR, ReflectionFile, Structure, StructureFinding,
     THREADS_SUFFIX, baseline_path, classify, domain_rel, fits_structure, is_under_reflections,
     reflection_folders, structure_findings, structure_globs, threads_path,
     validate_new_reflection_path, validate_reflection_path,

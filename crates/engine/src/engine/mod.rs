@@ -7141,7 +7141,7 @@ mod names;
 mod origins;
 mod read;
 mod reflect;
-pub use reflect::REFLECT_GUIDANCE;
+pub use reflect::{REFLECT_GUIDANCE, STRUCTURE_HINT};
 mod reflection;
 mod reflection_assets;
 pub use fence::KEPT_HERE;

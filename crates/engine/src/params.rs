@@ -666,7 +666,8 @@ pub struct WriteReflectionParams {
     #[serde(default)]
     pub to: Option<String>,
     /// settle: the section ids whose change you settle; leave it out to
-    /// settle the whole page, its top included.
+    /// settle the whole page, its top included. A heading with no id line
+    /// yet is left out: it gets one on the next write, then settle again.
     #[serde(default, deserialize_with = "null_as_default")]
     pub sections: Vec<String>,
     /// settle: kept (the person's text stands and the sources stay) or

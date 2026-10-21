@@ -298,7 +298,7 @@ pub fn structure_findings(pact: &str, pages: &[String]) -> Vec<StructureFinding>
             continue;
         };
         let matcher = glob.compile_matcher();
-        if !text.contains(' ') && !pages.iter().any(|page| matcher.is_match(page)) {
+        if !pages.iter().any(|page| matcher.is_match(page)) {
             findings.push(finding(text, MATCHES_NO_PAGE));
         }
     }
@@ -578,7 +578,7 @@ mod tests {
 
     #[test]
     fn structure_findings_name_what_is_not_read_as_a_glob() {
-        let pact = "# Pact\n\n## Structure\n\nOne glob per bullet.\n\n- a folder per domain\n- */README.md\n- not a glob [\n- archive/*.md\n- `guides/*.md`\n  - nested/*.md\n  - just a few words\n\n```\n- in a fence\n```\n\n## Pages\n\n- a page somebody asked for\n";
+        let pact = "# Pact\n\n## Structure\n\nOne glob per bullet.\n\n- a folder per domain\n- one page per topic, under guides/\n- */README.md\n- not a glob [\n- archive/*.md\n- `guides/*.md`\n  - nested/*.md\n  - just a few words\n\n```\n- in a fence\n```\n\n## Pages\n\n- a page somebody asked for\n";
         let pages = vec!["eng/README.md".to_string(), "guides/a.md".to_string()];
         let found: Vec<(String, &str)> = structure_findings(pact, &pages)
             .into_iter()
@@ -587,13 +587,14 @@ mod tests {
         assert_eq!(
             found,
             vec![
+                ("a folder per domain".to_string(), READS_AS_A_SENTENCE),
                 (
-                    "a folder per domain".to_string(),
-                    "reads as a sentence, not a glob"
+                    "one page per topic, under guides/".to_string(),
+                    MATCHES_NO_PAGE
                 ),
-                ("not a glob [".to_string(), "is not a valid glob"),
-                ("archive/*.md".to_string(), "matches no page"),
-                ("nested/*.md".to_string(), "nested bullets are not read"),
+                ("not a glob [".to_string(), NOT_A_VALID_GLOB),
+                ("archive/*.md".to_string(), MATCHES_NO_PAGE),
+                ("nested/*.md".to_string(), NESTED_NOT_READ),
             ]
         );
         assert!(
@@ -603,6 +604,6 @@ mod tests {
         // `*` stays inside one folder, as the queue reads it.
         let found = structure_findings("## Structure\n\n- *.md\n", &["guides/a.md".to_string()]);
         assert_eq!(found.len(), 1, "{:?}", found.first().map(|f| &f.bullet));
-        assert_eq!(found[0].reason, "matches no page");
+        assert_eq!(found[0].reason, MATCHES_NO_PAGE);
     }
 }

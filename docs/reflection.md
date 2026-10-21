@@ -149,7 +149,7 @@ Items about the same section stay together. Groups come oldest first, and inside
 The agent settles a feedback item in one of three ways:
 
 - It takes the change into the engrams: it changes the engrams, then writes the section with its source engrams.
-- It keeps the change as the person's text (`write_reflection` with `action: settle` and `outcome: kept`). A settle without `sections` settles the whole page, its top included. When the pages follow a changed pact again, the agent settles `PACT.md` this way.
+- It keeps the change as the person's text (`write_reflection` with `action: settle` and `outcome: kept`). A settle without `sections` settles the whole page, its top included. A heading with no id line yet is left out. It gets one on the next write through Crystalline, and a settle after that settles it. When the pages follow a changed pact again, the agent settles `PACT.md` this way.
 - It answers in a thread (`discuss` with `answers_feedback`), when it disagrees or has a question.
 
 Three nudges point the agent at open items of the Reflections its user curates: the receipt of a write, the reminder at the end of a session (the Stop hook) and the line for the domain in the routing block at session start ("Reflection: 3 open items - call reflect"). The daemon counts the open items every five minutes.

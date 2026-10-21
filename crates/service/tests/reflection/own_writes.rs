@@ -147,6 +147,33 @@ async fn a_hand_typed_heading_stays_feedback_through_an_agents_section_write() {
     assert_eq!(owed[0]["what"], "new", "{q}");
 }
 
+/// An agent's new section that shares its heading with a person's changed
+/// section elsewhere on the page is the agent's own text: only the person's
+/// change is owed.
+#[tokio::test]
+async fn an_agents_new_section_named_like_a_persons_changed_one_is_its_own() {
+    let fx = reflecting().await;
+    fx.engine
+        .write_reflection(&write("a.md", TWO_SECTIONS), &agent())
+        .await
+        .unwrap();
+    let edited = page(&fx, "a.md").replace("At night.", "At dawn.");
+    fx.engine
+        .write_reflection(&write("a.md", &edited), &person())
+        .await
+        .unwrap();
+    let grown = page(&fx, "a.md") + "\n## Night deploys\n\nA second part.\n";
+    fx.engine
+        .write_reflection(&write("a.md", &grown), &agent())
+        .await
+        .unwrap();
+    let q = queue(&fx).await;
+    let owed = feedback(&q);
+    assert_eq!(owed.len(), 1, "{q}");
+    assert_eq!(owed[0]["what"], "changed", "{q}");
+    assert_eq!(owed[0]["changed_by"][0], "jordi", "{q}");
+}
+
 const PACT: &str = "# How we write\n\n## Audience\n\n- New people.\n\n## Structure\n\nOne glob per bullet.\n\n- *.md\n";
 
 #[tokio::test]
@@ -255,7 +282,10 @@ async fn a_prose_structure_bullet_is_named_in_the_receipt() {
     assert_eq!(
         written["structure_findings"],
         serde_json::json!([
-            { "bullet": "a folder per domain", "reason": "reads as a sentence, not a glob" }
+            {
+                "bullet": "a folder per domain",
+                "reason": crystalline_core::reflection::READS_AS_A_SENTENCE
+            }
         ]),
         "{written}"
     );
@@ -292,7 +322,7 @@ async fn off_structure_carries_a_hint_when_no_glob_fits() {
     assert_eq!(off.len(), 1, "{q}");
     assert_eq!(
         off[0]["hint"],
-        "The pact's ## Structure bullets are read as globs, one per top-level bullet, for example - guides/*.md. None of them matches a page.",
+        crystalline_service::engine::STRUCTURE_HINT,
         "{q}"
     );
 

@@ -1868,9 +1868,15 @@ impl Engine {
             let stored_page = stored.as_deref().unwrap_or("");
             let owed = r::feedback_changes(stored_page, &baseline);
             let owed_ids: BTreeSet<&str> = owed.iter().filter_map(|c| c.id.as_deref()).collect();
+            // The headings of owed sections this write may have sent back
+            // without their id: one that never had an id, and one whose id
+            // is no longer on the page. A person's section still on the page
+            // under its id names no other section.
+            let on_page: BTreeSet<&str> = sections.iter().filter_map(|s| s.id.as_deref()).collect();
             let owed_headings: Vec<String> = owed
                 .iter()
                 .filter(|c| c.kind != r::ChangeKind::Removed)
+                .filter(|c| c.id.as_deref().is_none_or(|id| !on_page.contains(id)))
                 .map(|c| c.heading.to_lowercase())
                 .collect();
             let on_stored: BTreeSet<String> = r::split_sections(stored_page)
@@ -1905,7 +1911,6 @@ impl Engine {
                 advanced.push(id);
             }
             // A reflected section the agent left out is its removal.
-            let on_page: BTreeSet<&str> = sections.iter().filter_map(|s| s.id.as_deref()).collect();
             let reflected = r::baseline_ids(&baseline);
             for id in &on_stored {
                 if !on_page.contains(id.as_str())
