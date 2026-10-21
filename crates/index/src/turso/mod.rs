@@ -1101,7 +1101,7 @@ fn domain_host_of(r: &Row) -> DomainHost {
 
 /// The read of one automation lease row, in [`automation_lease_of`]'s column
 /// order.
-const AUTOMATION_LEASE_SQL: &str = "SELECT instance_id, account, runner, token, taken_at, renewed_at, unshared_at_start, due_at_start FROM automation_lease WHERE domain_id=?1 AND loop_kind=?2";
+const AUTOMATION_LEASE_SQL: &str = "SELECT instance_id, account, runner, token, taken_at, renewed_at, unshared_at_start, due_at_start, pr_url, written FROM automation_lease WHERE domain_id=?1 AND loop_kind=?2";
 
 /// An [`AutomationLease`] from a row read by [`AUTOMATION_LEASE_SQL`]'s
 /// columns.
@@ -1117,6 +1117,8 @@ fn automation_lease_of(r: &Row) -> Result<AutomationLease> {
         token: cell_text(r, 3).unwrap_or_default(),
         taken_at: cell_text(r, 4).unwrap_or_default(),
         renewed_at: cell_text(r, 5).unwrap_or_default(),
+        pr_url: cell_text(r, 8),
+        written: serde_json::from_str(&cell_text(r, 9).unwrap_or_else(|| "[]".to_string()))?,
     })
 }
 
@@ -4493,8 +4495,11 @@ impl Store for TursoStore {
         // One atomic upsert, the host lock's claim: insert when unheld, or
         // replace a row whose last renewal is older than `stale_before`. A
         // fresh row is left untouched, whoever asks; the re-read then tells
-        // whose token the row carries.
+        // whose token the row carries. One instance owns a Turso database,
+        // so the row read before the claim is the row a landed claim
+        // replaced.
         let token = crate::store::claim_token(now);
+        let before = self.automation_lease(domain, loop_kind).await?;
         self.conn
             .execute(
                 "INSERT INTO automation_lease(domain_id, loop_kind, instance_id, account, runner, \
@@ -4503,7 +4508,8 @@ impl Store for TursoStore {
                  ON CONFLICT(domain_id, loop_kind) DO UPDATE SET \
                  instance_id=excluded.instance_id, account=excluded.account, runner=excluded.runner, \
                  token=excluded.token, taken_at=excluded.taken_at, renewed_at=excluded.renewed_at, \
-                 unshared_at_start=excluded.unshared_at_start, due_at_start=excluded.due_at_start \
+                 unshared_at_start=excluded.unshared_at_start, due_at_start=excluded.due_at_start, \
+                 pr_url=NULL, written='[]' \
                  WHERE automation_lease.renewed_at < ?10",
                 vec![
                     Value::Integer(domain.0),
@@ -4521,8 +4527,78 @@ impl Store for TursoStore {
             .await?;
         match self.automation_lease(domain, loop_kind).await? {
             Some(lease) if lease.token != token => Ok(LeaseClaim::Held(lease)),
-            _ => Ok(LeaseClaim::Acquired { token }),
+            _ => Ok(LeaseClaim::Acquired {
+                token,
+                replaced: before,
+            }),
         }
+    }
+
+    async fn set_automation_pr_url(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        token: &str,
+        pr_url: &str,
+    ) -> Result<bool> {
+        let n = self
+            .conn
+            .execute(
+                "UPDATE automation_lease SET pr_url=?4 \
+                 WHERE domain_id=?1 AND loop_kind=?2 AND token=?3",
+                vec![
+                    Value::Integer(domain.0),
+                    Value::Text(loop_kind.to_string()),
+                    Value::Text(token.to_string()),
+                    Value::Text(pr_url.to_string()),
+                ],
+            )
+            .await?;
+        Ok(n > 0)
+    }
+
+    async fn note_automation_written(
+        &self,
+        domain: DomainId,
+        account: &str,
+        paths: &[String],
+        stale_before: &str,
+    ) -> Result<u64> {
+        // One process owns a Turso database and the engine serializes its
+        // store calls, so a read and a token-guarded write of each lease
+        // cannot interleave with another note.
+        let mut noted = 0;
+        for loop_kind in ["reflect", "evolve"] {
+            let Some(lease) = self.automation_lease(domain, loop_kind).await? else {
+                continue;
+            };
+            if lease.holder.account.as_deref() != Some(account)
+                || lease.renewed_at.as_str() < stale_before
+            {
+                continue;
+            }
+            let mut written = lease.written;
+            for path in paths {
+                if !written.contains(path) {
+                    written.push(path.clone());
+                }
+            }
+            let n = self
+                .conn
+                .execute(
+                    "UPDATE automation_lease SET written=?4 \
+                     WHERE domain_id=?1 AND loop_kind=?2 AND token=?3",
+                    vec![
+                        Value::Integer(domain.0),
+                        Value::Text(loop_kind.to_string()),
+                        Value::Text(lease.token.clone()),
+                        Value::Text(serde_json::to_string(&written)?),
+                    ],
+                )
+                .await?;
+            noted += n;
+        }
+        Ok(noted)
     }
 
     async fn renew_automation_lease(

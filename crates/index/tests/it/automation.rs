@@ -60,7 +60,7 @@ fn holder(instance: &str, runner: &str) -> LeaseHolder {
 
 fn token_of(claim: LeaseClaim) -> String {
     match claim {
-        LeaseClaim::Acquired { token } => token,
+        LeaseClaim::Acquired { token, .. } => token,
         LeaseClaim::Held(lease) => panic!("expected to acquire, held by {lease:?}"),
     }
 }
@@ -373,4 +373,98 @@ async fn empty_domain_row_takes_its_automation(store: &dyn Store) {
 parity!(
     an_empty_domain_row_drops_with_its_lease_and_runs,
     empty_domain_row_takes_its_automation
+);
+
+/// A run's written paths and its pull request ride on the lease: a note
+/// lands only on a fresh lease of the noting account, each path once, and a
+/// take over a stale lease starts clean and names the lease it replaced.
+async fn lease_carries_written_and_pr_url(store: &dyn Store) {
+    let d = domain(store, "eng").await;
+    let first = holder("inst-a", "cli");
+    let token = token_of(
+        store
+            .take_automation_lease(d, "evolve", &first, T0, BEFORE_T0)
+            .await
+            .unwrap(),
+    );
+    let paths = |p: &[&str]| p.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        store
+            .note_automation_written(d, "ada", &paths(&["b.md", "a.md"]), BEFORE_T0)
+            .await
+            .unwrap(),
+        1
+    );
+    store
+        .note_automation_written(d, "ada", &paths(&["a.md", "c.md"]), BEFORE_T0)
+        .await
+        .unwrap();
+    // Another account, or a lease gone stale, notes nothing.
+    assert_eq!(
+        store
+            .note_automation_written(d, "bob", &paths(&["x.md"]), BEFORE_T0)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        store
+            .note_automation_written(d, "ada", &paths(&["y.md"]), "2026-10-21T10:01:00+00:00")
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(
+        store
+            .set_automation_pr_url(d, "evolve", &token, "https://forge.test/pull/1")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .set_automation_pr_url(d, "evolve", "not-the-token", "https://x")
+            .await
+            .unwrap()
+    );
+    let lease = store.automation_lease(d, "evolve").await.unwrap().unwrap();
+    let mut written = lease.written.clone();
+    written.sort();
+    assert_eq!(written, paths(&["a.md", "b.md", "c.md"]));
+    assert_eq!(lease.pr_url.as_deref(), Some("https://forge.test/pull/1"));
+
+    let later = "2026-10-21T10:06:00+00:00";
+    match store
+        .take_automation_lease(
+            d,
+            "evolve",
+            &holder("inst-b", "k8s"),
+            later,
+            "2026-10-21T10:01:00+00:00",
+        )
+        .await
+        .unwrap()
+    {
+        LeaseClaim::Acquired { replaced, .. } => {
+            assert_eq!(replaced, Some(lease), "the stale lease, as it was");
+        }
+        LeaseClaim::Held(held) => panic!("a stale lease is taken over: {held:?}"),
+    }
+    let fresh = store.automation_lease(d, "evolve").await.unwrap().unwrap();
+    assert!(
+        fresh.written.is_empty() && fresh.pr_url.is_none(),
+        "{fresh:?}"
+    );
+    // The first take of an unheld lease replaced nothing.
+    match store
+        .take_automation_lease(d, "reflect", &first, T0, BEFORE_T0)
+        .await
+        .unwrap()
+    {
+        LeaseClaim::Acquired { replaced, .. } => assert_eq!(replaced, None),
+        LeaseClaim::Held(held) => panic!("{held:?}"),
+    }
+}
+parity!(
+    written_paths_and_the_pull_request_ride_on_the_lease,
+    lease_carries_written_and_pr_url
 );

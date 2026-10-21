@@ -1014,9 +1014,6 @@ pub struct Engine {
     // read to the next day. See `Engine::set_automation_now`.
     #[cfg(any(test, feature = "testing"))]
     automation_now: std::sync::Mutex<Option<DateTime<FixedOffset>>>,
-    // The pull request each automation lease token shared its run in, kept
-    // until the run is recorded (see `Engine::automation_share`).
-    automation_shared: std::sync::Mutex<HashMap<String, String>>,
     // A seam that is a gate rather than a stopwatch: when armed, the next move
     // or delete of a Reflection signals `entered` after its live-room screen,
     // then waits for `release` before it takes the page lock. See
@@ -2355,7 +2352,6 @@ impl Engine {
             hold_next_draft_edit: std::sync::atomic::AtomicU64::new(0),
             #[cfg(any(test, feature = "testing"))]
             automation_now: std::sync::Mutex::new(None),
-            automation_shared: std::sync::Mutex::new(HashMap::new()),
             #[cfg(any(test, feature = "testing"))]
             hold_next_room_screen: std::sync::Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
@@ -4141,7 +4137,10 @@ impl Engine {
     pub(crate) async fn reflection_home_here(&self, domain: &str) -> bool {
         matches!(
             self.reflection_state(domain).await,
-            Ok(crystalline_core::reflection::ReflectionState::On { .. })
+            Ok(crystalline_core::reflection::ReflectionState::On {
+                home: crystalline_core::reflection::ReflectionHome::Here
+                    | crystalline_core::reflection::ReflectionHome::Local
+            })
         ) && !self.domain_is_read_only(domain).await
             // A takeover stops the old host's backup at once, not at its
             // next heartbeat.

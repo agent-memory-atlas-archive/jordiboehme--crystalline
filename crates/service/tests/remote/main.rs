@@ -8,6 +8,7 @@
 mod support;
 
 mod answers;
+mod automation;
 mod client;
 mod connect;
 mod ctl;

@@ -19,8 +19,14 @@ use crystalline_index::{
 
 use crate::scope::{ReflectionCaller, ReflectionRight, Scope};
 
+/// Why a domain whose loop can run nowhere here is not due.
+const NOT_HOSTED_HERE: &str = "not hosted here";
+
 /// The refusal of a take while another run holds a fresh lease.
 const ALREADY_RUNNING: &str = "already running";
+
+/// The longest runner label a lease keeps.
+const RUNNER_MAX_BYTES: usize = 128;
 
 /// The summary an expired run is recorded with.
 const EXPIRED_SUMMARY: &str = "The runner stopped renewing its lease.";
@@ -93,6 +99,17 @@ fn version_of<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
     crystalline_index::hex_lower(&hasher.finalize())
 }
 
+/// A run as the answers show it: everything but the items it left, which
+/// are bookkeeping keyed by page paths and folder names (`left` counts
+/// them).
+fn run_json(run: &AutomationRun) -> Value {
+    let mut value = json!(run);
+    if let Some(obj) = value.as_object_mut() {
+        obj.remove("left_items");
+    }
+    value
+}
+
 /// What a status answer shows of a lease that is still fresh.
 fn running_json(lease: &AutomationLease) -> Value {
     json!({
@@ -144,9 +161,10 @@ impl Engine {
 
     /// Take the lease of `lp` on `domain` for `runner`: `{token,
     /// renew_secs}`. Refused with "already running" while another run holds
-    /// a fresh lease, and with "runs on" and its name where another instance runs
-    /// the loop. A stale lease is taken over, and the run that held it is
-    /// recorded as expired.
+    /// a fresh lease, and with "runs on" and its name where another instance
+    /// runs the loop. A stale lease is taken over, and the run that held it
+    /// is recorded as expired, once: the store names the lease the claim
+    /// replaced in the claim itself.
     pub async fn automation_lease_take(
         &self,
         lp: Loop,
@@ -154,6 +172,12 @@ impl Engine {
         runner: &str,
         scope: &Scope,
     ) -> Result<Value> {
+        let runner = runner.trim();
+        if runner.is_empty() || runner.len() > RUNNER_MAX_BYTES {
+            return Err(EngineError::Invalid(format!(
+                "runner must be a label of 1 to {RUNNER_MAX_BYTES} bytes"
+            )));
+        }
         self.require_loop_right(lp, domain, scope).await?;
         match self.loop_runs(lp, domain, scope).await {
             Runs::Here => {}
@@ -172,17 +196,15 @@ impl Engine {
             due_at_start: due.items.into_iter().map(|(key, _)| key).collect(),
         };
         let store = self.store.lock().await;
-        let previous = store.automation_lease(id, lp.as_str()).await?;
         match store
             .take_automation_lease(id, lp.as_str(), &holder, &now, &stale_before)
             .await?
         {
             LeaseClaim::Held(_) => Err(EngineError::Refused(ALREADY_RUNNING.to_string())),
-            LeaseClaim::Acquired { token } => {
+            LeaseClaim::Acquired { token, replaced } => {
                 // A take that lands over a lease means that lease was stale:
                 // its runner stopped, and the history says so.
-                if let Some(old) = previous {
-                    let pr_url = self.automation_shared.lock().unwrap().remove(&old.token);
+                if let Some(old) = replaced {
                     let run = AutomationRun {
                         started_at: old.taken_at.clone(),
                         ended_at: old.renewed_at.clone(),
@@ -193,7 +215,7 @@ impl Engine {
                         left: 0,
                         judgment_waiting: 0,
                         summary: EXPIRED_SUMMARY.to_string(),
-                        pr_url,
+                        pr_url: old.pr_url.clone(),
                         left_items: Vec::new(),
                     };
                     store
@@ -246,18 +268,23 @@ impl Engine {
                 .release_automation_lease(id, lp.as_str(), token)
                 .await?
         };
-        self.automation_shared.lock().unwrap().remove(token);
         Ok(json!({ "released": released.is_some() }))
     }
 
     /// Record the run that holds `token`, then release its lease: `{run}`.
+    ///
+    /// The release is the authority: it is a compare-and-delete on the
+    /// token, and the run is recorded from the lease it returns, in the same
+    /// store lock. A token that no longer holds the lease (it expired and
+    /// another run took it, or it was never this lease's) is refused and
+    /// records nothing.
     ///
     /// Only a `done` run leaves items for a person: every item due when the
     /// lease was taken that is still due at the same version (R3). A run that
     /// stopped at its cap, failed or expired leaves none, so what it did not
     /// reach stays due. An evolve run also counts the judgment findings
     /// waiting. The summary keeps its first 2 KiB, and the pull request the
-    /// run shared in rides along.
+    /// run shared in rides along from the lease.
     pub async fn automation_run_record(
         &self,
         lp: Loop,
@@ -266,14 +293,32 @@ impl Engine {
         report: &RunReport,
         scope: &Scope,
     ) -> Result<Value> {
+        let started_at = report.started_at.trim();
+        if !started_at.is_empty() && DateTime::parse_from_rfc3339(started_at).is_err() {
+            return Err(EngineError::Invalid(format!(
+                "started_at '{started_at}' is not an RFC 3339 time"
+            )));
+        }
         self.require_loop_right(lp, domain, scope).await?;
         let id = self.loop_domain_id(domain).await?;
-        let lease = self.held_lease(lp, domain, id, token).await?;
+        // A wrong token is refused before the work is counted; the release
+        // below decides for good.
+        self.held_lease(lp, domain, id, token).await?;
+        // Counted before the lock, so a long evolve sweep holds no store
+        // lock; it may be a moment old by the time the run is recorded.
         let needs_work = report.outcome == RunOutcome::Done || lp == Loop::Evolve;
         let work = if needs_work {
             self.loop_work(lp, domain, scope).await?
         } else {
             Work::default()
+        };
+        let (now, _) = self.automation_window();
+        let store = self.store.lock().await;
+        let Some(lease) = store
+            .release_automation_lease(id, lp.as_str(), token)
+            .await?
+        else {
+            return Err(lease_lost(lp, domain));
         };
         let left_items: Vec<DueKey> = if report.outcome == RunOutcome::Done {
             lease
@@ -286,13 +331,11 @@ impl Engine {
         } else {
             Vec::new()
         };
-        let (now, _) = self.automation_window();
-        let pr_url = self.automation_shared.lock().unwrap().remove(token);
         let run = AutomationRun {
-            started_at: if report.started_at.trim().is_empty() {
+            started_at: if started_at.is_empty() {
                 lease.taken_at.clone()
             } else {
-                report.started_at.clone()
+                started_at.to_string()
             },
             ended_at: now,
             runner: lease.holder.runner.clone(),
@@ -302,27 +345,51 @@ impl Engine {
             left: left_items.len() as u64,
             judgment_waiting: work.judgment,
             summary: cap_summary(&report.summary, SUMMARY_MAX_BYTES).to_string(),
-            pr_url,
+            pr_url: lease.pr_url.clone(),
             left_items,
         };
-        {
-            let store = self.store.lock().await;
-            store
-                .record_automation_run(id, lp.as_str(), &run, RUNS_KEPT)
-                .await?;
-            store
-                .release_automation_lease(id, lp.as_str(), token)
-                .await?;
+        store
+            .record_automation_run(id, lp.as_str(), &run, RUNS_KEPT)
+            .await?;
+        drop(store);
+        Ok(json!({ "domain": domain, "loop": lp, "run": run_json(&run) }))
+    }
+
+    /// Note that `account` wrote `paths` in `domain`, for the run whose
+    /// lease that account holds there (R4, ruling B). The MCP tool dispatch
+    /// calls this after every write-shaped tool that succeeded; nothing else
+    /// does, so a write over REST, Fluid, the files or a sync is never noted
+    /// and never shared by a run. A domain with no fresh lease of that
+    /// account notes nothing.
+    pub async fn note_written(&self, domain: &str, account: &str, paths: &[String]) -> Result<()> {
+        if paths.is_empty() || account.is_empty() {
+            return Ok(());
         }
-        Ok(json!({ "domain": domain, "loop": lp, "run": run }))
+        let (_, stale_before) = self.automation_window();
+        let store = self.store.lock().await;
+        let Some(id) = store.domain_id(domain).await? else {
+            return Ok(());
+        };
+        store
+            .note_automation_written(id, account, paths, &stale_before)
+            .await?;
+        Ok(())
     }
 
     /// Share what the run that holds `token` changed, as a pull request
     /// whatever the domain's `sharing` says (R4): `{outcome: "shared" |
-    /// "nothing_to_share" | "no_origin", url?, files}`. Only the files that
-    /// are new since the lease was taken, or whose checksum moved since,
-    /// travel; a person's unshared work stays theirs. The title names the
-    /// loop, the domain and the date; the description is `summary`.
+    /// "nothing_to_share" | "no_origin", url?, files, held_back, attributed}`.
+    ///
+    /// Only the runner's own MCP writes are shared: the paths the lease's
+    /// account wrote over MCP while it held the lease
+    /// ([`Engine::note_written`]) that are unshared now. A lease with no
+    /// account cannot attribute a write; it shares the files that are new
+    /// or changed since the take instead, and says `attributed: false`.
+    /// Either way a path a person had unshared work on when the lease was
+    /// taken is held back, even when the run changed it too: it is listed
+    /// in `held_back` and named in the pull request description, so a
+    /// person shares it. The title names the loop, the domain and the date;
+    /// the description is the summary, capped like the run record's.
     pub async fn automation_share(
         &self,
         lp: Loop,
@@ -334,35 +401,62 @@ impl Engine {
         self.require_loop_right(lp, domain, scope).await?;
         let id = self.loop_domain_id(domain).await?;
         let lease = self.held_lease(lp, domain, id, token).await?;
+        let attributed = lease.holder.account.is_some();
         if !self.config.read().unwrap().github_enabled() || !self.domain_has_origin(domain)? {
-            return Ok(json!({ "outcome": "no_origin", "files": [] }));
+            return Ok(json!({
+                "outcome": "no_origin",
+                "files": [],
+                "held_back": [],
+                "attributed": attributed,
+            }));
         }
-        let files: Vec<String> = self
+        let start = &lease.holder.unshared_at_start;
+        let candidates: Vec<String> = self
             .unshared_now(domain, scope)
             .await?
             .into_iter()
             .filter(|now| {
-                !lease
-                    .holder
-                    .unshared_at_start
-                    .iter()
-                    .any(|start| start.path == now.path && start.checksum == now.checksum)
+                if attributed {
+                    lease.written.contains(&now.path)
+                } else {
+                    !start
+                        .iter()
+                        .any(|s| s.path == now.path && s.checksum == now.checksum)
+                }
             })
             .map(|now| now.path)
             .collect();
+        let (mut held_back, files): (Vec<String>, Vec<String>) = candidates
+            .into_iter()
+            .partition(|path| start.iter().any(|s| &s.path == path));
+        held_back.sort();
         if files.is_empty() {
-            return Ok(json!({ "outcome": "nothing_to_share", "files": [] }));
+            return Ok(json!({
+                "outcome": "nothing_to_share",
+                "files": [],
+                "held_back": held_back,
+                "attributed": attributed,
+            }));
         }
         let title = format!(
             "{} run on {domain}, {}",
             lp.title_word(),
             self.automation_clock().format("%Y-%m-%d")
         );
+        let mut description = cap_summary(summary, SUMMARY_MAX_BYTES).to_string();
+        if !held_back.is_empty() {
+            let n = held_back.len();
+            description.push_str(&format!(
+                "\n\n{n} {} held back because a person had unshared work on {}.",
+                if n == 1 { "file was" } else { "files were" },
+                if n == 1 { "it" } else { "them" },
+            ));
+        }
         let receipt = self
             .origin_share_with(
                 domain,
                 Some(&title),
-                Some(summary),
+                Some(&description),
                 None,
                 Some(&files),
                 Some(true),
@@ -373,7 +467,12 @@ impl Engine {
             Some("proposed") => &receipt,
             Some("updated") => &receipt["proposal"],
             Some("nothing_to_share") => {
-                return Ok(json!({ "outcome": "nothing_to_share", "files": [] }));
+                return Ok(json!({
+                    "outcome": "nothing_to_share",
+                    "files": [],
+                    "held_back": held_back,
+                    "attributed": attributed,
+                }));
             }
             _ => &Value::Null,
         };
@@ -382,23 +481,34 @@ impl Engine {
             // share's own answer, passed on as it came.
             let mut answer = receipt.clone();
             answer["files"] = json!(files);
+            answer["held_back"] = json!(held_back);
+            answer["attributed"] = json!(attributed);
             return Ok(answer);
         };
-        self.automation_shared
-            .lock()
-            .unwrap()
-            .insert(token.to_string(), url.clone());
+        {
+            let store = self.store.lock().await;
+            store
+                .set_automation_pr_url(id, lp.as_str(), token, &url)
+                .await?;
+        }
         // What the pull request carries, as the share reports it.
         let carried: Vec<&Value> = ["added", "updated", "deleted"]
             .iter()
             .filter_map(|k| report[*k].as_array())
             .flatten()
             .collect();
-        Ok(json!({ "outcome": "shared", "url": url, "files": carried }))
+        Ok(json!({
+            "outcome": "shared",
+            "url": url,
+            "files": carried,
+            "held_back": held_back,
+            "attributed": attributed,
+        }))
     }
 
     /// The newest `limit` runs of `lp` on `domain`, newest first:
-    /// `{domain, loop, runs}`.
+    /// `{domain, loop, runs}`. The items a run left are its own
+    /// bookkeeping and stay out; `left` counts them.
     pub async fn automation_runs(
         &self,
         lp: Loop,
@@ -414,6 +524,7 @@ impl Engine {
                 .automation_runs(id, lp.as_str(), limit.clamp(1, RUNS_KEPT))
                 .await?
         };
+        let runs: Vec<Value> = runs.iter().map(run_json).collect();
         Ok(json!({ "domain": domain, "loop": lp, "runs": runs }))
     }
 
@@ -632,7 +743,10 @@ impl Engine {
                     .await?;
                 // One item per rule, engram and (for a pair rule) pair; the
                 // version is the scope an acknowledgment records, which moves
-                // only when the evidence does, never with the date.
+                // only when the evidence does, never with the date. A rule
+                // whose scope is empty keeps one constant version, so once a
+                // run left it, it stays left until its key changes, as an
+                // acknowledgment of it would.
                 let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
                 let mut judgment = 0u64;
                 for f in &swept.findings {
@@ -746,11 +860,15 @@ impl Engine {
             "counts": counts,
             "left_for_person": due.as_ref().map_or(0, |d| d.left),
             "running": running.as_ref().map(running_json),
-            "runs_on": match runs_on {
-                Runs::On(name) => Some(name),
+            "runs_on": match &runs_on {
+                Runs::On(name) => Some(name.as_str()),
                 _ => None,
             },
-            "last_run": last_run,
+            "reason": match runs_on {
+                Runs::Nowhere(_) => Some(NOT_HOSTED_HERE),
+                _ => None,
+            },
+            "last_run": last_run.as_ref().map(run_json),
         }))
     }
 
@@ -799,6 +917,6 @@ impl Engine {
 /// the lease.
 fn lease_lost(lp: Loop, domain: &str) -> EngineError {
     EngineError::Refused(format!(
-        "this run no longer holds the {lp} lease of '{domain}': it expired or another run took it"
+        "lease is not held: this run's {lp} lease of '{domain}' expired or another run took it"
     ))
 }

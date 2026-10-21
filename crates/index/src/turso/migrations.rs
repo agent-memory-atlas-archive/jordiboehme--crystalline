@@ -157,6 +157,11 @@ pub const MIGRATIONS: &[Migration] = &[
         label: "automation lease and runs",
         sql: SCHEMA_V27,
     },
+    Migration {
+        version: 28,
+        label: "automation lease pull request and written paths",
+        sql: SCHEMA_V28,
+    },
 ];
 
 const SCHEMA_V1: &str = r#"
@@ -907,6 +912,15 @@ CREATE TABLE automation_run (
     left_items TEXT NOT NULL
 );
 CREATE INDEX idx_automation_run_loop ON automation_run(domain_id, loop_kind, id);
+"#;
+
+// What a run shared and wrote, kept with its lease: the pull request it
+// shared its changes in (null until it shares), and the paths its account
+// wrote over MCP while it held the lease, as JSON text. Both go with the
+// lease into the run record.
+const SCHEMA_V28: &str = r#"
+ALTER TABLE automation_lease ADD COLUMN pr_url TEXT;
+ALTER TABLE automation_lease ADD COLUMN written TEXT NOT NULL DEFAULT '[]';
 "#;
 
 const SCHEMA_V9: &str = r#"

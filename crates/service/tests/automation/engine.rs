@@ -10,7 +10,7 @@ use crystalline_core::automation::{Loop, RunOutcome, RunReport};
 use crystalline_core::config::{GitHubConfig, GlobalConfig};
 use crystalline_index::TursoStore;
 use crystalline_service::engine::ShareActor;
-use crystalline_service::params::{DiscussParams, WriteReflectionParams};
+use crystalline_service::params::{DiscussParams, ReflectParams, WriteReflectionParams};
 use crystalline_service::rest::{AuthStore, Role};
 use crystalline_service::{DomainAccess, Engine, EngineError, ReflectionCaller, Scope};
 use serde_json::Value;
@@ -361,32 +361,98 @@ async fn a_failed_run_parks_nothing() {
     );
 }
 
+/// The age of the one `source_changed` item in `eng`'s queue.
+async fn source_change_age(fx: &Fx) -> i64 {
+    let queue = fx
+        .engine
+        .reflect(
+            &ReflectParams {
+                domains: vec!["eng".into()],
+                ..Default::default()
+            },
+            &agent(),
+        )
+        .await
+        .unwrap();
+    let item = queue["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["what"] == "source_changed")
+        .unwrap_or_else(|| panic!("a source_changed item: {queue}"));
+    item["age_secs"].as_i64().unwrap()
+}
+
+/// A section's source changed a day ago and a run left the update for a
+/// person. Time goes on: the item's age moves (it is read from the real
+/// clock against the engram's mtime), the test clock moves a day, and the
+/// version does not move, so the item stays left. The index records an
+/// mtime only with a content change, so the source's new text is dated a
+/// day back before it is synced.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unchanged_item_keeps_its_version_a_day_later() {
     let fx = reflecting().await;
-    write_summary_pair(&fx.root);
+    let source = fx.root.join("runbooks/deploy.md");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(
+        &source,
+        engram("Deploy", "runbooks/deploy", "- [fact] deploys run at night"),
+    )
+    .unwrap();
     fx.engine.sync(None).await.unwrap();
-    open_thread(&fx, "aaaa1111", "Still true?").await;
-    for lp in [Loop::Reflect, Loop::Evolve] {
-        assert_eq!(status(&fx.engine, lp).await["due"], true, "{lp}");
-        let token = take(&fx.engine, lp, "eng", "cli").await;
-        record(
-            &fx.engine,
-            lp,
-            "eng",
-            &token,
-            report(RunOutcome::Done, 0, "Left it."),
+    fx.engine
+        .write_reflection(
+            &WriteReflectionParams {
+                domain: "eng".into(),
+                path: "d.md".into(),
+                sources: BTreeMap::from([(
+                    "aaaa1111".to_string(),
+                    vec!["runbooks/deploy".to_string()],
+                )]),
+                ..Default::default()
+            },
+            &agent(),
         )
-        .await;
-    }
-    for when in [start(), start() + Duration::days(1)] {
-        fx.engine.set_automation_now(Some(when));
-        for lp in [Loop::Reflect, Loop::Evolve] {
-            let s = status(&fx.engine, lp).await;
-            assert_eq!(s["due"], false, "{lp} at {when}: {s}");
-            assert!(s["left_for_person"].as_u64().unwrap() >= 1, "{lp}: {s}");
-        }
-    }
+        .await
+        .unwrap();
+    std::fs::write(
+        &source,
+        engram(
+            "Deploy",
+            "runbooks/deploy",
+            "- [fact] deploys run in the morning",
+        ),
+    )
+    .unwrap();
+    let file = std::fs::File::options().write(true).open(&source).unwrap();
+    file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(86_400))
+        .unwrap();
+    drop(file);
+    fx.engine.sync(None).await.unwrap();
+    let s = status(&fx.engine, Loop::Reflect).await;
+    assert_eq!(s["due"], true, "{s}");
+    assert_eq!(s["counts"]["updates"], 1, "{s}");
+
+    let token = take(&fx.engine, Loop::Reflect, "eng", "cli").await;
+    record(
+        &fx.engine,
+        Loop::Reflect,
+        "eng",
+        &token,
+        report(RunOutcome::Done, 0, "Left the update."),
+    )
+    .await;
+    let before = source_change_age(&fx).await;
+    assert!(before >= 86_000, "a day old: {before}");
+
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    fx.engine
+        .set_automation_now(Some(start() + Duration::days(1)));
+    let after = source_change_age(&fx).await;
+    assert!(after > before, "the age moved: {before} then {after}");
+    let s = status(&fx.engine, Loop::Reflect).await;
+    assert_eq!(s["due"], false, "{s}");
+    assert_eq!(s["left_for_person"], 1, "{s}");
 }
 
 // --- who runs ---------------------------------------------------------------
@@ -518,17 +584,52 @@ fn shared_files(shared: &Value) -> Vec<String> {
     files
 }
 
+/// `brand` with an accounts store in which `runner` (the runner's account)
+/// and `pia` (a person) may write, and the runner's scope.
+async fn with_accounts(eng: &Engine, tmp: &tempfile::TempDir) -> Scope {
+    let auth = Arc::new(
+        AuthStore::open(&tmp.path().join("web-auth.db"))
+            .await
+            .unwrap(),
+    );
+    for name in ["runner", "pia"] {
+        auth.add_user(name, name, None, Role::Editor, "pw12345678")
+            .await
+            .unwrap();
+    }
+    eng.set_domain_access(Arc::new(DomainAccess::new(auth)));
+    Scope::User {
+        account: "runner".into(),
+        admin: false,
+    }
+}
+
+fn write_note(root: &Path, rel: &str, body: &str) {
+    let permalink = rel.trim_end_matches(".md");
+    std::fs::write(root.join(rel), engram(body, permalink, body)).unwrap();
+}
+
+fn names(list: &Value) -> Vec<String> {
+    let mut out: Vec<String> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f.as_str().unwrap().to_string())
+        .collect();
+    out.sort();
+    out
+}
+
+/// The no-account fallback: a lease taken as the machine owner cannot
+/// attribute a write, so it shares what is new or changed since the take,
+/// as a pull request even under `sharing: direct`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn share_opens_a_pull_request_under_direct_sharing() {
     let tmp = tempfile::tempdir().unwrap();
     let mock = Arc::new(MockProvider::new());
     let (eng, root) = direct_team(&tmp, mock.clone()).await;
     let token = take(&eng, Loop::Evolve, "brand", "k8s").await;
-    std::fs::write(
-        root.join("notes/fix.md"),
-        engram("Fix", "notes/fix", "the run's fix"),
-    )
-    .unwrap();
+    write_note(&root, "notes/fix.md", "the run's fix");
     let shared = eng
         .automation_share(
             Loop::Evolve,
@@ -540,6 +641,7 @@ async fn share_opens_a_pull_request_under_direct_sharing() {
         .await
         .unwrap();
     assert_eq!(shared["outcome"], "shared", "{shared}");
+    assert_eq!(shared["attributed"], false, "{shared}");
     assert_eq!(shared_files(&shared), vec!["notes/fix.md"], "{shared}");
     let url = shared["url"].as_str().unwrap().to_string();
     assert!(
@@ -566,53 +668,119 @@ async fn share_opens_a_pull_request_under_direct_sharing() {
     )
     .await;
     assert_eq!(recorded["run"]["pr_url"], url.as_str(), "{recorded}");
-
-    // A second run with nothing new has nothing to share.
-    let again = take(&eng, Loop::Evolve, "brand", "k8s").await;
-    let nothing = eng
-        .automation_share(
-            Loop::Evolve,
-            "brand",
-            &again,
-            "Nothing.",
-            &Scope::Unrestricted,
-        )
-        .await
-        .unwrap();
-    assert_eq!(nothing["outcome"], "nothing_to_share", "{nothing}");
+    assert!(recorded["run"].get("left_items").is_none(), "{recorded}");
+    let s = status_of(&eng, Loop::Evolve, "brand").await;
+    assert_eq!(s["last_run"]["pr_url"], url.as_str(), "{s}");
+    assert!(s["last_run"].get("left_items").is_none(), "{s}");
 }
 
+/// A second run while the first run's pull request is still open: the
+/// share adds to that pull request (`updated`) and reports what it carries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_run_adds_to_the_open_pull_request() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mock = Arc::new(MockProvider::new());
+    let (eng, root) = direct_team(&tmp, mock.clone()).await;
+    let first = take(&eng, Loop::Evolve, "brand", "k8s").await;
+    write_note(&root, "notes/fix.md", "the first fix");
+    let one = eng
+        .automation_share(Loop::Evolve, "brand", &first, "One.", &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert_eq!(one["outcome"], "shared", "{one}");
+    record(
+        &eng,
+        Loop::Evolve,
+        "brand",
+        &first,
+        report(RunOutcome::Done, 1, "One."),
+    )
+    .await;
+
+    let second = take(&eng, Loop::Evolve, "brand", "k8s").await;
+    write_note(&root, "notes/fix-two.md", "the second fix");
+    let two = eng
+        .automation_share(Loop::Evolve, "brand", &second, "Two.", &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert_eq!(two["outcome"], "shared", "{two}");
+    assert!(
+        shared_files(&two).contains(&"notes/fix-two.md".to_string()),
+        "{two}"
+    );
+    assert!(two["url"].is_string(), "{two}");
+    // The share's own outcome was `updated`: one pull request, amended.
+    let calls = mock.calls();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|c| c.starts_with("create_proposal"))
+            .count(),
+        1,
+        "{calls:?}"
+    );
+    assert!(calls.iter().any(|c| c == "update_proposal:1"), "{calls:?}");
+    assert_eq!(two["url"], one["url"], "the same pull request");
+}
+
+/// Ruling B: with an account on the lease, only the paths its runner wrote
+/// over MCP travel. A person's edit on another path during the run stays
+/// out; a person's unshared edit on a path the run fixed too is held back
+/// and named.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn share_takes_only_the_runs_files_when_people_had_unshared_work() {
     let tmp = tempfile::tempdir().unwrap();
     let mock = Arc::new(MockProvider::new());
     let (eng, root) = direct_team(&tmp, mock.clone()).await;
+    let runner = with_accounts(&eng, &tmp).await;
     // A person's unshared edit, before the run takes its lease.
-    std::fs::write(
-        root.join("notes/person.md"),
-        engram("Person", "notes/person", "a person's draft"),
+    write_note(&root, "notes/shared-edit.md", "a person's draft");
+    // The lease is the runner's: taken as its account.
+    let taken = eng
+        .automation_lease_take(Loop::Evolve, "brand", "k8s", &runner)
+        .await
+        .unwrap();
+    let token = taken["token"].as_str().unwrap().to_string();
+    // The run writes over MCP (what the tool dispatch notes): its own fix,
+    // and a fix of the file the person had unshared work on.
+    write_note(&root, "notes/fix.md", "the run's fix");
+    write_note(
+        &root,
+        "notes/shared-edit.md",
+        "a person's draft, fixed by the run",
+    );
+    eng.note_written(
+        "brand",
+        "runner",
+        &[
+            "notes/fix.md".to_string(),
+            "notes/shared-edit.md".to_string(),
+        ],
     )
+    .await
     .unwrap();
-    let token = take(&eng, Loop::Evolve, "brand", "k8s").await;
-    std::fs::write(
-        root.join("notes/fix.md"),
-        engram("Fix", "notes/fix", "the run's fix"),
-    )
-    .unwrap();
+    // A person edits another path during the run, through Fluid or the
+    // files; nothing notes it. Another account's MCP write is not noted
+    // for this lease either.
+    write_note(&root, "notes/person-during.md", "typed while the run ran");
+    write_note(&root, "notes/pia.md", "pia's agent wrote this");
+    eng.note_written("brand", "pia", &["notes/pia.md".to_string()])
+        .await
+        .unwrap();
+
     let shared = eng
-        .automation_share(
-            Loop::Evolve,
-            "brand",
-            &token,
-            "Fixed one finding.",
-            &Scope::Unrestricted,
-        )
+        .automation_share(Loop::Evolve, "brand", &token, "Fixed two.", &runner)
         .await
         .unwrap();
     assert_eq!(shared["outcome"], "shared", "{shared}");
+    assert_eq!(shared["attributed"], true, "{shared}");
     assert_eq!(shared_files(&shared), vec!["notes/fix.md"], "{shared}");
-    // The person's work is still theirs to share; the run's fix waits in
-    // the pull request.
+    assert_eq!(
+        names(&shared["held_back"]),
+        vec!["notes/shared-edit.md"],
+        "{shared}"
+    );
+    // The people's work is still theirs to share.
     let left = eng
         .local_changes("brand", &ShareActor::Owner)
         .await
@@ -623,5 +791,240 @@ async fn share_takes_only_the_runs_files_when_people_had_unshared_work() {
         .iter()
         .map(|c| c["path"].as_str().unwrap())
         .collect();
-    assert!(paths.contains(&"notes/person.md"), "{left}");
+    for person in [
+        "notes/shared-edit.md",
+        "notes/person-during.md",
+        "notes/pia.md",
+    ] {
+        assert!(paths.contains(&person), "{person}: {left}");
+    }
+}
+
+/// The fallback holds back a path a person had unshared work on too, even
+/// when the run changed it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_fallback_holds_back_a_persons_unshared_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mock = Arc::new(MockProvider::new());
+    let (eng, root) = direct_team(&tmp, mock.clone()).await;
+    write_note(&root, "notes/x.md", "a person's draft");
+    let token = take(&eng, Loop::Evolve, "brand", "k8s").await;
+    write_note(&root, "notes/x.md", "a person's draft, changed by the run");
+    let shared = eng
+        .automation_share(
+            Loop::Evolve,
+            "brand",
+            &token,
+            "Nothing of mine.",
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(shared["outcome"], "nothing_to_share", "{shared}");
+    assert_eq!(shared["attributed"], false, "{shared}");
+    assert_eq!(names(&shared["held_back"]), vec!["notes/x.md"], "{shared}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_share_and_a_record_with_a_wrong_token_are_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mock = Arc::new(MockProvider::new());
+    let (eng, root) = direct_team(&tmp, mock.clone()).await;
+    take(&eng, Loop::Evolve, "brand", "k8s").await;
+    write_note(&root, "notes/fix.md", "the run's fix");
+    let share = eng
+        .automation_share(
+            Loop::Evolve,
+            "brand",
+            "not-the-token",
+            "x",
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap_err();
+    assert!(share.to_string().contains("lease is not held"), "{share}");
+    assert!(
+        !mock
+            .calls()
+            .iter()
+            .any(|c| c.starts_with("create_proposal")),
+        "{:?}",
+        mock.calls()
+    );
+    let recorded = eng
+        .automation_run_record(
+            Loop::Evolve,
+            "brand",
+            "not-the-token",
+            &report(RunOutcome::Done, 0, "x"),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        recorded.to_string().contains("lease is not held"),
+        "{recorded}"
+    );
+    let runs = eng
+        .automation_runs(Loop::Evolve, "brand", 10, &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert_eq!(runs["runs"], serde_json::json!([]), "{runs}");
+}
+
+// --- more of the lease ------------------------------------------------------
+
+/// A run whose lease expired and was taken over records nothing: the
+/// takeover recorded it as expired, once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_record_after_a_takeover_is_refused() {
+    let fx = reflecting().await;
+    open_thread(&fx, "aaaa1111", "Still true?").await;
+    let old = take(&fx.engine, Loop::Reflect, "eng", "k8s").await;
+    fx.engine
+        .set_automation_now(Some(start() + Duration::seconds(301)));
+    take(&fx.engine, Loop::Reflect, "eng", "cli").await;
+    let err = fx
+        .engine
+        .automation_run_record(
+            Loop::Reflect,
+            "eng",
+            &old,
+            &report(RunOutcome::Done, 0, "late"),
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("lease is not held"), "{err}");
+    let runs = fx
+        .engine
+        .automation_runs(Loop::Reflect, "eng", 10, &Scope::Unrestricted)
+        .await
+        .unwrap();
+    let outcomes: Vec<&str> = runs["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["outcome"].as_str().unwrap())
+        .collect();
+    assert_eq!(outcomes, vec!["expired"], "{runs}");
+}
+
+/// Two runners racing for one lease: exactly one gets it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_runners_racing_get_one_lease() {
+    let fx = reflecting().await;
+    open_thread(&fx, "aaaa1111", "Still true?").await;
+    let engine = fx.engine.clone();
+    let race = |runner: &'static str| {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            engine
+                .automation_lease_take(Loop::Reflect, "eng", runner, &Scope::Unrestricted)
+                .await
+        })
+    };
+    let (a, b) = tokio::join!(race("a"), race("b"));
+    let results = [a.unwrap(), b.unwrap()];
+    assert_eq!(
+        results.iter().filter(|r| r.is_ok()).count(),
+        1,
+        "{results:?}"
+    );
+    let refused = results.iter().find_map(|r| r.as_ref().err()).unwrap();
+    assert_eq!(refused.to_string(), "already running");
+}
+
+/// What a runner sends is checked: a start time that is not RFC 3339 and a
+/// runner label that is empty or too long are refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_runners_input_is_checked() {
+    let fx = reflecting().await;
+    for runner in ["", "   ", &"r".repeat(129)] {
+        let err = fx
+            .engine
+            .automation_lease_take(Loop::Reflect, "eng", runner, &Scope::Unrestricted)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, EngineError::Invalid(_)), "{runner:?}: {err}");
+    }
+    let token = take(&fx.engine, Loop::Reflect, "eng", &"r".repeat(128)).await;
+    let mut bad = report(RunOutcome::Done, 0, "x");
+    bad.started_at = "yesterday".into();
+    let err = fx
+        .engine
+        .automation_run_record(Loop::Reflect, "eng", &token, &bad, &Scope::Unrestricted)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, EngineError::Invalid(_)), "{err}");
+}
+
+/// A domain whose loop cannot run anywhere here says why beside `due`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_domain_that_cannot_run_here_says_so() {
+    let fx = fixture(&[]).await;
+    let s = status(&fx.engine, Loop::Reflect).await;
+    assert_eq!(s["due"], false, "{s}");
+    assert_eq!(s["reason"], "not hosted here", "{s}");
+    assert_eq!(s["runs_on"], Value::Null, "{s}");
+    let quiet = status(&fx.engine, Loop::Evolve).await;
+    assert_eq!(quiet["reason"], Value::Null, "{quiet}");
+}
+
+// --- on a shared database ---------------------------------------------------
+
+/// Two instances on one Postgres schema: evolve runs on the host lock's
+/// holder and the other names it; a take over a stale lease records one
+/// expired run.
+#[cfg(feature = "postgres")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn on_postgres_evolve_runs_on_the_host_and_a_stale_lease_expires_once() {
+    use crate::fixture::{instance_on, scratch_schema};
+    use crystalline_index::Store;
+
+    let Some(scratch) = scratch_schema() else {
+        return;
+    };
+    let open = || async {
+        let store = crystalline_index::PostgresStore::open_in_schema(scratch.url(), scratch.name())
+            .await
+            .expect("open the postgres test schema");
+        Arc::new(Mutex::new(store)) as Arc<Mutex<dyn Store>>
+    };
+    let a = instance_on(open().await, "alpha", &[]).await;
+    let b = instance_on(open().await, "beta", &[]).await;
+    a.engine.set_automation_now(Some(start()));
+    b.engine.set_automation_now(Some(start()));
+
+    let s = status(&b.engine, Loop::Evolve).await;
+    assert_eq!(s["runs_on"], "alpha", "{s}");
+    let refused = b
+        .engine
+        .automation_lease_take(Loop::Evolve, "eng", "cli", &Scope::Unrestricted)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.to_string(), "runs on alpha");
+
+    let old = take(&a.engine, Loop::Evolve, "eng", "k8s").await;
+    a.engine
+        .set_automation_now(Some(start() + Duration::seconds(301)));
+    take(&a.engine, Loop::Evolve, "eng", "cli").await;
+    let err = a
+        .engine
+        .automation_lease_renew(Loop::Evolve, "eng", &old, &Scope::Unrestricted)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("lease is not held"), "{err}");
+    let runs = a
+        .engine
+        .automation_runs(Loop::Evolve, "eng", 10, &Scope::Unrestricted)
+        .await
+        .unwrap();
+    let outcomes: Vec<&str> = runs["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["outcome"].as_str().unwrap())
+        .collect();
+    assert_eq!(outcomes, vec!["expired"], "{runs}");
 }

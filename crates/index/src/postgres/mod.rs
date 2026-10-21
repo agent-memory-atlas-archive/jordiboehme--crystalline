@@ -925,11 +925,11 @@ fn domain_host_of(r: &sqlx::postgres::PgRow) -> DomainHost {
 
 /// The read of one automation lease row, in [`automation_lease_of`]'s column
 /// order.
-const AUTOMATION_LEASE_SQL: &str = "SELECT instance_id, account, runner, token, taken_at, renewed_at, unshared_at_start, due_at_start FROM automation_lease WHERE domain_id=$1 AND loop_kind=$2";
+const AUTOMATION_LEASE_SQL: &str = "SELECT instance_id, account, runner, token, taken_at, renewed_at, unshared_at_start, due_at_start, pr_url, written FROM automation_lease WHERE domain_id=$1 AND loop_kind=$2";
 
 /// The token-guarded release of one automation lease row, answering the row
 /// in [`automation_lease_of`]'s column order.
-const AUTOMATION_LEASE_RELEASE_SQL: &str = "DELETE FROM automation_lease WHERE domain_id=$1 AND loop_kind=$2 AND token=$3 RETURNING instance_id, account, runner, token, taken_at, renewed_at, unshared_at_start, due_at_start";
+const AUTOMATION_LEASE_RELEASE_SQL: &str = "DELETE FROM automation_lease WHERE domain_id=$1 AND loop_kind=$2 AND token=$3 RETURNING instance_id, account, runner, token, taken_at, renewed_at, unshared_at_start, due_at_start, pr_url, written";
 
 /// An [`AutomationLease`] from a row read by [`AUTOMATION_LEASE_SQL`]'s
 /// columns.
@@ -945,6 +945,8 @@ fn automation_lease_of(r: &PgRow) -> Result<AutomationLease> {
         token: cell_text(r, 3).unwrap_or_default(),
         taken_at: cell_text(r, 4).unwrap_or_default(),
         renewed_at: cell_text(r, 5).unwrap_or_default(),
+        pr_url: cell_text(r, 8),
+        written: serde_json::from_str(&cell_text(r, 9).unwrap_or_else(|| "[]".to_string()))?,
     })
 }
 
@@ -4718,18 +4720,28 @@ impl Store for PostgresStore {
         // replace a row whose last renewal is older than `stale_before`. A
         // fresh row is left untouched, whoever asks; the re-read on the same
         // connection then tells whose token the row carries.
+        //
+        // The stale row the claim replaces is read in the same statement,
+        // locked (`FOR UPDATE`): a second take waiting on the lock re-reads
+        // the row the first one wrote, finds it fresh and reports nothing,
+        // so one stale lease is reported replaced once.
         let token = crate::store::claim_token(now);
         let mut conn = self.acquire().await?;
         let c = conn.as_mut();
-        sqlx::query(
-            "INSERT INTO automation_lease(domain_id, loop_kind, instance_id, account, runner, \
+        let replaced = sqlx::query(
+            "WITH old AS (SELECT instance_id, account, runner, token, taken_at, renewed_at, \
+             unshared_at_start, due_at_start, pr_url, written FROM automation_lease \
+             WHERE domain_id=$1 AND loop_kind=$2 AND renewed_at < $10 FOR UPDATE), \
+             up AS (INSERT INTO automation_lease(domain_id, loop_kind, instance_id, account, runner, \
              token, taken_at, renewed_at, unshared_at_start, due_at_start) \
              VALUES($1, $2, $3, $4, $5, $6, $7, $7, $8, $9) \
              ON CONFLICT(domain_id, loop_kind) DO UPDATE SET \
              instance_id=EXCLUDED.instance_id, account=EXCLUDED.account, runner=EXCLUDED.runner, \
              token=EXCLUDED.token, taken_at=EXCLUDED.taken_at, renewed_at=EXCLUDED.renewed_at, \
-             unshared_at_start=EXCLUDED.unshared_at_start, due_at_start=EXCLUDED.due_at_start \
-             WHERE automation_lease.renewed_at < $10",
+             unshared_at_start=EXCLUDED.unshared_at_start, due_at_start=EXCLUDED.due_at_start, \
+             pr_url=NULL, written='[]' \
+             WHERE automation_lease.renewed_at < $10 RETURNING token) \
+             SELECT old.* FROM old CROSS JOIN up",
         )
         .bind(domain.0)
         .bind(loop_kind)
@@ -4741,9 +4753,11 @@ impl Store for PostgresStore {
         .bind(serde_json::to_string(&holder.unshared_at_start)?)
         .bind(serde_json::to_string(&holder.due_at_start)?)
         .bind(stale_before)
-        .execute(&mut *c)
+        .fetch_optional(&mut *c)
         .await
-        .map_err(IndexError::from)?;
+        .map_err(IndexError::from)?
+        .map(|r| automation_lease_of(&r))
+        .transpose()?;
         let row = sqlx::query(AUTOMATION_LEASE_SQL)
             .bind(domain.0)
             .bind(loop_kind)
@@ -4752,8 +4766,56 @@ impl Store for PostgresStore {
             .map_err(IndexError::from)?;
         match row.map(|r| automation_lease_of(&r)).transpose()? {
             Some(lease) if lease.token != token => Ok(LeaseClaim::Held(lease)),
-            _ => Ok(LeaseClaim::Acquired { token }),
+            _ => Ok(LeaseClaim::Acquired { token, replaced }),
         }
+    }
+
+    async fn set_automation_pr_url(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        token: &str,
+        pr_url: &str,
+    ) -> Result<bool> {
+        let mut conn = self.acquire().await?;
+        let done = sqlx::query(
+            "UPDATE automation_lease SET pr_url=$4 \
+             WHERE domain_id=$1 AND loop_kind=$2 AND token=$3",
+        )
+        .bind(domain.0)
+        .bind(loop_kind)
+        .bind(token)
+        .bind(pr_url)
+        .execute(conn.as_mut())
+        .await
+        .map_err(IndexError::from)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn note_automation_written(
+        &self,
+        domain: DomainId,
+        account: &str,
+        paths: &[String],
+        stale_before: &str,
+    ) -> Result<u64> {
+        // One statement: the union of what the row holds and `paths`, so two
+        // instances noting at once both land.
+        let mut conn = self.acquire().await?;
+        let done = sqlx::query(
+            "UPDATE automation_lease SET written = ( \
+             SELECT COALESCE(jsonb_agg(p ORDER BY p), '[]'::jsonb)::text FROM ( \
+             SELECT DISTINCT p FROM jsonb_array_elements_text(written::jsonb || $3::jsonb) AS p) AS u) \
+             WHERE domain_id=$1 AND account=$2 AND renewed_at >= $4",
+        )
+        .bind(domain.0)
+        .bind(account)
+        .bind(serde_json::to_string(paths)?)
+        .bind(stale_before)
+        .execute(conn.as_mut())
+        .await
+        .map_err(IndexError::from)?;
+        Ok(done.rows_affected())
     }
 
     async fn renew_automation_lease(

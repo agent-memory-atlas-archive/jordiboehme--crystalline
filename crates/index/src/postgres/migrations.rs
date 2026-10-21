@@ -161,6 +161,11 @@ pub const MIGRATIONS: &[Migration] = &[
         label: "automation lease and runs",
         sql: SCHEMA_V27,
     },
+    Migration {
+        version: 28,
+        label: "automation lease pull request and written paths",
+        sql: SCHEMA_V28,
+    },
 ];
 
 // The whole current schema in one step. The temporal columns stay TEXT ISO
@@ -819,6 +824,15 @@ CREATE TABLE IF NOT EXISTS automation_run (
     left_items TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_automation_run_loop ON automation_run(domain_id, loop_kind, id);
+"#;
+
+// What a run shared and wrote, kept with its lease: the pull request it
+// shared its changes in (null until it shares), and the paths its account
+// wrote over MCP while it held the lease, as JSON text. Both go with the
+// lease into the run record. Guarded, so a replay changes nothing.
+const SCHEMA_V28: &str = r#"
+ALTER TABLE automation_lease ADD COLUMN IF NOT EXISTS pr_url TEXT;
+ALTER TABLE automation_lease ADD COLUMN IF NOT EXISTS written TEXT NOT NULL DEFAULT '[]';
 "#;
 
 const SCHEMA_V8: &str = r#"

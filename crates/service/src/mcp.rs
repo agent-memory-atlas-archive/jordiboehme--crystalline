@@ -2390,7 +2390,26 @@ impl McpServer {
             self.engine.close_folders_for(folders.as_ref(), scope),
         );
         Engine::attach_close_folders(&mut receipt, &close);
+        self.note_run_writes(caller, &receipt).await;
         Ok(done_written(receipt, &caller.base))
+    }
+
+    /// Note the engram paths a write-shaped tool just wrote for a headless
+    /// run whose lease this caller's account holds (R4, ruling B): the run
+    /// shares only what its runner wrote over MCP. Every engram write tool
+    /// calls this once it succeeded (write, edit, move with both ends and
+    /// the linkers it rewrote, split, delete); a write over REST, Fluid or
+    /// the files never reaches it. A caller with no account notes nothing.
+    /// A failed note is logged and never fails the write.
+    async fn note_run_writes(&self, caller: &Caller, receipt: &Value) {
+        let Scope::User { account, .. } = &caller.scope else {
+            return;
+        };
+        for (domain, paths) in written_paths(receipt) {
+            if let Err(e) = self.engine.note_written(&domain, account, &paths).await {
+                tracing::warn!("noting a run's writes in '{domain}': {e}");
+            }
+        }
     }
 
     /// `read_engram` for one caller.
@@ -2501,6 +2520,7 @@ impl McpServer {
             Some(probe) => self.with_similar(receipt, probe, scope).await,
             None => receipt,
         };
+        self.note_run_writes(caller, &receipt).await;
         Ok(done_written(receipt, &caller.base))
     }
 
@@ -2539,6 +2559,7 @@ impl McpServer {
             Ok(receipt) => receipt,
             Err(e) => return overlay_refusal(e).map(Verdict::Refused),
         };
+        self.note_run_writes(caller, &receipt).await;
         // The page address lands on `to` and nowhere else: `from` is the
         // address the engram stopped answering to.
         if let Some(to) = receipt.get_mut("to") {
@@ -2564,6 +2585,7 @@ impl McpServer {
             Ok(receipt) => receipt,
             Err(e) => return overlay_refusal(e).map(Verdict::Refused),
         };
+        self.note_run_writes(caller, &receipt).await;
         Ok(Verdict::Done(receipt))
     }
 
@@ -2582,6 +2604,7 @@ impl McpServer {
             Ok(receipt) => receipt,
             Err(e) => return overlay_refusal(e).map(Verdict::Refused),
         };
+        self.note_run_writes(caller, &receipt).await;
         Ok(Verdict::Done(receipt))
     }
 
@@ -6261,6 +6284,33 @@ fn overlay_refusal(e: EngineError) -> Result<String, ErrorData> {
 
 /// A write receipt as a finished [`Verdict`], with the page this caller opens
 /// the engram at.
+/// The engram paths a write receipt names, by domain: its own `path`, the
+/// `from` and `to` of a move, the `source` and `new` of a split, and every
+/// linker a move rewrote. Each object's own `domain` wins over the
+/// receipt's.
+fn written_paths(receipt: &Value) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut out: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    let top = receipt["domain"].as_str();
+    let mut note = |obj: &Value| {
+        let (Some(domain), Some(path)) = (obj["domain"].as_str().or(top), obj["path"].as_str())
+        else {
+            return;
+        };
+        let paths = out.entry(domain.to_string()).or_default();
+        if !paths.iter().any(|p| p == path) {
+            paths.push(path.to_string());
+        }
+    };
+    note(receipt);
+    for key in ["from", "to", "source", "new"] {
+        note(&receipt[key]);
+    }
+    for linker in receipt["rewritten"].as_array().into_iter().flatten() {
+        note(linker);
+    }
+    out
+}
+
 fn done_written(mut receipt: Value, base: &crate::web_url::WebBase) -> Verdict {
     crate::web_url::attach_engram_url(&mut receipt, base);
     Verdict::Done(receipt)

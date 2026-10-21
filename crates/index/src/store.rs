@@ -2305,6 +2305,11 @@ pub struct AutomationLease {
     pub taken_at: String,
     /// When it was last renewed, RFC 3339.
     pub renewed_at: String,
+    /// The pull request the run shared its changes in, once it shared.
+    pub pr_url: Option<String>,
+    /// The paths the holder's account wrote over MCP while it held the
+    /// lease, each once ([`Store::note_automation_written`]).
+    pub written: Vec<String>,
 }
 
 /// The outcome of a [`Store::take_automation_lease`].
@@ -2316,6 +2321,10 @@ pub enum LeaseClaim {
         /// [`AutomationLease::token`]: it goes back only to the caller whose
         /// take landed, which may be a runner on the far side of a route.
         token: String,
+        /// The stale lease this take replaced, as it was, `None` when the
+        /// lease was unheld. Read in the same claim, so two takes never
+        /// both report one stale lease.
+        replaced: Option<AutomationLease>,
     },
     /// Another runner holds a lease that is not stale.
     Held(AutomationLease),
@@ -2332,7 +2341,7 @@ pub struct AutomationRun {
     pub runner: String,
     /// The account the run worked as, when it had one.
     pub account: Option<String>,
-    /// `done`, `stopped at cap`, `failed`, `nothing due` or `expired`.
+    /// `done`, `stopped_at_cap`, `failed`, `nothing_due` or `expired`.
     pub outcome: String,
     /// Items done.
     pub done: u64,
@@ -4074,6 +4083,29 @@ pub trait Store: Send + Sync {
         loop_kind: &str,
         token: &str,
     ) -> Result<Option<AutomationLease>>;
+
+    /// Record the pull request the run holding `token` shared in. `false`
+    /// when the row is gone or carries another token.
+    async fn set_automation_pr_url(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        token: &str,
+        pr_url: &str,
+    ) -> Result<bool>;
+
+    /// Add `paths` to the written paths of every lease on `domain` (either
+    /// loop) that `account` holds and that was renewed at or after
+    /// `stale_before`; a path already noted is kept once. One statement per
+    /// lease, so two writers on a shared database never lose each other's
+    /// paths. Answers how many leases noted them.
+    async fn note_automation_written(
+        &self,
+        domain: DomainId,
+        account: &str,
+        paths: &[String],
+        stale_before: &str,
+    ) -> Result<u64>;
 
     /// The lease of `loop_kind` on `domain` as stored, a stale one included.
     async fn automation_lease(
