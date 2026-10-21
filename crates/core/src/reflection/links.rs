@@ -57,7 +57,7 @@ pub fn relative_to(from_file: &str, target: &str) -> String {
     out.join("/")
 }
 
-fn is_relative(target: &str) -> bool {
+pub(crate) fn is_relative(target: &str) -> bool {
     !target.is_empty()
         && !target.starts_with('#')
         && !target.starts_with('/')
@@ -69,7 +69,7 @@ fn is_relative(target: &str) -> bool {
 /// matched the way `crate::parse::mask_inline_code` matches them. That
 /// function swaps characters for spaces, which shifts byte offsets when a
 /// span holds a multi-byte character, so this dialect keeps its own ranges.
-fn code_spans(line: &str) -> Vec<(usize, usize)> {
+pub(crate) fn code_spans(line: &str) -> Vec<(usize, usize)> {
     let bytes = line.as_bytes();
     let mut spans = Vec::new();
     let mut i = 0;
@@ -117,22 +117,26 @@ pub(crate) struct Destination<'a> {
     pub(crate) close: usize,
 }
 
-/// The byte offset of the depth-zero `)` at or after `from`, the rule the
-/// link target scan (`crate::attachment`'s `link_targets`) reads a
-/// destination by.
+/// The byte offset of the depth-zero `)` at or after `from`. Balanced
+/// parentheses inside a destination are read past, and a backslash-escaped
+/// `\(` or `\)` neither opens nor closes, so `[x](R\).png)` reads `R).png`.
 fn closing_paren(line: &str, from: usize) -> Option<usize> {
+    let bytes = line.as_bytes();
     let mut depth = 1usize;
-    for (offset, byte) in line.as_bytes()[from..].iter().enumerate() {
-        match byte {
+    let mut i = from;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if matches!(bytes.get(i + 1), Some(b'(' | b')' | b'\\')) => i += 1,
             b'(' => depth += 1,
             b')' => {
                 depth -= 1;
                 if depth == 0 {
-                    return Some(from + offset);
+                    return Some(i);
                 }
             }
             _ => {}
         }
+        i += 1;
     }
     None
 }
@@ -170,16 +174,25 @@ pub(crate) fn read_destination(line: &str, open: usize) -> Option<Destination<'_
         let (target, rest) = inside.split_at(target_len);
         (target, rest, close)
     };
-    let (path, fragment) = match target.split_once('#') {
-        Some((p, f)) => (p, Some(f)),
-        None => (target, None),
-    };
+    let (path, fragment) = decode_target(target);
     Some(Destination {
-        path: percent_decode_target(&unescape_backslashes(path)),
+        path,
         fragment,
         rest,
         close,
     })
+}
+
+/// One raw link target read into its path and `#fragment`: the fragment is
+/// split off on the raw `#` first, then backslash escapes are removed from the
+/// path and it is percent-decoded. The reading every destination takes, inline
+/// or in a reference definition.
+pub(crate) fn decode_target(target: &str) -> (String, Option<&str>) {
+    let (path, fragment) = match target.split_once('#') {
+        Some((p, f)) => (p, Some(f)),
+        None => (target, None),
+    };
+    (percent_decode_target(&unescape_backslashes(path)), fragment)
 }
 
 /// One line of the reflection dialect: every relative link target outside
@@ -305,6 +318,14 @@ mod tests {
         );
         // A backslash before a letter is not an escape.
         assert_eq!(read("](a\\b.png)").0, "a\\b.png");
+    }
+
+    #[test]
+    fn an_escaped_parenthesis_neither_opens_nor_closes() {
+        assert_eq!(read("[x](R\\).png)").0, "R).png");
+        assert_eq!(read("[x](R\\(.png) after").0, "R(.png");
+        // An escaped backslash before `)` leaves the `)` to close.
+        assert_eq!(read("[x](a\\\\) b)").0, "a\\");
     }
 
     #[test]

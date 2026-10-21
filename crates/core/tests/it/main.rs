@@ -13,6 +13,7 @@ mod base_routes;
 mod config;
 mod conventional_corpus;
 mod editing;
+mod linked;
 mod manifest;
 mod names;
 mod orchestrate;

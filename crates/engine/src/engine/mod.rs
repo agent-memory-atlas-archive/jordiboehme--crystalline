@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};
+use crystalline_core::attachment::suffixed_asset_path;
 use crystalline_core::config::registration::{
     Registration, RegistrationRequest, case_twin, case_twin_refusal, choose_domain_name,
     decide_registration, infer_name_origin, needs_manifest_write_back, validate_domain_name,
@@ -9078,48 +9079,6 @@ fn ack_entries(fm: &Frontmatter) -> Vec<AckEntry> {
         .collect()
 }
 
-/// `assets/deck.pptx` as `assets/deck-2.pptx`: the name an attachment takes
-/// when the destination already holds a different file under its own.
-///
-/// The counter goes before the extension rather than after it, so the file
-/// keeps the extension its mime and its allowlist decision rest on, and the
-/// stem is shortened as far as it has to be for the result to pass
-/// [`crystalline_core::validate_asset_path`]. A path already at the length
-/// ceiling would otherwise grow past it, and since this name is what the
-/// moving engram's references are rewritten to, an invalid one would be a
-/// reference rewritten to a path no write can ever accept. `None` when no
-/// valid name can be built even with the stem gone, which leaves the
-/// attachment uncarried rather than renamed into nowhere.
-fn suffixed_asset_path(path: &str, attempt: usize) -> Option<String> {
-    let (dir, name) = match path.rsplit_once('/') {
-        Some((dir, name)) => (format!("{dir}/"), name),
-        None => (String::new(), path),
-    };
-    let (stem, extension) = match name.rsplit_once('.') {
-        Some((stem, extension)) => (stem, Some(extension)),
-        None => (name, None),
-    };
-    let mut keep = stem.len();
-    loop {
-        let candidate = match extension {
-            Some(extension) => format!("{dir}{}-{attempt}.{extension}", &stem[..keep]),
-            None => format!("{dir}{}-{attempt}", &stem[..keep]),
-        };
-        if crystalline_core::validate_asset_path(&candidate).is_ok() {
-            return Some(candidate);
-        }
-        if keep == 0 {
-            return None;
-        }
-        // One character at a time, never one byte: a stem cut through a
-        // multi-byte character would not be a string at all.
-        keep -= 1;
-        while keep > 0 && !stem.is_char_boundary(keep) {
-            keep -= 1;
-        }
-    }
-}
-
 /// The moving engram's text with every renamed attachment reference - in the
 /// body and in the `analyzes` claim - pointing at the name the file took at
 /// the destination.
@@ -11092,43 +11051,6 @@ mod attachment_carry_tests {
         // what both spellings share, which is why the screen tests that.
         assert!("analyzes: Assets/shot.png".contains(asset_tail("assets/shot.png")));
         assert!("![x](./assets/shot.png#right)".contains(asset_tail("assets/shot.png")));
-    }
-
-    #[test]
-    fn a_suffixed_name_stays_a_valid_attachment_path() {
-        assert_eq!(
-            suffixed_asset_path("assets/shot.png", 2).unwrap(),
-            "assets/shot-2.png"
-        );
-        assert_eq!(
-            suffixed_asset_path("assets/notes/deck.pptx", 3).unwrap(),
-            "assets/notes/deck-3.pptx"
-        );
-
-        // At the 256 byte ceiling the stem gives way, never the extension:
-        // the name has to stay one a write will accept, because the engram's
-        // references are rewritten to it.
-        let at_cap = format!("assets/{}.png", "a".repeat(245));
-        assert_eq!(at_cap.len(), 256);
-        let suffixed = suffixed_asset_path(&at_cap, 2).unwrap();
-        assert_eq!(suffixed, format!("assets/{}-2.png", "a".repeat(243)));
-        assert!(crystalline_core::validate_asset_path(&suffixed).is_ok());
-        let long_suffix = suffixed_asset_path(&at_cap, 100).unwrap();
-        assert!(crystalline_core::validate_asset_path(&long_suffix).is_ok());
-
-        // A multi-byte stem is cut on character boundaries, not byte ones:
-        // 255 bytes of path with a two-byte stem character, where `-2` no
-        // longer fits and exactly one character has to go.
-        let wide = format!("assets/{}.png", "é".repeat(122));
-        assert_eq!(wide.len(), 255);
-        let cut = suffixed_asset_path(&wide, 2).unwrap();
-        assert!(crystalline_core::validate_asset_path(&cut).is_ok());
-        assert_eq!(cut, format!("assets/{}-2.png", "é".repeat(121)));
-
-        // And a path with no room left at all is refused rather than
-        // rewritten into something no write would take.
-        let hopeless = format!("assets/{}/x.png", "d".repeat(246));
-        assert!(suffixed_asset_path(&hopeless, 2).is_none());
     }
 }
 

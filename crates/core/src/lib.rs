@@ -33,6 +33,7 @@ pub mod kept;
 pub mod kind;
 pub mod layout;
 pub mod line_endings;
+pub mod linked;
 pub mod manifest;
 pub mod manifest_view;
 pub mod markdown;
