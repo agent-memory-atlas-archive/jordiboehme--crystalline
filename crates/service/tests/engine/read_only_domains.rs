@@ -340,6 +340,7 @@ async fn the_owner_switches_read_only_off_and_writes_land_again() {
                 &manifest_now.replace("read_only: on", "read_only: off"),
                 &sha256(&manifest_now),
                 &scope,
+                false,
             )
             .await
             .unwrap_err(),

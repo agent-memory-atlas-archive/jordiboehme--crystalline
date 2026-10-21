@@ -1298,9 +1298,9 @@ pub struct Engine {
     // [`crate::rename::RenamePause`] and `Engine::rename_domain_local`.
     rename_pause: crate::rename::RenamePause,
     // The one rename this engine runs at a time, as the local name it
-    // renames and the name it gets; a second one is refused while it is
-    // taken.
-    rename_slot: std::sync::Mutex<Option<(String, String, bool)>>,
+    // renames, the name it gets and how it is finished if it stops; a second
+    // one is refused while it is taken.
+    rename_slot: std::sync::Mutex<Option<(String, String, String)>>,
     // Why the last adoption of a declared name failed, by the local name that
     // keeps waiting: set when the rename after a sync fails, cleared when it
     // lands or waits for a known reason. `crystalline doctor` reads it.

@@ -1300,12 +1300,16 @@ pub async fn collect_orphaned_domains(
 }
 
 /// The domain name findings `crystalline doctor` shows
-/// ([`Engine::name_report`]), after, when `fix` is set, respelling every link
-/// that names a domain by a name only this machine uses
-/// ([`Engine::fix_local_spellings`]); the report then carries `fixed`, how
-/// many links changed. A fix that is refused (a read-only instance) keeps the
-/// report and carries `fix_error` instead. Over the daemon when one owns the
-/// index (the ctl commands `fix_local_spellings` and `name_report`), else
+/// ([`Engine::name_report`]), after, when `fix` is set, finishing every
+/// rename a MANIFEST made that nobody answered
+/// ([`Engine::finish_rename_questions`]) and then respelling every link that
+/// names a domain by a name only this machine uses
+/// ([`Engine::fix_local_spellings`]). The report then carries `fixed`, how
+/// many links the second changed, and `renames_finished`, the domains the
+/// first finished. A fix that is refused (a read-only instance) keeps the
+/// report and carries `fix_error` or `rename_fix_errors` instead. Over the
+/// daemon when one owns the index (the ctl commands
+/// `finish_rename_questions`, `fix_local_spellings` and `name_report`), else
 /// against one directly opened store.
 pub async fn name_report(
     fix: bool,
@@ -1314,6 +1318,14 @@ pub async fn name_report(
 ) -> anyhow::Result<Value> {
     use serde_json::json;
     if use_daemon(db, config_path) {
+        let renamed = if fix {
+            match ctl_if_running(json!({ "v": 1, "cmd": "finish_rename_questions" })).await {
+                Ok(answer) => answer.map(Ok),
+                Err(e) => Some(Err(format!("{e:#}"))),
+            }
+        } else {
+            None
+        };
         let fixed = if fix {
             match ctl_if_running(json!({ "v": 1, "cmd": "fix_local_spellings" })).await {
                 Ok(answer) => {
@@ -1328,12 +1340,23 @@ pub async fn name_report(
             && let Some(mut data) = ctl_if_running(json!({ "v": 1, "cmd": "name_report" })).await?
         {
             attach_fix_outcome(&mut data, fixed);
+            attach_rename_outcome(&mut data, renamed);
             return Ok(data);
         }
     }
     let loaded = overlay::load(config_path)?;
     let db_path = resolve_db(db)?;
     let engine = open_standalone_reporting(loaded, &db_path, false, db, config_path).await?;
+    let renamed = if fix {
+        Some(
+            engine
+                .finish_rename_questions()
+                .await
+                .map_err(|e| e.to_string()),
+        )
+    } else {
+        None
+    };
     let fixed = if fix {
         Some(
             engine
@@ -1346,7 +1369,44 @@ pub async fn name_report(
     };
     let mut report = engine.name_report().await?;
     attach_fix_outcome(&mut report, fixed);
+    attach_rename_outcome(&mut report, renamed);
     Ok(report)
+}
+
+/// Put what `--fix` did about MANIFEST renames into a name report:
+/// `renames_finished`, the domains finished, and `rename_fix_errors`, one
+/// `domain: reason` per domain that could not be, or the one reason nothing
+/// could be.
+fn attach_rename_outcome(report: &mut Value, renamed: Option<Result<Value, String>>) {
+    let Value::Object(map) = report else {
+        return;
+    };
+    let (finished, errors): (Vec<Value>, Vec<Value>) = match renamed {
+        None => return,
+        Some(Err(e)) => (Vec::new(), vec![Value::from(e)]),
+        Some(Ok(answer)) => (
+            answer["finished"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|report| report.get("domain").cloned())
+                .collect(),
+            answer["failed"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|failed| {
+                    Value::from(format!(
+                        "{}: {}",
+                        failed["domain"].as_str().unwrap_or_default(),
+                        failed["error"].as_str().unwrap_or_default()
+                    ))
+                })
+                .collect(),
+        ),
+    };
+    map.insert("renames_finished".to_string(), Value::from(finished));
+    map.insert("rename_fix_errors".to_string(), Value::from(errors));
 }
 
 /// Put what a `--fix` did into a name report: `fixed`, or `fix_error`.

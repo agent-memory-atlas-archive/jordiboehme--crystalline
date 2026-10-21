@@ -7079,6 +7079,11 @@ fn every_instance_write_guard_meets_the_domain_flag() {
         ("engine.rs", "domain_add_local_as"),
         ("engine.rs", "domain_add_virtual_as"),
         ("engine.rs", "origin_add_with_progress_as"),
+        // The answer to a rename a MANIFEST made, which is configuration;
+        // finishing it respells links only in the domains the caller can
+        // write, which leaves every read-only domain out (`writable_domains`).
+        ("engine.rs", "open_rename_question"),
+        ("engine.rs", "finish_rename_questions"),
         // Ending a registration (decision D6).
         ("engine.rs", "unregister_domain"),
         ("engine.rs", "domain_remove"),

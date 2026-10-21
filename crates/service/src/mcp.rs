@@ -2745,11 +2745,14 @@ impl McpServer {
     /// the way [`McpServer::nudged`] adds one: a rule and the sentence, which
     /// leaves the JSON in front of the rule as it was. An error, an answer
     /// that is not a JSON object (a TOON listing) or one with no top-level
-    /// `domain` is handed back unchanged.
+    /// `domain` is handed back unchanged, and so is the answer of a caller
+    /// (`scope`) who may not rename the domain: the line asks for a step only
+    /// such a caller can take.
     async fn with_rename_guidance(
         &self,
         mut result: CallToolResult,
         session: &str,
+        scope: &Scope,
     ) -> CallToolResult {
         if result.is_error == Some(true) {
             return result;
@@ -2764,7 +2767,11 @@ impl McpServer {
         else {
             return result;
         };
-        if let Some(line) = self.engine.rename_guidance_once(session, &domain).await {
+        if let Some(line) = self
+            .engine
+            .rename_guidance_once(session, &domain, scope)
+            .await
+        {
             text.text.push_str(&format!("\n\n---\n{line}"));
         }
         result
@@ -4827,13 +4834,20 @@ impl ServerHandler for McpServer {
         request: rmcp::model::CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, ErrorData> {
+        // Nothing to tell when no domain has an open question: the answer
+        // goes back as the router made it, unparsed.
+        if !self.engine.any_rename_question() {
+            let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+            return Self::tool_router().call(tcc).await;
+        }
         let session = session_key(self.holder_of(&context), mcp_account(&context));
+        let scope = self.scope_of(&context);
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         let response = Self::tool_router().call(tcc).await?;
         Ok(match response {
             rmcp::model::CallToolResponse::Complete(result) => {
                 rmcp::model::CallToolResponse::Complete(
-                    self.with_rename_guidance(result, &session).await,
+                    self.with_rename_guidance(result, &session, &scope).await,
                 )
             }
             other => other,

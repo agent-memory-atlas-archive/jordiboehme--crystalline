@@ -59,6 +59,11 @@ impl RenameStep {
         RenameStep::Config,
     ];
 
+    /// The steps of finishing a rename the MANIFEST already made: the links
+    /// only. The adoption has already kept the old name as an alias and
+    /// recorded the new one as seen, so nothing else moves.
+    pub(crate) const RESPELL: [RenameStep; 1] = [RenameStep::Relink];
+
     /// The steps of a rename that also writes the MANIFEST and respells
     /// links: those two first, then the local ones.
     pub(crate) const FULL: [RenameStep; 9] = [
@@ -103,6 +108,13 @@ pub(crate) struct RenameJournal {
     pub new: String,
     /// Whether the rename leaves the MANIFEST and content alone.
     pub local_only: bool,
+    /// Whether this only finishes a rename the MANIFEST already made: the
+    /// relink step alone ([`RenameStep::RESPELL`]), with `old` the domain's
+    /// local name, which it keeps, and `new` the name its MANIFEST declares
+    /// now, which the links are respelled to. `old_spellings` starts with the
+    /// name the question started from.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub respell_only: bool,
     /// What the configuration records for `new`.
     pub origin: NameOrigin,
     /// Every spelling the domain had before step one (local name, canonical
@@ -304,6 +316,9 @@ pub struct PendingRename {
     pub new: String,
     /// Whether the rename leaves the MANIFEST and content alone.
     pub local_only: bool,
+    /// Whether it only respells the links of a rename the MANIFEST already
+    /// made: `old` keeps its name, and `new` is the name the links get.
+    pub respell_only: bool,
     /// What the journal belongs to; `None` for a journal that does not say.
     pub owner: Option<RenameOwner>,
     /// The steps completed so far, in order.
@@ -326,6 +341,7 @@ pub fn pending_rename(state_dir: &Path) -> io::Result<Option<PendingRename>> {
             old: journal.old,
             new: journal.new,
             local_only: journal.local_only,
+            respell_only: journal.respell_only,
             owner: journal.owner,
             done: journal.done,
             remaining,
@@ -469,7 +485,9 @@ impl RenameJournal {
 
     /// The steps this rename runs, in order.
     pub(crate) fn steps(&self) -> &'static [RenameStep] {
-        if self.local_only {
+        if self.respell_only {
+            &RenameStep::RESPELL
+        } else if self.local_only {
             &RenameStep::LOCAL
         } else {
             &RenameStep::FULL

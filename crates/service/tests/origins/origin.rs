@@ -6601,6 +6601,90 @@ async fn a_full_rename_rewrites_a_team_domains_link_as_a_local_change() {
     assert_eq!(entry["local_changes"], 1, "{entry}");
 }
 
+/// Finishing a MANIFEST rename respells the link a team domain holds to
+/// the renamed domain, and that rewrite is a local change of the team
+/// domain, waiting for the next share like the rewrite of a full rename.
+#[tokio::test]
+async fn the_respell_on_a_team_domain_becomes_local_changes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mock = Arc::new(MockProvider::new());
+    let commit = mock.add_commit(commit_files(&[
+        ("MANIFEST.md", manifest()),
+        (
+            "notes/link.md",
+            engram("Link", "link", "See [[eng:alpha]] first."),
+        ),
+    ]));
+    mock.set_branch("main", &commit);
+
+    let config_path = tmp.path().join("config.yaml");
+    let origins_dir = tmp.path().join("origins");
+    let root = tmp.path().join("brand-knowledge");
+    let eng = engine_with(&config_path, &origins_dir, mock.clone(), true, false).await;
+    eng.origin_add(
+        "acme/brand-knowledge",
+        Some("brand"),
+        None,
+        None,
+        Some(root.to_str().unwrap()),
+    )
+    .await
+    .unwrap();
+    let eng_dir = tmp.path().join("eng");
+    std::fs::create_dir_all(&eng_dir).unwrap();
+    std::fs::write(eng_dir.join("MANIFEST.md"), manifest()).unwrap();
+    std::fs::write(
+        eng_dir.join("alpha.md"),
+        engram("Alpha", "alpha", "the runbook"),
+    )
+    .unwrap();
+    eng.domain_add_local(Some("eng"), Some(eng_dir.to_str().unwrap()))
+        .await
+        .unwrap();
+    eng.adopt_domain_names().await.unwrap();
+    let renamed = String::from_utf8(manifest()).unwrap().replacen(
+        "status: current\n",
+        "status: current\ndomain_name: platform\n",
+        1,
+    );
+    std::fs::write(eng_dir.join("MANIFEST.md"), renamed).unwrap();
+    eng.sync(Some("eng")).await.unwrap();
+    eng.adopt_domain_names().await.unwrap();
+    assert!(eng.rename_question("eng").is_some(), "the adoption asked");
+    let calls_before = mock.calls().len();
+
+    let report = eng
+        .finish_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert_eq!(
+        report["rewritten"],
+        serde_json::json!([{ "domain": "brand", "engrams": 1, "references": 1 }]),
+        "{report}"
+    );
+    let text = std::fs::read_to_string(root.join("notes/link.md")).unwrap();
+    assert!(text.contains("[[platform:alpha]]"), "{text}");
+    let new_calls = mock.calls()[calls_before..].to_vec();
+    assert!(
+        !new_calls
+            .iter()
+            .any(|c| c.starts_with("create_") || c.contains("proposal")),
+        "the respell opened nothing upstream: {new_calls:?}"
+    );
+
+    let status = eng
+        .origin_status(Some("brand"), true, false, &Scope::Unrestricted)
+        .await
+        .unwrap();
+    let entry = &status["domains"][0];
+    assert_eq!(
+        entry["detail"]["modified"],
+        serde_json::json!(["notes/link.md"]),
+        "{entry}"
+    );
+    assert_eq!(entry["local_changes"], 1, "{entry}");
+}
+
 fn manifest_read_only() -> Vec<u8> {
     String::from_utf8(manifest())
         .unwrap()

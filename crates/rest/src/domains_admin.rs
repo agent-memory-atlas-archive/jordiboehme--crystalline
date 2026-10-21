@@ -3002,6 +3002,161 @@ pub async fn rename(
     }
 }
 
+/// `POST /domains/{domain}/rename/finish` - finish a rename the domain's
+/// MANIFEST made: respell every link that still uses the old name to the
+/// name the MANIFEST declares now, in the domains the caller can write, and
+/// answer the rename question. The domain keeps its name on this machine.
+///
+/// The same gates as [`rename`]: the caller's write gate on the domain, then
+/// the engine's own rule for who may rename it.
+#[utoipa::path(
+    post,
+    path = "/api/v1/domains/{domain}/rename/finish",
+    tag = "domains",
+    operation_id = "finish_manifest_rename",
+    summary = "Finish a rename the domain's MANIFEST made.",
+    description = "Respells every link to the domain that still uses the \
+                   name its MANIFEST declared before, in each domain the \
+                   caller can write, Reflection pages included, and answers \
+                   the rename question. Team domains take the rewrites as \
+                   local changes. Gated as a rename: an instance admin, or \
+                   a private domain's owner.",
+    params(("domain" = String, Path, description = "The domain's current name.")),
+    responses(
+        (
+            status = 200,
+            description = "What was respelled, and what was left as it is.",
+            body = Object,
+            example = json!({
+                "domain": "eng",
+                "from": "eng",
+                "to": "platform",
+                "rewritten": [{ "domain": "ops", "engrams": 1, "references": 2 }],
+                "left_behind": []
+            }),
+        ),
+        (
+            status = 401,
+            description = "No identity, or an anonymous one.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 403,
+            description = "The caller may not rename the domain, the request \
+                           did not echo its CSRF token, or this instance is \
+                           read-only.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 404,
+            description = "No such domain, or none this caller may see.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 409,
+            description = "The domain has no rename waiting for an answer, \
+                           another rename is running, or the new name \
+                           reaches another domain here.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+    ),
+)]
+pub async fn finish_manifest_rename(
+    State(state): State<RestState>,
+    identity: Identity,
+    ApiPath(domain): ApiPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    refuse_read_only(&state)?;
+    require_domain_write(&state, &identity, &domain).await?;
+    match state
+        .engine
+        .finish_manifest_rename(&domain, &identity.scope())
+        .await
+    {
+        Ok(report) => Ok(Json(report)),
+        // A 409, as for `rename`: the request is well formed, the question
+        // just is not open, or another rename holds the slot.
+        Err(EngineError::Conflict(detail)) => Err(ApiError::conflict(detail)),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// `POST /domains/{domain}/rename/keep` - keep the links of a rename the
+/// domain's MANIFEST made as they are: the old name stays an alias here and
+/// the rename question is closed. Gated as [`finish_manifest_rename`].
+#[utoipa::path(
+    post,
+    path = "/api/v1/domains/{domain}/rename/keep",
+    tag = "domains",
+    operation_id = "keep_manifest_rename",
+    summary = "Keep the links of a rename the domain's MANIFEST made.",
+    description = "Closes the rename question and changes nothing else: \
+                   links keep the old name, which stays an alias here. \
+                   Gated as a rename: an instance admin, or a private \
+                   domain's owner.",
+    params(("domain" = String, Path, description = "The domain's current name.")),
+    responses(
+        (
+            status = 200,
+            description = "The question, answered.",
+            body = Object,
+            example = json!({
+                "domain": "eng",
+                "from": "eng",
+                "to": "platform",
+                "answered": "keep"
+            }),
+        ),
+        (
+            status = 401,
+            description = "No identity, or an anonymous one.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 403,
+            description = "The caller may not rename the domain, the request \
+                           did not echo its CSRF token, or this instance is \
+                           read-only.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 404,
+            description = "No such domain, or none this caller may see.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+        (
+            status = 409,
+            description = "The domain has no rename waiting for an answer.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
+    ),
+)]
+pub async fn keep_manifest_rename(
+    State(state): State<RestState>,
+    identity: Identity,
+    ApiPath(domain): ApiPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    refuse_read_only(&state)?;
+    require_domain_write(&state, &identity, &domain).await?;
+    match state
+        .engine
+        .keep_manifest_rename(&domain, &identity.scope())
+        .await
+    {
+        Ok(answer) => Ok(Json(answer)),
+        Err(EngineError::Conflict(detail)) => Err(ApiError::conflict(detail)),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// The query string `GET /github/domain-name` takes.
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]

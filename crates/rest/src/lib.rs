@@ -149,6 +149,8 @@ use crate::scope::{DomainAccess, DomainRight};
         domains_admin::create,
         domains_admin::remove,
         domains_admin::rename,
+        domains_admin::finish_manifest_rename,
+        domains_admin::keep_manifest_rename,
         domains_admin::github_domain_name,
         domains_admin::set_review_mode,
         domains_admin::drafts,
@@ -737,6 +739,16 @@ fn routes(state: RestState) -> Router {
         // rule: see [`domains_admin::rename`]. Refused on a read-only
         // instance like every other mutation here.
         .route("/domains/{domain}/rename", post(domains_admin::rename))
+        // A rename the MANIFEST made, finished or kept: the same gates as
+        // the rename itself.
+        .route(
+            "/domains/{domain}/rename/finish",
+            post(domains_admin::finish_manifest_rename),
+        )
+        .route(
+            "/domains/{domain}/rename/keep",
+            post(domains_admin::keep_manifest_rename),
+        )
         // Whether a domain is private, and the two directions are gated
         // differently. PRIVATIZING is admin only: it hands the domain to the
         // caller, so a shared domain would otherwise be seized by whoever

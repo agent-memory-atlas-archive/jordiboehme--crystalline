@@ -6688,6 +6688,171 @@
         }
       }
     },
+    "/api/v1/domains/{domain}/rename/finish": {
+      "post": {
+        "tags": [
+          "domains"
+        ],
+        "summary": "Finish a rename the domain's MANIFEST made.",
+        "description": "Respells every link to the domain that still uses the name its MANIFEST declared before, in each domain the caller can write, Reflection pages included, and answers the rename question. Team domains take the rewrites as local changes. Gated as a rename: an instance admin, or a private domain's owner.",
+        "operationId": "finish_manifest_rename",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain's current name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What was respelled, and what was left as it is.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "domain": "eng",
+                  "from": "eng",
+                  "left_behind": [],
+                  "rewritten": [
+                    {
+                      "domain": "ops",
+                      "engrams": 1,
+                      "references": 2
+                    }
+                  ],
+                  "to": "platform"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No identity, or an anonymous one.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not rename the domain, the request did not echo its CSRF token, or this instance is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain, or none this caller may see.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The domain has no rename waiting for an answer, another rename is running, or the new name reaches another domain here.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/domains/{domain}/rename/keep": {
+      "post": {
+        "tags": [
+          "domains"
+        ],
+        "summary": "Keep the links of a rename the domain's MANIFEST made.",
+        "description": "Closes the rename question and changes nothing else: links keep the old name, which stays an alias here. Gated as a rename: an instance admin, or a private domain's owner.",
+        "operationId": "keep_manifest_rename",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain's current name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The question, answered.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "answered": "keep",
+                  "domain": "eng",
+                  "from": "eng",
+                  "to": "platform"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No identity, or an anonymous one.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not rename the domain, the request did not echo its CSRF token, or this instance is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain, or none this caller may see.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The domain has no rename waiting for an answer.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/domains/{domain}/retire": {
       "post": {
         "tags": [
@@ -13498,6 +13663,14 @@
             "type": "string",
             "description": "The full MANIFEST markdown as the editor holds it.",
             "example": "---\ntitle: eng\n---\n\n## Scope\n\n- Everything about eng\n\n## When to Use\n\n- Route here for eng questions.\n"
+          },
+          "rename": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`\"keep\"` when the text changes `domain_name` and the links should\nkeep their spelling (\"Save without renaming\"): the rename question\nis recorded as already answered, so no banner follows. Left out, a\nchanged name is asked about after the next sync.",
+            "example": "keep"
           }
         }
       },

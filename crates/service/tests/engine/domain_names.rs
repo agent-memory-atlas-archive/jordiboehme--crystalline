@@ -2131,3 +2131,54 @@ async fn the_startup_pass_binds_what_an_upgrade_left_pending() {
     engine.settle_after_initial_sync().await;
     assert_eq!(bound_to(&store, "scratch", "src").await, raw);
 }
+
+/// "Save without renaming" in the MANIFEST editor: a save that changes the
+/// declared name and asks to keep the links records the question as already
+/// answered, so the adoption after the next sync asks nothing.
+#[tokio::test]
+async fn a_save_with_rename_keep_records_no_open_question() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (engine, root) = adopted_explicit_eng(tmp.path()).await;
+    let before = std::fs::read_to_string(root.join("MANIFEST.md")).unwrap();
+    let checksum = crystalline_core::provision::receipt::sha256_hex(before.as_bytes());
+    let edited = crystalline_core::manifest_template("platform", TODAY);
+
+    engine
+        .save_manifest("eng", &edited, &checksum, &Scope::Unrestricted, true)
+        .await
+        .unwrap();
+    let question = saved(tmp.path()).domains["eng"]
+        .rename_question
+        .clone()
+        .expect("the answer is recorded with the save");
+    assert_eq!(question.from, "eng");
+    assert_eq!(question.to, "platform");
+    assert_eq!(question.answered, Some(RenameAnswer::Keep));
+
+    sync_and_adopt(&engine).await;
+    let cfg = saved(tmp.path());
+    assert_eq!(cfg.domains["eng"].rename_question, Some(question));
+    assert_eq!(engine.rename_question("eng"), None);
+    assert_eq!(
+        engine.local_domain_name("platform").await.as_deref(),
+        Some("eng")
+    );
+}
+
+/// A save without the keep records nothing itself: the adoption asks.
+#[tokio::test]
+async fn a_plain_save_of_a_new_name_leaves_the_question_to_the_adoption() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (engine, root) = adopted_explicit_eng(tmp.path()).await;
+    let before = std::fs::read_to_string(root.join("MANIFEST.md")).unwrap();
+    let checksum = crystalline_core::provision::receipt::sha256_hex(before.as_bytes());
+    let edited = crystalline_core::manifest_template("platform", TODAY);
+
+    engine
+        .save_manifest("eng", &edited, &checksum, &Scope::Unrestricted, false)
+        .await
+        .unwrap();
+    assert_eq!(saved(tmp.path()).domains["eng"].rename_question, None);
+    sync_and_adopt(&engine).await;
+    assert!(engine.rename_question("eng").is_some());
+}

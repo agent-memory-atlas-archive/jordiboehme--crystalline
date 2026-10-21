@@ -227,7 +227,7 @@ async fn a_manifest_edit_that_switches_on_is_screened_like_the_policy_patch() {
     let checksum = crate::support::sha256_hex(source.as_bytes());
     let err = fx
         .engine
-        .save_manifest("eng", &markdown, &checksum, &Scope::Unrestricted)
+        .save_manifest("eng", &markdown, &checksum, &Scope::Unrestricted, false)
         .await
         .unwrap_err()
         .to_string();
@@ -914,6 +914,7 @@ async fn a_manifest_editor_save_announces_the_switch() {
             &manifest("reflection: on\n"),
             &crate::support::sha256_hex(source.as_bytes()),
             &ada(),
+            false,
         )
         .await
         .unwrap();

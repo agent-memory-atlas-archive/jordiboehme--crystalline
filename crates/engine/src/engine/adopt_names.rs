@@ -11,7 +11,7 @@
 #[cfg(any(test, feature = "testing"))]
 use std::sync::atomic::Ordering as AtomicOrdering;
 
-use crystalline_core::config::RenameQuestion;
+use crystalline_core::config::{RenameAnswer, RenameQuestion};
 use crystalline_core::names::NameTable;
 
 use super::*;
@@ -31,12 +31,29 @@ impl Engine {
             .filter(|question| question.answered.is_none())
     }
 
+    /// Whether any domain here has an open rename question: the cheap check
+    /// a tool answer makes before it looks for a domain to tell about.
+    pub fn any_rename_question(&self) -> bool {
+        self.config.read().unwrap().domains.values().any(|entry| {
+            entry
+                .rename_question
+                .as_ref()
+                .is_some_and(|question| question.answered.is_none())
+        })
+    }
+
     /// The rename guidance line for a tool answer about `domain` (any name
-    /// it answers to), when that domain has an open rename question and the
-    /// session `session` (a stable key for whoever is asking) has not been
-    /// told about it yet. Marks the pair as told, so the next answer in the
-    /// same session carries nothing.
-    pub async fn rename_guidance_once(&self, session: &str, domain: &str) -> Option<String> {
+    /// it answers to), when that domain has an open rename question, `scope`
+    /// may rename the domain (the line asks the person to act, and only
+    /// those who may can) and the session `session` (a stable key for
+    /// whoever is asking) has not been told about it yet. Marks the pair as
+    /// told, so the next answer in the same session carries nothing.
+    pub async fn rename_guidance_once(
+        &self,
+        session: &str,
+        domain: &str,
+        scope: &crate::scope::Scope,
+    ) -> Option<String> {
         let registered = self.config.read().unwrap().domains.contains_key(domain);
         let local = if registered {
             domain.to_string()
@@ -44,6 +61,9 @@ impl Engine {
             self.name_table_now().await.resolve(domain)?.to_string()
         };
         let question = self.rename_question(&local)?;
+        if !self.may_rename(&local, scope).await {
+            return None;
+        }
         let fresh = self
             .rename_nudged
             .lock()
@@ -54,6 +74,94 @@ impl Engine {
                 .replace("{from}", &question.from)
                 .replace("{to}", &question.to)
         })
+    }
+
+    /// Forget which sessions were told about `domain`'s rename question, once
+    /// it is answered, dropped or moved with a rename, so a new question on
+    /// the same domain is told again.
+    pub(super) fn forget_rename_nudges(&self, domain: &str) {
+        self.rename_nudged
+            .lock()
+            .unwrap()
+            .retain(|(_, told)| told != domain);
+    }
+
+    /// Answer `domain`'s open rename question with `answer`, when its new
+    /// name is still `to` (any, when `None`): a question a newer MANIFEST
+    /// edit moved on is about another name and stays open. Written through
+    /// the configuration file as the adoption writes it. Answers whether a
+    /// question was answered.
+    pub(super) fn answer_rename_question(
+        &self,
+        domain: &str,
+        answer: RenameAnswer,
+        to: Option<&str>,
+    ) -> Result<bool> {
+        let answered = {
+            let mut file_guard = self.file_config.write().unwrap();
+            let mut file = self.fresh_file_config(&file_guard)?;
+            let question = file
+                .domains
+                .get_mut(domain)
+                .and_then(|entry| entry.rename_question.as_mut())
+                .filter(|question| {
+                    question.answered.is_none() && to.is_none_or(|to| question.to == to)
+                });
+            match question {
+                Some(question) => {
+                    question.answered = Some(answer);
+                    self.persist_config(&file)?;
+                    let effective = self.overlay.apply(&file);
+                    *file_guard = file;
+                    *self.config.write().unwrap() = effective;
+                    true
+                }
+                None => false,
+            }
+        };
+        self.forget_rename_nudges(domain);
+        Ok(answered)
+    }
+
+    /// Record that a MANIFEST save which declares `to` keeps the links as
+    /// they are ("Save without renaming"): a question already answered
+    /// "keep", so the adoption after the next sync asks nothing. An open
+    /// question keeps the name it started from; otherwise the question
+    /// starts from the name this machine last saw. A domain the
+    /// configuration file does not hold (an environment variable defines
+    /// it) records nothing.
+    pub(super) fn record_kept_rename(&self, domain: &str, to: &str) -> Result<()> {
+        {
+            let mut file_guard = self.file_config.write().unwrap();
+            let mut file = self.fresh_file_config(&file_guard)?;
+            let Some(entry) = file.domains.get_mut(domain) else {
+                return Ok(());
+            };
+            let from = match &entry.rename_question {
+                Some(question) if question.answered.is_none() => question.from.clone(),
+                _ => entry
+                    .canonical_seen
+                    .clone()
+                    .unwrap_or_else(|| domain.to_string()),
+            };
+            if from == to {
+                // Back to the name the question started from: the adoption
+                // drops the question.
+                return Ok(());
+            }
+            entry.rename_question = Some(RenameQuestion {
+                from,
+                to: to.to_string(),
+                seen_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                answered: Some(RenameAnswer::Keep),
+            });
+            self.persist_config(&file)?;
+            let effective = self.overlay.apply(&file);
+            *file_guard = file;
+            *self.config.write().unwrap() = effective;
+        }
+        self.forget_rename_nudges(domain);
+        Ok(())
     }
 
     /// Runs after a sync pass. First the one-time catch-up: every entry with
@@ -378,6 +486,7 @@ impl Engine {
                 .is_some_and(|question| question.from == canonical)
             {
                 entry.rename_question = None;
+                self.forget_rename_nudges(name);
                 changed = true;
             }
             let reaches_it = table.resolve(&canonical) == Some(name.as_str());

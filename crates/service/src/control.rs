@@ -4,6 +4,7 @@
 //! one line `{ "v": 1, "ok": true, "data": ... }` or
 //! `{ "v": 1, "ok": false, "error": ... }`. Commands: sync, status, reindex,
 //! file_stamps, collect_orphaned_domains, name_report, fix_local_spellings,
+//! finish_rename_questions,
 //! sessions, holder, tool, configure, domain_rename, origin_add,
 //! origin_update, origin_status,
 //! origin_share, origin_withdraw, origin_changes, origin_discard, origin_resolve,
@@ -325,6 +326,13 @@ async fn handle(req: &Value, shared: &Arc<Shared>) -> (Value, bool) {
         },
         "fix_local_spellings" => match shared.engine.fix_local_spellings().await {
             Ok(fixed) => (envelope_ok(json!({ "fixed": fixed })), false),
+            Err(e) => (envelope_err(e.to_string()), false),
+        },
+        // The other fix `crystalline doctor --fix` runs for names: every
+        // rename a MANIFEST made that nobody has answered is finished, as
+        // the machine owner.
+        "finish_rename_questions" => match shared.engine.finish_rename_questions().await {
+            Ok(data) => (envelope_ok(data), false),
             Err(e) => (envelope_err(e.to_string()), false),
         },
         "reindex" => {
@@ -807,7 +815,8 @@ async fn handle(req: &Value, shared: &Arc<Shared>) -> (Value, bool) {
                 "unknown ctl command '{other}'; expected status, sessions, holder, tool, sync, reindex, \
                  routing_bullets, scaffold_manifest, domain_import, domain_export, \
                  domain_remove, domain_review, domain_rename, retag, collect_orphaned_domains, \
-                 name_report, fix_local_spellings, configure, origin_add, origin_update, \
+                 name_report, fix_local_spellings, finish_rename_questions, configure, \
+                 origin_add, origin_update, \
                  origin_status, origin_share, origin_withdraw, origin_changes, origin_discard, \
                  origin_resolve, provision, forget_domain or shutdown"
             )),

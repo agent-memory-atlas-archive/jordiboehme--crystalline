@@ -57,6 +57,12 @@ impl Harness {
             }
             cfg.domains.insert(name.to_string(), entry);
         }
+        // Tokens for the HTTP door, which the gated test signs in through.
+        cfg.auth = Some(crystalline_core::config::AuthConfig {
+            mcp: Some(true),
+            oauth: Some(false),
+            ..crystalline_core::config::AuthConfig::default()
+        });
         cfg.service = Some(ServiceConfig {
             response_format: Some(ResponseFormat::Json),
             ..ServiceConfig::default()
@@ -130,4 +136,91 @@ async fn the_rename_guidance_appears_once_per_session_and_domain() {
     let (second, _server) = harness.connect().await;
     let fresh = read_text(&second, "eng").await;
     assert!(fresh.contains(LINE), "a new session is told again: {fresh}");
+}
+
+/// The first JSON-RPC payload in an SSE-framed or plain-JSON response.
+fn payload(raw: &str) -> Value {
+    let line = raw
+        .lines()
+        .map(|line| line.strip_prefix("data: ").unwrap_or(line).trim())
+        .find(|line| line.starts_with('{'))
+        .unwrap_or_else(|| panic!("no JSON-RPC payload in:\n{raw}"));
+    serde_json::from_str(line).unwrap_or_else(|e| panic!("payload is not JSON ({e}):\n{line}"))
+}
+
+/// The line goes only to a caller who may rename the domain, the right
+/// `POST /rename` needs: on a shared domain an instance admin is told, and
+/// an editor who reads and writes it but may not rename it is not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_rename_guidance_goes_only_to_callers_who_may_rename() {
+    let harness = Harness::new().await;
+    let auth_dir = harness._tmp.path().join("web-auth.db");
+    let auth = Arc::new(
+        crystalline_service::rest::AuthStore::open(&auth_dir)
+            .await
+            .unwrap(),
+    );
+    auth.add_user(
+        "root",
+        "Root",
+        None,
+        crystalline_service::rest::Role::Admin,
+        "pw12345678",
+    )
+    .await
+    .unwrap();
+    auth.add_user(
+        "eddy",
+        "Eddy",
+        None,
+        crystalline_service::rest::Role::Editor,
+        "pw12345678",
+    )
+    .await
+    .unwrap();
+    let router = crystalline_service::daemon::http_router(
+        harness.engine.clone(),
+        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        &[],
+        auth.clone(),
+        None,
+    )
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    let args = json!({ "identifier": "note", "domain": "eng" });
+    let eddy = crate::support::McpTestSession::open(
+        &addr,
+        Some(&auth.issue_mcp_token("eddy", "t").await.unwrap().token),
+    )
+    .await;
+    let read = payload(&eddy.call_tool("read_engram", args.clone()).await);
+    let text = read["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(text.contains("\"domain\""), "the read is answered: {read}");
+    assert!(
+        !text.contains("renamed from"),
+        "an editor is not told: {text}"
+    );
+
+    let root = crate::support::McpTestSession::open(
+        &addr,
+        Some(&auth.issue_mcp_token("root", "t").await.unwrap().token),
+    )
+    .await;
+    let read = payload(&root.call_tool("read_engram", args).await);
+    let text = read["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(text.contains(LINE), "an admin is told: {read}");
 }

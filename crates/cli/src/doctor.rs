@@ -882,11 +882,24 @@ pub struct LocalSpellingDoctor {
     pub in_draft: bool,
 }
 
+/// A rename a MANIFEST made that nobody has finished or kept yet.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RenamePendingDoctor {
+    /// The domain's local name, which it keeps.
+    pub domain: String,
+    /// The name its MANIFEST declared before.
+    pub from: String,
+    /// The name its MANIFEST declares now.
+    pub to: String,
+    /// When a sync saw the change, as RFC 3339 text.
+    pub seen_at: String,
+}
+
 /// The domain name findings. Shadowed and contested names, dropped aliases,
 /// team domains without a declared name and adoptions still waiting are
 /// warnings and hints: they never feed [`DoctorReport::remaining_problems`].
-/// Links spelled with a name only this machine uses are problems until
-/// `--fix` respells them.
+/// Links spelled with a name only this machine uses, and renames a MANIFEST
+/// made that nobody answered, are problems until `--fix` respells them.
 ///
 /// `None` on [`DoctorReport::names`] when the check did not run: a `--domain`
 /// run, or no route to the index.
@@ -904,6 +917,15 @@ pub struct NamesDoctor {
     pub adoption_pending: Vec<AdoptionPendingDoctor>,
     #[serde(default)]
     pub local_spellings: Vec<LocalSpellingDoctor>,
+    #[serde(default)]
+    pub rename_pending: Vec<RenamePendingDoctor>,
+    /// The domains whose MANIFEST rename `--fix` finished.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub renames_finished: Vec<String>,
+    /// Why `--fix` could not finish a MANIFEST rename, one `domain: reason`
+    /// each, or the one reason it could finish none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rename_fix_errors: Vec<String>,
     /// How many links `--fix` respelled, present only on a `--fix` run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixed: Option<u64>,
@@ -1672,6 +1694,9 @@ impl DoctorReport {
                 .map(|s| (s.domain.as_str(), s.path.as_str()))
                 .collect();
             n += files.len();
+            // A rename the MANIFEST made leaves the links on the old name
+            // until someone finishes or keeps it: one problem per domain.
+            n += names.rename_pending.len();
         }
         // A rename journal nobody finishes on their own: it was recorded
         // against another index or configuration than the ones this machine
@@ -2044,10 +2069,15 @@ fn rename_doctor(
     let here = here_now.as_ref();
     let belongs_here = matches!((&recorded, here), (Some(owner), Some(here)) if owner == here);
     let local = if pending.local_only { " --local" } else { "" };
-    let plain = format!(
-        "crystalline domain rename {} {}{local}",
-        pending.old, pending.new
-    );
+    // A respell finishes a rename the MANIFEST made, which `--fix` runs.
+    let plain = if pending.respell_only {
+        "crystalline doctor --fix".to_string()
+    } else {
+        format!(
+            "crystalline domain rename {} {}{local}",
+            pending.old, pending.new
+        )
+    };
     // Only this machine's own index and configuration ever finish a
     // journal, so one recorded against another spelling of them is finished
     // by putting that spelling back, never by a command pointed at it. What
@@ -5710,6 +5740,20 @@ fn name_lines(names: &NamesDoctor, fix: bool) -> Vec<String> {
             t.domain, t.domain
         ));
     }
+    for domain in &names.renames_finished {
+        lines.push(format!(
+            "finished the rename of domain '{domain}' from its MANIFEST: its links use the new name"
+        ));
+    }
+    for err in &names.rename_fix_errors {
+        lines.push(format!("--fix could not finish a MANIFEST rename: {err}"));
+    }
+    for r in &names.rename_pending {
+        lines.push(format!(
+            "[problem] domain '{}' was renamed from '{}' to '{}' in its MANIFEST, and its links still use the old name. Rerun with --fix to finish the rename, or keep the links as they are from the banner in Fluid",
+            r.domain, r.from, r.to
+        ));
+    }
     if let Some(fixed) = names.fixed
         && fixed > 0
     {
@@ -5791,6 +5835,7 @@ mod tests {
             old: "eng".to_string(),
             new: "platform".to_string(),
             local_only: true,
+            respell_only: false,
             owner: Some(owner),
             done: Vec::new(),
             remaining: Vec::new(),
@@ -7103,6 +7148,65 @@ mod tests {
             "{out}"
         );
         assert_eq!(report.remaining_problems(), 0);
+    }
+
+    /// A MANIFEST rename nobody finished or kept is a problem that names
+    /// both names and `--fix`; once `--fix` finished it, the run says so and
+    /// counts nothing. A finish that failed is named with its reason.
+    #[test]
+    fn doctor_lists_a_pending_rename_and_fix_finishes_it() {
+        let pending = RenamePendingDoctor {
+            domain: "eng".to_string(),
+            from: "eng".to_string(),
+            to: "platform".to_string(),
+            seen_at: "2026-10-21T08:00:00Z".to_string(),
+        };
+        let report = DoctorReport {
+            names: Some(NamesDoctor {
+                rename_pending: vec![pending.clone()],
+                ..NamesDoctor::default()
+            }),
+            ..DoctorReport::default()
+        };
+        assert_eq!(report.remaining_problems(), 1);
+        let out = render_human(&report);
+        assert!(
+            out.contains(
+                "[problem] domain 'eng' was renamed from 'eng' to 'platform' in its MANIFEST, and its links still use the old name. Rerun with --fix to finish the rename, or keep the links as they are from the banner in Fluid"
+            ),
+            "{out}"
+        );
+
+        let fixed = DoctorReport {
+            names: Some(NamesDoctor {
+                renames_finished: vec!["eng".to_string()],
+                ..NamesDoctor::default()
+            }),
+            fix: true,
+            ..DoctorReport::default()
+        };
+        assert_eq!(fixed.remaining_problems(), 0);
+        let out = render_human(&fixed);
+        assert!(
+            out.contains("finished the rename of domain 'eng' from its MANIFEST"),
+            "{out}"
+        );
+
+        let failed = DoctorReport {
+            names: Some(NamesDoctor {
+                rename_pending: vec![pending],
+                rename_fix_errors: vec!["eng: the index is busy".to_string()],
+                ..NamesDoctor::default()
+            }),
+            fix: true,
+            ..DoctorReport::default()
+        };
+        assert_eq!(failed.remaining_problems(), 1);
+        let out = render_human(&failed);
+        assert!(
+            out.contains("--fix could not finish a MANIFEST rename: eng: the index is busy"),
+            "{out}"
+        );
     }
 
     /// Local-only spellings count once per file, and a file whose fix waits

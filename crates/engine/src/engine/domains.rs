@@ -438,12 +438,18 @@ impl Engine {
     /// `scope` decides the read-only screen and the switch-on (decision D10):
     /// on a read-only domain the editor is refused like every other write,
     /// and an off-to-on MANIFEST is the owner's or an instance admin's.
+    ///
+    /// `keep_name` is the MANIFEST editor's "Save without renaming": when the
+    /// saved text declares a `domain_name` other than the one the MANIFEST
+    /// declared before, the rename question the adoption would ask is
+    /// recorded as already answered "keep" once the save has landed.
     pub async fn save_manifest(
         &self,
         domain: &str,
         markdown: &str,
         expected_checksum: &str,
         scope: &crate::scope::Scope,
+        keep_name: bool,
     ) -> Result<Value> {
         if self.read_only {
             return Err(EngineError::ReadOnly);
@@ -476,6 +482,18 @@ impl Engine {
         // domain policies meet.
         self.screen_manifest_write(domain, None, markdown).await?;
         let switch_before = self.reflection_switch(domain);
+        // The name the MANIFEST declares before the save, read only when the
+        // save keeps the links of a new one.
+        let kept_name = if keep_name {
+            let before = self
+                .domain_entry(domain)
+                .ok()
+                .and_then(|entry| self.declared_domain_name(domain, &entry));
+            crystalline_core::manifest::domain_name_of_source(markdown)
+                .filter(|after| before.as_deref() != Some(after.as_str()))
+        } else {
+            None
+        };
 
         let (rel, created) = match self.content_source(domain)? {
             ContentSource::File { root } => {
@@ -636,6 +654,9 @@ impl Engine {
             audience: None,
         }));
 
+        if let Some(name) = &kept_name {
+            self.record_kept_rename(domain, name)?;
+        }
         self.refresh_routing_cache().await;
         // A switch written here moves the Reflection's mode for every file
         // in the folder; the index follows before the switch is announced,

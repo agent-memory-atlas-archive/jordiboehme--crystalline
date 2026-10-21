@@ -1764,6 +1764,13 @@ export type SaveManifestBody = {
      * The full MANIFEST markdown as the editor holds it.
      */
     markdown: string;
+    /**
+     * `"keep"` when the text changes `domain_name` and the links should
+     * keep their spelling ("Save without renaming"): the rename question
+     * is recorded as already answered, so no banner follows. Left out, a
+     * changed name is asked about after the next sync.
+     */
+    rename?: string | null;
 };
 
 /**
@@ -5388,6 +5395,94 @@ export type RenameDomainResponses = {
 };
 
 export type RenameDomainResponse = RenameDomainResponses[keyof RenameDomainResponses];
+
+export type FinishManifestRenameData = {
+    body?: never;
+    path: {
+        /**
+         * The domain's current name.
+         */
+        domain: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/rename/finish';
+};
+
+export type FinishManifestRenameErrors = {
+    /**
+     * No identity, or an anonymous one.
+     */
+    401: ProblemDetail;
+    /**
+     * The caller may not rename the domain, the request did not echo its CSRF token, or this instance is read-only.
+     */
+    403: ProblemDetail;
+    /**
+     * No such domain, or none this caller may see.
+     */
+    404: ProblemDetail;
+    /**
+     * The domain has no rename waiting for an answer, another rename is running, or the new name reaches another domain here.
+     */
+    409: ProblemDetail;
+};
+
+export type FinishManifestRenameError = FinishManifestRenameErrors[keyof FinishManifestRenameErrors];
+
+export type FinishManifestRenameResponses = {
+    /**
+     * What was respelled, and what was left as it is.
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type FinishManifestRenameResponse = FinishManifestRenameResponses[keyof FinishManifestRenameResponses];
+
+export type KeepManifestRenameData = {
+    body?: never;
+    path: {
+        /**
+         * The domain's current name.
+         */
+        domain: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/rename/keep';
+};
+
+export type KeepManifestRenameErrors = {
+    /**
+     * No identity, or an anonymous one.
+     */
+    401: ProblemDetail;
+    /**
+     * The caller may not rename the domain, the request did not echo its CSRF token, or this instance is read-only.
+     */
+    403: ProblemDetail;
+    /**
+     * No such domain, or none this caller may see.
+     */
+    404: ProblemDetail;
+    /**
+     * The domain has no rename waiting for an answer.
+     */
+    409: ProblemDetail;
+};
+
+export type KeepManifestRenameError = KeepManifestRenameErrors[keyof KeepManifestRenameErrors];
+
+export type KeepManifestRenameResponses = {
+    /**
+     * The question, answered.
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type KeepManifestRenameResponse = KeepManifestRenameResponses[keyof KeepManifestRenameResponses];
 
 export type RetireEngramData = {
     body: RetireBody;

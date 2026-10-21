@@ -614,6 +614,7 @@ async fn a_manifest_save_announces_the_manifest() {
             &revised,
             &support::sha256_hex(current.as_bytes()),
             &Scope::Unrestricted,
+            false,
         )
         .await
         .unwrap();
@@ -647,6 +648,7 @@ async fn a_manifest_save_names_the_account_that_saved_it() {
                 account: "ada".into(),
                 admin: false,
             },
+            false,
         )
         .await
         .unwrap();
@@ -670,6 +672,7 @@ async fn a_manifest_create_announces_added() {
             &original,
             &support::sha256_hex(b""),
             &Scope::Unrestricted,
+            false,
         )
         .await
         .unwrap();
@@ -1094,6 +1097,7 @@ async fn a_virtual_domains_scaffold_import_and_manifest_save_announce() {
             &revised,
             &support::sha256_hex(current.as_bytes()),
             &Scope::Unrestricted,
+            false,
         )
         .await
         .unwrap();

@@ -119,6 +119,8 @@ pub const MOUNTED_OPERATIONS: &[&str] = &[
     "POST /api/v1/domains",
     "DELETE /api/v1/domains/{domain}",
     "POST /api/v1/domains/{domain}/rename",
+    "POST /api/v1/domains/{domain}/rename/finish",
+    "POST /api/v1/domains/{domain}/rename/keep",
     "PUT /api/v1/domains/{domain}/review",
     "GET /api/v1/domains/{domain}/drafts",
     "PUT /api/v1/domains/{domain}/visibility",

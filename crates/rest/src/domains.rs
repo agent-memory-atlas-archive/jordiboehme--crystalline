@@ -749,6 +749,13 @@ pub struct SaveManifestBody {
         example = "---\ntitle: eng\n---\n\n## Scope\n\n- Everything about eng\n\n## When to Use\n\n- Route here for eng questions.\n"
     )]
     markdown: String,
+    /// `"keep"` when the text changes `domain_name` and the links should
+    /// keep their spelling ("Save without renaming"): the rename question
+    /// is recorded as already answered, so no banner follows. Left out, a
+    /// changed name is asked about after the next sync.
+    #[serde(default)]
+    #[schema(example = "keep")]
+    rename: Option<String>,
 }
 
 /// `PUT /domains/{domain}/manifest` - save a domain's MANIFEST markdown
@@ -918,9 +925,25 @@ pub async fn save_manifest(
         ));
     }
     let token = if_match(&headers)?;
+    let keep_name = match body.rename.as_deref() {
+        None => false,
+        Some("keep") => true,
+        Some(other) => {
+            return Err(ApiError::unprocessable(format!(
+                "rename must be \"keep\" or left out, not \"{other}\"; finish a rename with \
+                 POST /domains/{{domain}}/rename/finish once the MANIFEST is saved"
+            )));
+        }
+    };
     match state
         .engine
-        .save_manifest(&domain, &body.markdown, &token, &identity.scope())
+        .save_manifest(
+            &domain,
+            &body.markdown,
+            &token,
+            &identity.scope(),
+            keep_name,
+        )
         .await
     {
         // What landed is the LF form of what was sent, so that is what the

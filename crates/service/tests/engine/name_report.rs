@@ -568,3 +568,63 @@ async fn a_fix_in_a_reviewing_domain_is_reported_as_waiting_in_a_draft() {
         "the draft is not written again"
     );
 }
+
+/// An open rename question is named in the report, and the doctor's fix
+/// (`finish_rename_questions`) finishes it: the link is respelled, and the
+/// report no longer lists it.
+#[tokio::test]
+async fn a_pending_rename_is_reported_and_finished_by_the_fix() {
+    let tmp = tempfile::tempdir().unwrap();
+    let eng = declared_folder(tmp.path(), "eng", "platform");
+    std::fs::write(
+        eng.join("runbook.md"),
+        engram("Runbook", "runbook", "The steps."),
+    )
+    .unwrap();
+    let ops = bare_folder(tmp.path(), "ops");
+    std::fs::write(
+        ops.join("note.md"),
+        engram("Note", "note", "See [[eng:runbook]]."),
+    )
+    .unwrap();
+    let mut entry = explicit(eng);
+    entry.canonical_seen = Some("platform".to_string());
+    entry.rename_question = Some(crystalline_core::config::RenameQuestion {
+        from: "eng".to_string(),
+        to: "platform".to_string(),
+        seen_at: "2026-10-21T08:00:00Z".to_string(),
+        answered: None,
+    });
+    let engine = engine(
+        memory_store().await,
+        tmp.path(),
+        vec![("eng", entry), ("ops", explicit(ops.clone()))],
+    );
+    engine.sync(None).await.unwrap();
+
+    let report = engine.name_report().await.unwrap();
+    assert_eq!(
+        report["rename_pending"],
+        json!([{
+            "domain": "eng", "from": "eng", "to": "platform",
+            "seen_at": "2026-10-21T08:00:00Z"
+        }]),
+        "{report}"
+    );
+
+    let finished = engine.finish_rename_questions().await.unwrap();
+    assert_eq!(finished["finished"][0]["domain"], "eng", "{finished}");
+    assert_eq!(finished["failed"], json!([]), "{finished}");
+    let text = std::fs::read_to_string(ops.join("note.md")).unwrap();
+    assert!(text.contains("[[platform:runbook]]"), "{text}");
+
+    let report = engine.name_report().await.unwrap();
+    assert_eq!(report["rename_pending"], json!([]), "{report}");
+    assert_eq!(
+        saved(tmp.path()).domains["eng"]
+            .rename_question
+            .as_ref()
+            .and_then(|q| q.answered),
+        Some(crystalline_core::config::RenameAnswer::Finished)
+    );
+}
