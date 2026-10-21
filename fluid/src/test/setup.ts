@@ -80,6 +80,11 @@ if (!("scrollIntoView" in Element.prototype)) {
 // whole suite is what makes those lists renderable here; the tests that care
 // about the number set their own scroll offsets against it. `clientHeight` is
 // a getter so a test can still spy on it.
+//
+// Every element answers 600 here, `document.documentElement` included. An
+// overflow test (one that compares `scrollHeight` against `clientHeight`)
+// must therefore set both on the element it measures: setting only
+// `scrollHeight` compares it against this 600, not against jsdom's 0.
 Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
   configurable: true,
   value: 600,
