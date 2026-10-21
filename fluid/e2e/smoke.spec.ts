@@ -403,6 +403,32 @@ for (const share of [false, true]) {
   }
 }
 
+// `run-smoke.sh` changes this domain's declared name by hand once the daemon
+// is up, which leaves a rename question for the domain page to ask.
+const RENAMED_DOMAIN = process.env.FLUID_E2E_RENAMED_DOMAIN ?? "smoke-rename";
+
+test("the domain page asks about a rename the MANIFEST made, and keeping the links closes it", async ({
+  page,
+}) => {
+  await page.goto(`d/${RENAMED_DOMAIN}`);
+
+  await expect(
+    page.getByText(
+      `This domain was renamed from ${RENAMED_DOMAIN} to smoke-moved in its MANIFEST.`,
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Finish the rename" }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Keep links as they are" }).click();
+
+  await expect(page.getByText(/^This domain was renamed from/)).toBeHidden();
+  await expect(
+    page.getByRole("button", { name: "Keep links as they are" }),
+  ).toBeHidden();
+});
+
 test("the Rename dialog opens from the domain page and can be cancelled", async ({
   page,
 }) => {

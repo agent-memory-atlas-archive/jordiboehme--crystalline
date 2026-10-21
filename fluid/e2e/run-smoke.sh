@@ -114,6 +114,10 @@ FLUID_E2E_LOCKED_DOMAIN="${FLUID_E2E_LOCKED_DOMAIN:-smoke-archive}"
 # admin, with its Reflection on. Its name starts with none of the names above
 # (the sidebar matches by prefix) and does not contain the badge's word.
 FLUID_E2E_REFLECTION_DOMAIN="${FLUID_E2E_REFLECTION_DOMAIN:-smoke-pages}"
+# The domain whose MANIFEST name is changed by hand once the daemon is up, so
+# the domain page has a rename question to ask. Its name starts with none of
+# the names above.
+FLUID_E2E_RENAMED_DOMAIN="${FLUID_E2E_RENAMED_DOMAIN:-smoke-rename}"
 # The fourth account: knowledge level none, a Reflection contributor in that
 # domain and nothing else.
 FLUID_E2E_CONTRIBUTOR="${FLUID_E2E_CONTRIBUTOR:-contrib}"
@@ -129,6 +133,7 @@ export FLUID_E2E_USER FLUID_E2E_PASSWORD FLUID_E2E_DOMAIN
 export FLUID_E2E_PEER FLUID_E2E_PEER_PASSWORD
 export FLUID_E2E_OUTSIDER FLUID_E2E_OUTSIDER_PASSWORD
 export FLUID_E2E_PRIVATE_DOMAIN FLUID_E2E_OWNED_DOMAIN FLUID_E2E_LOCKED_DOMAIN
+export FLUID_E2E_RENAMED_DOMAIN
 export FLUID_E2E_REFLECTION_DOMAIN FLUID_E2E_CONTRIBUTOR FLUID_E2E_CONTRIBUTOR_PASSWORD
 
 # A second run serves the daemon under a path prefix: its public_url names
@@ -228,6 +233,8 @@ locked_root="$run_dir/locked-domain"
 cp -R "$here/fixtures/locked-domain" "$locked_root"
 reflection_root="$run_dir/reflection-domain"
 cp -R "$here/fixtures/reflection-domain" "$reflection_root"
+renamed_root="$run_dir/renamed-domain"
+cp -R "$here/fixtures/renamed-domain" "$renamed_root"
 # The Reflection journeys write one threads file on disk, the way another
 # process or a pull would, to see the open page follow it.
 export FLUID_E2E_REFLECTION_ROOT="$reflection_root"
@@ -243,6 +250,7 @@ echo "smoke: registering the fixture domains"
 "${isolated[@]}" "$bin" domain add "$FLUID_E2E_OWNED_DOMAIN" "$owned_root"
 "${isolated[@]}" "$bin" domain add "$FLUID_E2E_LOCKED_DOMAIN" "$locked_root"
 "${isolated[@]}" "$bin" domain add "$FLUID_E2E_REFLECTION_DOMAIN" "$reflection_root"
+"${isolated[@]}" "$bin" domain add "$FLUID_E2E_RENAMED_DOMAIN" "$renamed_root"
 
 # One kept text, as a co-editing room leaves it when its last save could not
 # land: a plain file in the state folder, which the server lists on every
@@ -326,6 +334,12 @@ fi
 # Again once the daemon is up: its start sets aside kept folders no domain
 # owns, and the fixture must survive that too.
 kept_is_listed "after the daemon started"
+
+# The hand edit that asks the rename question: the daemon has seen the
+# declared name `smoke-rename` by now, so a new one is a rename its note still
+# links to by the old name. The rename journey finds the question open.
+sed -i.bak 's/^domain_name: .*/domain_name: smoke-moved/' "$renamed_root/MANIFEST.md"
+rm -f "$renamed_root/MANIFEST.md.bak"
 
 # The first admin, created the way a person creates one: through the endpoint
 # behind the browser's first-run wizard, over loopback, where no setup token is

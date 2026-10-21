@@ -30,6 +30,7 @@
 
 import {
   useInfiniteQuery,
+  useMutation,
   useMutationState,
   useQuery,
   useQueryClient,
@@ -58,12 +59,15 @@ import {
 import {
   archiveDownloadUrl,
   fetchSyncStatus,
+  finishManifestRename,
+  keepManifestRename,
   renameReportKey,
   syncPullKey,
   syncStatusKey,
 } from "../api/admin";
 import type { RenameReport, SyncStatus } from "../api/admin";
-import { problemDetail } from "../api/client";
+import { DOMAINS_QUERY_KEY } from "../api/domains";
+import { ApiProblem, problemDetail } from "../api/client";
 import { fetchManifest, manifestKey, treeQuery } from "../api/domain";
 import type { ManifestView } from "../api/domain";
 import { fetchReflectionTree, reflectionTreeKey } from "../api/reflection";
@@ -312,6 +316,14 @@ function DomainPage({
     });
   }
   const renamed = renamedFor.report;
+  /**
+   * What finishing a MANIFEST rename did. Kept here, not in the banner,
+   * because the banner is gone as soon as the question is.
+   */
+  const [finished, setFinished] = useState<{
+    domain: string;
+    report: RenameReport;
+  } | null>(null);
   useEffect(() => {
     queryClient.removeQueries({ queryKey: renameReportKey(domain) });
   }, [domain, queryClient]);
@@ -608,6 +620,24 @@ function DomainPage({
         </header>
 
         {renamed !== null && <RenameSummary report={renamed} />}
+        {finished !== null && finished.domain === domain && (
+          <RenameSummary report={finished.report} />
+        )}
+
+        {/*
+          The MANIFEST's own name changed by hand and nobody has answered yet.
+          Only for somebody who may rename the domain, because both answers
+          go through the rename gate.
+        */}
+        {own && summary?.renamePending != null && (
+          <PendingRenameBanner
+            domain={domain}
+            from={summary.renamePending.from}
+            to={summary.renamePending.to}
+            disabledReason={renameDisabledReason}
+            onFinished={(report) => setFinished({ domain, report })}
+          />
+        )}
 
         {/*
           Another domain here already answers to this one's own canonical
@@ -927,6 +957,93 @@ function ShutItem({
       <Icon aria-hidden="true" size={16} strokeWidth={1.75} />
       {label}
     </DropdownMenu.Item>
+  );
+}
+
+/**
+ * The banner for a rename the MANIFEST made: finish it (respell the links)
+ * or keep the links as they are. A finish hands its report up, because the
+ * banner is gone once the listing is read again.
+ */
+function PendingRenameBanner({
+  domain,
+  from,
+  to,
+  disabledReason,
+  onFinished,
+}: {
+  domain: string;
+  from: string;
+  to: string;
+  disabledReason: string | undefined;
+  onFinished: (report: RenameReport) => void;
+}) {
+  const queryClient = useQueryClient();
+  const reasonId = useId();
+  const [failure, setFailure] = useState<string | null>(null);
+  const answer = useMutation({
+    mutationFn: async (finish: boolean) => {
+      if (finish) {
+        onFinished(await finishManifestRename(domain));
+      } else {
+        await keepManifestRename(domain);
+      }
+    },
+    onMutate: () => setFailure(null),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: DOMAINS_QUERY_KEY }),
+    onError: (error) =>
+      setFailure(
+        error instanceof ApiProblem && error.status === 409
+          ? "Someone changed the name again. Reload to see the new question."
+          : problemDetail(error),
+      ),
+  });
+  const blocked = disabledReason !== undefined || answer.isPending;
+  const button = `${BUTTON.secondary} aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-transparent dark:aria-disabled:hover:bg-transparent`;
+  return (
+    <div
+      role="status"
+      className="flex flex-wrap items-center justify-between gap-3 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300"
+    >
+      <p>{`This domain was renamed from ${from} to ${to} in its MANIFEST.`}</p>
+      <button
+        type="button"
+        aria-disabled={blocked}
+        aria-describedby={disabledReason !== undefined ? reasonId : undefined}
+        onClick={() => {
+          if (!blocked) {
+            answer.mutate(true);
+          }
+        }}
+        className={button}
+      >
+        Finish the rename
+      </button>
+      <button
+        type="button"
+        aria-disabled={blocked}
+        aria-describedby={disabledReason !== undefined ? reasonId : undefined}
+        onClick={() => {
+          if (!blocked) {
+            answer.mutate(false);
+          }
+        }}
+        className={button}
+      >
+        Keep links as they are
+      </button>
+      {disabledReason !== undefined && (
+        <span id={reasonId} className="sr-only">
+          {disabledReason}
+        </span>
+      )}
+      {failure !== null && (
+        <p role="alert" className="basis-full">
+          {failure}
+        </p>
+      )}
+    </div>
   );
 }
 

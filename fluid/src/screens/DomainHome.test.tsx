@@ -2654,6 +2654,171 @@ describe("the domain's declared name", () => {
     ).toBeVisible();
   });
 
+  it("offers an admin to finish or keep a rename the MANIFEST made, and each answer closes the question", async () => {
+    let open = true;
+    const calls: string[] = [];
+    serve(
+      {
+        "/domains": () =>
+          listingOf(
+            domainRow({
+              canonical_name: "platform",
+              rename_pending: {
+                from: "eng",
+                to: "platform",
+                seen_at: "2026-10-20T10:00:00Z",
+              },
+            }),
+          ),
+        "/domains/eng/rename/finish": (_path, init) => {
+          calls.push(`finish ${init?.method}`);
+          open = false;
+          return {
+            domain: "eng",
+            from: "eng",
+            to: "platform",
+            rewritten: [{ domain: "ops", engrams: 1, references: 2 }],
+            left_behind: [],
+          };
+        },
+        "/domains/eng/rename/keep": (_path, init) => {
+          calls.push(`keep ${init?.method}`);
+          open = false;
+          return {
+            domain: "eng",
+            from: "eng",
+            to: "platform",
+            answered: "keep",
+          };
+        },
+      },
+      "admin",
+    );
+    // The listing answers the question as open until a call closes it.
+    const listing = apiMock.getMockImplementation();
+    apiMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      const answer = (await (listing as NonNullable<typeof listing>)(
+        path,
+        init,
+      )) as { domains?: Record<string, unknown>[] };
+      if (path === "/domains" && !open && answer.domains) {
+        return {
+          ...answer,
+          domains: answer.domains.map((row) => ({
+            ...row,
+            rename_pending: null,
+          })),
+        };
+      }
+      return answer;
+    });
+
+    renderApp("/d/eng");
+
+    const sentence = await screen.findByText(
+      "This domain was renamed from eng to platform in its MANIFEST.",
+    );
+    const banner = sentence.closest('[role="status"]') as HTMLElement;
+    expect(
+      within(banner).getByRole("button", { name: "Keep links as they are" }),
+    ).toBeVisible();
+    await userEvent.click(
+      within(banner).getByRole("button", { name: "Finish the rename" }),
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByText(/^This domain was renamed from/)).toBeNull();
+    });
+    expect(calls).toEqual(["finish POST"]);
+    expect(await screen.findByText("Renamed from eng.")).toBeVisible();
+    expect(screen.getByText(/ops: 1 engram rewritten/)).toBeVisible();
+  });
+
+  it("keeps the links when asked to", async () => {
+    serve(
+      {
+        "/domains": () =>
+          listingOf(
+            domainRow({
+              rename_pending: {
+                from: "eng",
+                to: "platform",
+                seen_at: "2026-10-20T10:00:00Z",
+              },
+            }),
+          ),
+        "/domains/eng/rename/keep": () => ({ answered: "keep" }),
+      },
+      "admin",
+    );
+
+    renderApp("/d/eng");
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Keep links as they are" }),
+    );
+
+    await waitFor(() => {
+      expect(requested()).toContain("/domains/eng/rename/keep");
+    });
+  });
+
+  it("says in words when someone changed the name again", async () => {
+    serve(
+      {
+        "/domains": () =>
+          listingOf(
+            domainRow({
+              rename_pending: {
+                from: "eng",
+                to: "platform",
+                seen_at: "2026-10-20T10:00:00Z",
+              },
+            }),
+          ),
+        "/domains/eng/rename/keep": () => {
+          throw new ApiProblem(409, "conflict", "no rename is waiting");
+        },
+      },
+      "admin",
+    );
+
+    renderApp("/d/eng");
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Keep links as they are" }),
+    );
+
+    expect(
+      await screen.findByText(
+        "Someone changed the name again. Reload to see the new question.",
+      ),
+    ).toHaveAttribute("role", "alert");
+  });
+
+  it("shows the pending rename to nobody who may not rename the domain", async () => {
+    serve({
+      "/domains": () =>
+        listingOf(
+          domainRow({
+            rename_pending: {
+              from: "eng",
+              to: "platform",
+              seen_at: "2026-10-20T10:00:00Z",
+            },
+          }),
+        ),
+    });
+
+    renderApp("/d/eng");
+
+    await screen.findByRole("heading", { level: 1, name: "eng" });
+    expect(screen.queryByText(/^This domain was renamed from/)).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Finish the rename" }),
+    ).toBeNull();
+  });
+
   it("keeps Rename domain inert on a read-only instance, and says why", async () => {
     serve({}, "admin", () =>
       meResponse({

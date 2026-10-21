@@ -533,6 +533,45 @@ export async function renameDomain(
 }
 
 /**
+ * Finish a rename the domain's MANIFEST made: respell the links that still
+ * use the old name. The route answers `{domain, from, to, rewritten,
+ * left_behind}`, which is read into the same report a rename gives, so the
+ * domain page draws both the same way.
+ */
+export async function finishManifestRename(
+  domain: string,
+): Promise<RenameReport> {
+  const report = asObject(
+    await api<unknown>(`/domains/${encodeSegment(domain)}/rename/finish`, {
+      method: "POST",
+    }),
+  );
+  return {
+    domain: asString(report?.to) ?? domain,
+    previous: asString(report?.from) ?? domain,
+    localOnly: true,
+    manifestWritten: false,
+    manifestDraft: false,
+    note: null,
+    rewritten: asArray(report?.rewritten)
+      .map(readRenameRewritten)
+      .filter((row): row is RenameRewritten => row !== null),
+    leftBehind: asArray(report?.left_behind)
+      .map(readRenameLeftBehind)
+      .filter((row): row is RenameLeftBehind => row !== null),
+    aliases: [],
+    shadows: [],
+  };
+}
+
+/** Close the rename question and leave every link as it is. */
+export async function keepManifestRename(domain: string): Promise<void> {
+  await api<unknown>(`/domains/${encodeSegment(domain)}/rename/keep`, {
+    method: "POST",
+  });
+}
+
+/**
  * Where a rename's own report waits for the domain page it lands on to read
  * it once, keyed by the domain's new name.
  *
