@@ -132,6 +132,27 @@ const REFLECT_PROMPT: &str = include_str!("automation/reflect-prompt.md");
 /// fill in.
 const EVOLVE_PROMPT: &str = include_str!("automation/evolve-prompt.md");
 
+/// The MCP tools a headless run may never call, by name: each needs a yes,
+/// or shares, pulls or throws away work a person owns. Both prompts name
+/// exactly these, and a runner passes the same list to its harness (Claude
+/// Code's `--disallowedTools`). Two more rules are parameters, not tools,
+/// so they live in the prompts only: the `write_reflection` action
+/// `delete_asset` and `write_engram` with `overwrite: true`.
+pub const HEADLESS_DISALLOWED_TOOLS: &[&str] = &[
+    "delete_engram",
+    "move_engram",
+    "split_engram",
+    "remove_domain",
+    "add_domain",
+    "configure",
+    "provision",
+    "share_changes",
+    "update_domain",
+    "resolve_conflict",
+    "withdraw_proposal",
+    "discard_changes",
+];
+
 /// The shipped prompt a headless run of `lp` starts its agent with, for
 /// `domain` and at most `max_items` items. It ends with the block
 /// [`parse_run_summary`] reads.
@@ -161,8 +182,12 @@ pub struct RunSummary {
 /// The summary block at the end of `last_message`, or `None` without one.
 /// The block is the last `Done: <n>`, `Left for a person: <n>` and
 /// `Errors: <n>` lines in that order (blank lines between them, spaces
-/// around them and a code fence around the block are fine); the lines under
-/// it are its text.
+/// around them, a code fence around the block, markdown bold or italics, a
+/// leading list marker and words after the number are fine); the lines
+/// under it are its text.
+///
+/// The block carries no cap signal: a runner records a run whose `done`
+/// reached its `max_items` as stopped at the cap, not as done.
 pub fn parse_run_summary(last_message: &str) -> Option<RunSummary> {
     let lines: Vec<&str> = last_message.lines().map(str::trim).collect();
     (0..lines.len()).rev().find_map(|at| {
@@ -183,13 +208,23 @@ pub fn parse_run_summary(last_message: &str) -> Option<RunSummary> {
     })
 }
 
-/// The number on a `<key>: <n>` line, or `None` for any other line.
+/// The number on a `<key>: <n>` line, or `None` for any other line. Bold
+/// and italic marks and a leading `-` or `+` list marker are ignored, and
+/// the number is the value's leading digits.
 fn count(line: &str, key: &str) -> Option<u64> {
-    let (name, value) = line.split_once(':')?;
+    let plain: String = line.chars().filter(|c| !matches!(c, '*' | '_')).collect();
+    let plain = plain.trim();
+    let plain = plain
+        .strip_prefix("- ")
+        .or_else(|| plain.strip_prefix("+ "))
+        .unwrap_or(plain);
+    let (name, value) = plain.split_once(':')?;
     if !name.trim().eq_ignore_ascii_case(key) {
         return None;
     }
-    value.trim().parse().ok()
+    let value = value.trim_start();
+    let digits = value.len() - value.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    value[..digits].parse().ok()
 }
 
 /// The first line from `from` on that is not blank, when it is a `<key>: <n>`
@@ -277,13 +312,57 @@ mod tests {
     }
 
     #[test]
-    fn a_prompt_never_waits_for_a_yes_and_asks_in_threads() {
+    fn a_prompt_never_waits_for_a_yes() {
         for (lp, prompt) in both() {
             assert!(prompt.contains("Nobody is there to answer"), "{lp}");
             assert!(prompt.contains("Never wait for a yes"), "{lp}");
-            assert!(prompt.contains("Reflection thread"), "{lp}");
-            assert!(prompt.contains("`discuss`"), "{lp}");
             assert!(prompt.contains("never in this session"), "{lp}");
+        }
+    }
+
+    #[test]
+    fn reflect_asks_in_threads_and_evolve_in_the_summary() {
+        let reflect = headless_prompt(Loop::Reflect, "work", 7);
+        assert!(
+            reflect.contains("Questions for people go into a Reflection thread with `discuss`")
+        );
+        let evolve = headless_prompt(Loop::Evolve, "work", 7);
+        assert!(evolve.contains("Name every question for people in the summary"));
+        assert!(evolve.contains("never in a Reflection thread"));
+        assert!(!evolve.contains("`discuss`"));
+    }
+
+    #[test]
+    fn a_prompt_ends_its_queue_when_only_worked_items_come_back() {
+        for (lp, prompt) in both() {
+            assert!(!prompt.contains("until it is empty"), "{lp}");
+            assert!(
+                prompt.contains("already worked or left for a person"),
+                "{lp}"
+            );
+            assert!(
+                prompt.contains("counts once toward the cap, also when it comes back"),
+                "{lp}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_prompt_forbids_exactly_the_tools_a_runner_disallows() {
+        for (lp, prompt) in both() {
+            let rule = prompt
+                .lines()
+                .find(|line| line.trim_start_matches("- ").starts_with("Do not use"))
+                .unwrap_or_else(|| panic!("{lp} has no Do not use line"));
+            let (tools, params) = rule.split_once(". ").unwrap();
+            let named: Vec<&str> = tools.split('`').skip(1).step_by(2).collect();
+            assert_eq!(named, HEADLESS_DISALLOWED_TOOLS, "{lp}");
+            for needle in [
+                "`write_reflection` action `delete_asset`",
+                "`write_engram` with `overwrite: true`",
+            ] {
+                assert!(params.contains(needle), "{lp} does not forbid {needle}");
+            }
         }
     }
 
@@ -403,6 +482,28 @@ mod tests {
         let summary = parse_run_summary(message).unwrap();
         assert_eq!((summary.done, summary.left, summary.errors), (4, 0, 0));
         assert_eq!(summary.text, "");
+    }
+
+    #[test]
+    fn a_summary_block_takes_bold_and_list_markers() {
+        let message =
+            "**Done:** 2\n- **Left for a person:** 1\n* Errors: **0**\nThe Setup thread waits.";
+        assert_eq!(
+            parse_run_summary(message),
+            Some(RunSummary {
+                done: 2,
+                left: 1,
+                errors: 0,
+                text: "The Setup thread waits.".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_summary_count_reads_the_leading_digits() {
+        let message = "Done: 3 (two threads, one page)\nLeft for a person: 1 thread\nErrors: 0.\n";
+        let summary = parse_run_summary(message).unwrap();
+        assert_eq!((summary.done, summary.left, summary.errors), (3, 1, 0));
     }
 
     #[test]
