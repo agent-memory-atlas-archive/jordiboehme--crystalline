@@ -775,6 +775,114 @@ describe("the MANIFEST editor and a changed domain name", () => {
     expect(await screen.findByText(/The name ops is taken/)).toBeVisible();
     expect(put).toHaveBeenCalledTimes(1);
     expect(screen.getByLabelText("MANIFEST source")).toBeVisible();
+
+    // A later save that renames nothing lands, and the old complaint goes.
+    const view = EditorView.findFromDOM(
+      screen
+        .getByLabelText("MANIFEST source")
+        .closest(".cm-editor") as HTMLElement,
+    );
+    act(() => {
+      view?.dispatch({
+        changes: { from: view.state.doc.length, insert: "More.\n" },
+      });
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(put).toHaveBeenCalledTimes(2);
+    });
+    await waitFor(() => {
+      expect(screen.queryByText(/The name ops is taken/)).toBeNull();
+    });
+  });
+
+  it("closes on Escape and saves nothing", async () => {
+    const put = serveNamed();
+    const { view } = await openDialog();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    expect(put).not.toHaveBeenCalled();
+    expect(view.state.doc.toString()).toContain("domain_name: ops");
+  });
+
+  it("keeps the choice through a 412 and the overwrite that retries", async () => {
+    let calls = 0;
+    const put = vi.fn(() => {
+      calls += 1;
+      if (calls === 1) {
+        throw new ApiProblem(412, "stale", "The MANIFEST changed.", {
+          current_etag: '"m9"',
+          current_content: NAMED,
+        });
+      }
+      return manifestResponse({ markdown: NAMED, checksum: "m10" });
+    });
+    serveEditor({
+      "/domains/eng/manifest": (_path, init) =>
+        init?.method === "PUT" ? put() : manifestResponse({ markdown: NAMED }),
+    });
+    const { dialog } = await openDialog();
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Save without renaming" }),
+    );
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Save mine over it" }),
+    );
+    await waitFor(() => {
+      expect(put).toHaveBeenCalledTimes(2);
+    });
+    const bodies = sent("PUT", "/domains/eng/manifest");
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toEqual(bodies[0]);
+    expect(bodies[1]).toMatchObject({ rename: "keep" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("asks when a name is added to a MANIFEST that had none", async () => {
+    const put = vi.fn(() => manifestResponse({ checksum: "m2" }));
+    serveEditor(savingManifest(put));
+    renderApp("/d/eng/manifest/edit");
+    const editor = await screen.findByLabelText("MANIFEST source");
+    await waitFor(() => {
+      expect(editor.textContent).toContain("title: Eng");
+    });
+    const host = editor.closest(".cm-editor");
+    const view = EditorView.findFromDOM(host as HTMLElement);
+    act(() => {
+      view?.dispatch({ changes: { from: 4, insert: "domain_name: ops\n" } });
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "You changed the domain name",
+    });
+    expect(
+      within(dialog).getByText("The MANIFEST now says ops instead of eng."),
+    ).toBeVisible();
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("opens no dialog when the name line is removed", async () => {
+    const put = serveNamed();
+    renderApp("/d/eng/manifest/edit");
+    const editor = await screen.findByLabelText("MANIFEST source");
+    await waitFor(() => {
+      expect(editor.textContent).toContain("domain_name: eng");
+    });
+    const host = editor.closest(".cm-editor");
+    const view = EditorView.findFromDOM(host as HTMLElement);
+    const at = NAMED.indexOf("domain_name: eng\n");
+    act(() => {
+      view?.dispatch({
+        changes: { from: at, to: at + "domain_name: eng\n".length },
+      });
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(put).toHaveBeenCalled();
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("opens no dialog when the save leaves the name alone", async () => {

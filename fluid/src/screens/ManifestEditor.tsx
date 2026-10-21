@@ -26,6 +26,7 @@ import { useLocation, useNavigate, useParams } from "react-router";
 
 import { renameDomain } from "../api/admin";
 import { problemDetail } from "../api/client";
+import { conflictOf } from "../api/writes";
 import type { ManifestDetail, ManifestSections } from "../api/domain";
 import {
   fetchManifestDetail,
@@ -272,8 +273,14 @@ function EditorSurface({
   const savedName = useRef(domainNameOf(manifest.markdown) ?? domain);
   /** The open question about a changed name: both names, nothing written yet. */
   const [asked, setAsked] = useState<{ from: string; to: string } | null>(null);
-  /** The answer the save that follows it carries; read once by that save. */
+  /**
+   * The answer the save that follows it carries. It stays until that save
+   * lands or fails for good, so a 412 whose overwrite retries the PUT carries
+   * the same choice; every other way out of a save clears it.
+   */
   const answer = useRef<"keep" | "rename" | null>(null);
+  /** Set when `holdSave` is reached, i.e. when a save really starts. */
+  const saveStarted = useRef(false);
   /** Why a rename that followed a landed save did not go through. */
   const [renameProblem, setRenameProblem] = useState<string | null>(null);
 
@@ -291,9 +298,13 @@ function EditorSurface({
     // A text that declares another name than the saved one is a question
     // before it is a save: nothing is written until it is answered.
     holdSave: (content) => {
+      saveStarted.current = true;
       if (answer.current !== null) {
         return false;
       }
+      // Only a name that is written and differs asks. Removing the line asks
+      // nothing: the server's own rename question catches a name that falls
+      // back to a derived one.
       const to = domainNameOf(content);
       if (to === null || to === savedName.current) {
         return false;
@@ -304,7 +315,6 @@ function EditorSurface({
     },
     save: async (content, token) => {
       const picked = answer.current;
-      answer.current = null;
       const newName = domainNameOf(content);
       const renaming = picked === "rename" && newName !== null;
       let saved;
@@ -322,8 +332,14 @@ function EditorSurface({
         // caused it, and the standing request dies with the save rather than
         // being left armed for whatever lands next.
         exit.disarm();
+        // A stale save keeps the answer for the overwrite that retries it.
+        if (conflictOf(error) === null) {
+          answer.current = null;
+        }
         throw error;
       }
+      answer.current = null;
+      setRenameProblem(null);
       // The plain read and the detail read are two cache entries over one
       // file: both are stale the moment this lands.
       void queryClient.invalidateQueries({ queryKey: manifestKey(domain) });
@@ -373,8 +389,14 @@ function EditorSurface({
   /** Answer it, and ask for the save again with the answer riding on it. */
   const answerAsk = (choice: "keep" | "rename") => {
     answer.current = choice;
+    saveStarted.current = false;
     setAsked(null);
     session.requestSave();
+    // A save that did not start (hard errors, one already running) must not
+    // leave the answer armed to skip the next question.
+    if (!saveStarted.current) {
+      answer.current = null;
+    }
   };
   /** Put the old name back into the buffer; nothing is saved. */
   const undoNameChange = () => {
@@ -598,9 +620,15 @@ function EditorSurface({
         <ConflictDialog
           conflict={session.conflict}
           mine={session.buffer}
-          onClose={session.onConflictClose}
+          onClose={() => {
+            answer.current = null;
+            session.onConflictClose();
+          }}
           onOverwrite={session.onConflictOverwrite}
-          onTakeServer={session.onConflictTakeServer}
+          onTakeServer={() => {
+            answer.current = null;
+            session.onConflictTakeServer();
+          }}
         />
       )}
     </div>
