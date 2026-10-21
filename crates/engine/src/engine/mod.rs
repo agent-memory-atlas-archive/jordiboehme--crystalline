@@ -8178,8 +8178,19 @@ struct SplitPlan {
 
 fn section_err(e: crystalline_core::emit::EditError) -> EngineError {
     match e {
-        crystalline_core::emit::EditError::SectionNotFound { path } => {
-            EngineError::NotFound(format!("no section found for heading path: {path}"))
+        crystalline_core::emit::EditError::SectionNotFound { path, headings } => {
+            let mut message = format!("no section found for heading path: {path}");
+            if !headings.is_empty() {
+                let shown: Vec<&str> = headings.iter().take(30).map(String::as_str).collect();
+                message.push_str(&format!(
+                    ". Headings in the document: {}",
+                    shown.join(" | ")
+                ));
+                if headings.len() > shown.len() {
+                    message.push_str(&format!(" (and {} more)", headings.len() - shown.len()));
+                }
+            }
+            EngineError::NotFound(message)
         }
     }
 }
@@ -9308,6 +9319,10 @@ pub(crate) fn note_domain_names_normalized(receipt: &mut Value, normalized: usiz
     }
 }
 
+/// The sentence an edit receipt carries when `insert_after_section` put a
+/// block that opens with a heading after the target's whole section.
+pub const PLACED_AFTER_SECTION_GUIDANCE: &str = "The content opens with a heading of the section's own level or higher, so it was placed after the whole section instead of under its heading. To put content right under the heading, send it without a heading.";
+
 /// The sentence an edit receipt carries when a section edit dropped a repeat
 /// of the section's own heading from its content.
 pub const HEADING_STRIPPED_GUIDANCE: &str = "Content repeated the section's own heading; it was dropped, since the heading stays. Send only the body next time.";
@@ -9345,6 +9360,13 @@ pub(crate) fn add_guidance(receipt: &mut Value, sentence: &str) {
 /// The repeat is dropped rather than refused because nobody means it, and
 /// said out loud because an agent that is only ever corrected in silence
 /// learns nothing and keeps sending it.
+fn note_placed_after_section(receipt: &mut Value, placed: bool) {
+    if placed {
+        receipt["placed_after_section"] = json!(true);
+        add_guidance(receipt, PLACED_AFTER_SECTION_GUIDANCE);
+    }
+}
+
 fn note_heading_stripped(receipt: &mut Value, stripped: Option<String>) {
     if let Some(heading) = stripped {
         receipt["heading_stripped"] = json!(heading);

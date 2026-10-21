@@ -9118,3 +9118,117 @@ fn queue_total(answer: &str) -> i64 {
         .and_then(|n| n.trim().parse().ok())
         .unwrap_or_else(|| panic!("no total in {answer}"))
 }
+
+/// D3 and D4 over edit_engram: a heading holding `>` is found whole, a
+/// same-level block lands after the target's body with the receipt saying so,
+/// and a miss lists the headings.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn edit_engram_addresses_every_heading_and_keeps_a_body_with_its_heading() {
+    let h = Harness::new(&["eng"]).await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+    call(
+        peer,
+        "write_engram",
+        json!({
+            "domain": "eng",
+            "title": "Dev notes",
+            "content": "## Crystalline dev: schemars Option<Map>/Option<Vec>\n\nOld body.\n\n## Errors\n\nCodes.\n",
+        }),
+    )
+    .await
+    .unwrap();
+    let edited = call(
+        peer,
+        "edit_engram",
+        json!({
+            "identifier": "dev-notes",
+            "domain": "eng",
+            "operation": "insert_after_section",
+            "section": "## Crystalline dev: schemars Option<Map>/Option<Vec>",
+            "content": "## Limits\n\nTen per second.",
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(edited["placed_after_section"], true, "{edited}");
+    let text = std::fs::read_to_string(h.root.join("eng/dev-notes.md")).unwrap();
+    assert!(
+        text.contains("Old body.\n\n## Limits\n\nTen per second.\n\n## Errors"),
+        "{text}"
+    );
+    let plain = call(
+        peer,
+        "edit_engram",
+        json!({
+            "identifier": "dev-notes",
+            "domain": "eng",
+            "operation": "insert_after_section",
+            "section": "## Errors",
+            "content": "More codes.",
+        }),
+    )
+    .await
+    .unwrap();
+    assert!(plain.get("placed_after_section").is_none(), "{plain}");
+    let miss = call(
+        peer,
+        "edit_engram",
+        json!({
+            "identifier": "dev-notes",
+            "domain": "eng",
+            "operation": "replace_section",
+            "section": "## Nowhere",
+            "content": "x",
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        miss.contains("## Errors") && miss.contains("## Limits"),
+        "{miss}"
+    );
+}
+
+/// D3 and D4 over write_reflection: a section id names the section, and a
+/// same-level block lands after the target's body.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_reflection_finds_a_section_by_id_and_keeps_a_body_with_its_heading() {
+    let h = Harness::new(&["eng"]).await;
+    switch_reflection_on(&h, "eng").await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+    call(
+        peer,
+        "write_reflection",
+        json!({ "domain": "eng", "path": "a.md", "markdown": "# A\n\n## One\n\nFirst.\n\n## Two\n\nSecond.\n" }),
+    )
+    .await
+    .unwrap();
+    let before = std::fs::read_to_string(h.root.join("eng/reflections/a.md")).unwrap();
+    let id = crystalline_core::reflection::split_sections(&before)[1]
+        .id
+        .clone()
+        .unwrap();
+    let edited = call(
+        peer,
+        "write_reflection",
+        json!({ "domain": "eng", "path": "a.md", "operation": "insert_after_section", "section": id, "content": "## Between\n\nNew." }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(edited["placed_after_section"], true, "{edited}");
+    let text = std::fs::read_to_string(h.root.join("eng/reflections/a.md")).unwrap();
+    assert!(
+        text.contains("First.\n\n## Between\n<!-- r:") && text.contains("\n\nNew.\n\n## Two\n"),
+        "{text}"
+    );
+    let miss = call(
+        peer,
+        "write_reflection",
+        json!({ "domain": "eng", "path": "a.md", "operation": "replace_section", "section": "## Nowhere", "content": "x" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(miss.contains("## One") && miss.contains("## Two"), "{miss}");
+}

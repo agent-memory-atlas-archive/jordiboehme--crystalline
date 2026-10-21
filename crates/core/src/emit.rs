@@ -38,6 +38,8 @@ pub enum EditError {
     SectionNotFound {
         /// The requested heading path.
         path: String,
+        /// The headings the document has (every level, `## Text`), in order.
+        headings: Vec<String>,
     },
 }
 
@@ -821,11 +823,29 @@ fn section_end_index(headings: &[HeadingSpan], p: usize) -> usize {
     headings.len()
 }
 
-fn resolve_path(headings: &[HeadingSpan], path: &str) -> Option<usize> {
-    let segments: Vec<(Option<u8>, String)> = path.split('>').map(parse_segment).collect();
-    if segments.is_empty() {
-        return None;
+fn not_found(headings: &[HeadingSpan], path: &str) -> EditError {
+    EditError::SectionNotFound {
+        path: path.to_string(),
+        headings: headings
+            .iter()
+            .map(|h| format!("{} {}", "#".repeat(usize::from(h.level)), h.text))
+            .collect(),
     }
+}
+
+/// The index of the heading a `section` text names. The whole text is tried
+/// as one heading first (with or without its `#` marks), so a heading that
+/// holds a `>` can be named; only when no heading matches whole is the text
+/// split on ` > ` (spaces required) into a path of nested headings.
+fn resolve_path(headings: &[HeadingSpan], path: &str) -> Option<usize> {
+    let (level, text) = parse_segment(path);
+    if let Some(i) = headings
+        .iter()
+        .position(|h| heading_matches(h, level, &text))
+    {
+        return Some(i);
+    }
+    let segments: Vec<(Option<u8>, String)> = path.split(" > ").map(parse_segment).collect();
     let mut search_start = 0usize;
     let mut search_end = headings.len();
     let mut matched = None;
@@ -866,6 +886,11 @@ pub struct SectionEdit {
     /// `## API > ### Auth`), when the content opened with a repeat of it and
     /// that repeat was dropped. `None` when the content was placed as sent.
     pub heading_stripped: Option<String>,
+    /// True when `insert_after_section` put the content after the target's
+    /// whole section instead of right under its heading, because the content
+    /// opens with a heading of the target's level or a higher one (which
+    /// would otherwise take the target's body with it).
+    pub placed_after_section: bool,
 }
 
 /// Drop a repeat of the target section's own heading from the top of
@@ -957,12 +982,26 @@ pub fn replace_section_reporting(
     include_subsections: bool,
 ) -> Result<SectionEdit, EditError> {
     let headings = heading_spans(source);
-    let p = resolve_path(&headings, path).ok_or_else(|| EditError::SectionNotFound {
-        path: path.to_string(),
-    })?;
+    let p = resolve_path(&headings, path).ok_or_else(|| not_found(&headings, path))?;
+    Ok(replace_section_at(
+        source,
+        &headings,
+        p,
+        new_content,
+        include_subsections,
+    ))
+}
+
+fn replace_section_at(
+    source: &str,
+    headings: &[HeadingSpan],
+    p: usize,
+    new_content: &str,
+    include_subsections: bool,
+) -> SectionEdit {
     let (new_content, heading_stripped) = strip_repeated_heading(&headings[p], new_content);
     let own_start = headings[p].line_end;
-    let sec_end_idx = section_end_index(&headings, p);
+    let sec_end_idx = section_end_index(headings, p);
     let section_end = headings
         .get(sec_end_idx)
         .map(|h| h.line_start)
@@ -983,10 +1022,11 @@ pub fn replace_section_reporting(
     } else {
         format!("\n{body}\n")
     };
-    Ok(SectionEdit {
+    SectionEdit {
         text: format!("{}{}{}", &source[..own_start], region, &source[boundary..]),
         heading_stripped,
-    })
+        placed_after_section: false,
+    }
 }
 
 /// The one-based line range a section occupies, its heading line included and
@@ -1003,9 +1043,7 @@ pub fn replace_section_reporting(
 /// the body.
 pub fn section_line_range(source: &str, path: &str) -> Result<(usize, usize), EditError> {
     let headings = heading_spans(source);
-    let p = resolve_path(&headings, path).ok_or_else(|| EditError::SectionNotFound {
-        path: path.to_string(),
-    })?;
+    let p = resolve_path(&headings, path).ok_or_else(|| not_found(&headings, path))?;
     let start = headings[p].line_start;
     let end_idx = section_end_index(&headings, p);
     let end = headings
@@ -1035,15 +1073,24 @@ fn line_at(source: &str, offset: usize) -> usize {
 /// Insert content immediately before a section's heading line.
 pub fn insert_before_section(source: &str, path: &str, content: &str) -> Result<String, EditError> {
     let headings = heading_spans(source);
-    let p = resolve_path(&headings, path).ok_or_else(|| EditError::SectionNotFound {
-        path: path.to_string(),
-    })?;
-    let at = headings[p].line_start;
-    let block = format!("{}\n\n", content.trim_matches('\n'));
-    Ok(format!("{}{}{}", &source[..at], block, &source[at..]))
+    let p = resolve_path(&headings, path).ok_or_else(|| not_found(&headings, path))?;
+    Ok(insert_before_section_at(source, &headings, p, content))
 }
 
-/// Insert content immediately after a section's heading line.
+fn insert_before_section_at(
+    source: &str,
+    headings: &[HeadingSpan],
+    p: usize,
+    content: &str,
+) -> String {
+    let at = headings[p].line_start;
+    let block = format!("{}\n\n", content.trim_matches('\n'));
+    format!("{}{}{}", &source[..at], block, &source[at..])
+}
+
+/// Insert content immediately after a section's heading line, or after the
+/// whole section when the content opens with a heading of the target's level
+/// or a higher one.
 ///
 /// The content lands under a heading that stays, so a repeat of that heading
 /// at the top of `content` is dropped, exactly as [`replace_section`] drops
@@ -1060,10 +1107,43 @@ pub fn insert_after_section_reporting(
     content: &str,
 ) -> Result<SectionEdit, EditError> {
     let headings = heading_spans(source);
-    let p = resolve_path(&headings, path).ok_or_else(|| EditError::SectionNotFound {
-        path: path.to_string(),
-    })?;
+    let p = resolve_path(&headings, path).ok_or_else(|| not_found(&headings, path))?;
+    Ok(insert_after_section_at(source, &headings, p, content))
+}
+
+fn insert_after_section_at(
+    source: &str,
+    headings: &[HeadingSpan],
+    p: usize,
+    content: &str,
+) -> SectionEdit {
     let (content, heading_stripped) = strip_repeated_heading(&headings[p], content);
+    if opens_with_closing_heading(&headings[p], content) {
+        // A heading of the target's level or a higher one would take the
+        // target's body with it if it went right under the target's heading,
+        // so the block goes after the whole section instead.
+        let end = headings
+            .get(section_end_index(headings, p))
+            .map_or(source.len(), |h| h.line_start);
+        let before = &source[..end];
+        let lead = if before.ends_with("\n\n") {
+            ""
+        } else if before.ends_with('\n') {
+            "\n"
+        } else {
+            "\n\n"
+        };
+        let tail = if end < source.len() { "\n" } else { "" };
+        return SectionEdit {
+            text: format!(
+                "{before}{lead}{}\n{tail}{}",
+                content.trim_matches('\n'),
+                &source[end..]
+            ),
+            heading_stripped,
+            placed_after_section: true,
+        };
+    }
     let at = headings[p].line_end;
     let mut block = format!("\n{}\n", content.trim_matches('\n'));
     // A line directly under the heading that a bullet would absorb (prose, as
@@ -1077,10 +1157,22 @@ pub fn insert_after_section_reporting(
     {
         block.push('\n');
     }
-    Ok(SectionEdit {
+    SectionEdit {
         text: format!("{}{}{}", &source[..at], block, &source[at..]),
         heading_stripped,
-    })
+        placed_after_section: false,
+    }
+}
+
+/// True when `content` opens (after blank lines) with an ATX heading whose
+/// level is at or above `target`'s, the kind of heading that closes the
+/// target's section.
+fn opens_with_closing_heading(target: &HeadingSpan, content: &str) -> bool {
+    let first = skip_blank_lines(content)
+        .split('\n')
+        .next()
+        .unwrap_or_default();
+    parse_heading(first.trim_end_matches('\r')).is_some_and(|(level, _)| level <= target.level)
 }
 
 /// One of the three edits that address a section by heading path.
@@ -1094,7 +1186,9 @@ pub enum SectionOp {
     },
     /// Put the content right above the heading line.
     InsertBefore,
-    /// Put the content right under the heading line.
+    /// Put the content right under the heading line, or, when it opens with
+    /// a heading of the target's level or a higher one, after the target's
+    /// whole section (see [`SectionEdit::placed_after_section`]).
     InsertAfter,
 }
 
@@ -1113,6 +1207,14 @@ impl SectionOp {
     }
 }
 
+/// The index (into the document's headings) of the heading a `section` text
+/// names, or the miss with the headings that exist. Whole text as one heading
+/// first, then a path split on ` > `.
+pub fn resolve_section(source: &str, path: &str) -> Result<usize, EditError> {
+    let headings = heading_spans(source);
+    resolve_path(&headings, path).ok_or_else(|| not_found(&headings, path))
+}
+
 /// Apply one section edit, reporting a dropped repeat of the heading the
 /// way the reporting variants do. One entry point, so every document kind
 /// that edits sections edits them the same way.
@@ -1122,17 +1224,24 @@ pub fn apply_section_op(
     path: &str,
     content: &str,
 ) -> Result<SectionEdit, EditError> {
+    let p = resolve_section(source, path)?;
+    Ok(apply_section_op_at(source, op, p, content))
+}
+
+/// [`apply_section_op`] on the heading at index `p` (from [`resolve_section`],
+/// or found by other means, such as a reflection section's id).
+pub fn apply_section_op_at(source: &str, op: SectionOp, p: usize, content: &str) -> SectionEdit {
+    let headings = heading_spans(source);
     match op {
         SectionOp::Replace {
             include_subsections,
-        } => replace_section_reporting(source, path, content, include_subsections),
-        SectionOp::InsertBefore => {
-            insert_before_section(source, path, content).map(|text| SectionEdit {
-                text,
-                heading_stripped: None,
-            })
-        }
-        SectionOp::InsertAfter => insert_after_section_reporting(source, path, content),
+        } => replace_section_at(source, &headings, p, content, include_subsections),
+        SectionOp::InsertBefore => SectionEdit {
+            text: insert_before_section_at(source, &headings, p, content),
+            heading_stripped: None,
+            placed_after_section: false,
+        },
+        SectionOp::InsertAfter => insert_after_section_at(source, &headings, p, content),
     }
 }
 

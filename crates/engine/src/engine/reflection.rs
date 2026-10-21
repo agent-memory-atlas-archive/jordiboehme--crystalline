@@ -1637,10 +1637,10 @@ impl Engine {
             self.refuse_only_elsewhere(&p.domain, access.domain_id, ElsewhereRow::Page(&p.path))
                 .await?;
         }
-        let (incoming, heading_stripped) = match op {
+        let (incoming, heading_stripped, placed_after_section) = match op {
             None => match (&p.markdown, current.as_deref()) {
-                (Some(markdown), _) => (markdown.clone(), None),
-                (None, Some(stored)) => (stored.to_string(), None),
+                (Some(markdown), _) => (markdown.clone(), None, false),
+                (None, Some(stored)) => (stored.to_string(), None, false),
                 (None, None) => {
                     return Err(EngineError::NotFound(format!(
                         "no reflection '{}' in domain '{}' to curate by sources; write it with markdown first",
@@ -1664,7 +1664,7 @@ impl Engine {
                     EngineError::Invalid("a section operation needs `content`".into())
                 })?;
                 let edit = r::edit_section(stored, op, section, content).map_err(section_err)?;
-                (edit.text, edit.heading_stripped)
+                (edit.text, edit.heading_stripped, edit.placed_after_section)
             }
         };
         // An engram attachment is copied into reflections/assets/
@@ -2009,6 +2009,7 @@ impl Engine {
                 .as_ref(),
         );
         note_heading_stripped(&mut receipt, heading_stripped);
+        note_placed_after_section(&mut receipt, placed_after_section);
         if p.path == r::PACT_FILE {
             // Checked against the pages as the index holds them now, this
             // write included.
