@@ -38,6 +38,12 @@ export interface LinkTarget {
   target: string;
   /** Present for a relative Markdown link (`[p](../p-12.md)`), absent for a wikilink. */
   form?: "relative";
+  /**
+   * The display text of a `[[target|alias]]` wikilink, read from the bracket
+   * text. The server keeps it out of the payload, since it never changes
+   * where a link points.
+   */
+  alias?: string;
 }
 
 /** One parsed reference out of the body: a prose wikilink or a relation. */

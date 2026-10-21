@@ -14,7 +14,12 @@ import { describe, expect, it } from "vitest";
 import { readEngramDetail } from "./api/engram";
 import { readGraph } from "./api/graph";
 import { domainSpellings } from "./domainNames";
-import { buildWikilinkResolver, parseWikiTarget } from "./wikilinks";
+import {
+  buildWikilinkResolver,
+  innerOf,
+  parseWikiTarget,
+  wikilinkWords,
+} from "./wikilinks";
 
 function detail() {
   return readEngramDetail(
@@ -130,6 +135,66 @@ describe("parsing what is inside the brackets", () => {
       domain: "Log",
       target: "Weekly Garden Notes",
     });
+  });
+});
+
+describe("a wikilink with its own display text", () => {
+  it("splits the display text off at the first bar", () => {
+    expect(parseWikiTarget("a|b")).toEqual({
+      domain: null,
+      target: "a",
+      alias: "b",
+    });
+    expect(parseWikiTarget("ops:pumps/p-12|x")).toEqual({
+      domain: "ops",
+      target: "pumps/p-12",
+      alias: "x",
+    });
+    expect(parseWikiTarget(" a | b|c ")).toEqual({
+      domain: null,
+      target: "a",
+      alias: "b|c",
+    });
+  });
+
+  it("reads an empty display text as none", () => {
+    expect(parseWikiTarget("a|")).toEqual({ domain: null, target: "a" });
+  });
+
+  it("writes the display text back after the target", () => {
+    expect(innerOf(parseWikiTarget("ops:Runbook|the runbook"))).toBe(
+      "ops:Runbook|the runbook",
+    );
+  });
+
+  it("shows the display text, the target without one and nothing for no target", () => {
+    expect(wikilinkWords("ops:Runbook|the runbook")).toBe("the runbook");
+    expect(wikilinkWords("ops:Runbook")).toBe("Runbook");
+    expect(wikilinkWords("Runbook|")).toBe("Runbook");
+    expect(wikilinkWords("|the runbook")).toBeNull();
+  });
+
+  it("resolves like the target alone and is labelled with its own words", () => {
+    const resolve = buildWikilinkResolver(detail(), graph(), DOMAINS);
+
+    expect(resolve("Beta|the beta")).toEqual({
+      kind: "resolved",
+      href: "/d/eng/e/notes/beta",
+      label: "the beta",
+    });
+    expect(resolve("ops:Runbook|restart")).toEqual({
+      kind: "resolved",
+      href: "/d/ops/e/runbooks/restart",
+      label: "restart",
+    });
+    expect(resolve("Log: Weekly Garden Notes|the log")).toEqual({
+      kind: "resolved",
+      href: "/d/eng/e/log-weekly",
+      label: "the log",
+    });
+    expect(resolve("Ghost|boo")).toEqual({ kind: "unresolved" });
+    // No target is no link, whatever the words after the bar say.
+    expect(resolve("|Beta")).toBeNull();
   });
 });
 

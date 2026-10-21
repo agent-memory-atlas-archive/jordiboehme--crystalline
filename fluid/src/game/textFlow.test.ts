@@ -79,4 +79,11 @@ describe("the moved rules", () => {
     expect(hardWrap("abcdef", 4)).toEqual(["abcd", "ef"]);
     expect(wordWrap("aa bb cc", 5)).toEqual(["aa bb", "cc"]);
   });
+
+  it("show a wikilink by its display text and keep one with no target", () => {
+    expect(plainInline("[[ops:Runbook|the runbook]] and [[Runbook|]]")).toBe(
+      "the runbook and Runbook",
+    );
+    expect(plainInline("a [[|b]] c")).toBe("a [[|b]] c");
+  });
 });

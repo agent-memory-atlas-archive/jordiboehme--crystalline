@@ -1088,6 +1088,38 @@ fn cross_domain_links_resolve_against_the_manifest_domain_name() {
 }
 
 #[test]
+fn a_link_with_display_text_is_checked_by_its_target() {
+    let dir = tempdir().unwrap();
+    let manifest = "---\ntype: manifest\ntitle: MANIFEST\npermalink: manifest\ntags:\n- manifest\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n## Scope\n\n- Scope text here for the domain\n\n## When to Use\n\n- When testing\n";
+    let docs = dir.path().join("docs");
+    write(&docs, "MANIFEST.md", manifest);
+    write(
+        &docs,
+        "runbook.md",
+        "---\ntype: engram\ntitle: Incident Runbook\npermalink: runbook\ntags:\n- ops\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n# Incident Runbook\n\nSteps for the on-call engineer when the pager goes off at night.\n\nA second paragraph of prose, so the body clears the minimum line count.\n",
+    );
+    write(
+        &docs,
+        "linker.md",
+        "---\ntype: engram\ntitle: Linker\npermalink: linker\ntags:\n- ops\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n# Linker\n\nSee [[Incident Runbook|the runbook]] and [[Nowhere At All|boo]] for the details here.\n\nA second paragraph of prose, so the body clears the minimum line count.\n",
+    );
+
+    let report = verify::verify_paths([docs.as_path()], &VerifyOptions::default()).unwrap();
+    let l001: Vec<&str> = report
+        .issues
+        .iter()
+        .filter(|i| i.rule == "L001")
+        .map(|i| i.message.as_str())
+        .collect();
+    assert_eq!(
+        l001,
+        vec!["broken wikilink to `Nowhere At All`"],
+        "{:#?}",
+        report.issues
+    );
+}
+
+#[test]
 fn a_bare_link_to_another_domains_title_names_the_prefixed_link() {
     let dir = tempdir().unwrap();
     let manifest = "---\ntype: manifest\ntitle: MANIFEST\npermalink: manifest\ntags:\n- manifest\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n## Scope\n\n- Scope text here for the domain\n\n## When to Use\n\n- When testing\n";

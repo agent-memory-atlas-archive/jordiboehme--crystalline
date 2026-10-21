@@ -522,14 +522,11 @@ fn scan_body(
                 Cow::Borrowed(line)
             };
             let mut seen: Vec<LinkTarget> = Vec::new();
-            for inner in find_wikilinks(&masked) {
-                push_prose_link(
-                    LinkTarget::parse(&inner),
-                    line_no,
-                    &mut relation_target,
-                    &mut seen,
-                    &mut links,
-                );
+            for target in find_wikilinks(&masked)
+                .iter()
+                .filter_map(|inner| LinkTarget::wikilink(inner))
+            {
+                push_prose_link(target, line_no, &mut relation_target, &mut seen, &mut links);
             }
         }
 
@@ -562,16 +559,17 @@ fn push_prose_link(
     seen: &mut Vec<LinkTarget>,
     links: &mut Vec<WikiLink>,
 ) {
+    // `same_place`: `[[a]]` and `[[a|text]]` are one target here.
     if relation_target
         .as_ref()
-        .is_some_and(|(_, rt)| &target == rt)
+        .is_some_and(|(_, rt)| target.same_place(rt))
     {
         // Excluded once: a second link to the same target in the bullet is
         // prose like any other.
         *relation_target = None;
         return;
     }
-    if !seen.contains(&target) {
+    if !seen.iter().any(|s| s.same_place(&target)) {
         seen.push(target.clone());
         links.push(WikiLink { line, target });
     }
@@ -950,7 +948,7 @@ fn wiki_relation(content: &str) -> Option<(String, LinkTarget)> {
     let close = after.find("]]")?;
     let inner = &after[..close];
     let rel_type = relation_type(&content[..open])?;
-    Some((rel_type, LinkTarget::parse(inner)))
+    Some((rel_type, LinkTarget::wikilink(inner)?))
 }
 
 /// `rel_type [text](path.md)`: the bullet's first `[` opens a relative link to
@@ -1192,6 +1190,28 @@ mod tests {
                 "the wikilink stays a prose link in {body:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_aliased_wikilink_is_a_link_to_its_target() {
+        let body = "- part_of [[overview|the overview]]\n\nSee [[ops:pumps/p-12|the pump]], [[|b]] and [[a|]].\n";
+        let (_, relations, links, _) = scan_body(body, 1);
+        assert_eq!(relations.len(), 1, "{relations:?}");
+        assert_eq!(relations[0].target.target, "overview");
+        assert_eq!(relations[0].target.alias.as_deref(), Some("the overview"));
+        let targets: Vec<_> = links
+            .iter()
+            .map(|l| (l.target.domain.as_deref(), l.target.target.as_str()))
+            .collect();
+        // The relation target is not a prose link too, and `[[|b]]` is no link.
+        assert_eq!(targets, vec![(Some("ops"), "pumps/p-12"), (None, "a")]);
+    }
+
+    #[test]
+    fn a_relation_to_an_empty_target_is_no_relation() {
+        let (_, relations, links, _) = scan_body("- part_of [[|b]]\n", 1);
+        assert!(relations.is_empty(), "{relations:?}");
+        assert!(links.is_empty(), "{links:?}");
     }
 
     #[test]

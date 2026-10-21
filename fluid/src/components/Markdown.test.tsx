@@ -531,6 +531,31 @@ describe("the markdown renderer", () => {
     expect(screen.queryByText(/\[\[Alpha\]\]/)).toBeNull();
   });
 
+  it("shows the display text of a wikilink as the link", async () => {
+    await renderMarkdown(
+      "See [[Alpha|the first one]] for the rest.",
+      (inner) =>
+        inner.startsWith("Alpha|")
+          ? { kind: "resolved", href: "/d/eng/e/alpha", label: "Alpha" }
+          : null,
+    );
+
+    const link = screen.getByRole("link", { name: "the first one" });
+    expect(link).toHaveAttribute("href", "/d/eng/e/alpha");
+    expect(screen.queryByText(/\[\[Alpha/)).toBeNull();
+  });
+
+  it("leaves an unresolved wikilink with display text as written", async () => {
+    await renderMarkdown("See [[Ghost|the ghost]] for the rest.", () => ({
+      kind: "unresolved",
+    }));
+
+    expect(screen.getByTitle("not resolved")).toHaveTextContent(
+      "[[Ghost|the ghost]]",
+    );
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
   it("opens the engram a relative note link lands on", async () => {
     // The resolver is asked with the path the server parsed: decoded and
     // without the fragment, which the route keeps.
@@ -1620,12 +1645,14 @@ describe("task boxes", () => {
   });
 
   it("names a box by the words a reader sees, without wikilink brackets", async () => {
-    await renderTasks("- [ ] read [[Deploy Guide]] and [[ops:Rollback]]\n", {
-      onTick: vi.fn(),
-      canTick: true,
-    });
+    await renderTasks(
+      "- [ ] read [[Deploy Guide]] and [[ops:Rollback|the rollback]]\n",
+      { onTick: vi.fn(), canTick: true },
+    );
     expect(
-      screen.getByRole("checkbox", { name: "read Deploy Guide and Rollback" }),
+      screen.getByRole("checkbox", {
+        name: "read Deploy Guide and the rollback",
+      }),
     ).toBeVisible();
   });
 

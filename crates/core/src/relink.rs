@@ -240,10 +240,12 @@ fn relink_line(line: &str, read_in: &str, written_in: &str, spec: &Relink<'_>) -
             && masked.get(i + 1) == Some(&'[')
             && let Some(close) = find_close(&masked, i + 2)
         {
-            let inner: String = masked[i + 2..close].iter().collect();
+            let end = target_end(&masked, i + 2, close);
+            let inner: String = masked[i + 2..end].iter().collect();
             if let Some(new_inner) = relink_wikilink(&inner, read_in, written_in, spec) {
                 out.push_str("[[");
                 out.push_str(&new_inner);
+                out.extend(&original[end..close]);
                 out.push_str("]]");
                 count += 1;
             } else {
@@ -276,6 +278,14 @@ fn relink_line(line: &str, read_in: &str, written_in: &str, spec: &Relink<'_>) -
 /// The index of the first `]]` at or after `from`.
 fn find_close(chars: &[char], from: usize) -> Option<usize> {
     (from..chars.len().saturating_sub(1)).find(|&k| chars[k] == ']' && chars[k + 1] == ']')
+}
+
+/// Where the target part of the wikilink whose text runs from `from` to
+/// `close` ends: at its first `|`, the split [`crate::engram::split_alias`]
+/// makes, or at `close` when it has no display text. A rewrite replaces only
+/// the target part and keeps `|display text` exactly as it was written.
+fn target_end(chars: &[char], from: usize, close: usize) -> usize {
+    (from..close).find(|&k| chars[k] == '|').unwrap_or(close)
 }
 
 fn starts_with(chars: &[char], at: usize, needle: &[char]) -> bool {
@@ -358,11 +368,13 @@ fn respell_line(line: &str, respell: &dyn Fn(&str) -> Option<String>) -> (String
             && masked.get(i + 1) == Some(&'[')
             && let Some(close) = find_close(&masked, i + 2)
         {
-            let inner: String = masked[i + 2..close].iter().collect();
-            let raw_inner: String = original[i + 2..close].iter().collect();
+            let end = target_end(&masked, i + 2, close);
+            let inner: String = masked[i + 2..end].iter().collect();
+            let raw_inner: String = original[i + 2..end].iter().collect();
             if let Some(new_inner) = respell_wikilink(&inner, &raw_inner, respell) {
                 out.push_str("[[");
                 out.push_str(&new_inner);
+                out.extend(&original[end..close]);
                 out.push_str("]]");
                 count += 1;
             } else {
@@ -498,11 +510,13 @@ fn path_wikilink_line(line: &str, from: &str, to: &str) -> (String, usize) {
             && masked.get(i + 1) == Some(&'[')
             && let Some(close) = find_close(&masked, i + 2)
         {
-            let inner: String = masked[i + 2..close].iter().collect();
+            let end = target_end(&masked, i + 2, close);
+            let inner: String = masked[i + 2..end].iter().collect();
             let target = LinkTarget::parse(&inner);
             if target.domain.is_none() && target.target == from {
                 out.push_str("[[");
                 out.push_str(to);
+                out.extend(&original[end..close]);
                 out.push_str("]]");
                 count += 1;
             } else {
@@ -537,6 +551,59 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("```\n[[pumps/b.md]]\n```"), "{out}");
+    }
+
+    #[test]
+    fn a_path_wikilink_with_a_display_text_follows_the_move_and_keeps_it() {
+        let source = format!("{ENGRAM_HEAD}See [[pumps/b.md|the pump]] and [[pumps/b.md|]].\n");
+        let (out, n) = respell_path_wikilinks(&source, "pumps/b.md", "archive/b.md");
+        assert_eq!(n, 2, "{out}");
+        assert!(
+            out.contains("See [[archive/b.md|the pump]] and [[archive/b.md|]]."),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn relink_keeps_the_alias() {
+        let moved = Relink {
+            from_domain: "eng",
+            from_permalink: "pumps/p-12",
+            title: "Pump Twelve",
+            to_domain: "eng",
+            to_permalink: "pumps/p-13",
+        };
+        let source = doc("See [[pumps/p-12|the pump]] and [[eng:pumps/p-12|it]].\n\
+             - part_of [[pumps/p-12|the pump]]\n\
+             By title [[Pump Twelve|twelve]] and code `[[pumps/p-12|x]]`.\n");
+        let (out, n) = relink(&source, "eng", "eng", &moved);
+        assert_eq!(n, 3, "{out}");
+        assert!(
+            out.contains("See [[pumps/p-13|the pump]] and [[eng:pumps/p-13|it]]."),
+            "{out}"
+        );
+        assert!(out.contains("- part_of [[pumps/p-13|the pump]]"), "{out}");
+        assert!(
+            out.contains("By title [[Pump Twelve|twelve]] and code `[[pumps/p-12|x]]`."),
+            "{out}"
+        );
+        // A move to another domain prefixes a title link and keeps its words.
+        let (out, n) = relink(&doc("[[Alpha Notes|the notes]]\n"), "eng", "eng", &CROSS);
+        assert_eq!(n, 1, "{out}");
+        assert!(out.contains("[[ops:Alpha Notes|the notes]]"), "{out}");
+    }
+
+    #[test]
+    fn a_domain_respell_keeps_the_alias() {
+        let (out, n) = respell_domains(
+            &spell_doc("See [[old:runbook|the runbook]] and [[runbook|old:x]].\n"),
+            &old_to_new,
+        );
+        assert_eq!(n, 1, "{out}");
+        assert!(
+            out.ends_with("See [[new:runbook|the runbook]] and [[runbook|old:x]].\n"),
+            "{out}"
+        );
     }
 
     const ENGRAM_HEAD: &str =

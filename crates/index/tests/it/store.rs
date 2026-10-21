@@ -532,6 +532,48 @@ parity!(
     forward_reference_resolves
 );
 
+/// `[[target|display text]]` binds by its target part alone, as a relation
+/// and as a prose link, by permalink and by title.
+async fn an_aliased_link_resolves(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(
+        root,
+        "a.md",
+        &engram(
+            "A",
+            "a",
+            "engram",
+            "",
+            "- depends_on [[target-b|the target]]\n\nSee [[Target Beta|beta]] and [[Ghost|boo]].\n",
+        ),
+    );
+    write(
+        root,
+        "b.md",
+        &engram("Target Beta", "target-b", "engram", "", "body b\n"),
+    );
+    sync_domain(store, "d", root).await.unwrap();
+    let stats = &store.domain_stats().await.unwrap()[0];
+    assert_eq!(stats.unresolved_relations, 0);
+    assert_eq!(stats.unresolved_links, 1);
+    // What the sweep quotes for a dangling one is the target part alone.
+    let d = store
+        .upsert_domain("d", Some(&root.to_string_lossy()), DomainKind::File)
+        .await
+        .unwrap();
+    let refs = store.unresolved_refs(d, None).await.unwrap();
+    let dangling: Vec<(&str, &str)> = refs
+        .iter()
+        .map(|r| (r.target.as_str(), r.raw.as_str()))
+        .collect();
+    assert_eq!(dangling, vec![("Ghost", "Ghost")]);
+}
+parity!(
+    an_aliased_link_resolves_by_its_target,
+    an_aliased_link_resolves
+);
+
 /// The twin of `forward_reference_resolves` for the title-match path: the
 /// reference names its target by title, not permalink, and must resolve on the
 /// later sync when the target appears. This exercises the `lower(e.title)`

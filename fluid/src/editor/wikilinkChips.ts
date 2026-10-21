@@ -31,7 +31,7 @@ import {
 
 import { NO_SEARCH, fetchSearch, titleMatchesKey } from "../api/search";
 import type { ReferenceState, WikilinkResolver } from "../wikilinks";
-import { WIKILINK, parseWikiTarget, referenceState } from "../wikilinks";
+import { WIKILINK, referenceState, wikilinkWords } from "../wikilinks";
 import { frontmatterRegion } from "./frontmatterRegion";
 import { parseAdvanced } from "./parseProgress";
 import { CODE_CONTEXTS, inCompletableProse } from "./prose";
@@ -145,13 +145,17 @@ function buildChips(view: EditorView): DecorationSet {
       // WIKILINK's one capture group is not optional, so it is always present
       // in a match; the fallback only documents that to the checker.
       const inner = match[1] ?? "";
-      const target = parseWikiTarget(inner);
+      // The display text, or the target text alone: the brackets were the
+      // source's way of marking a reference, and the chip marks it now.
+      // `null` is `[[|b]]`, which names no target and stays text.
+      const words = wikilinkWords(inner);
+      if (words === null) {
+        continue;
+      }
       chips.push(
         Decoration.replace({
           widget: new ChipWidget(
-            // The target text alone: the brackets were the source's way of
-            // marking a reference, and the chip marks it now.
-            target.target,
+            words,
             // Bracket text carries no parsed reference of its own, so the
             // payload has nothing to say about it beyond the resolver.
             referenceState(resolve(inner), null),

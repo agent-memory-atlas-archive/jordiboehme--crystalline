@@ -141,6 +141,19 @@ describe("wikilink chips", () => {
     view.destroy();
   });
 
+  it("labels a target with display text by that text", () => {
+    const view = editor(
+      () => ({ kind: "resolved", href: "/d/ops/e/runbook", label: "Runbook" }),
+      "See [[ops:Runbook|the runbook]] and [[|nothing]].\n",
+    );
+    const chips = view.dom.querySelectorAll(".cm-wikilink");
+    expect(chips).toHaveLength(1);
+    expect(chips[0]?.textContent).toBe("the runbook");
+    expect(chips[0]?.getAttribute("title")).toBe("[[ops:Runbook|the runbook]]");
+    expect(view.contentDOM.textContent).toContain("[[|nothing]]");
+    view.destroy();
+  });
+
   it("hands the atom back as text when the cursor enters it", () => {
     const view = editor(() => ({ kind: "unresolved" }));
     view.dispatch({
