@@ -116,6 +116,24 @@ function selected(v: EditorView): string {
 }
 
 describe("the slash menu", () => {
+  test("draws the bare list in Callout, Blocks, Inline, Diagram order", async () => {
+    const v = open("Intro.\n\n", 8);
+    type(v, "/");
+    await opened(v);
+    const names = currentCompletions(v.state).map((entry) => {
+      const { section } = entry;
+      return typeof section === "string" ? section : section?.name;
+    });
+    expect([...new Set(names)]).toEqual([
+      "Callout",
+      "Blocks",
+      "Inline",
+      "Diagram",
+    ]);
+    // Every Diagram option comes after every Inline option.
+    expect(names.lastIndexOf("Inline")).toBeLessThan(names.indexOf("Diagram"));
+  });
+
   test("offers the whole list on a bare slash", async () => {
     const v = open("Intro.\n\n", 8);
     type(v, "/");
