@@ -78,7 +78,9 @@ async fn the_view_of_a_file_domain_names_every_policy_section_and_part() {
             "domain_name",
             "read_only",
             "reflection",
-            "reflection_home"
+            "reflection_home",
+            "reflect_trigger",
+            "evolve_trigger"
         ]
     );
     let home = row(&view["policies"], "key", "reflection_home");

@@ -1192,7 +1192,7 @@ async fn configure_with_a_domain_answers_the_domain_view() {
         .await
         .unwrap();
     assert_eq!(out["domain"], "eng", "{out}");
-    assert_eq!(out["policies"].as_array().unwrap().len(), 6);
+    assert_eq!(out["policies"].as_array().unwrap().len(), 8);
     assert_eq!(out["sections"].as_array().unwrap().len(), 4);
     assert_eq!(out["rules"]["available"], true);
     assert_eq!(out["how"].as_array().unwrap().len(), 4);
@@ -8215,7 +8215,7 @@ async fn configure_lists_no_operator_setting() {
         .filter(|s| s.operator_only)
         .map(|s| s.key)
         .collect();
-    assert_eq!(operator.len(), 25);
+    assert_eq!(operator.len(), 27);
 
     let out = call(peer, "configure", json!({})).await.unwrap();
     let keys: Vec<&str> = out["settings"]
@@ -8224,7 +8224,7 @@ async fn configure_lists_no_operator_setting() {
         .iter()
         .map(|s| s["key"].as_str().unwrap())
         .collect();
-    assert_eq!(keys.len(), 18, "{keys:?}");
+    assert_eq!(keys.len(), 19, "{keys:?}");
     assert!(keys.contains(&"github.enabled") && keys.contains(&"search.salience_weight"));
     assert!(
         keys.contains(&"service.response_format"),

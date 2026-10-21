@@ -929,8 +929,8 @@ fn every_registry_key_answers_through_manifest_policy() {
     let silent = manifest_from_source(&manifest_declaring_sharing(None));
     assert_eq!(
         policy_registry().len(),
-        6,
-        "generated_indexes, sharing, domain_name, read_only, reflection and reflection_home"
+        8,
+        "generated_indexes, sharing, domain_name, read_only, reflection, reflection_home, reflect_trigger and evolve_trigger"
     );
     for spec in policy_registry() {
         if spec.kind == PolicyKind::Choice {
@@ -1016,7 +1016,12 @@ fn the_registry_rows_say_who_changes_what_and_to_which_values() {
     );
     assert_eq!(
         policy_registry().last().map(|spec| spec.key),
-        Some(REFLECTION_HOME_KEY)
+        Some("evolve_trigger")
+    );
+    assert_eq!(
+        policy_registry()[5].key,
+        REFLECTION_HOME_KEY,
+        "the trigger rows are appended after it"
     );
 }
 
@@ -1120,6 +1125,34 @@ fn reflection_home_is_a_url_or_nothing() {
     );
     let err = validate_reflection_home("https://KB.example.com:443").unwrap_err();
     assert!(err.contains("`https://kb.example.com`"), "{err}");
+}
+
+#[test]
+fn the_two_trigger_rows_and_the_accessor() {
+    use crystalline_core::automation::Loop;
+    use crystalline_core::{EVOLVE_TRIGGER_KEY, REFLECT_TRIGGER_KEY, Trigger};
+    for (key, lp) in [
+        (REFLECT_TRIGGER_KEY, Loop::Reflect),
+        (EVOLVE_TRIGGER_KEY, Loop::Evolve),
+    ] {
+        let spec = *policy_registry().iter().find(|s| s.key == key).unwrap();
+        assert_eq!(spec.kind, PolicyKind::Choice);
+        assert_eq!(spec.values, &["off", "webhook"]);
+        assert_eq!(spec.default, "off");
+        assert_eq!(spec.changed_by, PolicyRole::Owner);
+        let silent = manifest_from_source(&manifest_declaring_sharing(None));
+        assert_eq!(silent.trigger(lp), Trigger::Off);
+        assert_eq!(silent.policy(key), Some((None, "off")));
+        let on = manifest_from_source(&manifest_declaring_reflection(&format!("{key}: webhook\n")));
+        assert_eq!(on.trigger(lp), Trigger::Webhook);
+        assert_eq!(on.policy(key), Some((Some("webhook"), "webhook")));
+        let typo = manifest_from_source(&manifest_declaring_reflection(&format!("{key}: hook\n")));
+        assert_eq!(typo.trigger(lp), Trigger::Off, "a typo never sends");
+        assert_eq!(typo.policy(key), Some((Some("hook"), "off")));
+    }
+    let only_reflect =
+        manifest_from_source(&manifest_declaring_reflection("reflect_trigger: webhook\n"));
+    assert_eq!(only_reflect.trigger(Loop::Evolve), Trigger::Off);
 }
 
 #[test]
@@ -1425,7 +1458,9 @@ fn manifest_facts_reads_every_policy_and_section() {
             "domain_name",
             "read_only",
             "reflection",
-            "reflection_home"
+            "reflection_home",
+            "reflect_trigger",
+            "evolve_trigger"
         ]
     );
     assert_eq!(facts.policies[1].declared.as_deref(), Some("direct"));
@@ -1473,7 +1508,7 @@ fn a_manifest_that_does_not_parse_declares_nothing() {
 #[test]
 fn policy_rows_without_a_manifest_are_the_registry_defaults() {
     let rows = policy_rows(None, "eng");
-    assert_eq!(rows.len(), 6);
+    assert_eq!(rows.len(), 8);
     assert_eq!(rows[0].effective, "local");
     assert_eq!(rows[1].effective, "proposal");
     assert!(rows.iter().all(|r| r.declared.is_none()));

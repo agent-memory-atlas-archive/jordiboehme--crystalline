@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
 
+use crate::automation::Loop;
 use crate::config::registration::validate_domain_name;
 use crate::engram::Engram;
 use crate::parse::{FenceTracker, body_lines, locate, parse_engram, parse_heading};
@@ -100,6 +101,21 @@ const READ_ONLY_OFF: &str = "off";
 /// The `read_only` value that refuses every change.
 const READ_ONLY_ON: &str = "on";
 
+/// The MANIFEST frontmatter key a domain switches the reflect loop's webhook
+/// on with: while it says `webhook`, the instance sends a signed webhook when
+/// reflect work is waiting. A switch, like [`SHARING_KEY`].
+pub const REFLECT_TRIGGER_KEY: &str = "reflect_trigger";
+
+/// The MANIFEST frontmatter key that does the same for the evolve loop, when
+/// maintenance findings pile up.
+pub const EVOLVE_TRIGGER_KEY: &str = "evolve_trigger";
+
+/// The trigger value that sends nothing: the default.
+const TRIGGER_OFF: &str = "off";
+
+/// The trigger value that sends the signed webhook.
+const TRIGGER_WEBHOOK: &str = "webhook";
+
 /// The starter MANIFEST engram for a new domain: valid frontmatter and the two
 /// required routing sections (`Scope`, `When to Use`) plus a `Notes for Agents`
 /// section, all as prompts to fill in. `today` is a pre-formatted `%Y-%m-%d`
@@ -182,6 +198,12 @@ pub struct Manifest {
     /// The [`REFLECTION_HOME_KEY`] value as written, or `None` when absent.
     /// Read through [`Manifest::reflection_home`].
     reflection_home: Option<String>,
+    /// The [`REFLECT_TRIGGER_KEY`] value as written, or `None` when absent.
+    /// Read through [`Manifest::trigger`].
+    reflect_trigger: Option<String>,
+    /// The [`EVOLVE_TRIGGER_KEY`] value as written, or `None` when absent.
+    /// Read through [`Manifest::trigger`].
+    evolve_trigger: Option<String>,
 }
 
 impl Manifest {
@@ -209,6 +231,16 @@ impl Manifest {
             .frontmatter
             .extra
             .get(REFLECTION_HOME_KEY)
+            .map(scalar_text);
+        let reflect_trigger = engram
+            .frontmatter
+            .extra
+            .get(REFLECT_TRIGGER_KEY)
+            .map(scalar_text);
+        let evolve_trigger = engram
+            .frontmatter
+            .extra
+            .get(EVOLVE_TRIGGER_KEY)
             .map(scalar_text);
         let domain_name_extra = engram.frontmatter.extra.get(DOMAIN_NAME_KEY);
         let declared_domain_name = domain_name_extra.map(scalar_text);
@@ -259,6 +291,8 @@ impl Manifest {
             domain_name_is_string,
             reflection,
             reflection_home,
+            reflect_trigger,
+            evolve_trigger,
         }
     }
 
@@ -526,6 +560,26 @@ impl Manifest {
         }
     }
 
+    /// The declaration of `lp`'s trigger key exactly as written, for
+    /// reporting only.
+    pub fn declared_trigger(&self, lp: Loop) -> Option<&str> {
+        match lp {
+            Loop::Reflect => self.reflect_trigger.as_deref(),
+            Loop::Evolve => self.evolve_trigger.as_deref(),
+        }
+    }
+
+    /// Whether the instance sends a signed webhook for `lp`'s work in this
+    /// domain. [`Trigger::Webhook`] only for `webhook` in exactly that
+    /// spelling; an absent key and a typo are both `off`, because a typo
+    /// must never make an instance call out.
+    pub fn trigger(&self, lp: Loop) -> Trigger {
+        match self.declared_trigger(lp) {
+            Some(TRIGGER_WEBHOOK) => Trigger::Webhook,
+            _ => Trigger::Off,
+        }
+    }
+
     /// The `reflection_home` declaration exactly as written, for reporting.
     pub fn declared_reflection_home(&self) -> Option<&str> {
         self.reflection_home.as_deref()
@@ -565,6 +619,14 @@ impl Manifest {
             REFLECTION_HOME_KEY => Some((
                 self.declared_reflection_home(),
                 self.reflection_home().unwrap_or(""),
+            )),
+            REFLECT_TRIGGER_KEY => Some((
+                self.declared_trigger(Loop::Reflect),
+                self.trigger(Loop::Reflect).as_str(),
+            )),
+            EVOLVE_TRIGGER_KEY => Some((
+                self.declared_trigger(Loop::Evolve),
+                self.trigger(Loop::Evolve).as_str(),
             )),
             _ => None,
         }
@@ -656,6 +718,37 @@ impl Sharing {
         match value {
             SHARING_PROPOSAL => Some(Sharing::Proposal),
             SHARING_DIRECT => Some(Sharing::Direct),
+            _ => None,
+        }
+    }
+}
+
+/// Whether the instance sends a signed webhook when a loop has work waiting
+/// in a domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Trigger {
+    /// Nothing is sent. The default, including for every MANIFEST that
+    /// declares nothing.
+    #[default]
+    Off,
+    /// A signed webhook goes out when the loop's work is waiting.
+    Webhook,
+}
+
+impl Trigger {
+    /// The value's spelling in the MANIFEST frontmatter.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Trigger::Off => TRIGGER_OFF,
+            Trigger::Webhook => TRIGGER_WEBHOOK,
+        }
+    }
+
+    /// Parse a declared value, exact and case-sensitive.
+    pub fn parse(value: &str) -> Option<Trigger> {
+        match value {
+            TRIGGER_OFF => Some(Trigger::Off),
+            TRIGGER_WEBHOOK => Some(Trigger::Webhook),
             _ => None,
         }
     }
@@ -988,6 +1081,22 @@ pub fn policy_registry() -> &'static [PolicyKey] {
             values: &[],
             default: "",
             meaning: "The address of the one server this domain's Reflection lives on; filled in when Reflection is switched on.",
+            changed_by: PolicyRole::Owner,
+        },
+        PolicyKey {
+            key: REFLECT_TRIGGER_KEY,
+            kind: PolicyKind::Choice,
+            values: &[TRIGGER_OFF, TRIGGER_WEBHOOK],
+            default: TRIGGER_OFF,
+            meaning: "Send a signed webhook when reflect work is waiting.",
+            changed_by: PolicyRole::Owner,
+        },
+        PolicyKey {
+            key: EVOLVE_TRIGGER_KEY,
+            kind: PolicyKind::Choice,
+            values: &[TRIGGER_OFF, TRIGGER_WEBHOOK],
+            default: TRIGGER_OFF,
+            meaning: "Send a signed webhook when maintenance findings pile up.",
             changed_by: PolicyRole::Owner,
         },
     ]

@@ -199,6 +199,22 @@ export function defaultPolicyRows(): PolicyRowFixture[] {
       "The address of the one server this domain's Reflection lives on; filled in when Reflection is switched on.",
       "text",
     ),
+    policyRow(
+      "reflect_trigger",
+      null,
+      "off",
+      ["off", "webhook"],
+      "off",
+      "Send a signed webhook when reflect work is waiting.",
+    ),
+    policyRow(
+      "evolve_trigger",
+      null,
+      "off",
+      ["off", "webhook"],
+      "off",
+      "Send a signed webhook when maintenance findings pile up.",
+    ),
   ];
 }
 
