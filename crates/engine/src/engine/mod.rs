@@ -1009,6 +1009,14 @@ pub struct Engine {
     // `Engine::hold_next_draft_edit`, and the same compile-out applies.
     #[cfg(any(test, feature = "testing"))]
     hold_next_draft_edit: std::sync::atomic::AtomicU64,
+    // A clock rather than a gate: when set, the automation verbs read this
+    // time as now, so a test moves a lease past its stale time or a status
+    // read to the next day. See `Engine::set_automation_now`.
+    #[cfg(any(test, feature = "testing"))]
+    automation_now: std::sync::Mutex<Option<DateTime<FixedOffset>>>,
+    // The pull request each automation lease token shared its run in, kept
+    // until the run is recorded (see `Engine::automation_share`).
+    automation_shared: std::sync::Mutex<HashMap<String, String>>,
     // A seam that is a gate rather than a stopwatch: when armed, the next move
     // or delete of a Reflection signals `entered` after its live-room screen,
     // then waits for `release` before it takes the page lock. See
@@ -2345,6 +2353,9 @@ impl Engine {
             lose_next_relink_swap: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "testing"))]
             hold_next_draft_edit: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(any(test, feature = "testing"))]
+            automation_now: std::sync::Mutex::new(None),
+            automation_shared: std::sync::Mutex::new(HashMap::new()),
             #[cfg(any(test, feature = "testing"))]
             hold_next_room_screen: std::sync::Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
@@ -4112,22 +4123,26 @@ impl Engine {
     }
 
     /// Whether this instance backs up `domain`'s Reflection: it is its home
-    /// (`On { home: Here }`), the domain is connected to a repository, the
-    /// domain is not read-only, and on a shared database this instance still
-    /// holds the domain's host lock and no host move of the domain is
-    /// unresolved. A Reflection never goes to a repository its domain is not
-    /// connected to.
+    /// here ([`Engine::reflection_home_here`]) and the domain is connected to
+    /// a repository. A Reflection never goes to a repository its domain is
+    /// not connected to. With an origin the home is always `Here`, never
+    /// `Local`.
     async fn backs_up_reflection_here(&self, domain: &str) -> bool {
-        let home = matches!(
-            self.reflection_state(domain).await,
-            Ok(crystalline_core::reflection::ReflectionState::On {
-                home: crystalline_core::reflection::ReflectionHome::Here
-            })
-        );
-        home && self
-            .domain_entry(domain)
+        self.domain_entry(domain)
             .is_ok_and(|entry| entry.origin.is_some())
-            && !self.domain_is_read_only(domain).await
+            && self.reflection_home_here(domain).await
+    }
+
+    /// Whether this instance is `domain`'s Reflection home: the Reflection
+    /// is in effect here (`On`, at home `Here` or `Local`), the domain is not
+    /// read-only, and on a shared database this instance still holds the
+    /// domain's host lock and no host move of the domain is unresolved. The
+    /// instance that may run the reflect loop and send its triggers.
+    pub(crate) async fn reflection_home_here(&self, domain: &str) -> bool {
+        matches!(
+            self.reflection_state(domain).await,
+            Ok(crystalline_core::reflection::ReflectionState::On { .. })
+        ) && !self.domain_is_read_only(domain).await
             // A takeover stops the old host's backup at once, not at its
             // next heartbeat.
             && matches!(self.confirm_reflection_host(domain).await, Ok(None))
@@ -7111,6 +7126,7 @@ mod domain_lookup_tests {
 // lists them in the order they stood in the single engine.rs.
 mod adopt_names;
 mod asset_home;
+mod automation;
 pub use asset_home::{ASSET_EXISTS, MOVE_ONTO_A_FILE};
 pub(crate) use asset_home::{AssetHome, ReplaceRule, WrittenAsset};
 mod attachments;

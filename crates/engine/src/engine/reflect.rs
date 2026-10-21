@@ -36,6 +36,10 @@ struct Item {
     heading: String,
     age_secs: i64,
     extra: Value,
+    /// What the item's version is a hash of: only what moves when the item
+    /// really changes (a thread's last entry, a feedback's text, a section's
+    /// source checksums), never an age. See [`item_basis`].
+    basis: String,
 }
 
 /// Which section an item is about, for grouping: its id, else its heading.
@@ -84,6 +88,33 @@ fn secs_since_rfc3339(at: Option<&str>) -> Option<i64> {
 
 fn secs_since_epoch(mtime: i64) -> i64 {
     (chrono::Utc::now().timestamp() - mtime).max(0)
+}
+
+/// An item's version: a sha256 over `parts`, each closed by a NUL so two
+/// splits of one text never hash alike.
+fn item_basis<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part.as_bytes());
+        hasher.update([0u8]);
+    }
+    crystalline_index::hex_lower(&hasher.finalize())
+}
+
+/// A thread's version: how many entries it holds and its last one, so a
+/// new message moves it and the passing of time does not.
+fn thread_basis(thread: &th::Thread) -> String {
+    let count = thread.entries.len().to_string();
+    match thread.entries.last() {
+        Some(last) => item_basis([
+            thread.id.as_str(),
+            count.as_str(),
+            last.at.as_str(),
+            last.author.name.as_str(),
+            last.text.as_str(),
+        ]),
+        None => item_basis([thread.id.as_str(), count.as_str()]),
+    }
 }
 
 /// Rank items: groups oldest first, feedback before update before review
@@ -164,6 +195,13 @@ struct QueueScope {
 /// who may not see engrams is not told of it, not even as a count.
 fn shown_to(item: &Item, engrams_visible: bool) -> bool {
     engrams_visible || item.what != "unreflected"
+}
+
+/// One item a headless reflect run would work: its key and version, and
+/// the page it is on (empty for an item of no page).
+pub(super) struct ReflectDue {
+    pub(super) key: crystalline_index::DueKey,
+    pub(super) page: String,
 }
 
 /// How much of each item [`Engine::detect_reflection`] builds.
@@ -294,6 +332,7 @@ impl Engine {
                         heading: String::new(),
                         age_secs: row_age,
                         extra,
+                        basis: item_basis([row.content.as_str()]),
                     });
                 }
                 continue;
@@ -347,6 +386,10 @@ impl Engine {
                     heading: change.heading.clone(),
                     age_secs: age,
                     extra,
+                    basis: item_basis([
+                        r::normalize_section_text(&change.before).as_str(),
+                        r::normalize_section_text(&change.after).as_str(),
+                    ]),
                 });
             }
             // The sources of domains that cannot be checked here, by
@@ -359,9 +402,22 @@ impl Engine {
                 let Some(record) = prov.get(id) else {
                     continue;
                 };
-                // Per `what`: the oldest age, the sources shown, and how many
-                // the caller may not see.
-                let mut by_what: BTreeMap<&'static str, (i64, Vec<Value>, usize)> = BTreeMap::new();
+                // Per `what`: the oldest age, the sources shown, how many the
+                // caller may not see, and every source's engram with its
+                // checksum now, the item's version basis.
+                type ByWhat = (i64, Vec<Value>, usize, Vec<String>);
+                let mut by_what: BTreeMap<&'static str, ByWhat> = BTreeMap::new();
+                let stamp = |src: &r::SourceRef| {
+                    format!(
+                        "{}:{}:{}",
+                        src.domain.as_deref().unwrap_or_default(),
+                        src.engram,
+                        facts
+                            .fact(src)
+                            .map(|f| f.checksum.as_str())
+                            .unwrap_or_default()
+                    )
+                };
                 for src in &record.sources {
                     // Unreflected stays per domain: citing another domain's
                     // engram covers nothing of this one.
@@ -376,12 +432,15 @@ impl Engine {
                     // source, aged by the page, never by its engram.
                     if !sees(src) {
                         if state != "current" {
-                            let entry =
-                                by_what
-                                    .entry("source_changed")
-                                    .or_insert((0, Vec::new(), 0));
+                            let entry = by_what.entry("source_changed").or_insert((
+                                0,
+                                Vec::new(),
+                                0,
+                                Vec::new(),
+                            ));
                             entry.0 = entry.0.max(row_age);
                             entry.2 += 1;
+                            entry.3.push(stamp(src));
                         }
                         continue;
                     }
@@ -409,13 +468,17 @@ impl Engine {
                         }
                         _ => continue,
                     };
-                    let entry = by_what.entry(what).or_insert((0, Vec::new(), 0));
+                    let entry = by_what
+                        .entry(what)
+                        .or_insert((0, Vec::new(), 0, Vec::new()));
                     entry.0 = entry.0.max(age);
+                    entry.3.push(stamp(src));
                     if full {
                         entry.1.push(source_view(src, &facts));
                     }
                 }
-                for (what, (age, sources, hidden)) in by_what {
+                for (what, (age, sources, hidden, mut stamps)) in by_what {
+                    stamps.sort();
                     let mut extra = json!({ "sources": sources });
                     if hidden > 0 {
                         extra["hidden_sources"] = json!(hidden);
@@ -430,6 +493,7 @@ impl Engine {
                         heading: section.heading.clone(),
                         age_secs: age,
                         extra,
+                        basis: item_basis(stamps.iter().map(String::as_str)),
                     });
                 }
             }
@@ -438,6 +502,11 @@ impl Engine {
             // a domain the caller may not open are on the section's changed
             // item above, as any other source it may not see.
             for (source_domain, (count, sections)) in unavailable {
+                let basis = item_basis(
+                    [source_domain, &count.to_string()]
+                        .into_iter()
+                        .chain(sections.iter().map(String::as_str)),
+                );
                 items.push(Item {
                     kind: "update",
                     what: "source_unavailable",
@@ -452,6 +521,7 @@ impl Engine {
                         "sections": sections,
                         "note": unavailable_note(source_domain),
                     }),
+                    basis,
                 });
             }
             if !structure.fits(&row.path) {
@@ -468,6 +538,7 @@ impl Engine {
                     } else {
                         json!({ "structure": pact_globs })
                     },
+                    basis: item_basis(pact_globs.iter().map(String::as_str)),
                 });
             }
         }
@@ -499,6 +570,7 @@ impl Engine {
                     if list.is_empty() {
                         continue;
                     }
+                    let basis = item_basis(list.iter().map(String::as_str));
                     let mut extra = serde_json::Map::new();
                     extra.insert(key.to_string(), json!(list));
                     items.push(Item {
@@ -510,6 +582,7 @@ impl Engine {
                         heading: section.heading.clone(),
                         age_secs: row_age,
                         extra: Value::Object(extra),
+                        basis,
                     });
                 }
             }
@@ -531,6 +604,7 @@ impl Engine {
                 heading: String::new(),
                 age_secs: secs_since_rfc3339(Some(&asset.modified)).unwrap_or(0),
                 extra: json!({ "asset": asset.path }),
+                basis: item_basis([asset.path.as_str()]),
             });
         }
         // An unresolved host move with rows this disk lacks: one item for
@@ -548,6 +622,7 @@ impl Engine {
                 heading: String::new(),
                 age_secs: secs_since_rfc3339(Some(&host_move.at)).unwrap_or(0),
                 extra: json!({ "only_elsewhere": host_move.only_elsewhere }),
+                basis: item_basis([host_move.at.as_str()]),
             });
         }
         let mut loose: BTreeMap<String, Vec<&EngramFact>> = BTreeMap::new();
@@ -581,6 +656,7 @@ impl Engine {
                 section: None,
                 heading: String::new(),
                 age_secs: oldest,
+                basis: item_basis(engrams.iter().map(|f| f.permalink.as_str())),
                 extra: json!({
                     "folder": folder,
                     "count": engrams.len(),
@@ -615,6 +691,7 @@ impl Engine {
                 heading,
                 age_secs: secs_since_rfc3339(Some(thread.last_at())).unwrap_or(0),
                 extra: thread_extra(thread),
+                basis: thread_basis(thread),
             });
         }
         Ok(items)
@@ -1006,6 +1083,67 @@ impl Engine {
             "pages_to_update": pages_to_update,
             "open_by_page": open_by_page.into_iter().map(|(_, v)| v).collect::<Vec<_>>(),
         }))
+    }
+
+    /// Every item of `domain`'s reflect queue that a headless run would
+    /// work, each with its stable key and its version (R3), for the
+    /// automation status: what the caller may see, and no update of a page
+    /// a person has open in a live editor. The caller curates the
+    /// Reflection; the gate refuses anyone else.
+    pub(super) async fn reflect_due_items(
+        &self,
+        domain: &str,
+        caller: &ReflectionCaller,
+    ) -> Result<Vec<ReflectDue>> {
+        let access = self
+            .require_reflection(domain, caller, ReflectionRight::Curate)
+            .await?;
+        let threads = self.all_threads(&access).await?;
+        let items = self
+            .detect_reflection(domain, &access, Detail::Count, &threads, &caller.scope)
+            .await?;
+        let rooms = self.collab_rooms();
+        let mut out = Vec::new();
+        for item in items {
+            if !shown_to(&item, access.engrams_visible) {
+                continue;
+            }
+            if item.kind == "update"
+                && !item.path.is_empty()
+                && let Some(rooms) = &rooms
+                && rooms
+                    .has_live_doc(
+                        domain,
+                        &crate::collab::session::RoomDoc::Reflection(item.path.clone()),
+                        None,
+                    )
+                    .await
+            {
+                continue;
+            }
+            let key = match item.extra.get("thread").and_then(Value::as_str) {
+                Some(id) if item.what == "thread" => format!("thread:{id}"),
+                _ => {
+                    let place = item.section.as_deref().unwrap_or(&item.heading);
+                    let detail = ["folder", "asset", "source_domain"]
+                        .iter()
+                        .find_map(|k| item.extra.get(*k).and_then(Value::as_str))
+                        .unwrap_or_default();
+                    format!("{}:{}#{place}:{detail}", item.what, item.path)
+                }
+            };
+            out.push(ReflectDue {
+                key: crystalline_index::DueKey {
+                    kind: item.kind.to_string(),
+                    key,
+                    version: item.basis,
+                },
+                page: item.path,
+            });
+        }
+        out.sort_by(|a, b| (&a.key.kind, &a.key.key).cmp(&(&b.key.kind, &b.key.key)));
+        out.dedup_by(|a, b| a.key == b.key);
+        Ok(out)
     }
 
     /// Open items per domain the caller curates here, for the nudges (R9):

@@ -4,6 +4,24 @@ use super::*;
 /// so can sit on any engram of the two.
 pub(super) const FOLDER_PAIR_RULE: &str = "V112";
 
+/// What [`Engine::evolve_findings`] swept, before the queue is shaped.
+pub(super) struct SweptFindings {
+    pub(super) today: NaiveDate,
+    pub(super) families: Vec<Family>,
+    pub(super) rules: Vec<&'static str>,
+    pub(super) class: Option<Class>,
+    pub(super) swept_scope: Vec<String>,
+    pub(super) read_only_left_out: Vec<String>,
+    /// Filtered and ranked.
+    pub(super) findings: Vec<Finding>,
+    pub(super) truncations: Vec<String>,
+    pub(super) engrams_scanned: usize,
+    pub(super) unparsed: usize,
+    pub(super) acknowledged: AckCounts,
+    /// The parameters with their domain names localized.
+    pub(super) p: EvolveParams,
+}
+
 /// Why a take-back left a holder alone that another account shared with the
 /// caller to read.
 const SHARED_NOT_JOINED: &str =
@@ -126,54 +144,15 @@ impl Engine {
         Ok(value)
     }
 
-    /// The detection half of the consolidation sweep: one page of the ranked
-    /// queue over a scope, with no side effect of any kind.
-    ///
-    /// Read-only end to end: it resolves the scope, assembles the facts every
-    /// detector reads, runs [`crystalline_index::detect`] once per domain and
-    /// shapes the merged result. Nothing is written and nothing is remembered,
-    /// so "what is left" is re-derived by calling again with the same scope.
-    ///
-    /// Seven details of the assembly are load-bearing, each guarding a class of
-    /// silently wrong finding:
-    ///
-    /// - the resolved degrees are counted over the **merged** graph slices, so
-    ///   chunking the `neighbors` seed list never turns a linked engram into a
-    ///   `V104` orphan. The merge dedupes edges on the same key the backends
-    ///   use, because an edge whose ends land in two different chunks comes
-    ///   back from both calls;
-    /// - `stale_on` and `verified_on` come from the [`Frontmatter`] accessors,
-    ///   never the raw keys, so the legacy `review_after` and `last_verified`
-    ///   spellings fold in exactly as they do for search and verify;
-    /// - the token budget is resolved the way verify's `Q002` resolves it - a
-    ///   per-file override, then the domain default, then 2500 - so `V105` and
-    ///   `Q002` never disagree about what oversized means;
-    /// - `status` and `engram_type` arrive lowercased, because the status sets
-    ///   the rules test against are exact matches;
-    /// - `known_domains` is every registered domain, so `V102` can tell an
-    ///   unregistered target domain apart from a target that does not exist,
-    ///   and the graph is taken at depth 1 so cross-domain targets carry a
-    ///   status for `V101` to read;
-    /// - the attachment facts (`analyzes`, `analyzed_hash`, `asset_refs`) are
-    ///   read off the **parsed engram** `Engine::load_engram` returns - the
-    ///   file for a file domain, the stored source for a virtual one - and
-    ///   never off the index's `content` column, which for a file domain holds
-    ///   the body alone. A claim lives in the frontmatter, so counting it off
-    ///   the index would make every file domain look as if it claimed nothing
-    ///   and would report claimed attachments as orphans. This is the same
-    ///   split `Engine::peer_engram_text` makes for the move's referent
-    ///   count, and the two agree on what a reference is: an `assets/` link in
-    ///   the body or the `analyzes` key, compared as exact paths;
-    /// - the lead vectors reach `V301` only when a provider is installed, so
-    ///   meaning is compared on exactly the machines that compute it. A machine
-    ///   with an index full of embeddings and no provider says nothing about
-    ///   meaning rather than scoring against whatever an older model left
-    ///   behind.
-    pub async fn evolve_detect(
+    /// The sweep half of [`Engine::evolve_detect`]: the scope resolved, every
+    /// domain in it swept, the findings filtered and ranked, nothing shaped.
+    /// The automation status reads the findings themselves from it, since a
+    /// due item's version is the scope an acknowledgment records.
+    pub(super) async fn evolve_findings(
         &self,
         p: &EvolveParams,
         scope: &crate::scope::Scope,
-    ) -> Result<Value> {
+    ) -> Result<SweptFindings> {
         let hidden = self.hidden_for(scope).await?;
         let p = &self.localized(p, &hidden).await;
         let today = match p.today.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -292,6 +271,85 @@ impl Engine {
         // and the sort is total and deterministic, so consecutive pages of an
         // unscoped sweep stay coherent.
         rank(&mut findings);
+        Ok(SweptFindings {
+            today,
+            families,
+            rules,
+            class,
+            swept_scope,
+            read_only_left_out,
+            findings,
+            truncations,
+            engrams_scanned,
+            unparsed,
+            acknowledged,
+            p: p.clone(),
+        })
+    }
+
+    /// The detection half of the consolidation sweep: one page of the ranked
+    /// queue over a scope, with no side effect of any kind.
+    ///
+    /// Read-only end to end: it resolves the scope, assembles the facts every
+    /// detector reads, runs [`crystalline_index::detect`] once per domain and
+    /// shapes the merged result. Nothing is written and nothing is remembered,
+    /// so "what is left" is re-derived by calling again with the same scope.
+    ///
+    /// Seven details of the assembly are load-bearing, each guarding a class of
+    /// silently wrong finding:
+    ///
+    /// - the resolved degrees are counted over the **merged** graph slices, so
+    ///   chunking the `neighbors` seed list never turns a linked engram into a
+    ///   `V104` orphan. The merge dedupes edges on the same key the backends
+    ///   use, because an edge whose ends land in two different chunks comes
+    ///   back from both calls;
+    /// - `stale_on` and `verified_on` come from the [`Frontmatter`] accessors,
+    ///   never the raw keys, so the legacy `review_after` and `last_verified`
+    ///   spellings fold in exactly as they do for search and verify;
+    /// - the token budget is resolved the way verify's `Q002` resolves it - a
+    ///   per-file override, then the domain default, then 2500 - so `V105` and
+    ///   `Q002` never disagree about what oversized means;
+    /// - `status` and `engram_type` arrive lowercased, because the status sets
+    ///   the rules test against are exact matches;
+    /// - `known_domains` is every registered domain, so `V102` can tell an
+    ///   unregistered target domain apart from a target that does not exist,
+    ///   and the graph is taken at depth 1 so cross-domain targets carry a
+    ///   status for `V101` to read;
+    /// - the attachment facts (`analyzes`, `analyzed_hash`, `asset_refs`) are
+    ///   read off the **parsed engram** `Engine::load_engram` returns - the
+    ///   file for a file domain, the stored source for a virtual one - and
+    ///   never off the index's `content` column, which for a file domain holds
+    ///   the body alone. A claim lives in the frontmatter, so counting it off
+    ///   the index would make every file domain look as if it claimed nothing
+    ///   and would report claimed attachments as orphans. This is the same
+    ///   split `Engine::peer_engram_text` makes for the move's referent
+    ///   count, and the two agree on what a reference is: an `assets/` link in
+    ///   the body or the `analyzes` key, compared as exact paths;
+    /// - the lead vectors reach `V301` only when a provider is installed, so
+    ///   meaning is compared on exactly the machines that compute it. A machine
+    ///   with an index full of embeddings and no provider says nothing about
+    ///   meaning rather than scoring against whatever an older model left
+    ///   behind.
+    pub async fn evolve_detect(
+        &self,
+        p: &EvolveParams,
+        scope: &crate::scope::Scope,
+    ) -> Result<Value> {
+        let SweptFindings {
+            today,
+            families,
+            rules,
+            class,
+            swept_scope,
+            read_only_left_out,
+            findings,
+            truncations,
+            engrams_scanned,
+            unparsed,
+            acknowledged,
+            p,
+        } = self.evolve_findings(p, scope).await?;
+        let p = &p;
 
         let total = findings.len();
         let limit = p

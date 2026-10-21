@@ -2236,7 +2236,7 @@ impl Engine {
     /// where the folder holds the path, `added` where it does not. That is
     /// exactly the set a review-mode share stages
     /// ([`crate::share_staging`]), so the list and the share agree.
-    async fn overlay_local_changes(
+    pub(super) async fn overlay_local_changes(
         &self,
         domain: &str,
         root: &Path,
