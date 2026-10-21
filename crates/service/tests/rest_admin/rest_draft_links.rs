@@ -1261,6 +1261,7 @@ fn read_as(identifier: &str) -> crystalline_service::params::ReadParams {
         identifier: identifier.to_string(),
         domain: Some("team".to_string()),
         share_link: None,
+        include_images: false,
     }
 }
 

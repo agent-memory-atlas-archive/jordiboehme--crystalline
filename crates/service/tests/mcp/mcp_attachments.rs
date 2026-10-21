@@ -942,3 +942,150 @@ async fn a_draft_attachment_is_a_resource_for_its_author_and_unknown_to_everybod
         "and goes on dangling for bob, who has nothing at that path: {his}"
     );
 }
+
+// --- pictures as images -------------------------------------------------------
+
+/// The image blocks in a tool result, in order.
+fn image_blocks(result: &Value) -> Vec<&Value> {
+    result["content"]
+        .as_array()
+        .expect("a tool result carries content blocks")
+        .iter()
+        .filter(|block| block["type"] == json!("image"))
+        .collect()
+}
+
+/// Write an engram `pics` that embeds each `(name, bytes)` as a picture, put
+/// the files under `assets/`, and index them.
+async fn with_pictures(h: &Harness, files: &[(String, Vec<u8>)]) {
+    let dir = h.root.join("eng");
+    let mut body = String::from(
+        "---\ntype: engram\ntitle: Pics\npermalink: pics\ntags:\n  - eng\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# Pics\n\n",
+    );
+    for (name, bytes) in files {
+        std::fs::write(dir.join("assets").join(name), bytes).unwrap();
+        body.push_str(&format!("![{name}](assets/{name})\n\n"));
+    }
+    std::fs::write(dir.join("pics.md"), body).unwrap();
+    h.engine.sync(None).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_engram_with_include_images_returns_image_blocks() {
+    let h = Harness::new().await;
+    let second: Vec<u8> = b"\x89PNG\r\n\x1a\n\x00second\xff".to_vec();
+    with_pictures(
+        &h,
+        &[
+            ("one.png".to_string(), PNG.to_vec()),
+            ("two.png".to_string(), second.clone()),
+        ],
+    )
+    .await;
+    let (client, _server) = h.connect().await;
+
+    let result = call(
+        client.peer(),
+        "read_engram",
+        json!({ "identifier": "pics", "domain": "eng", "include_images": true }),
+    )
+    .await;
+
+    assert_eq!(resource_links(&result).len(), 2, "links stay: {result}");
+    let images = image_blocks(&result);
+    assert_eq!(images.len(), 2, "{result}");
+    assert_eq!(images[0]["mimeType"].as_str(), Some("image/png"));
+    assert_eq!(
+        images[0]["data"].as_str(),
+        Some(BASE64.encode(PNG).as_str())
+    );
+    assert_eq!(
+        images[1]["data"].as_str(),
+        Some(BASE64.encode(&second).as_str())
+    );
+    // Images come after the links.
+    let kinds: Vec<&str> = result["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        kinds,
+        ["text", "resource_link", "resource_link", "image", "image"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn images_stop_at_eight_or_five_mib() {
+    let h = Harness::new().await;
+    let many: Vec<(String, Vec<u8>)> = (0..10)
+        .map(|i| (format!("p{i}.png"), vec![i as u8; 16]))
+        .collect();
+    with_pictures(&h, &many).await;
+    let (client, _server) = h.connect().await;
+    let result = call(
+        client.peer(),
+        "read_engram",
+        json!({ "identifier": "pics", "domain": "eng", "include_images": true }),
+    )
+    .await;
+    assert_eq!(image_blocks(&result).len(), 8, "count cap");
+    assert_eq!(resource_links(&result).len(), 10, "every link stays");
+
+    // Three 2 MiB pictures: the third would pass 5 MiB.
+    let big: Vec<(String, Vec<u8>)> = (0..3)
+        .map(|i| (format!("b{i}.png"), vec![i as u8; 2 * 1024 * 1024]))
+        .collect();
+    with_pictures(&h, &big).await;
+    let result = call(
+        client.peer(),
+        "read_engram",
+        json!({ "identifier": "pics", "domain": "eng", "include_images": true }),
+    )
+    .await;
+    assert_eq!(image_blocks(&result).len(), 2, "byte cap");
+    assert_eq!(resource_links(&result).len(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn svg_and_pdf_stay_resource_links() {
+    let h = Harness::new().await;
+    with_pictures(
+        &h,
+        &[
+            (
+                "a.svg".to_string(),
+                b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>".to_vec(),
+            ),
+            ("b.pdf".to_string(), b"%PDF-1.4 x".to_vec()),
+            ("c.jpg".to_string(), b"\xff\xd8\xffjpeg".to_vec()),
+        ],
+    )
+    .await;
+    let (client, _server) = h.connect().await;
+    let result = call(
+        client.peer(),
+        "read_engram",
+        json!({ "identifier": "pics", "domain": "eng", "include_images": true }),
+    )
+    .await;
+    assert_eq!(resource_links(&result).len(), 3);
+    let images = image_blocks(&result);
+    assert_eq!(images.len(), 1, "{result}");
+    assert_eq!(images[0]["mimeType"].as_str(), Some("image/jpeg"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_the_flag_nothing_changes() {
+    let h = Harness::new().await;
+    let (client, _server) = h.connect().await;
+    let result = call(
+        client.peer(),
+        "read_engram",
+        json!({ "identifier": "shots", "domain": "eng" }),
+    )
+    .await;
+    assert!(image_blocks(&result).is_empty());
+    assert_eq!(resource_links(&result).len(), 2);
+}

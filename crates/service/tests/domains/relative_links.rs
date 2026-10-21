@@ -81,6 +81,7 @@ async fn read(engine: &Engine, identifier: &str) -> Value {
                 identifier: identifier.to_string(),
                 domain: Some("plant".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )

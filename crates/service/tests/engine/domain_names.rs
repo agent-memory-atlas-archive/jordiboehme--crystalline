@@ -76,6 +76,7 @@ async fn read(engine: &Engine, domain: &str, identifier: &str) -> Value {
                 identifier: identifier.to_string(),
                 domain: Some(domain.to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -404,6 +405,7 @@ async fn every_verb_accepts_a_canonical_name_or_an_alias() {
                     identifier: identifier.to_string(),
                     domain: domain.map(str::to_string),
                     share_link: None,
+                    include_images: false,
                 },
                 &Scope::Unrestricted,
             )
@@ -477,6 +479,7 @@ async fn a_hidden_domain_keeps_the_spelling_the_caller_typed() {
         identifier: "crystalline://old-eng/runbook".to_string(),
         domain: Some("eng".to_string()),
         share_link: None,
+        include_images: false,
     };
     let seen = engine.localized(&p, &none).await;
     assert_eq!(seen.identifier, "crystalline://eng-knowledge/runbook");
@@ -614,6 +617,7 @@ async fn a_fresh_engine_resolves_a_virtual_name_on_its_first_verb() {
                 identifier: "manifest".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -678,6 +682,7 @@ async fn a_local_name_registered_by_another_process_wins_at_once() {
         identifier: "crystalline://eng/x".to_string(),
         domain: Some("eng".to_string()),
         share_link: None,
+        include_images: false,
     };
     let seen = engine.localized(&p, &none).await;
     assert_eq!(seen.domain.as_deref(), Some("eng"));

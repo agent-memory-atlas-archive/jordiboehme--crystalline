@@ -3069,7 +3069,7 @@ impl McpServer {
     #[tool(
         name = "read_engram",
         title = "Read engram",
-        description = "Read an engram's full markdown and resolved frontmatter to learn what is already known before acting or writing. Identify it by bare permalink, title or a crystalline:// URL; pass domain to disambiguate. An identifier without crystalline:// is domain-relative: 'onboarding/setup', never 'mydomain/onboarding/setup'. A file path is not an identifier: a miss names the permalink it probably meant. The response flags whether each relation and prose link resolves, summarizes what links back and names a build_context anchor for exploring nearby knowledge. Attachments the engram references come back as resource links; fetch one with resources/read when the file itself matters. An engram from a domain served by another machine carries them too, and resources/read fetches them from that server (Crystalline 0.27 or newer there). Somebody may have the engram open in the web editor while you read it: the reply then carries live: true, present (who is in there) and their unsaved text, which is what the engram says right now - read it as work in progress and expect it to move. When their editor cannot save right now (its save is in conflict or was refused) the reply carries the saved version instead, which is where your edits go, with room: waiting, present and room_note: tell the person what room_note says. An engram open in a live editor is read through the live document whenever you are reading your own view of it, so you see what the person sees; a draft you reach with a share_link answers its author's last saved text instead, so an edit inside one is best sent without expected_checksum. Reading a live document is not a private act: you usually join that person's participant strip by name for a minute, so they can see an agent is reading along. If somebody handed you a draft share-link (dl_...), pass it as share_link to read their draft of the page instead of the page the domain holds; that also opens the draft for this connection, so a later edit_engram of it lands in their copy. A stdio server or an MCP session holds that open until the session ends; a sessionless HTTP connection holds it for 30 minutes after your last call about that draft, so present the link again whenever an edit is refused as unjoined. A link you may only read still opens the draft for reading. Where this instance serves the web UI the reply carries web_url, the address a person opens the engram at, to hand to somebody who wants to see it; add # and a heading's slug to open it at a section. The answer carries read_only: true when you cannot write in the engram's domain; propose the change to a person instead of editing.",
+        description = "Read an engram's full markdown and resolved frontmatter to learn what is already known before acting or writing. Identify it by bare permalink, title or a crystalline:// URL; pass domain to disambiguate. An identifier without crystalline:// is domain-relative: 'onboarding/setup', never 'mydomain/onboarding/setup'. A file path is not an identifier: a miss names the permalink it probably meant. The response flags whether each relation and prose link resolves, summarizes what links back and names a build_context anchor for exploring nearby knowledge. Attachments the engram references come back as resource links; fetch one with resources/read when the file itself matters. Pass include_images true to also get the pictures it links (png, jpeg, gif, webp; at most 8 and 5 MiB) as image content you can look at with vision, for a picture marked as needing vision. An engram from a domain served by another machine carries them too, and resources/read fetches them from that server (Crystalline 0.27 or newer there). Somebody may have the engram open in the web editor while you read it: the reply then carries live: true, present (who is in there) and their unsaved text, which is what the engram says right now - read it as work in progress and expect it to move. When their editor cannot save right now (its save is in conflict or was refused) the reply carries the saved version instead, which is where your edits go, with room: waiting, present and room_note: tell the person what room_note says. An engram open in a live editor is read through the live document whenever you are reading your own view of it, so you see what the person sees; a draft you reach with a share_link answers its author's last saved text instead, so an edit inside one is best sent without expected_checksum. Reading a live document is not a private act: you usually join that person's participant strip by name for a minute, so they can see an agent is reading along. If somebody handed you a draft share-link (dl_...), pass it as share_link to read their draft of the page instead of the page the domain holds; that also opens the draft for this connection, so a later edit_engram of it lands in their copy. A stdio server or an MCP session holds that open until the session ends; a sessionless HTTP connection holds it for 30 minutes after your last call about that draft, so present the link again whenever an edit is refused as unjoined. A link you may only read still opens the draft for reading. Where this instance serves the web UI the reply carries web_url, the address a person opens the engram at, to hand to somebody who wants to see it; add # and a heading's slug to open it at a section. The answer carries read_only: true when you cannot write in the engram's domain; propose the change to a person instead of editing.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn read_engram(
@@ -3081,6 +3081,7 @@ impl McpServer {
             return answer;
         }
         let caller = self.caller(&ctx);
+        let include_images = p.include_images;
         let mut value = self.read_core(p, &caller).await?;
         attach_configure_hint(
             &mut value,
@@ -3102,6 +3103,13 @@ impl McpServer {
             .await;
         let mut result = ok(value)?;
         result.content.extend(file_links(&domain, &files));
+        if include_images {
+            let rc = self.reflection_caller(&ctx);
+            let images = self
+                .inline_images(&domain, &files, &caller.scope, &rc)
+                .await;
+            result.content.extend(images);
+        }
         Ok(result)
     }
 
@@ -4503,6 +4511,39 @@ impl McpServer {
             .collect()
     }
 
+    /// The pictures among `files` as image blocks, in the order the engram
+    /// references them. Only png, jpeg, gif and webp go; both caps count the
+    /// decoded bytes, and once a picture would pass either the rest stay
+    /// resource links. A picture whose bytes cannot be read is skipped.
+    async fn inline_images(
+        &self,
+        domain: &str,
+        files: &[LinkedFile],
+        scope: &Scope,
+        rc: &ReflectionCaller,
+    ) -> Vec<ContentBlock> {
+        let mut images = Vec::new();
+        let mut total: u64 = 0;
+        for file in files.iter().filter(|f| inlinable_image(&f.mime)) {
+            if images.len() >= MAX_INLINE_IMAGES || total + file.size > MAX_INLINE_IMAGE_BYTES {
+                break;
+            }
+            let Ok((bytes, row)) = self
+                .file_bytes(ContentKind::Engram, domain, &file.path, scope, rc)
+                .await
+            else {
+                continue;
+            };
+            let len = bytes.len() as u64;
+            if total + len > MAX_INLINE_IMAGE_BYTES {
+                break;
+            }
+            total += len;
+            images.push(ContentBlock::image(BASE64.encode(&bytes), row.mime));
+        }
+        images
+    }
+
     /// One file's bytes and its row, for `resources/read` and a connected
     /// machine's `file` command alike. `path` is the path inside the kind's
     /// home as [`CrystallineUrl::asset_ref`] answers it (`assets/...` for
@@ -5433,6 +5474,21 @@ pub(crate) struct LinkedFile {
     pub mime: String,
     /// Byte length.
     pub size: u64,
+}
+
+/// The most pictures `read_engram` returns as image content in one reply.
+const MAX_INLINE_IMAGES: usize = 8;
+
+/// The most decoded picture bytes `read_engram` returns as image content in
+/// one reply.
+const MAX_INLINE_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+
+/// A picture a model can look at: the raster formats vision reads.
+fn inlinable_image(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    )
 }
 
 /// One resource link per file, under `domain`.

@@ -451,6 +451,7 @@ async fn a_guarded_split_of_a_live_engram_takes_the_live_checksum() {
                 identifier: "alpha".to_string(),
                 domain: Some("eng".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &crystalline_service::Scope::Unrestricted,
         )
@@ -522,6 +523,7 @@ async fn a_guarded_delete_of_a_live_engram_takes_the_live_checksum() {
                 identifier: "alpha".to_string(),
                 domain: Some("eng".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &crystalline_service::Scope::Unrestricted,
         )

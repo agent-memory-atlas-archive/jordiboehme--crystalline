@@ -90,6 +90,7 @@ async fn virtual_crud(store: Arc<Mutex<dyn Store>>) {
                 identifier: "first-note".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -127,6 +128,7 @@ async fn virtual_crud(store: Arc<Mutex<dyn Store>>) {
                 identifier: "first-note".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -184,6 +186,7 @@ async fn virtual_crud(store: Arc<Mutex<dyn Store>>) {
                 identifier: "first-note".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -276,6 +279,7 @@ async fn unchanged_sources_edit(store: Arc<Mutex<dyn Store>>) {
                     identifier: "cited".to_string(),
                     domain: Some("notes".to_string()),
                     share_link: None,
+                    include_images: false,
                 },
                 &Scope::Unrestricted,
             )
@@ -345,6 +349,7 @@ async fn stale_edit_conflict(store: Arc<Mutex<dyn Store>>) {
                 identifier: "note".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -405,6 +410,7 @@ async fn stale_edit_conflict(store: Arc<Mutex<dyn Store>>) {
                 identifier: "note".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -475,6 +481,7 @@ async fn virtual_edit_drop_is_cas_consistent(store: Arc<Mutex<dyn Store>>) {
                 identifier: "sentinel-note".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -531,6 +538,7 @@ async fn virtual_edit_rejects_malformed_temporal_date(store: Arc<Mutex<dyn Store
                 identifier: "timestamp-note".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -573,6 +581,7 @@ async fn virtual_edit_rejects_malformed_temporal_date(store: Arc<Mutex<dyn Store
                 identifier: "timestamp-note".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -650,6 +659,7 @@ async fn full_reindex_preserves_virtual(store: Arc<Mutex<dyn Store>>) {
                 identifier: "kept-note".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -669,6 +679,7 @@ async fn full_reindex_preserves_virtual(store: Arc<Mutex<dyn Store>>) {
                 identifier: "page".to_string(),
                 domain: Some("docs".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -817,6 +828,7 @@ async fn retag_renames_and_merges(store: Arc<Mutex<dyn Store>>) {
                 identifier: "alpha".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -839,6 +851,7 @@ async fn retag_renames_and_merges(store: Arc<Mutex<dyn Store>>) {
                 identifier: "alpha".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -932,6 +945,7 @@ async fn retag_merges_separator_variant(store: Arc<Mutex<dyn Store>>) {
                 identifier: "under".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -1014,6 +1028,7 @@ async fn merge_records_alias_in_virtual_manifest(store: Arc<Mutex<dyn Store>>) {
                 identifier: "manifest".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -1073,6 +1088,7 @@ async fn merge_surfaces_conflict_in_virtual_manifest(store: Arc<Mutex<dyn Store>
                 identifier: "manifest".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -1118,6 +1134,7 @@ async fn merge_surfaces_conflict_in_virtual_manifest(store: Arc<Mutex<dyn Store>
                 identifier: "manifest".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -1391,6 +1408,7 @@ async fn virtual_path_identifier(store: Arc<Mutex<dyn Store>>) {
                 identifier: "guides/agent-workflow-guide.md".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -1439,6 +1457,7 @@ async fn virtual_overwrite_in_place(store: Arc<Mutex<dyn Store>>) {
                 identifier: "conventions/code-review-standards".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -2066,6 +2085,7 @@ async fn delete_unbinds_inbound_references(store: Arc<Mutex<dyn Store>>) {
                 identifier: "target-note".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )

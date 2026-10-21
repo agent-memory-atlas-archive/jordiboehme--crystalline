@@ -144,6 +144,12 @@ pub struct ReadParams {
     /// link you may only READ still opens the draft for reading.
     #[serde(default)]
     pub share_link: Option<String>,
+    /// Also return the pictures the engram links to (png, jpeg, gif, webp) as
+    /// image content, so you can look at them. At most 8 pictures and 5 MiB
+    /// in all; the rest stay resource links. Pass it when a picture is marked
+    /// as needing vision. Only for a domain on this machine.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_images: bool,
 }
 
 /// Parameters for `edit_engram`.
