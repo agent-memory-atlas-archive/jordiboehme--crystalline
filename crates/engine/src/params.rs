@@ -653,8 +653,9 @@ pub struct WriteReflectionParams {
     /// id or heading text (a heading this write creates included): a
     /// permalink for an engram in this domain, a
     /// `crystalline://<domain>/<permalink>` address for one in another
-    /// domain you can read. Naming a section here curates it: its
-    /// reflected text moves to what you wrote. Without markdown and
+    /// domain you can read. Naming a section here curates it: it records
+    /// what the section reflects (an agent's own text is reflected with or
+    /// without sources). Without markdown and
     /// operation, sources curate the sections as the page stands: none of
     /// its text is rewritten, though a heading without an id line still gets
     /// one and addresses are spelled with current domain names.
@@ -664,7 +665,8 @@ pub struct WriteReflectionParams {
     /// path inside reflections/, assets/...
     #[serde(default)]
     pub to: Option<String>,
-    /// settle: the section ids whose change you settle.
+    /// settle: the section ids whose change you settle; leave it out to
+    /// settle the whole page, its top included.
     #[serde(default, deserialize_with = "null_as_default")]
     pub sections: Vec<String>,
     /// settle: kept (the person's text stands and the sources stay) or

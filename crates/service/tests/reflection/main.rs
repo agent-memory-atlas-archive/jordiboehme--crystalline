@@ -16,6 +16,7 @@ mod hosts;
 mod kept;
 mod mode_change;
 mod nudges;
+mod own_writes;
 mod queue;
 mod rest;
 mod rights;

@@ -295,7 +295,7 @@ const UNSOURCED_GUIDANCE: &str = "These sections name no source engrams: pass so
 /// switch pending after a rebuild or a switch-off and on again (R48).
 pub(crate) fn pact_starter(domain: &str) -> String {
     let text = format!(
-        "---\ntitle: How we write about {domain}\n---\n\n# How we write about {domain}\n\nThis is the agreement between the people and the agents who work on this domain's Reflection. Change it like any page; the agent reads every change.\n\n## Audience\n\n- Who reads these pages, and what they already know.\n\n## Level of detail\n\n- How deep the pages go, and what they leave to the engrams.\n\n## Presentation\n\n- Which diagrams, callouts and tables help these readers, and what to avoid.\n\n## Structure\n\n- *.md\n\n## Pages\n\n- One bullet per page or space a person asked for: its path or glob, what they asked for in their words, who asked and when.\n"
+        "---\ntitle: How we write about {domain}\n---\n\n# How we write about {domain}\n\nThis is the agreement between the people and the agents who work on this domain's Reflection. Change it like any page; the agent reads every change.\n\n## Audience\n\n- Who reads these pages, and what they already know.\n\n## Level of detail\n\n- How deep the pages go, and what they leave to the engrams.\n\n## Presentation\n\n- Which diagrams, callouts and tables help these readers, and what to avoid.\n\n## Structure\n\nOne glob per bullet, for example `- guides/*.md`. Write the reasons in a sentence above the list.\n\n- *.md\n\n## Pages\n\n- One bullet per page or space a person asked for: its path or glob, what they asked for in their words, who asked and when.\n"
     );
     let (with_ids, _) = crystalline_core::reflection::assign_ids(
         &text,
@@ -1853,46 +1853,36 @@ impl Engine {
             record.answered_by = None;
             advanced.push(id);
         }
-        // An agent's curated write reflects the rest of what it wrote in
-        // this call: its new top while the stored top owes nothing, and a
-        // section neither the stored page nor the baseline held (not its
-        // id, not its heading), which no source names and which would
-        // otherwise come back to it as its own feedback. Every other section
-        // keeps what it owes, whoever changed it and however this write
-        // changed it: a pending change, a person's removal among them, is
-        // settled only by sources, a settle or a thread. An emptied top is a
-        // change too, and it is not settled here.
-        if !advanced.is_empty() && caller.author.agent {
-            // A heading with no id yet (typed in a plain editor) is held by
-            // its heading alone, an id the stored bookkeeping keeps a record
-            // for by its id alone.
-            let mut held: Vec<(Option<String>, String)> = stored
-                .as_deref()
-                .map(r::split_sections)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|s| (s.id, s.heading))
-                .collect();
-            if let Some(page) = stored.as_deref() {
-                held.extend(
-                    r::read_provenance(page)
-                        .into_keys()
-                        .map(|id| (Some(id), String::new())),
-                );
-            }
-            held.extend(r::parse_baseline(&baseline).into_iter().map(|(id, text)| {
-                let heading = r::split_sections(&text)
-                    .into_iter()
-                    .nth(1)
-                    .map(|s| s.heading)
-                    .unwrap_or_default();
-                (Some(id), heading)
-            }));
-            let top_owes = r::feedback_changes(stored.as_deref().unwrap_or(""), &baseline)
+        // Whether sources named a section: what the receipt calls curated.
+        let curated = !advanced.is_empty();
+        // An agent's write is reflected, with or without sources: every
+        // section it creates, changes or removes moves to what it wrote, so
+        // its own text never comes back to it as feedback (D5). Feedback is
+        // for people's edits, and those stay owed through the agent's write:
+        // a section that owed a change before it (a person's edit, a heading
+        // typed in a plain editor that gets its id here, a section sent back
+        // in another case without its id), and a stale copy of a section the
+        // page no longer held, are settled only by sources, a settle or a
+        // thread.
+        if caller.author.agent {
+            let stored_page = stored.as_deref().unwrap_or("");
+            let owed = r::feedback_changes(stored_page, &baseline);
+            let owed_ids: BTreeSet<&str> = owed.iter().filter_map(|c| c.id.as_deref()).collect();
+            let owed_headings: Vec<String> = owed
                 .iter()
-                .any(|change| change.id.as_deref() == Some(r::TOP_SECTION));
+                .filter(|c| c.kind != r::ChangeKind::Removed)
+                .map(|c| c.heading.to_lowercase())
+                .collect();
+            let on_stored: BTreeSet<String> = r::split_sections(stored_page)
+                .into_iter()
+                .filter_map(|s| s.id)
+                .collect();
+            let mut known_elsewhere = r::baseline_ids(&baseline);
+            if let Some(page) = stored.as_deref() {
+                known_elsewhere.extend(r::read_provenance(page).into_keys());
+            }
             for id in changed {
-                if advanced.contains(&id) {
+                if advanced.contains(&id) || owed_ids.contains(id.as_str()) {
                     continue;
                 }
                 let Some(section) = sections
@@ -1901,16 +1891,11 @@ impl Engine {
                 else {
                     continue;
                 };
-                let fresh = if id == r::TOP_SECTION {
-                    !top_owes && !section.text.trim().is_empty()
-                } else {
-                    !held.iter().any(|(old_id, old_heading)| {
-                        old_id.as_deref() == Some(id.as_str())
-                            || (!old_heading.is_empty()
-                                && old_heading.to_lowercase() == section.heading.to_lowercase())
-                    })
-                };
-                if !fresh {
+                if id != r::TOP_SECTION
+                    && !on_stored.contains(&id)
+                    && (known_elsewhere.contains(&id)
+                        || owed_headings.contains(&section.heading.to_lowercase()))
+                {
                     continue;
                 }
                 let record = prov.entry(id.clone()).or_default();
@@ -1918,6 +1903,17 @@ impl Engine {
                 record.changed_at = None;
                 record.answered_by = None;
                 advanced.push(id);
+            }
+            // A reflected section the agent left out is its removal.
+            let on_page: BTreeSet<&str> = sections.iter().filter_map(|s| s.id.as_deref()).collect();
+            let reflected = r::baseline_ids(&baseline);
+            for id in &on_stored {
+                if !on_page.contains(id.as_str())
+                    && reflected.contains(id)
+                    && !owed_ids.contains(id.as_str())
+                {
+                    advanced.push(id.clone());
+                }
             }
         }
         let final_text = stamp_reflected(&text, &mut prov, &advanced)?;
@@ -1996,7 +1992,7 @@ impl Engine {
             "checksum": sha256_hex(final_text.as_bytes()),
             "created": current.is_none(),
             "ids_assigned": minted,
-            "curated": !advanced.is_empty(),
+            "curated": curated,
         });
         note_domain_names_normalized(&mut receipt, normalized);
         note_markdown_findings(
@@ -2008,6 +2004,29 @@ impl Engine {
                 .as_ref(),
         );
         note_heading_stripped(&mut receipt, heading_stripped);
+        if p.path == r::PACT_FILE {
+            // Checked against the pages as the index holds them now, this
+            // write included.
+            let pages: Vec<String> = self
+                .store
+                .lock()
+                .await
+                .list_reflections(access.domain_id)
+                .await?
+                .into_iter()
+                .map(|row| row.path)
+                .filter(|path| path != r::PACT_FILE)
+                .collect();
+            let findings = r::structure_findings(&final_text, &pages);
+            if !findings.is_empty() {
+                receipt["structure_findings"] = json!(
+                    findings
+                        .iter()
+                        .map(|f| json!({ "bullet": f.bullet, "reason": f.reason }))
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
         if !unsourced_sections.is_empty() {
             receipt["unsourced_sections"] = json!(unsourced_sections);
             add_guidance(&mut receipt, UNSOURCED_GUIDANCE);
@@ -3089,11 +3108,6 @@ impl Engine {
                 "`{outcome}` is not a settle outcome; use kept or taken_in"
             )));
         }
-        if ids.is_empty() {
-            return Err(EngineError::Invalid(
-                "settle needs the section ids it settles".into(),
-            ));
-        }
         let access = self
             .require_reflection_to_write(domain, caller, ReflectionRight::Curate)
             .await?;
@@ -3110,6 +3124,21 @@ impl Engine {
         })?;
         let baseline = read_opt(&baseline_abs)?.unwrap_or_default();
         let sections = r::split_sections(&text);
+        // No ids settles the whole page: every section on it, the top
+        // included, and every section its baseline holds that the page no
+        // longer does.
+        let ids: Vec<String> = if ids.is_empty() {
+            let mut every: Vec<String> = sections.iter().filter_map(|s| s.id.clone()).collect();
+            for id in r::baseline_ids(&baseline) {
+                if !every.contains(&id) {
+                    every.push(id);
+                }
+            }
+            every
+        } else {
+            ids.to_vec()
+        };
+        let ids = ids.as_slice();
         let mut prov = r::read_provenance(&text);
         // A take-in reads the facts of the settled sections' sources only,
         // from the page as it stands under the file lock. The store lock is
@@ -3438,6 +3467,21 @@ mod tests {
             "{text}"
         );
         assert!(prov["cccc3333"].changed_by.is_empty(), "{prov:?}");
+    }
+
+    #[test]
+    fn the_starter_pact_says_how_structure_is_read() {
+        let pact = pact_starter("eng");
+        let structure = crystalline_core::reflection::split_sections(&pact)
+            .into_iter()
+            .find(|s| s.heading == "Structure")
+            .unwrap();
+        assert!(
+            structure.text.contains(
+                "One glob per bullet, for example `- guides/*.md`. Write the reasons in a sentence above the list."
+            ),
+            "{pact}"
+        );
     }
 
     #[test]

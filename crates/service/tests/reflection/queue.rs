@@ -1501,10 +1501,10 @@ async fn a_hand_typed_section_stays_feedback_through_a_curated_write() {
     }
 }
 
-/// A person's on-disk change of a section whose record names only the agent
-/// (its own earlier write, never settled) stays feedback through the agent's
-/// next curated write that rewords it: sync does not touch the record, so the record cannot
-/// tell whose change it is.
+/// A person's on-disk change of a section the agent wrote (and so
+/// reflected) stays feedback through the agent's next curated write that
+/// rewords it: the change was owed before that write, whoever the record
+/// names, since sync does not touch the record.
 #[tokio::test]
 async fn a_persons_disk_edit_of_the_agents_unsettled_section_stays_feedback() {
     let fx = curated(&[]).await;
@@ -1530,10 +1530,10 @@ async fn a_persons_disk_edit_of_the_agents_unsettled_section_stays_feedback() {
     assert_eq!(owed, ["Notes"]);
 }
 
-/// The agent's own earlier unsourced section stays feedback through its next
-/// curated write, reworded or not, until it settles it.
+/// The agent's own unsourced section is its own text: it owes no feedback
+/// after the write that adds it nor after the next write that rewords it.
 #[tokio::test]
-async fn the_agents_own_unsettled_section_stays_feedback_until_it_settles_it() {
+async fn the_agents_own_unsourced_section_never_comes_back_as_feedback() {
     let fx = curated(&[]).await;
     let text = edit_page(
         &fx,
@@ -1544,19 +1544,10 @@ async fn the_agents_own_unsettled_section_stays_feedback_until_it_settles_it() {
         .write_reflection(&write("guides/deploying.md", &text), &agent())
         .await
         .unwrap();
+    assert!(feedback_headings(&fx).await.is_empty());
     let owed =
         curate_rollback_and_resend(&fx, |t| t.replace("Ask first.", "Ask before you start.")).await;
-    assert_eq!(owed, ["Notes"]);
-    let page = std::fs::read_to_string(fx.root.join("reflections/guides/deploying.md")).unwrap();
-    let notes = crystalline_core::reflection::split_sections(&page)
-        .into_iter()
-        .find(|s| s.heading == "Notes")
-        .and_then(|s| s.id)
-        .unwrap();
-    fx.engine
-        .settle_reflection("eng", "guides/deploying.md", &[notes], "kept", &agent())
-        .await
-        .unwrap();
+    assert!(owed.is_empty(), "{owed:?}");
     let queue = fx
         .engine
         .reflect(&ReflectParams::default(), &agent())

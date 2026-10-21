@@ -37,10 +37,14 @@ A plain editor or a pull can still write `reflection: on` into the MANIFEST. If 
 - `## Audience`: who reads these pages and what they already know.
 - `## Level of detail`: how deep the pages go, and what they leave to the engrams.
 - `## Presentation`: which diagrams, callouts, tables and status labels help these readers, and what to avoid.
-- `## Structure`: one bullet per glob, for example `- guides/*.md`.
+- `## Structure`: one glob per top-level bullet, for example `- guides/*.md`. Only top-level bullets are read, so write the reasons in a sentence above the list.
 - `## Pages`: one bullet per page or space a person asked for: its path or glob, what they asked for in their words, who asked and when. The agent adds the bullet when it is asked, and reads it to place new engrams or to recreate a page from the request.
 
 The agent reads the pact before it writes. A page that fits none of the `## Structure` globs is reported to the agent as an update item. A change to the pact is reported too, so the agent applies it to the pages it affects. A `write_reflection` receipt names `unsourced_sections` (the headings) when the write created or changed a `##` section that has no sources, with a sentence asking the agent to pass them. It is a hint, never a refusal, and the pact is not a page, so it never reports it.
+
+A `PACT.md` write's receipt names `structure_findings` when a `## Structure` bullet is not read the way it looks. Each finding has the `bullet` and a `reason`: it reads as a sentence, not a glob (a space and none of `*`, `?`, `[`, `/`), it is not a valid glob, it matches no page, or it is a nested bullet that holds a path (nested bullets are not read). When no glob fits any page, every `off_structure` item carries a `hint` that says how the bullets are read.
+
+An agent's own writes never come back to it as feedback. A section an agent writes, changes or removes is reflected at once, with or without sources, on a page and in `PACT.md`, so an agent's pact write raises no `pact_changed`. A person's edit in Fluid, in the files or through the JSON API is still a feedback item (or `pact_changed`), also when an agent writes that section again before the change is settled.
 
 ## Presentation
 
@@ -133,7 +137,7 @@ crystalline domain members eng add ada --level none --reflection reader
 | update | `source_unavailable` | Sources of a page in a domain that cannot be checked here: the domain is not on this instance, or it is a domain of a connected server. One item per page and domain. Keep them while the domain may come back, or leave one out of its section's sources to drop it. |
 | update | `unreflected` | An engram no section covers yet. |
 | update | `off_structure` | A page fits none of the pact's `## Structure` globs. |
-| update | `pact_changed` | The pact changed since the pages were last brought in line with it. |
+| update | `pact_changed` | A person changed the pact since the pages were last brought in line with it. `sections` lists the ids of the changed parts. |
 | update | `asset_missing` | A page links a file in `reflections/assets/` that is not there. |
 | update | `engram_attachment` | A page embeds an engram attachment instead of a file of its own. |
 | update | `asset_unreferenced` | A file in `reflections/assets/` that no page links. |
@@ -145,7 +149,7 @@ Items about the same section stay together. Groups come oldest first, and inside
 The agent settles a feedback item in one of three ways:
 
 - It takes the change into the engrams: it changes the engrams, then writes the section with its source engrams.
-- It keeps the change as the person's text (`write_reflection` with `action: settle` and `outcome: kept`).
+- It keeps the change as the person's text (`write_reflection` with `action: settle` and `outcome: kept`). A settle without `sections` settles the whole page, its top included. When the pages follow a changed pact again, the agent settles `PACT.md` this way.
 - It answers in a thread (`discuss` with `answers_feedback`), when it disagrees or has a question.
 
 Three nudges point the agent at open items of the Reflections its user curates: the receipt of a write, the reminder at the end of a session (the Stop hook) and the line for the domain in the routing block at session start ("Reflection: 3 open items - call reflect"). The daemon counts the open items every five minutes.

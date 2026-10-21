@@ -563,6 +563,7 @@ async fn two_subpaths_on_one_branch_upload_only_their_own_changes() {
             .count()
     };
     // `ops` moved the branch after `eng`'s backup; `eng` changes one page.
+    // An agent's write is reflected, so the page's baseline moves with it.
     let before = blobs(&mock);
     fx.engine
         .write_reflection(&in_domain("eng", "one.md", "# Changed\n"), &agent())
@@ -572,11 +573,15 @@ async fn two_subpaths_on_one_branch_upload_only_their_own_changes() {
     assert!(
         matches!(
             again[..],
-            [(_, Ok(BackupOutcome::Committed { files: 1, .. }))]
+            [(_, Ok(BackupOutcome::Committed { files: 2, .. }))]
         ),
         "{again:?}"
     );
-    assert_eq!(blobs(&mock), before + 1, "the changed page alone");
+    assert_eq!(
+        blobs(&mock),
+        before + 2,
+        "the changed page and its baseline alone"
+    );
     // And `ops`, whose head `eng` just moved, has nothing to send.
     fx.engine.mark_reflection_dirty("ops", BackupCause::Settled);
     let ops = fx.engine.reflection_backup_tick(Instant::now()).await;
@@ -584,7 +589,7 @@ async fn two_subpaths_on_one_branch_upload_only_their_own_changes() {
         matches!(ops[..], [(_, Ok(BackupOutcome::NothingToBackUp))]),
         "{ops:?}"
     );
-    assert_eq!(blobs(&mock), before + 1, "no upload for ops");
+    assert_eq!(blobs(&mock), before + 2, "no upload for ops");
     let head = mock.branch_commit(BACKUP_BRANCH).unwrap();
     let paths = mock.commit_paths(&head);
     assert!(

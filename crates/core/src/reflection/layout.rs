@@ -197,15 +197,22 @@ pub fn classify(path: &str) -> ReflectionFile {
     }
 }
 
-/// The globs a pact's `## Structure` section lists: every zero-indent
-/// bullet, backticks stripped, that compiles as a glob. Empty when the pact
-/// has no such section.
-pub fn structure_globs(pact_source: &str) -> Vec<String> {
+/// One line of a pact's `## Structure` section that is a bullet: its text
+/// with backticks stripped at both ends, and whether it sits at column 0
+/// (the only bullets read as globs).
+struct StructureBullet<'a> {
+    text: &'a str,
+    top_level: bool,
+}
+
+/// Every `- ` bullet of the pact's `## Structure` section outside a fence,
+/// in page order.
+fn structure_bullets(pact_source: &str) -> Vec<StructureBullet<'_>> {
     let body = crate::frontmatter::split_frontmatter(pact_source)
         .map(|parts| parts.body)
         .unwrap_or(pact_source);
     let mut inside = false;
-    let mut globs = Vec::new();
+    let mut bullets = Vec::new();
     for line in body_lines(body, 1) {
         if line.in_fence {
             continue;
@@ -219,15 +226,83 @@ pub fn structure_globs(pact_source: &str) -> Vec<String> {
         if !inside {
             continue;
         }
-        let Some(item) = line.text.strip_prefix("- ") else {
+        let top_level = !line.text.starts_with([' ', '\t']);
+        let Some(item) = line.text.trim_start().strip_prefix("- ") else {
             continue;
         };
-        let glob = item.trim().trim_matches('`').trim();
-        if !glob.is_empty() && Glob::new(glob).is_ok() {
-            globs.push(glob.to_string());
+        let text = item.trim().trim_matches('`').trim();
+        if !text.is_empty() {
+            bullets.push(StructureBullet { text, top_level });
         }
     }
-    globs
+    bullets
+}
+
+/// The globs a pact's `## Structure` section lists: every zero-indent
+/// bullet, backticks stripped, that compiles as a glob. Empty when the pact
+/// has no such section.
+pub fn structure_globs(pact_source: &str) -> Vec<String> {
+    structure_bullets(pact_source)
+        .into_iter()
+        .filter(|b| b.top_level && Glob::new(b.text).is_ok())
+        .map(|b| b.text.to_string())
+        .collect()
+}
+
+/// A `## Structure` bullet that is not read the way its writer likely meant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructureFinding {
+    /// The bullet's text, backticks stripped.
+    pub bullet: String,
+    /// Why: [`READS_AS_A_SENTENCE`], [`NOT_A_VALID_GLOB`],
+    /// [`MATCHES_NO_PAGE`] or [`NESTED_NOT_READ`].
+    pub reason: &'static str,
+}
+
+/// A top-level bullet with a space and none of `*`, `?`, `[`, `/`.
+pub const READS_AS_A_SENTENCE: &str = "reads as a sentence, not a glob";
+/// A top-level bullet that does not compile as a glob.
+pub const NOT_A_VALID_GLOB: &str = "is not a valid glob";
+/// A top-level glob that fits none of the pages.
+pub const MATCHES_NO_PAGE: &str = "matches no page";
+/// An indented bullet that holds a path: only top-level bullets are read.
+pub const NESTED_NOT_READ: &str = "nested bullets are not read";
+
+/// The pact's `## Structure` bullets that are not read as the writer likely
+/// meant, checked against `pages` (domain-relative reflection paths, the
+/// pact left out). A glob is matched as [`Structure`] matches it.
+pub fn structure_findings(pact: &str, pages: &[String]) -> Vec<StructureFinding> {
+    let finding = |bullet: &str, reason| StructureFinding {
+        bullet: bullet.to_string(),
+        reason,
+    };
+    let mut findings = Vec::new();
+    for bullet in structure_bullets(pact) {
+        let text = bullet.text;
+        if !bullet.top_level {
+            let path_like = text.split_whitespace().any(|token| {
+                let token = token.trim_matches('`');
+                token.contains(['/', '*']) || token.ends_with(".md")
+            });
+            if path_like {
+                findings.push(finding(text, NESTED_NOT_READ));
+            }
+            continue;
+        }
+        if text.contains(' ') && !text.contains(['*', '?', '[', '/']) {
+            findings.push(finding(text, READS_AS_A_SENTENCE));
+            continue;
+        }
+        let Ok(glob) = GlobBuilder::new(text).literal_separator(true).build() else {
+            findings.push(finding(text, NOT_A_VALID_GLOB));
+            continue;
+        };
+        let matcher = glob.compile_matcher();
+        if !text.contains(' ') && !pages.iter().any(|page| matcher.is_match(page)) {
+            findings.push(finding(text, MATCHES_NO_PAGE));
+        }
+    }
+    findings
 }
 
 /// A pact's structure, compiled once for every path it is asked about.
@@ -499,5 +574,35 @@ mod tests {
             fits_structure("anything.md", &[]),
             "no structure section, nothing is off it"
         );
+    }
+
+    #[test]
+    fn structure_findings_name_what_is_not_read_as_a_glob() {
+        let pact = "# Pact\n\n## Structure\n\nOne glob per bullet.\n\n- a folder per domain\n- */README.md\n- not a glob [\n- archive/*.md\n- `guides/*.md`\n  - nested/*.md\n  - just a few words\n\n```\n- in a fence\n```\n\n## Pages\n\n- a page somebody asked for\n";
+        let pages = vec!["eng/README.md".to_string(), "guides/a.md".to_string()];
+        let found: Vec<(String, &str)> = structure_findings(pact, &pages)
+            .into_iter()
+            .map(|f| (f.bullet, f.reason))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (
+                    "a folder per domain".to_string(),
+                    "reads as a sentence, not a glob"
+                ),
+                ("not a glob [".to_string(), "is not a valid glob"),
+                ("archive/*.md".to_string(), "matches no page"),
+                ("nested/*.md".to_string(), "nested bullets are not read"),
+            ]
+        );
+        assert!(
+            structure_findings("# Pact\n\n## Audience\n\n- new people\n", &pages).is_empty(),
+            "no structure section, nothing to say"
+        );
+        // `*` stays inside one folder, as the queue reads it.
+        let found = structure_findings("## Structure\n\n- *.md\n", &["guides/a.md".to_string()]);
+        assert_eq!(found.len(), 1, "{:?}", found.first().map(|f| &f.bullet));
+        assert_eq!(found[0].reason, "matches no page");
     }
 }
