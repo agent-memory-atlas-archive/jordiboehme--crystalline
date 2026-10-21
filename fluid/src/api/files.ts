@@ -167,6 +167,10 @@ function slug(part: string): string {
  * "設計-メモ.png". A name with nothing safe left in its stem keeps its
  * extension and takes {@link FALLBACK_STEM}, so the result is never a bare
  * extension or an empty string.
+ *
+ * `clean_asset_segment` in `crates/core/src/attachment.rs` is the Rust twin of
+ * this rule (an import names its files the way an upload does); keep the two
+ * in step.
  */
 export function sanitizeAttachmentName(name: string): string {
   const trimmed = name.trim();

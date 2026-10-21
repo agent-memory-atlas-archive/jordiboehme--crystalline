@@ -106,15 +106,15 @@ fn code_spans(line: &str) -> Vec<(usize, usize)> {
 }
 
 /// One link destination, read from just after a `](`.
-struct Destination<'a> {
-    /// The path, percent-decoded, without a `#fragment` or a title.
-    path: String,
+pub(crate) struct Destination<'a> {
+    /// The path, unescaped and percent-decoded, without a `#fragment` or a title.
+    pub(crate) path: String,
     /// The `#fragment` as written, without the `#`.
-    fragment: Option<&'a str>,
+    pub(crate) fragment: Option<&'a str>,
     /// What follows the target up to the closing parenthesis: a title.
-    rest: &'a str,
+    pub(crate) rest: &'a str,
     /// The byte offset of the closing parenthesis.
-    close: usize,
+    pub(crate) close: usize,
 }
 
 /// The byte offset of the depth-zero `)` at or after `from`, the rule the
@@ -137,9 +137,26 @@ fn closing_paren(line: &str, from: usize) -> Option<usize> {
     None
 }
 
+/// `path` with every CommonMark backslash escape removed: a backslash before
+/// an ASCII punctuation character drops the backslash, any other backslash
+/// stays.
+fn unescape_backslashes(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    let mut chars = path.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && chars.peek().is_some_and(char::is_ascii_punctuation) {
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// The destination that starts at `open` (just after `](`), or `None` when
-/// none closes on this line.
-fn destination(line: &str, open: usize) -> Option<Destination<'_>> {
+/// none closes on this line. The `#` fragment is split off the raw target
+/// first, then backslash escapes are removed and the rest is percent-decoded,
+/// so `a%23b.png` keeps its `#` in the path and `R\&D.png` reads `R&D.png`.
+pub(crate) fn read_destination(line: &str, open: usize) -> Option<Destination<'_>> {
     let (target, rest, close) = if line[open..].starts_with('<') {
         // `[a](<my page.md> "Title")`: the target runs to the first `>`.
         let gt = open + 1 + line[open + 1..].find('>')?;
@@ -158,7 +175,7 @@ fn destination(line: &str, open: usize) -> Option<Destination<'_>> {
         None => (target, None),
     };
     Some(Destination {
-        path: percent_decode_target(path),
+        path: percent_decode_target(&unescape_backslashes(path)),
         fragment,
         rest,
         close,
@@ -180,7 +197,7 @@ fn map_line(line: &str, map: &dyn Fn(&str) -> Option<String>) -> (String, usize)
         let open = cursor + found + 2;
         out.push_str(&line[cursor..open]);
         cursor = open;
-        let Some(dest) = destination(line, open) else {
+        let Some(dest) = read_destination(line, open) else {
             continue;
         };
         let replacement = if in_code(open - 2) || !is_relative(&dest.path) {
@@ -267,6 +284,28 @@ pub fn rebase_links(source: &str, from: &str, to: &str) -> (String, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn read(line: &str) -> (String, Option<String>) {
+        let open = line.find("](").unwrap() + 2;
+        let d = read_destination(line, open).unwrap();
+        (d.path, d.fragment.map(str::to_string))
+    }
+
+    #[test]
+    fn read_destination_decodes_unescapes_and_splits() {
+        assert_eq!(
+            read("](Q3%20report%20%28final%29.pdf.assets/page-1.png)").0,
+            "Q3 report (final).pdf.assets/page-1.png"
+        );
+        assert_eq!(read("](<a b.png>)").0, "a b.png");
+        assert_eq!(read("](R\\&D.png)").0, "R&D.png");
+        assert_eq!(
+            read("](a%23b.png#right)"),
+            ("a#b.png".to_string(), Some("right".to_string()))
+        );
+        // A backslash before a letter is not an escape.
+        assert_eq!(read("](a\\b.png)").0, "a\\b.png");
+    }
 
     #[test]
     fn relative_paths_between_reflections() {

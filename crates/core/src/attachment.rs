@@ -211,6 +211,69 @@ pub fn validate_asset_path(path: &str) -> Result<(), AssetPathError> {
     Ok(())
 }
 
+/// The longest stem or extension `clean_asset_segment` keeps, in bytes.
+const MAX_CLEAN_PART_BYTES: usize = 100;
+
+/// One part of a name (stem or extension) in the slug rule.
+fn slug_part(part: &str) -> String {
+    let mut safe = String::with_capacity(part.len());
+    let mut dashed = false;
+    for c in part.to_lowercase().chars() {
+        if c.is_alphabetic() || c.is_numeric() || c == '.' || c == '_' {
+            safe.push(c);
+            dashed = false;
+        } else if !dashed {
+            safe.push('-');
+            dashed = true;
+        } else {
+            continue;
+        }
+        // A literal `-` kept from the name also collapses with a neighbour.
+        if c == '-' {
+            dashed = true;
+        }
+    }
+    let mut kept = String::new();
+    for c in safe.chars() {
+        if kept.len() + c.len_utf8() > MAX_CLEAN_PART_BYTES {
+            break;
+        }
+        kept.push(c);
+    }
+    kept.trim_start_matches(['.', '-'])
+        .trim_end_matches(['.', '-'])
+        .to_string()
+}
+
+/// One file name as a segment `validate_asset_path` accepts: lowercase, every
+/// run of characters other than letters, digits, `.`, `_` and `-` turned into
+/// one `-`, leading dots and dashes and trailing dots and dashes dropped, the
+/// extension (after the last dot, never a leading one) lowercased, and the
+/// stem and the extension each capped at 100 bytes. `None` when nothing is
+/// left of the stem.
+///
+/// This is the Rust twin of `sanitizeAttachmentName` in
+/// `fluid/src/api/files.ts`, so a file named by an upload and by an import
+/// comes out the same; keep the two in step. The one difference: Fluid names
+/// a stem with nothing keepable `attachment`, this answers `None` and lets
+/// the caller choose.
+pub fn clean_asset_segment(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    let (stem, extension) = match trimmed.rfind('.') {
+        Some(dot) if dot > 0 => (&trimmed[..dot], slug_part(&trimmed[dot + 1..])),
+        _ => (trimmed, String::new()),
+    };
+    let stem = slug_part(stem);
+    if stem.is_empty() {
+        return None;
+    }
+    Some(if extension.is_empty() {
+        stem
+    } else {
+        format!("{stem}.{extension}")
+    })
+}
+
 /// The distinct `assets/` targets an Engram body references, in order of first
 /// appearance.
 ///
@@ -369,6 +432,43 @@ fn line_link_targets(line: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clean_asset_segment_follows_the_slug_rule() {
+        let cases = [
+            ("Q3 report (final).PDF", Some("q3-report-final.pdf")),
+            ("page 3.png", Some("page-3.png")),
+            (".hidden.png", Some("hidden.png")),
+            ("100%.pdf", Some("100.pdf")),
+            ("###", None),
+            ("café.png", Some("café.png")),
+        ];
+        for (input, want) in cases {
+            assert_eq!(clean_asset_segment(input).as_deref(), want, "{input}");
+        }
+    }
+
+    #[test]
+    fn clean_asset_segment_results_are_valid_asset_paths() {
+        for input in [
+            "Q3 report (final).PDF",
+            "page 3.png",
+            ".hidden.png",
+            "100%.pdf",
+            "café.png",
+            "R&D #1.png",
+            "a:b\\c.jpg",
+        ] {
+            let s = clean_asset_segment(input).unwrap();
+            assert_eq!(validate_asset_path(&format!("assets/x/{s}")), Ok(()), "{s}");
+        }
+    }
+
+    #[test]
+    fn clean_asset_segment_caps_the_stem_at_100_bytes() {
+        let s = clean_asset_segment(&format!("{}.png", "é".repeat(80))).unwrap();
+        assert_eq!(s, format!("{}.png", "é".repeat(50)));
+    }
 
     /// Every extension the specification allowlists, with the exact mime the
     /// server must serve it under.
