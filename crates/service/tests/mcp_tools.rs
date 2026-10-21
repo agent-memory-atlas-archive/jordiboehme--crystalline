@@ -8215,7 +8215,7 @@ async fn configure_lists_no_operator_setting() {
         .filter(|s| s.operator_only)
         .map(|s| s.key)
         .collect();
-    assert_eq!(operator.len(), 27);
+    assert_eq!(operator.len(), 28);
 
     let out = call(peer, "configure", json!({})).await.unwrap();
     let keys: Vec<&str> = out["settings"]
@@ -8224,7 +8224,7 @@ async fn configure_lists_no_operator_setting() {
         .iter()
         .map(|s| s["key"].as_str().unwrap())
         .collect();
-    assert_eq!(keys.len(), 19, "{keys:?}");
+    assert_eq!(keys.len(), 18, "{keys:?}");
     assert!(keys.contains(&"github.enabled") && keys.contains(&"search.salience_weight"));
     assert!(
         keys.contains(&"service.response_format"),
@@ -8264,6 +8264,8 @@ async fn configure_refuses_an_operator_setting_and_applies_nothing() {
         json!({ "unset": ["auth.mcp"] }),
         json!({ "set": { "search.salience_weight": "0.25", "auth.oidc.client_secret": "mk-secret-4c1d" } }),
         json!({ "set": { "database.url": "postgres://mk-user-4c1d@mk-host-4c1d/db" }, "unset": ["recall.limit"] }),
+        json!({ "set": { "automation.evolve_threshold": "1" } }),
+        json!({ "unset": ["automation.evolve_threshold"] }),
         json!({ "set": { "github.api_url": "https://mk-ghes-4c1d.invalid/api/v3" }, "connect": "github" }),
     ] {
         let result = call_result(peer, "configure", args.clone()).await;

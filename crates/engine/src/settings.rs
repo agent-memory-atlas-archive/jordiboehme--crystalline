@@ -665,7 +665,7 @@ pub fn registry() -> &'static [SettingSpec] {
             kind: SettingKind::U64,
             startup_effective: false,
             secret: false,
-            operator_only: false,
+            operator_only: true,
             apply: set_evolve_threshold,
             clear: clear_evolve_threshold,
             effective: evolve_threshold_effective,
@@ -2870,6 +2870,7 @@ mod tests {
                 "auth.login.max_delay",
                 "automation.webhook.url",
                 "automation.webhook.secret",
+                "automation.evolve_threshold",
             ]
         );
         // The rule, not only the list: a key added under one of the three
@@ -2880,7 +2881,7 @@ mod tests {
                 || (spec.key.starts_with("service.") && spec.key != "service.response_format")
                 || spec.key == "github.api_url"
                 || spec.key == "github.oauth_client_id"
-                || spec.key.starts_with("automation.webhook.");
+                || spec.key.starts_with("automation.");
             assert_eq!(spec.operator_only, by_rule, "{}", spec.key);
             assert_eq!(is_operator_key(spec.key), by_rule, "{}", spec.key);
             assert!(is_known_key(spec.key), "{}", spec.key);
@@ -2894,7 +2895,7 @@ mod tests {
     #[test]
     fn the_agent_snapshot_and_the_agent_unknown_key_error_name_no_operator_key() {
         let views = agent_snapshot(&GlobalConfig::default(), &EnvOverlay::default());
-        assert_eq!(views.len(), 19);
+        assert_eq!(views.len(), 18);
         assert!(views.iter().all(|v| !is_operator_key(&v.key)));
         assert!(views.iter().any(|v| v.key == "github.enabled"));
         assert!(views.iter().any(|v| v.key == "service.response_format"));
