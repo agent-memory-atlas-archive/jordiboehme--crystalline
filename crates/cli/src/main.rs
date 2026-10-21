@@ -15,6 +15,7 @@ use crystalline_core::config;
 use crystalline_core::text::plural;
 use crystalline_core::verify::{self, VerifyOptions};
 
+mod automation;
 mod cmd;
 mod desktop_state;
 mod doctor;
@@ -758,6 +759,13 @@ enum Command {
         #[arg(long)]
         config: Option<PathBuf>,
     },
+    /// Work the reflect loop headless: see what is due, run a Claude Code
+    /// agent on a domain's Reflection queue, or watch and run when work
+    /// comes in.
+    Reflect {
+        #[command(subcommand)]
+        command: automation::LoopCommand,
+    },
     /// Sweep for the maintenance the knowledge needs and print a ranked queue.
     ///
     /// Read-only: it detects temporal and lifecycle debt, structural gaps,
@@ -767,7 +775,14 @@ enum Command {
     /// contradiction; it never confirms a contradiction and changes nothing
     /// itself. Work the queue with the write verbs and re-run
     /// the same scope to confirm it shrank.
+    ///
+    /// `status`, `run`, `watch` and `prompt` work the evolve loop headless:
+    /// a runner checks what is due and a Claude Code agent works the
+    /// mechanical findings.
+    #[command(args_conflicts_with_subcommands = true)]
     Evolve {
+        #[command(subcommand)]
+        command: Option<automation::LoopCommand>,
         /// Restrict the sweep to these domains (repeatable). Omit to sweep
         /// every registered domain.
         #[arg(long)]
@@ -2257,6 +2272,23 @@ fn run() -> anyhow::Result<()> {
         Some(Command::Ctl { command }) => on_runtime(move || run_ctl(command, cli.json)),
         Some(Command::Users { command }) => on_runtime(move || users::run(command, cli.json)),
         Some(Command::Kept { command }) => kept::run(command, cli.json),
+        Some(Command::Reflect { command }) => on_runtime(move || {
+            automation::run(
+                crystalline_core::automation::Loop::Reflect,
+                command,
+                cli.json,
+            )
+        }),
+        Some(Command::Evolve {
+            command: Some(command),
+            ..
+        }) => on_runtime(move || {
+            automation::run(
+                crystalline_core::automation::Loop::Evolve,
+                command,
+                cli.json,
+            )
+        }),
         Some(
             cmd @ (Command::Read { .. }
             | Command::Search { .. }
@@ -3998,6 +4030,7 @@ async fn run_data(command: Command, db: Option<PathBuf>, json: bool) -> anyhow::
             config,
         ),
         Command::Evolve {
+            command: _,
             domain,
             families,
             rules,
