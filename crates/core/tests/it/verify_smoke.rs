@@ -1216,7 +1216,7 @@ fn a_wikilink_spelled_as_a_path_is_checked_against_the_files_of_the_domain() {
         &root,
         "overview.md",
         &format!(
-            "{}- has_part [[pumps/p-12.md]]\n\nSee [[pumps/p-12.md]] and [[pumps/gone.md]].\n\nA second paragraph of prose, so the body clears the minimum line count.\n",
+            "{}- has_part [[pumps/p-12.md]]\n\nSee [[pumps/p-12.md]] and [[pumps/gone.md]] and [[Pumps/P-12.md]].\n\nA second paragraph of prose, so the body clears the minimum line count.\n",
             fm("Overview", "start-here")
         ),
     );
@@ -1227,9 +1227,15 @@ fn a_wikilink_spelled_as_a_path_is_checked_against_the_files_of_the_domain() {
         .filter(|i| i.rule.starts_with('L'))
         .map(|i| (i.rule, i.message.as_str()))
         .collect();
-    assert_eq!(links.len(), 1, "{:#?}", report.issues);
-    assert_eq!(links[0].0, "L001", "{:#?}", report.issues);
+    // A path is compared exactly, case included, as the index compares it.
+    assert_eq!(links.len(), 2, "{:#?}", report.issues);
+    assert!(
+        links.iter().all(|(rule, _)| *rule == "L001"),
+        "{:#?}",
+        report.issues
+    );
     assert!(links[0].1.contains("pumps/gone.md"), "{:#?}", report.issues);
+    assert!(links[1].1.contains("Pumps/P-12.md"), "{:#?}", report.issues);
 }
 
 /// A file that is not UTF-8 is reported under the encoding rule, `E006`, and

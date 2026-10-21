@@ -532,11 +532,14 @@ impl Engine {
         // A reference that bound by path: a relative link, or a bare wikilink
         // spelled as a file path (`[[pumps/p-12.md]]`), which the index's path
         // arm binds the same way. A permalink never ends in `.md`, so a stored
-        // target that does is a path. A prefixed wikilink is left out: its path
-        // is in another domain, which the lookup below does not read.
+        // target that does is a path. The rule is verify's and the index's:
+        // the path is compared exactly, case included, so the lookup below
+        // keeps only the engram whose path equals it. A prefixed wikilink is
+        // left out: its path is in another domain, which the lookup does not
+        // read.
         let landed = |resolved: bool, target: &LinkTarget| -> Option<String> {
             let by_path = target.form == LinkForm::Relative
-                || (target.domain.is_none() && target.target.to_ascii_lowercase().ends_with(".md"));
+                || (target.domain.is_none() && target.target.ends_with(".md"));
             (resolved && by_path).then(|| target.stored_target(&desc.path))
         };
         let mut relations: Vec<RelationOut> = engram

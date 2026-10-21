@@ -445,6 +445,20 @@ impl Engine {
             .chain(dest_abs.iter())
             .map(PathBuf::as_path)
             .collect();
+        // A path-only move keeps the room over the engram (see below), and
+        // while it is open its text IS the engram. The rebase of the
+        // engram's own links is then composed into that room after the move,
+        // the way a linker's rewrite is, rather than written to the file under
+        // it, where the room's next save would meet it as a change that may
+        // conflict with what is being typed. Asked before the file locks,
+        // since the answer takes the room's lock, which comes first.
+        let defer_rebase = match (relocation.is_some() && !readdressed, self.collab_rooms()) {
+            (true, Some(rooms)) => rooms
+                .live_text(&p.domain, &src.permalink, None)
+                .await
+                .is_some(),
+            _ => false,
+        };
         // A move that changes the address the editor saves to ends the room
         // over the engram: its text is saved first, and no room opens over
         // the old address until the move is done (the fence). Its sockets
@@ -512,7 +526,7 @@ impl Engine {
             &dest_rel,
             &new_permalink,
             (readdressed && update_links).then_some(&spec),
-            relocation.as_ref(),
+            relocation.as_ref().filter(|_| !defer_rebase),
             &self.actor(client),
         )?;
 
@@ -804,6 +818,26 @@ impl Engine {
         // now would report a move that happened as one that did not. The
         // receipt names it in `links_failed`, as a reflection move does.
         let linker_actor = self.actor(None);
+        // The moved engram's own rebase, deferred above because a room is
+        // open over it: composed into the room when it saves, else written to
+        // the file at its new path. Its own text, so the mover is its author.
+        if defer_rebase && let Some(moved) = &relocation {
+            let own = MoveLinker {
+                domain: p.domain.clone(),
+                domain_id: src.domain_id,
+                path: dest_rel.clone(),
+            };
+            if let Err(e) = self
+                .relink_engram(&own, &spec, Some(moved), &self.actor(client), &hidden)
+                .await
+            {
+                tracing::warn!(
+                    domain = p.domain.as_str(),
+                    path = dest_rel.as_str(),
+                    "the move could not rebase the moved engram's own relative links: {e}"
+                );
+            }
+        }
         let mut rewritten: Vec<Value> = Vec::new();
         let mut failed: Vec<Value> = Vec::new();
         let mut references = 0usize;
@@ -1046,6 +1080,9 @@ impl Engine {
         }
         if let Some(moved) = relocation {
             text = crystalline_core::relink::rebase_relative_links(&text, moved.from, moved.to).0;
+            // A wikilink spelled as a path is read from the domain root, so
+            // only one naming the engram itself has to follow it.
+            text = crystalline_core::relink::respell_path_wikilinks(&text, moved.from, moved.to).0;
         }
         Ok((text != original).then(|| touch_generated(&text, mover, None, now_offset())))
     }
@@ -1401,9 +1438,9 @@ impl Engine {
 
     /// The linker's text with the moved engram's references rewritten,
     /// stamped and normalized, and how many references changed; `None` when
-    /// none did. A relative link follows the file (`relocation`), and only in
-    /// the domain it moved inside, which is the only one a relative path can
-    /// reach it from.
+    /// none did. A relative link, and a bare wikilink spelled as the file's
+    /// path, follow the file (`relocation`), and only in the domain it moved
+    /// inside, which is the only one either can reach it from.
     async fn relinked_text(
         &self,
         text: &str,
@@ -1418,14 +1455,22 @@ impl Engine {
         let (mut relinked, mut count) =
             crystalline_core::relink::relink(&text, &linker.domain, &linker.domain, spec);
         if let Some(moved) = relocation.filter(|moved| moved.domain_id == linker.domain_id) {
-            let (respelled, respelled_count) = crystalline_core::relink::respell_relative_links(
-                &relinked,
-                &linker.path,
-                moved.from,
-                moved.to,
-            );
+            // The moved engram itself, when its rebase was deferred to here:
+            // its links are rebased rather than respelled.
+            let (respelled, respelled_count) = if linker.path == moved.to {
+                crystalline_core::relink::rebase_relative_links(&relinked, moved.from, moved.to)
+            } else {
+                crystalline_core::relink::respell_relative_links(
+                    &relinked,
+                    &linker.path,
+                    moved.from,
+                    moved.to,
+                )
+            };
+            let (respelled, path_count) =
+                crystalline_core::relink::respell_path_wikilinks(&respelled, moved.from, moved.to);
             relinked = respelled;
-            count += respelled_count;
+            count += respelled_count + path_count;
         }
         if count == 0 {
             return None;

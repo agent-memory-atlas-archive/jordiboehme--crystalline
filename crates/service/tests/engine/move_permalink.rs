@@ -1230,6 +1230,12 @@ async fn moving_an_engram_respells_relative_links_to_it() {
         "deep/c.md",
         &engram("Cee", "cee", "Up and over: [b](../pumps/b.md)."),
     );
+    // A wikilink spelled as the path binds by path too, from the domain root.
+    seed(
+        f.notes(),
+        "deep/w.md",
+        &engram("Dub", "dub", "By path: [[pumps/b.md]]."),
+    );
     f.sync().await;
 
     let receipt = f
@@ -1237,8 +1243,8 @@ async fn moving_an_engram_respells_relative_links_to_it() {
         .await
         .unwrap();
     assert_eq!(receipt["to"]["permalink"], "kit/bee", "{receipt}");
-    assert_eq!(receipt["links_rewritten"], 2, "{receipt}");
-    assert_eq!(receipt["references_rewritten"], 3, "{receipt}");
+    assert_eq!(receipt["links_rewritten"], 3, "{receipt}");
+    assert_eq!(receipt["references_rewritten"], 4, "{receipt}");
 
     let a = read(f.notes(), "a.md");
     assert!(
@@ -1249,6 +1255,8 @@ async fn moving_an_engram_respells_relative_links_to_it() {
     );
     let c = read(f.notes(), "deep/c.md");
     assert!(c.contains("Up and over: [b](../archive/b.md)."), "{c}");
+    let w = read(f.notes(), "deep/w.md");
+    assert!(w.contains("By path: [[archive/b.md]]."), "{w}");
 
     let a = read_receipt(&f, "notes", "ay").await;
     assert_eq!(
@@ -1277,6 +1285,16 @@ async fn moving_an_engram_respells_relative_links_to_it() {
         )],
         "{c}"
     );
+    let w = read_receipt(&f, "notes", "dub").await;
+    assert_eq!(
+        edges(&w)[0],
+        (
+            "archive/b.md".to_string(),
+            true,
+            Some("kit/bee".to_string())
+        ),
+        "{w}"
+    );
     assert!(
         f.unresolved("notes").await.is_empty(),
         "{:?}",
@@ -1304,7 +1322,8 @@ async fn moving_an_engram_rebases_its_own_relative_links() {
             "Bee",
             "pumps/b",
             "- part_of [Ay](../a.md#intro)\n\nSee [peer](peer.md \"Peer\"), [me](b.md), \
-             ![pic](assets/pic.png), [web](https://x.test/y.md) and `[code](../a.md)`.",
+             ![pic](assets/pic.png), [web](https://x.test/y.md) and `[code](../a.md)`.\n\n\
+             Self [[pumps/b.md]] and root [[a.md]].",
         ),
     );
     f.sync().await;
@@ -1319,7 +1338,8 @@ async fn moving_an_engram_rebases_its_own_relative_links() {
     assert!(
         b.contains(
             "- part_of [Ay](../../a.md#intro)\n\nSee [peer](../../pumps/peer.md \"Peer\"), [me](b.md), \
-             ![pic](assets/pic.png), [web](https://x.test/y.md) and `[code](../a.md)`."
+             ![pic](assets/pic.png), [web](https://x.test/y.md) and `[code](../a.md)`.\n\n\
+             Self [[archive/old/b.md]] and root [[a.md]]."
         ),
         "{b}"
     );
@@ -1335,6 +1355,12 @@ async fn moving_an_engram_rebases_its_own_relative_links() {
                 Some("peer".to_string())
             ),
             ("b.md".to_string(), true, Some("archive/old/b".to_string())),
+            (
+                "archive/old/b.md".to_string(),
+                true,
+                Some("archive/old/b".to_string())
+            ),
+            ("a.md".to_string(), true, Some("ay".to_string())),
         ],
         "{b}"
     );

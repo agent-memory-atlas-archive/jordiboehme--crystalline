@@ -1206,6 +1206,72 @@ async fn a_path_only_move_of_an_open_engram_keeps_the_rooms_typing() {
     assert!(live.saving, "and raised no conflict");
 }
 
+/// A path-only move rebases the engram's own relative links while its room
+/// stays open. The room's next save meets the rebase as a change under it and
+/// merges it, so the file ends with both the typing and the rebased links.
+#[tokio::test]
+async fn a_path_only_move_under_an_open_room_keeps_the_typing_and_the_rebased_links() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let dir = tmp.path().join("eng");
+    std::fs::create_dir_all(dir.join("guides")).unwrap();
+    std::fs::write(
+        dir.join("guides/peer.md"),
+        "---\ntype: engram\ntitle: Peer\npermalink: peer\ntags:\n  - eng\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# Peer\n\nThe peer.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("alpha.md"),
+        ALPHA.replace(
+            "A rule about alpha.\n",
+            "A rule about alpha.\n\nSee [the peer](guides/peer.md).\n",
+        ),
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed before the move").await;
+
+    engine
+        .move_engram(
+            &crystalline_service::params::MoveParams {
+                identifier: "alpha".to_string(),
+                domain: "eng".to_string(),
+                destination: "guides/alpha.md".to_string(),
+                destination_domain: None,
+                permalink: Some("keep".to_string()),
+                update_links: None,
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect("a path-only move is not refused by the open room");
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_secs(60))
+        .await;
+
+    let moved = std::fs::read_to_string(dir.join("guides/alpha.md")).unwrap();
+    assert!(
+        moved.contains("typed before the move") && moved.contains("See [the peer](peer.md)."),
+        "the typing and the rebased link both landed: {moved:?}"
+    );
+    assert!(!moved.contains("guides/peer.md"), "{moved:?}");
+    let live = sessions
+        .live_text("eng", "alpha", None)
+        .await
+        .expect("the room stands");
+    assert!(live.saving, "and raised no conflict");
+    assert!(
+        live.text.contains("See [the peer](peer.md).")
+            && live.text.contains("typed before the move"),
+        "the room holds what the file holds: {:?}",
+        live.text
+    );
+}
+
 /// **Task 41c.** A room's save that found the engram at its old path and
 /// then waited for that path's lock while a path-only move held it finds the
 /// file gone. The engram still answers to the room's address at its new

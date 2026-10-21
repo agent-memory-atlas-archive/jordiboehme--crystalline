@@ -33,7 +33,9 @@
 //! names a path, not an address, so it follows the file rather than the
 //! address: [`respell_relative_links`] rewrites the links to a file that
 //! moved inside its domain, and [`rebase_relative_links`] rebases the moved
-//! engram's own relative links onto its new folder.
+//! engram's own relative links onto its new folder. A wikilink spelled as the
+//! file's path (`[[pumps/p.md]]`) binds by path too, so
+//! [`respell_path_wikilinks`] makes it follow the file the same way.
 
 use crate::address::SCHEME;
 use crate::engram::LinkTarget;
@@ -466,9 +468,76 @@ pub fn rebase_relative_links(source: &str, from: &str, to: &str) -> (String, usi
     })
 }
 
+/// Rewrite every bare wikilink spelled as the domain-relative file path `from`
+/// (`[[pumps/b.md]]`) so it names `to`. The index binds such a link by path,
+/// and the path is read from the domain root, so it needs no respelling from
+/// the folder of the engram that holds it. A prefixed wikilink, one inside
+/// code and one naming any other text stay as written.
+pub fn respell_path_wikilinks(source: &str, from: &str, to: &str) -> (String, usize) {
+    rewrite_body_lines(source, BodyGate::Lossless, &|line| {
+        through(LinkDialect::Addressed, line, |l| {
+            path_wikilink_line(l, from, to)
+        })
+    })
+}
+
+/// One body line under [`respell_path_wikilinks`]: the wikilinks found the
+/// way [`relink_line`] finds them, over the line with inline code masked.
+fn path_wikilink_line(line: &str, from: &str, to: &str) -> (String, usize) {
+    let original: Vec<char> = line.chars().collect();
+    let masked: Vec<char> = if line.contains('`') {
+        mask_inline_code(line).chars().collect()
+    } else {
+        original.clone()
+    };
+    let mut out = String::with_capacity(line.len());
+    let mut count = 0usize;
+    let mut i = 0usize;
+    while i < masked.len() {
+        if masked[i] == '['
+            && masked.get(i + 1) == Some(&'[')
+            && let Some(close) = find_close(&masked, i + 2)
+        {
+            let inner: String = masked[i + 2..close].iter().collect();
+            let target = LinkTarget::parse(&inner);
+            if target.domain.is_none() && target.target == from {
+                out.push_str("[[");
+                out.push_str(to);
+                out.push_str("]]");
+                count += 1;
+            } else {
+                out.extend(&original[i..close + 2]);
+            }
+            i = close + 2;
+            continue;
+        }
+        out.push(original[i]);
+        i += 1;
+    }
+    (out, count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wikilink_spelled_as_the_moved_path_follows_it() {
+        let source = format!(
+            "{ENGRAM_HEAD}- part_of [[pumps/b.md]]\n\nSee [[pumps/b.md]], [[ops:pumps/b.md]], \
+             [[Pumps/B.md]], [[pumps/b]] and `[[pumps/b.md]]`.\n\n```\n[[pumps/b.md]]\n```\n"
+        );
+        let (out, n) = respell_path_wikilinks(&source, "pumps/b.md", "archive/b.md");
+        assert_eq!(n, 2, "{out}");
+        assert!(out.contains("- part_of [[archive/b.md]]\n"), "{out}");
+        assert!(
+            out.contains(
+                "See [[archive/b.md]], [[ops:pumps/b.md]], [[Pumps/B.md]], [[pumps/b]] and `[[pumps/b.md]]`."
+            ),
+            "{out}"
+        );
+        assert!(out.contains("```\n[[pumps/b.md]]\n```"), "{out}");
+    }
 
     const ENGRAM_HEAD: &str =
         "---\ntype: engram\ntitle: B\npermalink: b\nstatus: stable\n---\n\n# B\n\n";

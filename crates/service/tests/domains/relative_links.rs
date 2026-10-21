@@ -167,18 +167,26 @@ async fn a_wikilink_spelled_as_a_path_reports_its_permalink() {
     let (tmp, engine) = fixture().await;
     std::fs::write(
         tmp.path().join("plant/wiki.md"),
-        note("Wiki", "wiki", "See [[pumps/p-12.md]] and [[Overview]]."),
+        note(
+            "Wiki",
+            "wiki",
+            "See [[pumps/p-12.md]] and [[Overview]] and [[Pumps/P-12.md]].",
+        ),
     )
     .unwrap();
     engine.sync(None).await.unwrap();
 
     let v = read(&engine, "wiki").await;
     let links = v["links"].as_array().unwrap();
-    assert_eq!(links.len(), 2, "{v}");
+    assert_eq!(links.len(), 3, "{v}");
     assert_eq!(links[0]["target"]["target"], "pumps/p-12.md");
     assert_eq!(links[0]["resolved"], true, "{v}");
     assert_eq!(links[0]["permalink"], "kit/pump-twelve", "{v}");
     // A wikilink by title already names its target.
     assert_eq!(links[1]["resolved"], true, "{v}");
     assert!(links[1].get("permalink").is_none(), "{v}");
+    // A path is compared exactly, case included, as the index compares it.
+    assert_eq!(links[2]["target"]["target"], "Pumps/P-12.md");
+    assert_eq!(links[2]["resolved"], false, "{v}");
+    assert!(links[2].get("permalink").is_none(), "{v}");
 }
