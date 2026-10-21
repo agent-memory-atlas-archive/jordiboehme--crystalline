@@ -96,13 +96,13 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Download macos-arm64 artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: crystalline-macos-arm64
           path: downloads/arm64
 
       - name: Download macos-intel artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: crystalline-macos-intel
           path: downloads/intel
@@ -147,7 +147,7 @@ jobs:
           fi
 
       - name: Upload the universal binary
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: crystalline-macos-universal
           path: universal/crystalline
@@ -169,7 +169,7 @@ jobs:
       # Pinned to the major CI's fluid job uses. No package cache: this job
       # makes release assets, and a cache a pull request could have written
       # must never reach them.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26'
           package-manager-cache: false
@@ -193,7 +193,7 @@ jobs:
           fi
 
       - name: Download the universal macOS binary
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: crystalline-macos-universal
           path: downloads/macos-universal
@@ -235,7 +235,7 @@ jobs:
           done
 
       - name: Upload mcpb artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mcpb-bundles
           path: mcpb-out/*.mcpb
@@ -267,7 +267,7 @@ jobs:
           done
 
       - name: Upload skill zips artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: skill-zips
           path: skill-out/*.zip
@@ -313,7 +313,7 @@ jobs:
       # action's manifest; `fallback: none` fails the step rather than
       # downloading an unpinned binary if the manifest ever lacks this host.
       - name: Install cargo-cyclonedx
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-cyclonedx@0.5.9
           fallback: none
@@ -390,7 +390,7 @@ jobs:
           jq -e '[.components[].name] | index("react") != null' sbom/crystalline-fluid-*.cdx.json > /dev/null
 
       - name: Upload the SBOMs
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sboms
           path: sbom/*.cdx.json
@@ -418,7 +418,7 @@ jobs:
           persist-credentials: false
 
       - name: Download all archives
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: downloads
 
@@ -586,13 +586,13 @@ jobs:
           persist-credentials: false
 
       - name: Download x86_64 musl artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: crystalline-linux-amd64
           path: downloads/amd64
 
       - name: Download aarch64 musl artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: crystalline-linux-arm64
           path: downloads/arm64
@@ -634,7 +634,7 @@ jobs:
       # staged above and sets metadata), so the linux/arm64 build executes
       # nothing emulated. Add QEMU back together with any RUN step.
       - name: Set up buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Generate image metadata
         id: meta
@@ -790,7 +790,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Generate image metadata
         id: meta

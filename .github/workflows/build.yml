@@ -106,7 +106,7 @@ jobs:
       # Repository-relative: working-directory applies to run steps, not to an
       # action's inputs.
       - name: Upload the bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fluid-dist
           path: fluid/dist
@@ -241,7 +241,7 @@ jobs:
       # it. A warm hit would save at most about 20 minutes on the Intel leg.
       # The key stays release-<target>: ci.yml's musl-spike job reads the
       # x86_64 musl entry the dev channel writes.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: inputs.channel == 'dev'
         with:
           key: release-${{ matrix.target }}
@@ -274,7 +274,7 @@ jobs:
       # ships. download-artifact is cross-platform, so the Windows legs take
       # this path too.
       - name: Download the fluid bundle
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: fluid-dist
           path: fluid/dist
@@ -300,9 +300,9 @@ jobs:
       # osv-scanner can name the crates inside a shipped binary or container
       # image long after the release. The install action fetches a prebuilt
       # binary and checks it against the SHA-256 in its manifest.
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
-          tool: cargo-auditable@0.7.6
+          tool: cargo-auditable@0.7.7
 
       # The build itself is unchanged; `cargo auditable build` takes the same
       # arguments as `cargo build` and the packagers below (.deb, .msi) wrap
@@ -529,7 +529,7 @@ jobs:
         run: Compress-Archive -Path "${env:STAGE}/*" -DestinationPath "${env:STAGE}.zip"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: crystalline-${{ matrix.platform }}
           path: dist/${{ steps.stage.outputs.name }}.${{ matrix.archive_ext }}
@@ -543,13 +543,13 @@ jobs:
       # The install action fetches a prebuilt binary and checks it against
       # the SHA-256 in its manifest. Its cargo-deb manifest has an x86_64
       # Linux binary only, so the arm64 leg falls back to
-      # `cargo install --locked cargo-deb@3.7.0`: the same pinned build as
+      # `cargo install --locked cargo-deb@3.8.0`: the same pinned build as
       # before, never the unpinned cargo-binstall download.
       - name: Install cargo-deb
         if: matrix.musl && inputs.channel != 'dev'
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
-          tool: cargo-deb@3.7.0
+          tool: cargo-deb@3.8.0
           fallback: cargo-install
 
       - name: Build .deb package
@@ -568,7 +568,7 @@ jobs:
 
       - name: Upload .deb artifact
         if: matrix.musl && inputs.channel != 'dev'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: crystalline-deb-${{ matrix.deb_arch }}
           path: dist/crystalline_*.deb
@@ -609,7 +609,7 @@ jobs:
           if ($got -ne $want) { throw "WiX candle is $got, expected $want" }
 
       # Built from source on purpose: install-action has no cargo-wix
-      # manifest (checked at v2.87.22, the newest release on 2026-10-02), and
+      # manifest (checked at v2.87.29, the newest release on 2026-10-21), and
       # its cargo-binstall fallback would download a binary no checksum pins.
       # It is one step on the two Windows legs, under a minute.
       - name: Install cargo-wix
@@ -922,7 +922,7 @@ jobs:
       # and upgrade steps, even when one of them failed.
       - name: Upload the MSI logs
         if: always() && matrix.msi
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: msi-logs-${{ matrix.platform }}
           path: ${{ runner.temp }}/msi-*.log
@@ -932,7 +932,7 @@ jobs:
       # the upgrade test, uploaded even when a check failed.
       - name: Upload the daemon task export
         if: always() && matrix.msi
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: daemon-task-export-${{ matrix.platform }}
           path: ${{ runner.temp }}/daemon-task-export*.xml
@@ -940,7 +940,7 @@ jobs:
 
       - name: Upload .msi artifact
         if: matrix.msi
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: crystalline-msi-${{ matrix.platform }}
           path: dist/*.msi
