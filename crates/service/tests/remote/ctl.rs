@@ -315,6 +315,7 @@ async fn a_token_runs_a_full_cycle_over_the_ctl_route() {
     .await;
     assert_eq!(status["ok"], true, "{status}");
     assert_eq!(status["data"]["domains"][0]["domain"], "open", "{status}");
+    assert!(status["data"]["domains"][0]["due"].is_boolean(), "{status}");
 
     let take = ask(verb(
         "automation_lease_take",
@@ -414,4 +415,27 @@ async fn a_token_without_curation_rights_sees_nothing() {
         .await;
     assert_eq!(take["ok"], false, "{take}");
     assert!(take.get("data").is_none(), "{take}");
+}
+
+/// A private domain the caller may not see is refused with the very text an
+/// unregistered name gets, so the refusal does not tell them apart.
+#[tokio::test]
+async fn a_hidden_domain_is_refused_like_an_unknown_one() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    let token = server.token_for("out").await;
+    let mut texts = Vec::new();
+    for domain in ["lab", "nosuch"] {
+        let (_, reply) = server
+            .ctl(
+                Some(&token),
+                verb(
+                    "automation_lease_take",
+                    json!({ "loop": "evolve", "domain": domain, "runner": "k8s" }),
+                ),
+            )
+            .await;
+        assert_eq!(reply["ok"], false, "{reply}");
+        texts.push(reply["error"].as_str().unwrap().replace(domain, "X"));
+    }
+    assert_eq!(texts[0], texts[1], "{texts:?}");
 }

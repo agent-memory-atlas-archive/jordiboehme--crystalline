@@ -4,7 +4,7 @@
 use crystalline_service::control::answer_for_test;
 use serde_json::{Value, json};
 
-use crate::fixture::{Fx, fixture, manifest};
+use crate::fixture::{Fx, fixture, fixture_with, manifest};
 
 fn verb(cmd: &str, rest: Value) -> Value {
     let mut body = rest;
@@ -91,4 +91,53 @@ async fn the_local_socket_runs_a_full_cycle_without_an_account() {
     )
     .await;
     assert_eq!(runs["data"]["runs"][0]["summary"], "ok", "{runs}");
+}
+
+/// A domain named by one of its aliases reaches the same domain.
+#[tokio::test]
+async fn a_domain_named_by_alias_is_localized_on_the_socket() {
+    let fx = fixture_with(&[("MANIFEST.md", &manifest(""))], |cfg, _| {
+        cfg.domains.get_mut("eng").unwrap().aliases = vec!["old-eng".to_string()];
+    })
+    .await;
+    let take = ask(
+        &fx,
+        "automation_lease_take",
+        json!({ "loop": "evolve", "domain": "old-eng", "runner": "cron" }),
+    )
+    .await;
+    assert_eq!(take["ok"], true, "{take}");
+    let status = ask(
+        &fx,
+        "automation_status",
+        json!({ "loop": "evolve", "domains": ["old-eng"] }),
+    )
+    .await;
+    assert_eq!(status["data"]["domains"][0]["domain"], "eng", "{status}");
+    assert!(
+        status["data"]["domains"][0]["running"].is_object(),
+        "{status}"
+    );
+}
+
+#[tokio::test]
+async fn a_status_names_at_most_a_hundred_domains_and_a_summary_is_a_string() {
+    let fx = fixture(&[("MANIFEST.md", &manifest(""))]).await;
+    let many: Vec<String> = (0..101).map(|i| format!("d{i}")).collect();
+    let status = ask(
+        &fx,
+        "automation_status",
+        json!({ "loop": "evolve", "domains": many }),
+    )
+    .await;
+    assert_eq!(status["ok"], false, "{status}");
+    assert_eq!(status["kind"], "invalid", "{status}");
+    let share = ask(
+        &fx,
+        "automation_share",
+        json!({ "loop": "evolve", "domain": "eng", "token": "t", "summary": 5 }),
+    )
+    .await;
+    assert_eq!(share["kind"], "invalid", "{share}");
+    assert_eq!(share["error"], "summary must be a string", "{share}");
 }

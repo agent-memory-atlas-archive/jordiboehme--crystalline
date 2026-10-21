@@ -31,6 +31,9 @@ pub const AUTOMATION_COMMANDS: [&str; 7] = [
 /// Runs of one `automation_runs` answer when the request names no limit.
 const DEFAULT_RUNS: usize = 10;
 
+/// The most domains one status request may name; each costs a lookup.
+const MAX_STATUS_DOMAINS: usize = 100;
+
 /// A failed verb: the message, and whether the request itself was wrong.
 struct Failure {
     message: String,
@@ -96,6 +99,11 @@ async fn run(
         match request.get("domains") {
             None | Some(Value::Null) => {}
             Some(Value::Array(items)) => {
+                if items.len() > MAX_STATUS_DOMAINS {
+                    return Err(Failure::invalid(format!(
+                        "domains names at most {MAX_STATUS_DOMAINS} domains"
+                    )));
+                }
                 let hidden = engine.hidden_for(scope).await?;
                 for item in items {
                     let Some(typed) = item.as_str() else {
@@ -139,10 +147,11 @@ async fn run(
         }
         "automation_share" => {
             let token = text(request, "token")?;
-            let summary = request
-                .get("summary")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
+            let summary = match request.get("summary") {
+                None | Some(Value::Null) => "",
+                Some(Value::String(s)) => s.as_str(),
+                Some(_) => return Err(Failure::invalid("summary must be a string")),
+            };
             engine
                 .automation_share(lp, domain, token, summary, scope)
                 .await?

@@ -703,9 +703,6 @@ async fn handle(req: &Value, shared: &Arc<Shared>) -> (Value, bool) {
                 Err(e) => (envelope_err(e.to_string()), false),
             }
         }
-        // The offline change list of one domain, optionally with both sides
-        // of every entry inlined (the CLI's diff), optionally narrowed to one
-        // path. Never pulls.
         // The runner's verbs for the reflect and evolve loops, as the machine
         // owner: no account, so a share falls back to the changed files.
         automation if crate::automation_ctl::AUTOMATION_COMMANDS.contains(&automation) => (
@@ -718,6 +715,9 @@ async fn handle(req: &Value, shared: &Arc<Shared>) -> (Value, bool) {
             .await,
             false,
         ),
+        // The offline change list of one domain, optionally with both sides
+        // of every entry inlined (the CLI's diff), optionally narrowed to one
+        // path. Never pulls.
         "origin_changes" => {
             let domain = req.get("domain").and_then(Value::as_str).unwrap_or("");
             let path = req.get("path").and_then(Value::as_str);
