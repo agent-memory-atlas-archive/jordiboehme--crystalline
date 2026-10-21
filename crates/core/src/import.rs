@@ -301,7 +301,19 @@ pub fn import_tree(options: &ImportOptions) -> Result<ImportReport, ImportError>
     );
     let mut rewritten = notes.into_iter();
 
-    // Phase 3: write the notes and the taken files, copy the rest.
+    // Phase 3: copy the taken files first, so a failed copy leaves no written
+    // note that links a missing asset; then write the notes, copy the rest.
+    for taken in &outcome.taken {
+        if taken.reused || options.dry_run {
+            continue;
+        }
+        let from = options.src_dir.join(&taken.source_rel);
+        let dest = options.domain_dir.join(&taken.dest);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(io_err(parent))?;
+        }
+        crate::config::copy_atomic(&from, &dest).map_err(io_err(&from))?;
+    }
     for item in planned {
         match item {
             Planned::Skipped(change) => report.files.push(change),
@@ -317,17 +329,6 @@ pub fn import_tree(options: &ImportOptions) -> Result<ImportReport, ImportError>
                 write_markdown(*m, note.text, options, &mut report)?;
             }
         }
-    }
-    for taken in &outcome.taken {
-        if taken.reused || options.dry_run {
-            continue;
-        }
-        let from = options.src_dir.join(&taken.source_rel);
-        let dest = options.domain_dir.join(&taken.dest);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(io_err(parent))?;
-        }
-        crate::config::copy_atomic(&from, &dest).map_err(io_err(&from))?;
     }
     report.files_linked = outcome.taken.len();
     report.not_taken = outcome.not_taken;
@@ -1320,6 +1321,9 @@ mod tests {
         out
     }
 
+    /// Distinct files the fixture's notes link that can be taken.
+    const FIXTURE_LINKED: usize = 8;
+
     fn linked_fixture() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/linked")
     }
@@ -1348,7 +1352,7 @@ mod tests {
             note.contains("](assets/report.pdf/page-3.png)"),
             "link not rewritten: {note}"
         );
-        assert!(report.files_linked >= 1);
+        assert_eq!(report.files_linked, FIXTURE_LINKED);
     }
 
     #[test]
@@ -1385,11 +1389,20 @@ mod tests {
 
         let first = import_tree(&linked_options(&src, &domain, false)).unwrap();
         let before = all_files(&domain);
+        let stamp = |p: &str| {
+            std::fs::metadata(domain.join(p))
+                .unwrap()
+                .modified()
+                .unwrap()
+        };
+        let page = "assets/report.pdf/page-3.png";
+        let modified = stamp(page);
+        std::thread::sleep(std::time::Duration::from_millis(20));
         let second = import_tree(&linked_options(&src, &domain, false)).unwrap();
         let after = all_files(&domain);
 
         assert_eq!(first.files_linked, second.files_linked);
-        assert!(second.files_linked >= 1);
+        assert_eq!(second.files_linked, FIXTURE_LINKED);
         assert!(
             after.iter().all(|(rel, _)| !rel.contains("-2.")),
             "a duplicate was stored: {after:?}"
@@ -1404,6 +1417,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(assets(before), assets(after));
+        assert_eq!(stamp(page), modified, "a reused asset was rewritten");
     }
 
     #[test]
@@ -1417,7 +1431,7 @@ mod tests {
         let report = import_tree(&linked_options(&src, &domain, true)).unwrap();
 
         assert!(all_files(&domain).is_empty(), "dry run wrote files");
-        assert!(report.files_linked >= 1);
+        assert_eq!(report.files_linked, FIXTURE_LINKED);
         assert!(!report.not_taken.is_empty());
     }
 
@@ -1444,5 +1458,27 @@ mod tests {
         assert_eq!(r.engram.frontmatter.permalink, None);
         assert!(!r.permalink_backfilled);
         assert!(r.changes.iter().any(|c| c.starts_with("warning:")));
+    }
+
+    #[test]
+    fn a_failed_copy_leaves_no_note_that_links_the_missing_asset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let domain = tmp.path().join("domain");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&domain).unwrap();
+        std::fs::write(
+            src.join("a.md"),
+            "---\ntype: engram\n---\n\n![p](pic.png)\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("pic.png"), b"png").unwrap();
+        // A file where the `assets` folder must go.
+        std::fs::write(domain.join("assets"), b"in the way").unwrap();
+
+        let result = import_tree(&linked_options(&src, &domain, false));
+
+        assert!(result.is_err());
+        assert!(!domain.join("a.md").exists(), "the note was written");
     }
 }
