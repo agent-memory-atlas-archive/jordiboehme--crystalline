@@ -1308,6 +1308,10 @@ pub struct Engine {
     // Held by `Engine::adopt_domain_names` from its plan to the end of its
     // renames, so two adoptions never plan the same rename.
     adoption_lock: tokio::sync::Mutex<()>,
+    // The sessions already told about a domain's pending rename question, as
+    // (session key, local domain name): the guidance line goes out once per
+    // session and domain. In memory only, so a restart tells everyone again.
+    rename_nudged: std::sync::Mutex<HashSet<(String, String)>>,
     // Set while a rename is between its index row step and its config step:
     // a spelling push then would drop the alias the index row step left for
     // the old name, since the configuration does not list it yet. A refresh
@@ -2405,6 +2409,7 @@ impl Engine {
             rename_slot: std::sync::Mutex::new(None),
             adoption_failures: std::sync::Mutex::new(HashMap::new()),
             adoption_lock: tokio::sync::Mutex::new(()),
+            rename_nudged: std::sync::Mutex::new(HashSet::new()),
             names_frozen: std::sync::atomic::AtomicBool::new(false),
             holds_state_dir: std::sync::atomic::AtomicBool::new(true),
             machine_owner: None,
@@ -9305,6 +9310,10 @@ pub(crate) fn note_domain_names_normalized(receipt: &mut Value, normalized: usiz
 /// The sentence an edit receipt carries when a section edit dropped a repeat
 /// of the section's own heading from its content.
 pub const HEADING_STRIPPED_GUIDANCE: &str = "Content repeated the section's own heading; it was dropped, since the heading stays. Send only the body next time.";
+
+/// The line an agent gets, once per session, on a tool answer about a domain
+/// with a pending rename question. `{from}` and `{to}` are the two names.
+pub(crate) const RENAME_PENDING_GUIDANCE: &str = "This domain was renamed from {from} to {to} in its MANIFEST. Tell the person they can finish the rename in Fluid (the banner on the domain) or with `crystalline doctor --fix`; if nobody is there to ask, leave it.";
 
 /// The sentence an edit or write receipt carries when the MANIFEST it just
 /// changed draws an error from the MANIFEST rules.

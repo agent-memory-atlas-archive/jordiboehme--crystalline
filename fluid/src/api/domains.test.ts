@@ -18,6 +18,30 @@ describe("readListing", () => {
     ]);
   });
 
+  it("reads a row's rename_pending, null when absent or malformed", () => {
+    const listing = readListing({
+      domains: [
+        {
+          name: "eng",
+          rename_pending: {
+            from: "eng",
+            to: "platform",
+            seen_at: "2026-10-21T08:00:00Z",
+          },
+        },
+        { name: "ops", rename_pending: null },
+        { name: "old" },
+        { name: "odd", rename_pending: { from: "x" } },
+      ],
+    });
+    expect(listing.domains.map((d) => d.renamePending)).toEqual([
+      { from: "eng", to: "platform", seenAt: "2026-10-21T08:00:00Z" },
+      null,
+      null,
+      null,
+    ]);
+  });
+
   it("reads the mounted domains beside the local ones", () => {
     const listing = readListing({
       behavior: [],

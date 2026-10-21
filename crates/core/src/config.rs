@@ -532,6 +532,37 @@ pub struct DomainEntry {
     /// is detected: the previous value in this field becomes a new alias.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canonical_seen: Option<String>,
+    /// The rename a sync saw and a person has not settled yet: an explicit
+    /// domain's MANIFEST `domain_name` changed, the local name was kept and
+    /// the old canonical name became an alias. Machine-local like
+    /// `aliases`: every instance asks its own question once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rename_question: Option<RenameQuestion>,
+}
+
+/// A rename a sync adopted for an explicit domain, waiting for a person to
+/// finish it (respell the links) or keep the links as they are.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenameQuestion {
+    /// The canonical name this machine had seen before the change.
+    pub from: String,
+    /// The canonical name the MANIFEST declares now.
+    pub to: String,
+    /// When the change was seen, as RFC 3339 text.
+    pub seen_at: String,
+    /// How a person answered, absent while the question is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered: Option<RenameAnswer>,
+}
+
+/// How a person settled a [`RenameQuestion`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RenameAnswer {
+    /// The links keep the old spelling; the alias stays.
+    Keep,
+    /// The links were respelled to the new name.
+    Finished,
 }
 
 /// How a domain came to have the name it is registered under: named on
@@ -575,6 +606,7 @@ impl DomainEntry {
             name_origin: None,
             aliases: Vec::new(),
             canonical_seen: None,
+            rename_question: None,
         }
     }
 
@@ -589,6 +621,7 @@ impl DomainEntry {
             name_origin: None,
             aliases: Vec::new(),
             canonical_seen: None,
+            rename_question: None,
         }
     }
 
@@ -2358,6 +2391,29 @@ mod tests {
             Some("platform")
         );
         assert_eq!(back, cfg);
+    }
+
+    #[test]
+    fn a_rename_question_round_trips_and_is_left_out_when_absent() {
+        let mut entry = DomainEntry::file("/tmp/eng");
+        let plain = serde_yaml_ng::to_string(&entry).unwrap();
+        assert!(!plain.contains("rename_question"), "{plain}");
+        entry.rename_question = Some(RenameQuestion {
+            from: "eng".to_string(),
+            to: "platform".to_string(),
+            seen_at: "2026-10-21T08:00:00+00:00".to_string(),
+            answered: Some(RenameAnswer::Keep),
+        });
+        let mut cfg = GlobalConfig::default();
+        cfg.domains.insert("eng".to_string(), entry);
+        let yaml = serde_yaml_ng::to_string(&cfg).unwrap();
+        assert!(yaml.contains("answered: keep"), "{yaml}");
+        let back: GlobalConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(back, cfg);
+
+        let open = "from: eng\nto: platform\nseen_at: 2026-10-21T08:00:00+00:00\n";
+        let question: RenameQuestion = serde_yaml_ng::from_str(open).unwrap();
+        assert_eq!(question.answered, None);
     }
 
     #[test]

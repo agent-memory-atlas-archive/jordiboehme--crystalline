@@ -59,10 +59,14 @@ use crystalline_core::{manifest_template, policy_registry, starter_stanzas};
                            a legacy entry nothing has inferred yet), \
                            `shadowed` (whether another domain's local name \
                            already holds this one's canonical name - a bool, \
-                           never naming the other domain) and `renaming` \
+                           never naming the other domain), `renaming` \
                            (whether a rename has this domain paused right \
                            now; always present, so every row keeps the same \
-                           columns).\n\n\
+                           columns) and `rename_pending` (`{from, to, \
+                           seen_at}` when a sync saw this domain's MANIFEST \
+                           `domain_name` change and nobody has finished the \
+                           rename or kept the links yet, `null` \
+                           otherwise).\n\n\
                            For an instance admin, `mounted` lists the \
                            domains this machine offers from connected \
                            servers (`crystalline connect`): each one's \
@@ -91,6 +95,7 @@ use crystalline_core::{manifest_template, policy_registry, starter_stanzas};
                     "name_origin": "derived",
                     "shadowed": false,
                     "renaming": false,
+                    "rename_pending": null,
                     "when_to_use": ["Route here for eng questions."]
                 }]
             }),

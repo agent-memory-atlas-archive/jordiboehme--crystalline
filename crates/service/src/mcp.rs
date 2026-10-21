@@ -2734,6 +2734,42 @@ impl McpServer {
         Ok(v)
     }
 
+    /// A finished tool answer with the pending rename line appended, the
+    /// first time in this session that an answer names a domain whose
+    /// MANIFEST `domain_name` a sync saw change
+    /// ([`Engine::rename_guidance_once`]).
+    ///
+    /// The domain is the answer's top-level `domain`, read off the first
+    /// text block up to the trailer rule ([`ok`]), so a read and a write
+    /// verb are covered alike. The line goes after the receipt as a trailer
+    /// the way [`McpServer::nudged`] adds one: a rule and the sentence, which
+    /// leaves the JSON in front of the rule as it was. An error, an answer
+    /// that is not a JSON object (a TOON listing) or one with no top-level
+    /// `domain` is handed back unchanged.
+    async fn with_rename_guidance(
+        &self,
+        mut result: CallToolResult,
+        session: &str,
+    ) -> CallToolResult {
+        if result.is_error == Some(true) {
+            return result;
+        }
+        let Some(ContentBlock::Text(text)) = result.content.first_mut() else {
+            return result;
+        };
+        let receipt = text.text.split("\n\n---\n").next().unwrap_or_default();
+        let Some(domain) = serde_json::from_str::<Value>(receipt)
+            .ok()
+            .and_then(|value| value.get("domain")?.as_str().map(str::to_string))
+        else {
+            return result;
+        };
+        if let Some(line) = self.engine.rename_guidance_once(session, &domain).await {
+            text.text.push_str(&format!("\n\n---\n{line}"));
+        }
+        result
+    }
+
     /// A write verb's [`Verdict`] as the MCP answer: the receipt rendered by
     /// `render` with the ride-along trailer after it, a refusal as a tool
     /// error.
@@ -2747,6 +2783,21 @@ impl McpServer {
             Verdict::Done(receipt) => Ok(self.nudged(render(receipt)?, caller).await),
             Verdict::Refused(text) => refuse(text),
         }
+    }
+}
+
+/// A stable key for the session a tool call belongs to, for what is said
+/// once per session: the call's [`crate::join::Holder`] (a stdio server, an
+/// MCP session, a sessionless token's account), else its account, else the
+/// instance itself.
+fn session_key(holder: Option<crate::join::Holder>, account: Option<String>) -> String {
+    use crate::join::Holder;
+    match (holder, account) {
+        (Some(Holder::Browser(csrf)), _) => format!("browser:{csrf}"),
+        (Some(Holder::McpSession(id)), _) => format!("mcp-session:{id}"),
+        (Some(Holder::Process(n)), _) => format!("process:{n}"),
+        (Some(Holder::Token(account)), _) | (None, Some(account)) => format!("account:{account}"),
+        (None, None) => "instance".to_string(),
     }
 }
 
@@ -4768,6 +4819,27 @@ fn applied_failure(applied: &[String], failed_key: &str, e: EngineError) -> Erro
 
 #[tool_handler]
 impl ServerHandler for McpServer {
+    /// Every tool call, read and write verbs alike: the tool router's own
+    /// dispatch (what `#[tool_handler]` would generate), then the pending
+    /// rename line (`McpServer::with_rename_guidance`) on the answer.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, ErrorData> {
+        let session = session_key(self.holder_of(&context), mcp_account(&context));
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        let response = Self::tool_router().call(tcc).await?;
+        Ok(match response {
+            rmcp::model::CallToolResponse::Complete(result) => {
+                rmcp::model::CallToolResponse::Complete(
+                    self.with_rename_guidance(result, &session).await,
+                )
+            }
+            other => other,
+        })
+    }
+
     /// The revisions this server serves, narrowed from rmcp's crate-wide
     /// `KNOWN_VERSIONS` default to [`SERVED_PROTOCOL_VERSIONS`].
     ///

@@ -250,6 +250,18 @@ impl Engine {
                         .and_then(|canonical| table.resolve(canonical))
                         .is_some_and(|holder| !hidden.contains(holder)),
                 "renaming": self.is_renaming(name),
+                // The rename a sync saw this domain's MANIFEST make and a
+                // person has not settled yet; `null` when there is none, so
+                // every row keeps the same columns.
+                "rename_pending": entry
+                    .rename_question
+                    .as_ref()
+                    .filter(|question| question.answered.is_none())
+                    .map(|question| json!({
+                        "from": question.from,
+                        "to": question.to,
+                        "seen_at": question.seen_at,
+                    })),
             });
             // Present only when true: "you cannot write here", for whatever
             // reason; a writable row keeps the columns it always had. Not the

@@ -89,6 +89,14 @@ export interface DomainSummary {
    */
   renaming: boolean;
   /**
+   * The rename a sync saw this domain's MANIFEST make (its `domain_name`
+   * changed by hand) that nobody has finished or kept yet: the name links
+   * were written with, the name the MANIFEST declares now and when the
+   * change was seen. Null when there is no open question, and for a listing
+   * that predates the field.
+   */
+  renamePending: RenamePending | null;
+  /**
    * Whether this session cannot write into this domain right now, for any
    * reason: the domain is locked, the role only reads, or the account's
    * write list leaves it out. The row's `read_only`, which the server sends
@@ -97,6 +105,29 @@ export interface DomainSummary {
    * its `read_only` policy row (see `useDomainWritable`), never this.
    */
   writeBlocked: boolean;
+}
+
+/** An open rename question on a domain, as the listing names it. */
+export interface RenamePending {
+  /** The name links in this domain were written with. */
+  from: string;
+  /** The name its MANIFEST declares now. */
+  to: string;
+  /** When this instance saw the change, as RFC 3339 text. */
+  seenAt: string;
+}
+
+/** Read a row's `rename_pending`, or null when it is absent or malformed. */
+function readRenamePending(value: unknown): RenamePending | null {
+  const record = asObject(value);
+  if (
+    typeof record?.from !== "string" ||
+    typeof record.to !== "string" ||
+    typeof record.seen_at !== "string"
+  ) {
+    return null;
+  }
+  return { from: record.from, to: record.to, seenAt: record.seen_at };
 }
 
 /** A domain this machine offers from a connected server: listed, not served. */
@@ -184,6 +215,7 @@ function readDomain(value: unknown): DomainSummary | null {
         : null,
     shadowed: record?.shadowed === true,
     renaming: record?.renaming === true,
+    renamePending: readRenamePending(record?.rename_pending),
     writeBlocked: record?.read_only === true,
   };
 }

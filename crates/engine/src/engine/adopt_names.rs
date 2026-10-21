@@ -11,11 +11,51 @@
 #[cfg(any(test, feature = "testing"))]
 use std::sync::atomic::Ordering as AtomicOrdering;
 
+use crystalline_core::config::RenameQuestion;
 use crystalline_core::names::NameTable;
 
 use super::*;
 
 impl Engine {
+    /// The rename question this instance holds open for `domain` (its local
+    /// name): an explicit domain whose MANIFEST `domain_name` a sync saw
+    /// change, and that nobody has finished or kept yet. `None` for a
+    /// question already answered and for a domain with none.
+    pub fn rename_question(&self, domain: &str) -> Option<RenameQuestion> {
+        let config = self.config.read().unwrap();
+        config
+            .domains
+            .get(domain)?
+            .rename_question
+            .clone()
+            .filter(|question| question.answered.is_none())
+    }
+
+    /// The rename guidance line for a tool answer about `domain` (any name
+    /// it answers to), when that domain has an open rename question and the
+    /// session `session` (a stable key for whoever is asking) has not been
+    /// told about it yet. Marks the pair as told, so the next answer in the
+    /// same session carries nothing.
+    pub async fn rename_guidance_once(&self, session: &str, domain: &str) -> Option<String> {
+        let registered = self.config.read().unwrap().domains.contains_key(domain);
+        let local = if registered {
+            domain.to_string()
+        } else {
+            self.name_table_now().await.resolve(domain)?.to_string()
+        };
+        let question = self.rename_question(&local)?;
+        let fresh = self
+            .rename_nudged
+            .lock()
+            .unwrap()
+            .insert((session.to_string(), local));
+        fresh.then(|| {
+            RENAME_PENDING_GUIDANCE
+                .replace("{from}", &question.from)
+                .replace("{to}", &question.to)
+        })
+    }
+
     /// Runs after a sync pass. First the one-time catch-up: every entry with
     /// `name_origin: None` gets [`infer_name_origin`], persisted, and the
     /// MANIFEST write-back where [`needs_manifest_write_back`] says so (never
@@ -24,7 +64,9 @@ impl Engine {
     /// local name) becomes an alias; a derived domain whose new canonical
     /// reaches only it here is renamed to it with
     /// [`Engine::rename_domain_local`] recorded as derived; an explicit one
-    /// keeps its name; a name another domain holds here is left shadowed.
+    /// keeps its name, and when the name it had seen changed, a rename
+    /// question is recorded for a person ([`Engine::rename_question`]); a
+    /// name another domain holds here is left shadowed.
     /// `canonical_seen` is updated in every case but two, both so a later
     /// pass tries again: a planned rename, whose own config step records it
     /// (a rename that fails is tried after the next sync), and a derived
@@ -328,6 +370,16 @@ impl Engine {
                 changed = true;
                 report.push(json!({ "domain": name, "action": "alias", "alias": previous }));
             }
+            // The name changed back to the one an open question started
+            // from: nothing is left to ask.
+            if entry
+                .rename_question
+                .as_ref()
+                .is_some_and(|question| question.from == canonical)
+            {
+                entry.rename_question = None;
+                changed = true;
+            }
             let reaches_it = table.resolve(&canonical) == Some(name.as_str());
             if canonical != *name && reaches_it && entry.name_origin == Some(NameOrigin::Derived) {
                 if busy.is_empty() {
@@ -369,6 +421,12 @@ impl Engine {
                     "canonical": canonical,
                     "action": "kept",
                 }));
+                // A name seen before, changed by hand in the MANIFEST: ask
+                // a person whether to finish the rename. The first sight of
+                // a declared name is no rename, so it asks nothing.
+                if let Some(previous) = entry.canonical_seen.clone() {
+                    ask_rename(entry, previous, &canonical);
+                }
             }
             entry.canonical_seen = Some(canonical);
             changed = true;
@@ -380,5 +438,32 @@ impl Engine {
             *self.config.write().unwrap() = effective;
         }
         Ok(planned)
+    }
+}
+
+/// Record that `entry`'s canonical name moved from `previous` to `canonical`
+/// with the local name kept, as a question for a person.
+///
+/// A question already answered for this same new name (the MANIFEST editor
+/// records "keep" before it saves) is left as it is. An open question keeps
+/// the name it started from and takes the newest name, so a second edit
+/// before an answer asks about the whole change once. Anything else starts
+/// a new question.
+fn ask_rename(entry: &mut DomainEntry, previous: String, canonical: &str) {
+    let seen_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    match &mut entry.rename_question {
+        Some(question) if question.to == canonical && question.answered.is_some() => {}
+        Some(question) if question.answered.is_none() => {
+            question.to = canonical.to_string();
+            question.seen_at = seen_at;
+        }
+        slot => {
+            *slot = Some(RenameQuestion {
+                from: previous,
+                to: canonical.to_string(),
+                seen_at,
+                answered: None,
+            });
+        }
     }
 }
