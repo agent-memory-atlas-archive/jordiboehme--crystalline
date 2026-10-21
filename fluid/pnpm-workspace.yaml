@@ -1,3 +1,11 @@
+# pnpm's own version is enforced by corepack from the "packageManager" pin in
+# package.json (CI, the Fluid image and the release job enable corepack before
+# any pnpm command). pnpm 12 would also switch to that version itself and then
+# record it in a second YAML document at the top of pnpm-lock.yaml, and
+# GitHub's dependency graph reads only the first document of a pnpm lockfile
+# (dependabot/dependabot-core#15904), so Dependabot alerts for Fluid would go
+# silent. `ignore` turns that switch off, and with it the second document.
+pmOnFail: ignore
 minimumReleaseAgeExclude:
   - "@codemirror/search@6.7.2"
   - "@typescript-eslint/eslint-plugin@8.70.0"
