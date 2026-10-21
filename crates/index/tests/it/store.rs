@@ -563,11 +563,13 @@ async fn an_aliased_link_resolves(store: &dyn Store) {
         .await
         .unwrap();
     let refs = store.unresolved_refs(d, None).await.unwrap();
-    let dangling: Vec<(&str, &str)> = refs
+    let dangling: Vec<(&str, &str, Option<&str>)> = refs
         .iter()
-        .map(|r| (r.target.as_str(), r.raw.as_str()))
+        .map(|r| (r.target.as_str(), r.raw.as_str(), r.alias.as_deref()))
         .collect();
-    assert_eq!(dangling, vec![("Ghost", "Ghost")]);
+    // The display text is stored beside it, so a repair can quote the
+    // bracket text exactly as the file holds it.
+    assert_eq!(dangling, vec![("Ghost", "Ghost", Some("boo"))]);
 }
 parity!(
     an_aliased_link_resolves_by_its_target,
@@ -2512,7 +2514,7 @@ async fn spelled_references_lists_one_domains_references(store: &dyn Store) {
             "a",
             "engram",
             "",
-            "See [[eng-knowledge:runbook]] and [[other:z]].\n\n- relates_to [[eng-knowledge:guide]]\n",
+            "See [[eng-knowledge:runbook]] and [[other:z]].\n\n- relates_to [[eng-knowledge:guide|the guide]]\n",
         ),
     );
     write(
@@ -2537,12 +2539,14 @@ async fn spelled_references_lists_one_domains_references(store: &dyn Store) {
                 line: 13,
                 spelling: "eng-knowledge".to_string(),
                 raw: "eng-knowledge:runbook".to_string(),
+                alias: None,
             },
             crystalline_index::SpelledRef {
                 from: a,
                 line: 15,
                 spelling: "eng-knowledge".to_string(),
                 raw: "eng-knowledge:guide".to_string(),
+                alias: Some("the guide".to_string()),
             },
         ]
     );

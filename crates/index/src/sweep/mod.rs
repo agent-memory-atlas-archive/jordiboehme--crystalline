@@ -920,6 +920,8 @@ pub struct SpelledRef {
     pub spelling: String,
     /// The bracket text exactly as it was written, colon and all.
     pub raw: String,
+    /// The display text of a `[[target|text]]` reference, `None` without one.
+    pub alias: Option<String>,
 }
 
 /// A reference that names a target the index could not resolve: the `V102`
@@ -942,6 +944,10 @@ pub struct UnresolvedRef {
     /// resolver falls back to when the prefix names no registered domain, so
     /// V102's repair can be scored against the same string the resolver read.
     pub raw: String,
+    /// The display text of a `[[target|text]]` reference, `None` without one.
+    /// A repair quotes it on both sides, so its left side is the text the file
+    /// holds and following it keeps the author's words.
+    pub alias: Option<String>,
     /// The one-based line the reference sits on, when known.
     pub line: Option<usize>,
 }
@@ -2501,6 +2507,8 @@ fn detect_local_spellings(input: &SweepInput, graph: &Graph<'_>, report: &mut Sw
             continue;
         };
         let new_raw = format!("{canonical}:{rest}");
+        let alias = reference.alias.as_deref();
+        let (written, respelled) = (bracketed(&reference.raw, alias), bracketed(&new_raw, alias));
         report.findings.push(
             Finding::about("V110", fact)
                 .with(
@@ -2510,13 +2518,12 @@ fn detect_local_spellings(input: &SweepInput, graph: &Graph<'_>, report: &mut Sw
                         reference.spelling
                     ),
                     format!(
-                        "`[[{}]]` names domain `{}`, a name only this machine uses; the domain's \
+                        "`{written}` names domain `{}`, a name only this machine uses; the domain's \
                          name is `{canonical}`",
-                        reference.raw, reference.spelling
+                        reference.spelling
                     ),
                     format!(
-                        "edit_engram with operation find_replace, find_text \"[[{}]]\" and content \"[[{new_raw}]]\"",
-                        reference.raw
+                        "edit_engram with operation find_replace, find_text \"{written}\" and content \"{respelled}\""
                     ),
                 )
                 .at_line((reference.line > 0).then_some(reference.line))
@@ -2793,7 +2800,11 @@ fn detect_unresolved(input: &SweepInput, graph: &Graph<'_>, report: &mut SweepRe
                         reference.rel_type, fact.domain, reference.raw
                     ),
                     Class::Judgment,
-                    format!("[[{}]] -> [[{candidate}]]", reference.raw),
+                    format!(
+                        "{} -> {}",
+                        bracketed(&reference.raw, reference.alias.as_deref()),
+                        bracketed(&candidate, reference.alias.as_deref())
+                    ),
                 ),
                 None => (
                     format!(
@@ -2845,9 +2856,16 @@ fn detect_unresolved(input: &SweepInput, graph: &Graph<'_>, report: &mut SweepRe
                         // occur in the engram, so a literal replace finds
                         // nothing; a right side without it silently repoints
                         // the reference at the writing engram's own domain.
+                        // A display text rides along on both sides for the
+                        // same reason: it is part of the text the file holds,
+                        // and the author's words for a reader.
                         format!(
-                            "[[{written}]] -> [[{}]]",
-                            prefixed(reference.target_domain.as_deref(), &candidate)
+                            "{} -> {}",
+                            bracketed(written, reference.alias.as_deref()),
+                            bracketed(
+                                &prefixed(reference.target_domain.as_deref(), &candidate),
+                                reference.alias.as_deref()
+                            )
                         ),
                     ),
                     None => (
@@ -2886,6 +2904,16 @@ fn prefixed(domain: Option<&str>, target: &str) -> String {
     match domain {
         Some(domain) => format!("{domain}:{target}"),
         None => target.to_string(),
+    }
+}
+
+/// A reference written back as the file holds it: `[[text]]`, or
+/// `[[text|alias]]` for a reference with display text. A repair quotes both of
+/// its sides through this, so the left side is text that occurs in the engram.
+fn bracketed(text: &str, alias: Option<&str>) -> String {
+    match alias {
+        Some(alias) => format!("[[{text}|{alias}]]"),
+        None => format!("[[{text}]]"),
     }
 }
 

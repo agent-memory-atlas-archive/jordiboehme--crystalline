@@ -1240,6 +1240,7 @@ fn unresolved_ref_from_row(r: &PgRow) -> UnresolvedRef {
         // A row written before `to_raw` existed reads as an empty string, which
         // the repair treats as "nothing extra to score" rather than as a match.
         raw: cell_text(r, 7).unwrap_or_default(),
+        alias: cell_text(r, 8),
         // The parser writes 0 when it has no line to report, which the sweep
         // reads as "no line" rather than as line zero.
         line: cell_i64(r, 5).filter(|l| *l > 0).map(|l| l as usize),
@@ -1714,15 +1715,16 @@ pub fn folder_level_sql(rel: &str, under: &str) -> String {
 #[doc(hidden)]
 pub fn unresolved_refs_sql(src_screen: &str, rel_pending: &str, link_pending: &str) -> String {
     format!(
-        "SELECT u.engram_id, u.kind, u.rel_type, u.to_domain, u.to_target, u.line, u.path, u.to_raw \
+        "SELECT u.engram_id, u.kind, u.rel_type, u.to_domain, u.to_target, u.line, u.path, u.to_raw, \
+                u.to_alias \
          FROM ( \
            SELECT r.engram_id, 0::int8 AS kind, r.rel_type, r.to_domain, r.to_target, \
-                  r.line, e.path, r.to_raw \
+                  r.line, e.path, r.to_raw, r.to_alias \
            FROM relation r JOIN engram e ON e.id=r.engram_id \
            WHERE {src_screen} AND {rel_pending} AND r.domain_id=$1 \
            UNION ALL \
            SELECT l.engram_id, 1::int8, 'links_to', l.to_domain, l.to_target, l.line, e.path, \
-                  l.to_raw \
+                  l.to_raw, l.to_alias \
            FROM link l JOIN engram e ON e.id=l.engram_id \
            WHERE {src_screen} AND {link_pending} AND l.domain_id=$1 \
          ) u \
@@ -2154,6 +2156,7 @@ impl Store for PostgresStore {
                         line: cell_i64(r, 1).unwrap_or(0).max(0) as usize,
                         spelling: cell_text(r, 2).unwrap_or_default(),
                         raw: cell_text(r, 3).unwrap_or_default(),
+                        alias: cell_text(r, 5),
                     },
                 )
             })
@@ -5314,7 +5317,7 @@ impl PostgresStore {
         }
 
         for batch in record.relations.chunks(INSERT_CHUNK) {
-            let mut params: Vec<Param> = Vec::with_capacity(batch.len() * 7);
+            let mut params: Vec<Param> = Vec::with_capacity(batch.len() * 8);
             for rel in batch {
                 params.push(Param::Int(engram_id));
                 params.push(Param::Int(domain.0));
@@ -5323,16 +5326,17 @@ impl PostgresStore {
                 params.push(Param::Text(rel.to_target.clone()));
                 params.push(Param::TextOpt(rel.to_domain.clone()));
                 params.push(Param::Text(rel.to_raw.clone()));
+                params.push(Param::TextOpt(rel.to_alias.clone()));
             }
             let sql = format!(
-                "INSERT INTO relation(engram_id, domain_id, line, rel_type, to_target, to_domain, to_raw, to_id) VALUES {}",
-                value_rows(7, batch.len(), Some("NULL"))
+                "INSERT INTO relation(engram_id, domain_id, line, rel_type, to_target, to_domain, to_raw, to_alias, to_id) VALUES {}",
+                value_rows(8, batch.len(), Some("NULL"))
             );
             exec(&mut *c, &sql, params).await?;
         }
 
         for batch in record.links.chunks(INSERT_CHUNK) {
-            let mut params: Vec<Param> = Vec::with_capacity(batch.len() * 6);
+            let mut params: Vec<Param> = Vec::with_capacity(batch.len() * 7);
             for link in batch {
                 params.push(Param::Int(engram_id));
                 params.push(Param::Int(domain.0));
@@ -5340,10 +5344,11 @@ impl PostgresStore {
                 params.push(Param::Text(link.to_target.clone()));
                 params.push(Param::TextOpt(link.to_domain.clone()));
                 params.push(Param::Text(link.to_raw.clone()));
+                params.push(Param::TextOpt(link.to_alias.clone()));
             }
             let sql = format!(
-                "INSERT INTO link(engram_id, domain_id, line, to_target, to_domain, to_raw, to_id) VALUES {}",
-                value_rows(6, batch.len(), Some("NULL"))
+                "INSERT INTO link(engram_id, domain_id, line, to_target, to_domain, to_raw, to_alias, to_id) VALUES {}",
+                value_rows(7, batch.len(), Some("NULL"))
             );
             exec(&mut *c, &sql, params).await?;
         }

@@ -151,6 +151,11 @@ pub const MIGRATIONS: &[Migration] = &[
         label: "domain host move",
         sql: SCHEMA_V25,
     },
+    Migration {
+        version: 26,
+        label: "wikilink display text",
+        sql: SCHEMA_V26,
+    },
 ];
 
 // The whole current schema in one step. The temporal columns stay TEXT ISO
@@ -759,6 +764,16 @@ const SCHEMA_V25: &str = r#"
 ALTER TABLE domain ADD COLUMN IF NOT EXISTS last_host_id TEXT;
 ALTER TABLE domain ADD COLUMN IF NOT EXISTS last_host_label TEXT;
 ALTER TABLE domain ADD COLUMN IF NOT EXISTS host_move TEXT;
+"#;
+
+// The display text of a `[[target|text]]` reference, beside `to_raw`, so the
+// sweep can quote a repair with the bracket text exactly as the file holds
+// it. NULL for a reference without one. Nullable, no default, no backfill:
+// the parse generation moved in the same release, so every engram is parsed
+// again and its rows are written with the column filled.
+const SCHEMA_V26: &str = r#"
+ALTER TABLE relation ADD COLUMN IF NOT EXISTS to_alias TEXT;
+ALTER TABLE link ADD COLUMN IF NOT EXISTS to_alias TEXT;
 "#;
 
 const SCHEMA_V8: &str = r#"

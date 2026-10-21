@@ -10,6 +10,7 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+mod aliased_links;
 mod collaboration;
 mod configure;
 mod contradictions;

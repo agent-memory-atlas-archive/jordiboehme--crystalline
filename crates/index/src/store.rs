@@ -417,11 +417,11 @@ pub fn referencing_domains_sql(list: &str) -> String {
 #[doc(hidden)]
 pub fn spelled_references_sql(domain: &str, list: &str) -> String {
     format!(
-        "SELECT r.engram_id, r.line, r.to_domain, r.to_raw, e.path \
+        "SELECT r.engram_id, r.line, r.to_domain, r.to_raw, e.path, r.to_alias \
          FROM relation r JOIN engram e ON e.id=r.engram_id \
          WHERE r.to_domain IS NOT NULL AND r.to_domain IN ({list}) AND r.domain_id={domain} AND e.actor = '' \
          UNION ALL \
-         SELECT l.engram_id, l.line, l.to_domain, l.to_raw, e.path \
+         SELECT l.engram_id, l.line, l.to_domain, l.to_raw, e.path, l.to_alias \
          FROM link l JOIN engram e ON e.id=l.engram_id \
          WHERE l.to_domain IS NOT NULL AND l.to_domain IN ({list}) AND l.domain_id={domain} AND e.actor = ''"
     )
@@ -693,6 +693,9 @@ pub struct RelationRecord {
     /// that can - `to_domain` and `to_target` have by then lost the whitespace
     /// the colon was trimmed around.
     pub to_raw: String,
+    /// The display text of a `[[target|text]]` reference, `None` without one.
+    /// Only read to quote the bracket text as the file holds it.
+    pub to_alias: Option<String>,
 }
 
 /// One prose wikilink, treated as a direct link edge.
@@ -713,6 +716,9 @@ pub struct LinkRecord {
     /// that can - `to_domain` and `to_target` have by then lost the whitespace
     /// the colon was trimmed around.
     pub to_raw: String,
+    /// The display text of a `[[target|text]]` reference, `None` without one.
+    /// Only read to quote the bracket text as the file holds it.
+    pub to_alias: Option<String>,
 }
 
 /// A fully prepared engram row plus its child rows and file stamp. Built from a
@@ -812,6 +818,7 @@ impl EngramRecord {
                 to_target: r.target.stored_target(path),
                 to_domain: r.target.domain.clone(),
                 to_raw: r.target.raw.clone(),
+                to_alias: r.target.alias.clone(),
             })
             .collect();
         let links = engram
@@ -822,6 +829,7 @@ impl EngramRecord {
                 to_target: l.target.stored_target(path),
                 to_domain: l.target.domain.clone(),
                 to_raw: l.target.raw.clone(),
+                to_alias: l.target.alias.clone(),
             })
             .collect();
 

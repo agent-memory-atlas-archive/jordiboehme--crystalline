@@ -338,6 +338,7 @@ fn v004_distinguishes_a_missing_relation_from_an_unresolved_one() {
         target_domain: None,
         target: "Newer Checklist".to_string(),
         raw: "Newer Checklist".to_string(),
+        alias: None,
         line: Some(7),
     }];
 
@@ -767,6 +768,7 @@ fn v102_is_mechanical_only_with_a_near_exact_candidate() {
             target_domain: None,
             target: "Deployment Pipline Runbook".to_string(),
             raw: "Deployment Pipline Runbook".to_string(),
+            alias: None,
             line: Some(12),
         },
         UnresolvedRef {
@@ -776,6 +778,7 @@ fn v102_is_mechanical_only_with_a_near_exact_candidate() {
             target_domain: None,
             target: "Nothing Like That At All".to_string(),
             raw: "Nothing Like That At All".to_string(),
+            alias: None,
             line: Some(14),
         },
     ];
@@ -817,6 +820,7 @@ fn v102_names_an_unregistered_target_domain() {
         target_domain: Some("archive".to_string()),
         target: "Old Notes".to_string(),
         raw: "archive:Old Notes".to_string(),
+        alias: None,
         line: None,
     }];
 
@@ -881,6 +885,42 @@ fn v102_repairs_a_plain_typo_without_inventing_a_prefix() {
     let finding = only(&detect(&sweep), "V102");
     assert_eq!(finding.fix, "[[Release Checklst]] -> [[Release Checklist]]");
     assert_eq!(finding.class, Class::Mechanical);
+}
+
+/// A link with display text is quoted with it on both sides: the left side is
+/// the bracket text the file holds, and the right side keeps the author's
+/// words for a reader.
+#[test]
+fn v102_quotes_an_aliased_link_exactly() {
+    let mut target = fact(1, "release-checklist");
+    target.title = "Release Checklist".to_string();
+    let mut sweep = input(vec![target, fact(2, "runbook")]);
+    let mut reference = unresolved(2, "Release Checklst");
+    reference.alias = Some("the list".to_string());
+    sweep.unresolved = vec![reference];
+
+    let finding = only(&detect(&sweep), "V102");
+    assert_eq!(
+        finding.fix,
+        "[[Release Checklst|the list]] -> [[Release Checklist|the list]]"
+    );
+    assert_eq!(finding.class, Class::Mechanical);
+
+    // The unregistered-prefix arm quotes it the same way.
+    let mut target = fact(1, "incident-response-checklist");
+    target.title = "Incident Response Checklist".to_string();
+    let mut sweep = input(vec![target, fact(2, "writer")]);
+    let mut reference = unresolved(2, "Incident Response Checklist");
+    reference.target_domain = Some("ops".to_string());
+    reference.raw = "ops:Incident Response Checklist".to_string();
+    reference.alias = Some("the checklist".to_string());
+    sweep.unresolved = vec![reference];
+    let finding = only(&detect(&sweep), "V102");
+    assert_eq!(
+        finding.fix,
+        "[[ops:Incident Response Checklist|the checklist]] -> \
+         [[Incident Response Checklist|the checklist]]"
+    );
 }
 
 /// A cross-domain reference into a domain the author means to register is not a
@@ -3008,6 +3048,7 @@ fn unresolved(from: i64, target: &str) -> UnresolvedRef {
         // The bracket text and the target are the same string when no prefix
         // was written, which is what an unprefixed link actually stores.
         raw: target.to_string(),
+        alias: None,
         line: Some(3),
     }
 }
@@ -3126,7 +3167,32 @@ fn spelled(from: i64, spelling: &str, target: &str) -> SpelledRef {
         line: 7,
         spelling: spelling.to_string(),
         raw: format!("{spelling}:{target}"),
+        alias: None,
     }
+}
+
+/// A link with display text is quoted with it on both sides of the repair:
+/// the left side is the text the file holds, and following the fix keeps
+/// what the author wrote for a reader.
+#[test]
+fn v110_quotes_an_aliased_link_exactly() {
+    let mut sweep = input(vec![fact(1, "link-holder")]);
+    sweep.respell = vec![("eng-knowledge".to_string(), "eng".to_string())];
+    let mut reference = spelled(1, "eng-knowledge", "a");
+    reference.alias = Some("the a".to_string());
+    sweep.spelled_refs = vec![reference];
+
+    let finding = only(&detect(&sweep), "V110");
+    assert_eq!(
+        finding.fix,
+        "edit_engram with operation find_replace, find_text \"[[eng-knowledge:a|the a]]\" and \
+         content \"[[eng:a|the a]]\""
+    );
+    assert_eq!(
+        finding.evidence,
+        "`[[eng-knowledge:a|the a]]` names domain `eng-knowledge`, a name only this machine \
+         uses; the domain's name is `eng`"
+    );
 }
 
 #[test]

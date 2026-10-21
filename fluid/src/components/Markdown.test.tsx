@@ -26,7 +26,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import { REVEAL_EVENT } from "../markdown/callouts";
 import { ThemeProvider } from "../theme/ThemeProvider";
+import { readEngramDetail } from "../api/engram";
+import { readGraph } from "../api/graph";
 import type { WikilinkResolver } from "../wikilinks";
+import { buildWikilinkResolver } from "../wikilinks";
 import { Markdown } from "./Markdown";
 
 // Mermaid draws nothing under jsdom - it measures text through layout this
@@ -532,13 +535,42 @@ describe("the markdown renderer", () => {
   });
 
   it("shows the display text of a wikilink as the link", async () => {
-    await renderMarkdown(
-      "See [[Alpha|the first one]] for the rest.",
-      (inner) =>
-        inner.startsWith("Alpha|")
-          ? { kind: "resolved", href: "/d/eng/e/alpha", label: "Alpha" }
-          : null,
+    // The real resolver, so the label the page shows is the one it builds.
+    const resolve = buildWikilinkResolver(
+      readEngramDetail(
+        {
+          domain: "eng",
+          permalink: "home",
+          title: "Home",
+          content: "",
+          links: [
+            {
+              line: 1,
+              resolved: true,
+              target: { domain: null, target: "Alpha" },
+            },
+          ],
+          relations: [],
+        },
+        "eng",
+        "home",
+      ),
+      readGraph({
+        nodes: [
+          {
+            id: 1,
+            domain: "eng",
+            permalink: "alpha",
+            title: "Alpha",
+            status: "stable",
+            type: "engram",
+          },
+        ],
+        edges: [],
+        truncated: false,
+      }),
     );
+    await renderMarkdown("See [[Alpha|the first one]] for the rest.", resolve);
 
     const link = screen.getByRole("link", { name: "the first one" });
     expect(link).toHaveAttribute("href", "/d/eng/e/alpha");

@@ -84,12 +84,7 @@ import { keepWithNext } from "../markdown/keepWithNext";
 import { remarkTaskState } from "../markdown/taskState";
 import { printUrl } from "../printUrl";
 import { SOURCE_ATTR, spanPieces } from "../reflectionQuotes";
-import {
-  WIKILINK,
-  parseWikiTarget,
-  referenceState,
-  wikilinkWords,
-} from "../wikilinks";
+import { WIKILINK, referenceState, wikilinkWords } from "../wikilinks";
 import type { WikilinkResolution, WikilinkResolver } from "../wikilinks";
 import Callout from "./Callout";
 import CopyCode from "./CopyCode";
@@ -266,7 +261,7 @@ function split(text: string, resolve: WikilinkResolver): HastNode[] {
     if (match.index > taken) {
       parts.push({ type: "text", value: text.slice(taken, match.index) });
     }
-    parts.push(element(resolution, match[0], target));
+    parts.push(element(resolution, match[0]));
     taken = match.index + match[0].length;
   }
   if (taken === 0) {
@@ -279,25 +274,16 @@ function split(text: string, resolve: WikilinkResolver): HastNode[] {
 }
 
 /** The element one recognized wikilink becomes. */
-function element(
-  resolution: WikilinkResolution,
-  literal: string,
-  inner: string,
-): HastNode {
+function element(resolution: WikilinkResolution, literal: string): HastNode {
   if (resolution.kind === "resolved") {
     return {
       type: "element",
       tagName: "a",
       properties: { href: resolution.href, [WIKILINK_MARKER]: "resolved" },
       // The label rather than the literal: the brackets were the source's way
-      // of marking a reference, and a link marks it now. The author's display
-      // text (`[[a|b]]`) wins over the label.
-      children: [
-        {
-          type: "text",
-          value: parseWikiTarget(inner).alias ?? resolution.label,
-        },
-      ],
+      // of marking a reference, and a link marks it now. The resolver already
+      // made the author's display text (`[[a|b]]`) the label.
+      children: [{ type: "text", value: resolution.label }],
     };
   }
   return {
