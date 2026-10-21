@@ -529,9 +529,15 @@ impl Engine {
             permalink: Option<String>,
         }
 
+        // A reference that bound by path: a relative link, or a bare wikilink
+        // spelled as a file path (`[[pumps/p-12.md]]`), which the index's path
+        // arm binds the same way. A permalink never ends in `.md`, so a stored
+        // target that does is a path. A prefixed wikilink is left out: its path
+        // is in another domain, which the lookup below does not read.
         let landed = |resolved: bool, target: &LinkTarget| -> Option<String> {
-            (resolved && target.form == LinkForm::Relative)
-                .then(|| target.stored_target(&desc.path))
+            let by_path = target.form == LinkForm::Relative
+                || (target.domain.is_none() && target.target.to_ascii_lowercase().ends_with(".md"));
+            (resolved && by_path).then(|| target.stored_target(&desc.path))
         };
         let mut relations: Vec<RelationOut> = engram
             .relations
@@ -561,7 +567,9 @@ impl Engine {
             })
             .collect();
         // The paths above become the permalinks of the engrams at them, one
-        // lookup per distinct path.
+        // lookup per distinct path. The permalink is a convenience for the
+        // reader, so a lookup that fails leaves it out rather than failing
+        // the read.
         let paths: BTreeSet<String> = relations
             .iter()
             .filter_map(|r| r.permalink.clone())
@@ -571,12 +579,18 @@ impl Engine {
             let mut at: HashMap<String, String> = HashMap::new();
             let store = self.store.lock().await;
             for path in paths {
-                if let Some(found) = store
-                    .list_engrams(&desc.domain, Some(&path), None)
-                    .await?
-                    .into_iter()
-                    .find(|found| found.path == path)
-                {
+                let found = match store.list_engrams(&desc.domain, Some(&path), None).await {
+                    Ok(rows) => rows.into_iter().find(|found| found.path == path),
+                    Err(e) => {
+                        tracing::debug!(
+                            domain = desc.domain.as_str(),
+                            path = path.as_str(),
+                            "a linked engram's permalink could not be looked up: {e}"
+                        );
+                        None
+                    }
+                };
+                if let Some(found) = found {
                     at.insert(path, found.permalink);
                 }
             }

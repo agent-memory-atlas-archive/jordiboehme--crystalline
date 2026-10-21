@@ -28,6 +28,12 @@
 //! unchanged - the index never read a reference out of it either. The walker
 //! itself (`rewrite_body_lines`) is shared with every other kind of document
 //! that rewrites links; a dialect decides which lines can hold its links.
+//!
+//! A relative Markdown link to another engram's file (`[p](../pumps/p.md)`)
+//! names a path, not an address, so it follows the file rather than the
+//! address: [`respell_relative_links`] rewrites the links to a file that
+//! moved inside its domain, and [`rebase_relative_links`] rebases the moved
+//! engram's own relative links onto its new folder.
 
 use crate::address::SCHEME;
 use crate::engram::LinkTarget;
@@ -421,9 +427,93 @@ fn respell_wikilink(
     Some(format!("{leading}{new_domain}{trailing}{rest}"))
 }
 
+/// Rewrite the relative links in the engram at the domain-relative
+/// `source_path` that land on the file `from` so they land on `to`, both
+/// domain-relative paths in the same domain. Each new target is spelled from
+/// the folder of `source_path`; a `#fragment` and a title stay as written.
+/// Only the links the parser reads as links to another engram's file are
+/// touched (a target ending in `.md`, not an image, outside code), in the
+/// body as the lossless engram parser cuts it.
+pub fn respell_relative_links(
+    source: &str,
+    source_path: &str,
+    from: &str,
+    to: &str,
+) -> (String, usize) {
+    use crate::reflection::links::{map_note_links, relative_to, resolve};
+    map_note_links(source, &|target| {
+        (resolve(source_path, target).as_deref() == Some(from))
+            .then(|| relative_to(source_path, to))
+    })
+}
+
+/// Rebase the relative links of an engram that moved from the
+/// domain-relative path `from` to `to` inside its domain, so each lands on the
+/// file it landed on before. A link to the engram itself follows it to `to`.
+/// A link that climbs out of the domain, and an `assets/` path (domain-root
+/// relative, so a move inside the domain leaves it valid), stay as written,
+/// as does every link that is not a link to another engram's file.
+pub fn rebase_relative_links(source: &str, from: &str, to: &str) -> (String, usize) {
+    use crate::reflection::links::{map_note_links, relative_to, resolve};
+    map_note_links(source, &|target| {
+        if crate::is_under_assets(target) {
+            return None;
+        }
+        let landed = resolve(from, target).filter(|path| !path.is_empty())?;
+        let landed = if landed == from { to } else { landed.as_str() };
+        let rebased = relative_to(to, landed);
+        (rebased != target.trim_start_matches("./")).then_some(rebased)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ENGRAM_HEAD: &str =
+        "---\ntype: engram\ntitle: B\npermalink: b\nstatus: stable\n---\n\n# B\n\n";
+
+    #[test]
+    fn relative_links_to_a_moved_file_are_respelled_from_the_linker() {
+        let source = format!(
+            "{ENGRAM_HEAD}- part_of [p](../pumps/p.md \"P\")\n\nSee [p](../pumps/p.md#top), \
+             ![p](../pumps/p.md), `[p](../pumps/p.md)` and [q](../pumps/q.md).\n\n\
+             ```\n[p](../pumps/p.md)\n```\n"
+        );
+        let (out, n) = respell_relative_links(&source, "deep/a.md", "pumps/p.md", "archive/p.md");
+        assert_eq!(n, 2, "{out}");
+        assert!(
+            out.contains("- part_of [p](../archive/p.md \"P\")\n"),
+            "{out}"
+        );
+        assert!(out.contains("See [p](../archive/p.md#top), ![p](../pumps/p.md), `[p](../pumps/p.md)` and [q](../pumps/q.md)."), "{out}");
+        assert!(out.contains("```\n[p](../pumps/p.md)\n```"), "{out}");
+        assert!(out.starts_with(ENGRAM_HEAD), "{out}");
+    }
+
+    #[test]
+    fn a_moved_engrams_own_relative_links_are_rebased() {
+        let source = format!(
+            "{ENGRAM_HEAD}[a](../a.md) [peer](./peer.md) [me](b.md) [out](../../x.md) \
+             [file](assets/n.md) [web](https://x.test/a.md) ![pic](../pic.md)\n"
+        );
+        let (out, n) = rebase_relative_links(&source, "pumps/b.md", "archive/old/b.md");
+        assert_eq!(n, 2, "{out}");
+        assert!(
+            out.ends_with(
+                "[a](../../a.md) [peer](../../pumps/peer.md) [me](b.md) [out](../../x.md) \
+                 [file](assets/n.md) [web](https://x.test/a.md) ![pic](../pic.md)\n"
+            ),
+            "{out}"
+        );
+        // Back to the root: the climb shortens, a same-folder link gains its folder.
+        let (out, n) = rebase_relative_links(&source, "pumps/b.md", "b.md");
+        assert_eq!(n, 2, "{out}");
+        assert!(
+            out.contains("[a](a.md) [peer](pumps/peer.md) [me](b.md)"),
+            "{out}"
+        );
+    }
 
     const SAME: Relink<'static> = Relink {
         from_domain: "eng",

@@ -585,7 +585,7 @@ fn push_prose_link(
 /// without the `#fragment` and the title. A link inside inline code and an
 /// image are not links to a note.
 fn relative_note_links(line: &str) -> Vec<(usize, String)> {
-    use crate::reflection::links::{code_spans, is_relative, read_destination};
+    use crate::reflection::links::{code_spans, read_destination};
 
     let spans = code_spans(line);
     let in_code = |at: usize| spans.iter().any(|(s, e)| (*s..*e).contains(&at));
@@ -595,20 +595,32 @@ fn relative_note_links(line: &str) -> Vec<(usize, String)> {
         let close_text = cursor + found;
         let open = close_text + 2;
         cursor = open;
-        let Some(start) = link_text_start(line, close_text) else {
+        if link_text_start(line, close_text).is_none() {
             continue;
-        };
+        }
         let Some(dest) = read_destination(line, open) else {
             continue;
         };
         cursor = dest.close;
-        let image = line[..start].ends_with('!');
-        let note = dest.path.to_ascii_lowercase().ends_with(".md");
-        if !image && note && is_relative(&dest.path) && !in_code(close_text) {
+        if let Some(start) = note_link_start(line, close_text, &dest.path)
+            && !in_code(close_text)
+        {
             out.push((start, dest.path));
         }
     }
     out
+}
+
+/// The byte offset of the `[` that opens a link to another engram's file,
+/// whose text closes at `close_text` and whose decoded destination is `path`:
+/// a relative path ending in `.md` in any case, and not an image. `None` for
+/// any other link. Whether the link sits in inline code is the caller's
+/// question.
+pub(crate) fn note_link_start(line: &str, close_text: usize, path: &str) -> Option<usize> {
+    let start = link_text_start(line, close_text)?;
+    let image = line[..start].ends_with('!');
+    let note = path.to_ascii_lowercase().ends_with(".md");
+    (!image && note && crate::reflection::links::is_relative(path)).then_some(start)
 }
 
 /// The byte offset of the `[` that opens the link text closed by the `]` at

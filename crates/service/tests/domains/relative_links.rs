@@ -159,3 +159,26 @@ async fn the_sweep_sees_relative_links_as_edges() {
     assert!(!fix.contains("[["), "{row}");
     assert!(fix.contains("../../old/plant.md"), "{row}");
 }
+
+/// A wikilink spelled as the target's file path binds by that path, as a
+/// relative link does, so the read reports the permalink it lands on too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wikilink_spelled_as_a_path_reports_its_permalink() {
+    let (tmp, engine) = fixture().await;
+    std::fs::write(
+        tmp.path().join("plant/wiki.md"),
+        note("Wiki", "wiki", "See [[pumps/p-12.md]] and [[Overview]]."),
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+
+    let v = read(&engine, "wiki").await;
+    let links = v["links"].as_array().unwrap();
+    assert_eq!(links.len(), 2, "{v}");
+    assert_eq!(links[0]["target"]["target"], "pumps/p-12.md");
+    assert_eq!(links[0]["resolved"], true, "{v}");
+    assert_eq!(links[0]["permalink"], "kit/pump-twelve", "{v}");
+    // A wikilink by title already names its target.
+    assert_eq!(links[1]["resolved"], true, "{v}");
+    assert!(links[1].get("permalink").is_none(), "{v}");
+}

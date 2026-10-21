@@ -195,12 +195,23 @@ pub(crate) fn decode_target(target: &str) -> (String, Option<&str>) {
     (percent_decode_target(&unescape_backslashes(path)), fragment)
 }
 
+/// Which relative links a line rewrite hands to its map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Targets {
+    /// Every relative link target: a reflection's links to pages and files.
+    All,
+    /// Only the links the engram parser reads as links to another engram's
+    /// file (`crate::parse`'s `note_link_start`): a target ending in `.md`,
+    /// never an image.
+    Notes,
+}
+
 /// One line of the reflection dialect: every relative link target outside
-/// inline code goes through `map`, which is handed the path (decoded, no
-/// title, no `#fragment`) and answers the replacement or `None` to keep it.
-/// A `](` that opens no destination is read past, so a later link on the
-/// line is still found.
-fn map_line(line: &str, map: &dyn Fn(&str) -> Option<String>) -> (String, usize) {
+/// inline code (of the kind `targets` names) goes through `map`, which is
+/// handed the path (decoded, no title, no `#fragment`) and answers the
+/// replacement or `None` to keep it. A `](` that opens no destination is
+/// read past, so a later link on the line is still found.
+fn map_line(line: &str, targets: Targets, map: &dyn Fn(&str) -> Option<String>) -> (String, usize) {
     let spans = code_spans(line);
     let in_code = |at: usize| spans.iter().any(|(s, e)| (*s..*e).contains(&at));
     let mut out = String::with_capacity(line.len());
@@ -213,7 +224,11 @@ fn map_line(line: &str, map: &dyn Fn(&str) -> Option<String>) -> (String, usize)
         let Some(dest) = read_destination(line, open) else {
             continue;
         };
-        let replacement = if in_code(open - 2) || !is_relative(&dest.path) {
+        let wanted = match targets {
+            Targets::All => is_relative(&dest.path),
+            Targets::Notes => crate::parse::note_link_start(line, open - 2, &dest.path).is_some(),
+        };
+        let replacement = if in_code(open - 2) || !wanted {
             None
         } else {
             map(&dest.path)
@@ -240,9 +255,29 @@ fn map_line(line: &str, map: &dyn Fn(&str) -> Option<String>) -> (String, usize)
 /// one walk every reflection link rewrite takes: the shared body walker with
 /// the reflection gate and dialect.
 pub(crate) fn map_links(source: &str, map: &dyn Fn(&str) -> Option<String>) -> (String, usize) {
-    rewrite_body_lines(source, BodyGate::Split, &|line| {
+    map_body(source, BodyGate::Split, Targets::All, map)
+}
+
+/// Rewrite the relative links of an engram that point at another engram's
+/// file through `map`: the body as the lossless engram parser cuts it, and
+/// only the links the parser reads as edges, so what changes is exactly what
+/// the index counted.
+pub(crate) fn map_note_links(
+    source: &str,
+    map: &dyn Fn(&str) -> Option<String>,
+) -> (String, usize) {
+    map_body(source, BodyGate::Lossless, Targets::Notes, map)
+}
+
+fn map_body(
+    source: &str,
+    gate: BodyGate,
+    targets: Targets,
+    map: &dyn Fn(&str) -> Option<String>,
+) -> (String, usize) {
+    rewrite_body_lines(source, gate, &|line| {
         if LinkDialect::Relative.may_hold(line) {
-            map_line(line, map)
+            map_line(line, targets, map)
         } else {
             (line.to_string(), 0)
         }

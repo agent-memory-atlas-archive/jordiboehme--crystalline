@@ -1187,6 +1187,51 @@ fn a_relative_link_is_checked_against_the_files_of_the_domain() {
     );
 }
 
+/// A wikilink spelled as a file path, `[[pumps/p-12.md]]`, binds by that
+/// path in the index, so verify judges it by the files of the domain too: a
+/// path that is there is sound, a path that is not is broken.
+#[test]
+fn a_wikilink_spelled_as_a_path_is_checked_against_the_files_of_the_domain() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().join("plant");
+    let fm = |title: &str, permalink: &str| {
+        format!(
+            "---\ntype: engram\ntitle: {title}\npermalink: {permalink}\ntags:\n- plant\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n# {title}\n\n"
+        )
+    };
+    write(
+        &root,
+        "MANIFEST.md",
+        "---\ntype: manifest\ntitle: MANIFEST\npermalink: manifest\ntags:\n- manifest\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n## Scope\n\n- Scope text here for the domain\n\n## When to Use\n\n- When testing\n",
+    );
+    write(
+        &root,
+        "pumps/p-12.md",
+        &format!(
+            "{}The big pump, with a motor and a seal in it.\n\nA second paragraph of prose, so the body clears the minimum line count.\n",
+            fm("P-12", "kit/pump-twelve")
+        ),
+    );
+    write(
+        &root,
+        "overview.md",
+        &format!(
+            "{}- has_part [[pumps/p-12.md]]\n\nSee [[pumps/p-12.md]] and [[pumps/gone.md]].\n\nA second paragraph of prose, so the body clears the minimum line count.\n",
+            fm("Overview", "start-here")
+        ),
+    );
+    let report = verify::verify_paths([root.as_path()], &VerifyOptions::default()).unwrap();
+    let links: Vec<(&str, &str)> = report
+        .issues
+        .iter()
+        .filter(|i| i.rule.starts_with('L'))
+        .map(|i| (i.rule, i.message.as_str()))
+        .collect();
+    assert_eq!(links.len(), 1, "{:#?}", report.issues);
+    assert_eq!(links[0].0, "L001", "{:#?}", report.issues);
+    assert!(links[0].1.contains("pumps/gone.md"), "{:#?}", report.issues);
+}
+
 /// A file that is not UTF-8 is reported under the encoding rule, `E006`, and
 /// the rest of the domain is still verified: it never aborts the scan.
 #[test]

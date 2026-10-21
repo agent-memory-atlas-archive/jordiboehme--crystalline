@@ -68,22 +68,25 @@ pub(crate) fn check(
         let own_permalink = effective_permalink(file, engram);
         let own_title = engram.frontmatter.title.trim().to_lowercase();
         let own_path = rel_path_of(file);
+        // A reference that binds by path: a relative link, or a bare wikilink
+        // spelled as one of the domain's files (`[[pumps/p-12.md]]`), which
+        // the index's path arm binds to that file the same way. A permalink
+        // never ends in `.md`, so such a spelling names nothing else.
+        let by_path = |t: &LinkTarget| {
+            t.form == LinkForm::Relative || (t.domain.is_none() && paths.contains(&t.target))
+        };
 
         for (target, line) in engram
             .links
             .iter()
             .map(|l| (&l.target, l.line))
             .chain(engram.relations.iter().map(|r| (&r.target, r.line)))
-            .filter(|(t, _)| t.form == LinkForm::Relative)
+            .filter(|(t, _)| by_path(t))
         {
             check_relative(file, target, line, &own_path, &paths, sink);
         }
 
-        for link in engram
-            .links
-            .iter()
-            .filter(|l| l.target.form == LinkForm::Wiki)
-        {
+        for link in engram.links.iter().filter(|l| !by_path(&l.target)) {
             check_target(
                 domain,
                 file,
@@ -96,11 +99,7 @@ pub(crate) fn check(
                 sink,
             );
         }
-        for rel in engram
-            .relations
-            .iter()
-            .filter(|r| r.target.form == LinkForm::Wiki)
-        {
+        for rel in engram.relations.iter().filter(|r| !by_path(&r.target)) {
             check_target(
                 domain,
                 file,
@@ -124,9 +123,10 @@ fn rel_path_of(file: &ScannedFile) -> String {
     file.rel_path.to_string_lossy().replace('\\', "/")
 }
 
-/// A relative link is judged by the file it lands on: one of the domain's
-/// files is sound (the file itself is a self-link, `L004`), anything else is
-/// broken (`L001`), including a path that climbs out of the domain.
+/// A reference that binds by path is judged by the file it lands on: one of
+/// the domain's files is sound (the file itself is a self-link, `L004`),
+/// anything else is broken (`L001`), including a path that climbs out of the
+/// domain.
 fn check_relative(
     file: &ScannedFile,
     target: &LinkTarget,

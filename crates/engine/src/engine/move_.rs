@@ -12,6 +12,19 @@ pub(super) struct Relinked {
     pub(super) live: bool,
 }
 
+/// An engram file that moved inside its domain. A relative Markdown link
+/// names a file, not an address, so the links to it follow the file whether
+/// or not its permalink changed.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Relocation<'a> {
+    /// The domain it moved inside.
+    pub(super) domain_id: DomainId,
+    /// Its domain-relative path before the move.
+    pub(super) from: &'a str,
+    /// Its domain-relative path after it.
+    pub(super) to: &'a str,
+}
+
 /// Name one linking page or engram a move could not rewrite, in the shape
 /// every move receipt's `links_failed` carries: `{ domain, path, reason }`.
 /// Shared by the engram move, the reflection move and the reflection file
@@ -225,6 +238,11 @@ impl Engine {
         // Whether the engram answers to a different address afterwards, which
         // is what every reference to it has to follow.
         let readdressed = cross || new_permalink != src.permalink;
+        // Whether its file moved inside the domain, which is what a relative
+        // link to it, and each of its own, has to follow. A move into another
+        // domain leaves relative links as they were: a relative path never
+        // reaches into another domain.
+        let relocated = !cross && dest_rel != src.path;
 
         // A move onto the MANIFEST writes the moved text as the MANIFEST, so it
         // meets the switch-on rule every MANIFEST writer meets (decision D10),
@@ -361,7 +379,12 @@ impl Engine {
         // Gather the referencing engrams before the move, while every bound
         // reference's `to_id` still points at the source row.
         let update_links = p.update_links.unwrap_or(true);
-        let linkers = if readdressed && update_links {
+        let relocation = (relocated && update_links).then_some(Relocation {
+            domain_id: src.domain_id,
+            from: &src.path,
+            to: &dest_rel,
+        });
+        let linkers = if (readdressed || relocated) && update_links {
             self.move_linkers(&src, &hidden).await?
         } else {
             Vec::new()
@@ -489,6 +512,7 @@ impl Engine {
             &dest_rel,
             &new_permalink,
             (readdressed && update_links).then_some(&spec),
+            relocation.as_ref(),
             &self.actor(client),
         )?;
 
@@ -794,7 +818,7 @@ impl Engine {
                 continue;
             }
             match self
-                .relink_engram(linker, &spec, &linker_actor, &hidden)
+                .relink_engram(linker, &spec, relocation.as_ref(), &linker_actor, &hidden)
                 .await
             {
                 Ok(Some(relinked)) => {
@@ -988,15 +1012,18 @@ impl Engine {
     /// own `permalink:` line, or the destination path's slug when it has none -
     /// is not `new_permalink`: that is what makes `"keep"` hold for an engram
     /// whose permalink was only ever path-derived, and what makes the new
-    /// address survive the next sync. And, when `relink` is given, the engram's
-    /// references to itself, which follow it like everybody else's. Either
-    /// change touches `generated` with the mover; `recorded_at` is never
-    /// touched, because the knowledge was not recorded again.
+    /// address survive the next sync. When `relink` is given, the engram's
+    /// references to itself, which follow it like everybody else's. And, when
+    /// `relocation` is given, its relative links, rebased onto its new folder
+    /// so each lands on the file it landed on before. Any change touches
+    /// `generated` with the mover; `recorded_at` is never touched, because the
+    /// knowledge was not recorded again.
     fn readdressed_text(
         original: &str,
         dest_rel: &str,
         new_permalink: &str,
         relink: Option<&Relink<'_>>,
+        relocation: Option<&Relocation<'_>>,
         mover: &str,
     ) -> Result<Option<String>> {
         let engram = parse_engram(original).map_err(|e| {
@@ -1016,6 +1043,9 @@ impl Engine {
         if let Some(spec) = relink {
             text =
                 crystalline_core::relink::relink(&text, spec.from_domain, spec.to_domain, spec).0;
+        }
+        if let Some(moved) = relocation {
+            text = crystalline_core::relink::rebase_relative_links(&text, moved.from, moved.to).0;
         }
         Ok((text != original).then(|| touch_generated(&text, mover, None, now_offset())))
     }
@@ -1189,6 +1219,7 @@ impl Engine {
         &self,
         linker: &MoveLinker,
         spec: &Relink<'_>,
+        relocation: Option<&Relocation<'_>>,
         actor: &str,
         hidden: &HashSet<String>,
     ) -> Result<Option<Relinked>> {
@@ -1205,7 +1236,7 @@ impl Engine {
                     break;
                 };
                 let Some((edited, references)) = self
-                    .relinked_text(&live.text, linker, spec, actor, hidden)
+                    .relinked_text(&live.text, linker, spec, relocation, actor, hidden)
                     .await
                 else {
                     // The room holds no such reference. When it saves, that
@@ -1266,8 +1297,9 @@ impl Engine {
                     path: abs.display().to_string(),
                     source,
                 })?;
-                let Some((replaced, count)) =
-                    self.relinked_text(&text, linker, spec, actor, hidden).await
+                let Some((replaced, count)) = self
+                    .relinked_text(&text, linker, spec, relocation, actor, hidden)
+                    .await
                 else {
                     return Ok(None);
                 };
@@ -1292,7 +1324,7 @@ impl Engine {
                     // pass below, as an edit compares them.
                     let expected = sha256_hex(stored.as_bytes());
                     let Some((replaced, count)) = self
-                        .relinked_text(&stored, linker, spec, actor, hidden)
+                        .relinked_text(&stored, linker, spec, relocation, actor, hidden)
                         .await
                     else {
                         return Ok(None);
@@ -1369,19 +1401,32 @@ impl Engine {
 
     /// The linker's text with the moved engram's references rewritten,
     /// stamped and normalized, and how many references changed; `None` when
-    /// none did.
+    /// none did. A relative link follows the file (`relocation`), and only in
+    /// the domain it moved inside, which is the only one a relative path can
+    /// reach it from.
     async fn relinked_text(
         &self,
         text: &str,
         linker: &MoveLinker,
         spec: &Relink<'_>,
+        relocation: Option<&Relocation<'_>>,
         actor: &str,
         hidden: &HashSet<String>,
     ) -> Option<(String, usize)> {
         // Rewritten as LF, the whole file, like every write.
         let text = crystalline_core::to_lf(text);
-        let (relinked, count) =
+        let (mut relinked, mut count) =
             crystalline_core::relink::relink(&text, &linker.domain, &linker.domain, spec);
+        if let Some(moved) = relocation.filter(|moved| moved.domain_id == linker.domain_id) {
+            let (respelled, respelled_count) = crystalline_core::relink::respell_relative_links(
+                &relinked,
+                &linker.path,
+                moved.from,
+                moved.to,
+            );
+            relinked = respelled;
+            count += respelled_count;
+        }
         if count == 0 {
             return None;
         }
