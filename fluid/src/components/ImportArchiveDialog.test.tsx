@@ -396,6 +396,57 @@ describe("importing an archive", () => {
     });
   });
 
+  it("lists the links it could not take, with the reason in words", async () => {
+    serve({
+      "/domains/eng/archive/preview": () => ({
+        ...previewReport(),
+        files_linked: 1,
+        not_taken: [
+          { note: "report.pdf.md", target: "missing.png", reason: "missing" },
+          { note: "report.pdf.md", target: "../up.png", reason: "outside" },
+          { note: "blob.md", target: "blob.bin", reason: "not_allowed" },
+          { note: "big.md", target: "big.png", reason: "too_large" },
+          { note: "odd.md", target: "....png", reason: "bad_name" },
+        ],
+      }),
+    });
+
+    const dialog = await openWithFile();
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Preview" }),
+    );
+
+    const table = await within(dialog).findByRole("table", {
+      name: "Not taken",
+    });
+    const reasonOf = (target: string): string =>
+      rowFor(table, target).querySelectorAll("td")[2]?.textContent ?? "";
+    expect(
+      within(rowFor(table, "missing.png")).getByText("report.pdf.md"),
+    ).toBeVisible();
+    expect(reasonOf("missing.png")).toBe("missing");
+    expect(reasonOf("../up.png")).toBe("outside the archive");
+    expect(reasonOf("blob.bin")).toBe("type not allowed");
+    expect(reasonOf("big.png")).toBe("too large");
+    expect(reasonOf("....png")).toBe("name cannot be used");
+  });
+
+  it("shows no not-taken list when every link was taken", async () => {
+    serve({ "/domains/eng/archive/preview": () => previewReport() });
+
+    const dialog = await openWithFile();
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Preview" }),
+    );
+    await within(dialog).findByRole("table", {
+      name: /what an import would do/i,
+    });
+
+    expect(
+      within(dialog).queryByRole("table", { name: "Not taken" }),
+    ).toBeNull();
+  });
+
   it("shows a hygiene refusal whole", async () => {
     serve({
       "/domains/eng/archive/preview": () => {

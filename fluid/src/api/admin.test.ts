@@ -1393,7 +1393,24 @@ describe("the admin client layer", () => {
       skipped: 0,
       invalid: 1,
       ignored: 0,
+      filesLinked: 0,
+      notTaken: [],
     });
+  });
+
+  it("reads the linked files and the links that were not taken", async () => {
+    apiMock.mockResolvedValueOnce({
+      ...PREVIEW_REPORT,
+      files_linked: 2,
+      not_taken: [
+        { note: "report.pdf.md", target: "missing.png", reason: "missing" },
+      ],
+    });
+    const report = await previewArchive("eng", new ArrayBuffer(4));
+    expect(report.filesLinked).toBe(2);
+    expect(report.notTaken).toEqual([
+      { note: "report.pdf.md", target: "missing.png", reason: "missing" },
+    ]);
   });
 
   it("carries the preview's own counters, and reads an absent one as none", async () => {

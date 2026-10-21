@@ -132,6 +132,32 @@ export type ArchiveEntryReport = {
 };
 
 /**
+ * A link from an archived note to a local file that was not taken in as an attachment, and why.
+ */
+export type ArchiveNotTaken = {
+    /**
+     * The path of the note that links the file.
+     */
+    note: string;
+    /**
+     * Why the file was not taken.
+     */
+    reason: ArchiveNotTakenReason;
+    /**
+     * The link target as the note names it, decoded, without a fragment.
+     */
+    target: string;
+};
+
+/**
+ * Why a linked file was not taken: `missing` (no such entry in the
+ * archive), `outside` (the link leaves the archive), `not_allowed` (not an
+ * attachment type), `too_large` (past the attachment size limit) or
+ * `bad_name` (no usable attachment name could be made from it).
+ */
+export type ArchiveNotTakenReason = 'missing' | 'outside' | 'not_allowed' | 'too_large' | 'bad_name';
+
+/**
  * The per-entry report of a preview or an import, with the counters a confirmation dialog summarizes. The counters are tallied from the entries above them, so the two can never disagree.
  */
 export type ArchiveReport = {
@@ -152,9 +178,14 @@ export type ArchiveReport = {
      */
     entries: Array<ArchiveEntryReport>;
     /**
+     * How many distinct files the notes link to were taken in as
+     * attachments. Each is listed in `entries` at its `assets/` path.
+     */
+    files_linked: number;
+    /**
      * Entries an archive may carry but a domain never imports: a MANIFEST, a
      * generated OKF index or log, anything that is neither markdown nor an
-     * attachment of an allowed type.
+     * attachment of an allowed type that a note links.
      */
     ignored: number;
     /**
@@ -167,6 +198,11 @@ export type ArchiveReport = {
      * Preview only: entries that would be created.
      */
     new: number;
+    /**
+     * Every link to a local file that was not taken, once per note and
+     * target. The link is left as it was written.
+     */
+    not_taken: Array<ArchiveNotTaken>;
     /**
      * Import only: entries an existing path or permalink held back.
      */

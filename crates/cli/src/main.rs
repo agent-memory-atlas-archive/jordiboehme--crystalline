@@ -1370,9 +1370,10 @@ enum DomainCommand {
         #[arg(long)]
         config: Option<PathBuf>,
     },
-    /// Load already-well-formed engram files into a virtual domain, verbatim.
-    /// Distinct from `crystalline import`, which converts a legacy tree into a
-    /// file domain's directory.
+    /// Load engram files into a virtual domain. A file that lacks a field a
+    /// reader needs is completed, as `crystalline import` does; the files the
+    /// notes link to are stored as attachments. Distinct from `crystalline
+    /// import`, which converts a legacy tree into a file domain's directory.
     Import {
         /// The source directory of engram `.md` files.
         path: PathBuf,
@@ -4506,7 +4507,7 @@ fn print_retag_preview(preview: &serde_json::Value) {
     }
 }
 
-/// `domain import`: verbatim load engram files into a virtual domain, over the
+/// `domain import`: load engram files into a virtual domain, over the
 /// daemon when one owns the index, else against a directly opened store.
 async fn domain_import_dispatch(
     domain: String,
@@ -4522,6 +4523,7 @@ async fn domain_import_dispatch(
         &path,
         overwrite,
         dry_run,
+        true,
         db.as_deref(),
         config.as_deref(),
     )

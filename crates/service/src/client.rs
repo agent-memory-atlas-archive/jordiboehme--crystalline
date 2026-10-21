@@ -1156,12 +1156,15 @@ pub async fn scaffold_virtual_manifest(
 }
 
 /// Import engram files into a virtual domain: over the daemon when one owns the
-/// index, else against a directly opened store.
+/// index, else against a directly opened store. `complete` completes notes
+/// that lack a field a reader needs; a move of Crystalline's own engrams
+/// passes `false` so nothing it moves is changed.
 pub async fn domain_import(
     domain: &str,
     src: &Path,
     overwrite: bool,
     dry_run: bool,
+    complete: bool,
     db: Option<&Path>,
     config_path: Option<&Path>,
 ) -> anyhow::Result<Value> {
@@ -1170,6 +1173,7 @@ pub async fn domain_import(
         && let Some(data) = ctl_if_running(json!({
             "v": 1, "cmd": "domain_import", "domain": domain,
             "path": src.display().to_string(), "overwrite": overwrite, "dry_run": dry_run,
+            "complete": complete,
         }))
         .await?
     {
@@ -1180,7 +1184,7 @@ pub async fn domain_import(
     let engine = open_standalone_reporting(loaded, &db_path, false, db, config_path).await?;
     let domain = localize_standalone(&engine, domain).await;
     Ok(engine
-        .import_domain(&domain, src, overwrite, dry_run)
+        .import_domain_with(&domain, src, overwrite, dry_run, complete)
         .await?)
 }
 

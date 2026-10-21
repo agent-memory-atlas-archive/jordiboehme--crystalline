@@ -724,6 +724,42 @@ pub fn complete_engram(source: &str, opts: &CompleteOptions) -> Result<Completed
     })
 }
 
+/// The text `domain import` and the archive upload store for one note: the
+/// note completed by [`complete_engram`] with the default type map, no
+/// prefix to strip and a missing status read as `stable`, or `None` when the
+/// note needs nothing and is kept byte for byte.
+///
+/// Both routes take files that are often Crystalline's own (an export, a
+/// backup), so a file that already carries everything a reader requires is
+/// not rewritten: adding write provenance alone, or a permalink that could
+/// not be derived, is no reason to change it. With no file date at hand a
+/// missing `recorded_at` becomes the day of `now`.
+pub fn complete_for_import(
+    source: &str,
+    rel_path: &str,
+    now: DateTime<FixedOffset>,
+) -> Result<Option<String>, ParseError> {
+    let type_map = default_type_map();
+    let completed = complete_engram(
+        source,
+        &CompleteOptions {
+            rel_path,
+            type_map: &type_map,
+            strip_prefix: "",
+            mtime: None,
+            now,
+            missing_status: MissingStatus::Stable,
+        },
+    )?;
+    let needed = completed.type_mapped
+        || completed.temporal_backfilled > 0
+        || completed.sentinels_dropped > 0
+        || completed.prefix_stripped
+        || completed.permalink_backfilled
+        || completed.tagged_imported;
+    Ok(needed.then(|| crate::to_lf(&emit_engram(&completed.engram)).into_owned()))
+}
+
 fn mtime_date(path: &Path) -> Option<NaiveDate> {
     let meta = std::fs::metadata(path).ok()?;
     let modified = meta.modified().ok()?;
@@ -1458,6 +1494,31 @@ mod tests {
         assert_eq!(r.engram.frontmatter.permalink, None);
         assert!(!r.permalink_backfilled);
         assert!(r.changes.iter().any(|c| c.starts_with("warning:")));
+    }
+
+    #[test]
+    fn a_file_that_needs_nothing_is_kept_as_it_is() {
+        // No `generated`, which completion would add, and keys in an order
+        // the emitter would not write: neither is a reason to rewrite it.
+        let source = "---\ntitle: Alpha\ntype: engram\npermalink: alpha\ntags:\n  - eng\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# Alpha\n";
+        let now = Utc::now().fixed_offset();
+        assert_eq!(complete_for_import(source, "alpha.md", now).unwrap(), None);
+    }
+
+    #[test]
+    fn a_converted_file_is_completed_for_import() {
+        let source = "---\ntype: document\ntitle: Report\n---\n\n# Report\n";
+        let now = Utc::now().fixed_offset();
+        let text = complete_for_import(source, "report.pdf.md", now)
+            .unwrap()
+            .expect("the file needs completing");
+        let engram = parse_engram(&text).unwrap();
+        let fm = &engram.frontmatter;
+        assert_eq!(fm.status.as_deref(), Some("stable"));
+        assert_eq!(fm.tags, vec![IMPORTED_TAG.to_string()]);
+        assert_eq!(fm.permalink.as_deref(), Some("report-pdf"));
+        assert_eq!(fm.recorded_at, Some(now.date_naive()));
+        assert!(fm.generated.is_some());
     }
 
     #[test]

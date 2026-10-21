@@ -363,7 +363,8 @@ async fn handle(req: &Value, shared: &Arc<Shared>) -> (Value, bool) {
                 Err(e) => (envelope_err(e.to_string()), false),
             }
         }
-        // Load engram files into a virtual domain verbatim.
+        // Load engram files into a virtual domain, completing them unless
+        // `complete` is false (a move of Crystalline's own engrams).
         "domain_import" => {
             let domain = req.get("domain").and_then(Value::as_str).unwrap_or("");
             let path = req.get("path").and_then(Value::as_str).unwrap_or("");
@@ -372,9 +373,16 @@ async fn handle(req: &Value, shared: &Arc<Shared>) -> (Value, bool) {
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             let dry_run = req.get("dry_run").and_then(Value::as_bool).unwrap_or(false);
+            let complete = req.get("complete").and_then(Value::as_bool).unwrap_or(true);
             match shared
                 .engine
-                .import_domain(domain, std::path::Path::new(path), overwrite, dry_run)
+                .import_domain_with(
+                    domain,
+                    std::path::Path::new(path),
+                    overwrite,
+                    dry_run,
+                    complete,
+                )
                 .await
             {
                 Ok(data) => (envelope_ok(data), false),

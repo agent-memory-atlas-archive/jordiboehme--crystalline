@@ -664,10 +664,12 @@ pub async fn merge_into(
                 report.registered.push(name.clone());
             }
             // Never overwrite: on both sides the real engrams win, and a new
-            // domain has nothing of its own yet.
+            // domain has nothing of its own yet. Never completed either: these
+            // are this person's own engrams, moved, not files from elsewhere.
             let imported = crystalline_service::domain_import(
                 &name,
                 &exported,
+                false,
                 false,
                 false,
                 None,

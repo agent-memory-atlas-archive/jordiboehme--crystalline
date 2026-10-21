@@ -4368,6 +4368,141 @@ async fn the_archive_round_trip_reproduces_the_files() {
     assert_eq!(detail["content"].as_str().unwrap(), ALPHA);
 }
 
+/// An archive of converted documents, each note beside its `<name>.assets/`
+/// folder and carrying only a type and a title: the notes are completed
+/// before they are verified, so none is refused for a missing permalink, tags
+/// or status; the pictures they link are stored under `assets/` and listed
+/// there instead of as ignored entries; a link to a file the archive lacks is
+/// reported as not taken, by the preview and the import alike.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_archive_with_rezzer_layout_is_accepted() {
+    let fx = serve(Options::default()).await;
+    let admin = login(fx.addr, "root", "rootpw").await;
+    let report_md = "---\ntype: document\ntitle: Report\n---\n\n# Report\n\n![p3](report.pdf.assets/page-3.png)\n\n![gone](missing.png)\n";
+    let memo_md = "---\ntype: document\ntitle: Memo\n---\n\n# Memo\n\nSee [the scan](memo.docx.assets/scan%201.png).\n";
+    let archive = zip_of_bytes(&[
+        ("report.pdf.md", report_md.as_bytes()),
+        ("report.pdf.assets/page-3.png", PNG),
+        ("memo.docx.md", memo_md.as_bytes()),
+        ("memo.docx.assets/scan 1.png", b"\x89PNG scan"),
+        ("readme.txt", b"no note links this"),
+    ]);
+
+    let entries_of = |report: &serde_json::Value| -> Vec<(String, String)> {
+        report["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e["path"].as_str().unwrap().to_string(),
+                    e["status"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+    let missing = serde_json::json!([{
+        "note": "report.pdf.md",
+        "target": "missing.png",
+        "reason": "missing",
+    }]);
+
+    let resp = post_zip(
+        fx.addr,
+        "/api/v1/domains/eng/archive/preview",
+        &admin,
+        archive.clone(),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let preview: serde_json::Value = resp.json().await.unwrap();
+    let mut listed = entries_of(&preview);
+    listed.sort();
+    assert_eq!(
+        listed,
+        vec![
+            ("assets/memo.docx/scan-1.png".to_string(), "new".to_string()),
+            (
+                "assets/report.pdf/page-3.png".to_string(),
+                "new".to_string()
+            ),
+            ("memo.docx.md".to_string(), "new".to_string()),
+            ("readme.txt".to_string(), "ignored".to_string()),
+            ("report.pdf.md".to_string(), "new".to_string()),
+        ],
+        "{preview}"
+    );
+    assert_eq!(preview["invalid"], 0, "{preview}");
+    assert_eq!(preview["files_linked"], 2, "{preview}");
+    assert_eq!(preview["not_taken"], missing, "{preview}");
+    let no_completion_error = |report: &serde_json::Value| {
+        report["entries"].as_array().unwrap().iter().all(|e| {
+            e["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|f| !matches!(f["rule"].as_str(), Some("E002" | "E004" | "T001")))
+        })
+    };
+    assert!(no_completion_error(&preview), "{preview}");
+
+    let resp = post_zip(
+        fx.addr,
+        "/api/v1/domains/eng/archive/import",
+        &admin,
+        archive,
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let done: serde_json::Value = resp.json().await.unwrap();
+    let mut listed = entries_of(&done);
+    listed.sort();
+    assert_eq!(
+        listed,
+        vec![
+            (
+                "assets/memo.docx/scan-1.png".to_string(),
+                "created".to_string()
+            ),
+            (
+                "assets/report.pdf/page-3.png".to_string(),
+                "created".to_string()
+            ),
+            ("memo.docx.md".to_string(), "created".to_string()),
+            ("readme.txt".to_string(), "ignored".to_string()),
+            ("report.pdf.md".to_string(), "created".to_string()),
+        ],
+        "{done}"
+    );
+    assert_eq!(done["written"], 4, "{done}");
+    assert_eq!(done["files_linked"], 2, "{done}");
+    assert_eq!(done["not_taken"], missing, "{done}");
+    assert!(no_completion_error(&done), "{done}");
+
+    assert_eq!(
+        get_attachment(fx.addr, "eng", "assets/report.pdf/page-3.png", &admin).await,
+        PNG
+    );
+    let detail = as_session(
+        fx.addr,
+        reqwest::Method::GET,
+        "/api/v1/domains/eng/engrams/report-pdf",
+        &admin,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(detail.status(), 200);
+    let detail: serde_json::Value = detail.json().await.unwrap();
+    let content = detail["content"].as_str().unwrap();
+    assert!(
+        content.contains("![p3](assets/report.pdf/page-3.png)"),
+        "{content}"
+    );
+    assert!(content.contains("status: stable"), "{content}");
+    assert!(content.contains("- imported"), "{content}");
+}
+
 /// An archive whose own MANIFEST keeps a Reflection never hands that
 /// Reflection's pages or files to the engram import: the archive's
 /// MANIFEST is dropped before the engine sees the batch, so the screen

@@ -1416,7 +1416,7 @@
           "domains"
         ],
         "summary": "Import an uploaded archive into a domain.",
-        "description": "Admin only. Runs the engine verb the preview dry-ran, so the outcome matches the report that was approved: entries land as `created` or `overwritten`, and `skipped`, `invalid` and `ignored` name everything that did not.\n\n`policy=skip` (the default) leaves an existing path alone; `policy=overwrite` replaces it. Overwrite is a same-path decision only - an entry whose permalink is held at another path is refused under either policy, since writing it would leave two files claiming one permalink.\n\nEntries under `assets/` are stored as attachments, through the same gates an upload to the file route passes, and follow the same same-path policy; a restored attachment marks the domain as owing a consolidation sweep, since it is a file the agent has not read yet.\n\nThe same hygiene the preview enforces applies here: a hostile archive is refused whole rather than partially imported.",
+        "description": "Admin only. Runs the engine verb the preview dry-ran, so the outcome matches the report that was approved: entries land as `created` or `overwritten`, and `skipped`, `invalid` and `ignored` name everything that did not.\n\n`policy=skip` (the default) leaves an existing path alone; `policy=overwrite` replaces it. Overwrite is a same-path decision only - an entry whose permalink is held at another path is refused under either policy, since writing it would leave two files claiming one permalink.\n\nEntries under `assets/` are stored as attachments, through the same gates an upload to the file route passes, and follow the same same-path policy; a restored attachment marks the domain as owing a consolidation sweep, since it is a file the agent has not read yet.\n\nMarkdown entries are completed and the files they link are stored as attachments, as the preview describes; a linked file whose bytes the domain already holds at its path is not written again.\n\nThe same hygiene the preview enforces applies here: a hostile archive is refused whole rather than partially imported.",
         "operationId": "import_domain_archive",
         "parameters": [
           {
@@ -1520,7 +1520,7 @@
           "domains"
         ],
         "summary": "Dry-run an archive upload: what each entry would become.",
-        "description": "Admin only. Takes the raw bytes of a zip and reports, per entry, what an import would do with it - `new`, `collides`, `invalid` or `ignored` - with the verify findings `POST /validate` would raise over that entry's markdown.\n\nEntries under `assets/` are attachments rather than engrams: they are reported with their byte count and screened by the attachment path rules, the extension allowlist and the size ceiling, each refusal naming which of the three answered; an attachment past the 10 MiB ceiling is refused on its own rather than refusing the archive.\n\nNothing is written. A hostile archive is refused whole with 422 rather than partially imported: more than 1000 entries, a markdown entry over 1 MiB or a whole archive over 200 MiB once decompressed, an entry name that is not UTF-8, or any path that could escape the domain root.",
+        "description": "Admin only. Takes the raw bytes of a zip and reports, per entry, what an import would do with it - `new`, `collides`, `invalid` or `ignored` - with the verify findings `POST /validate` would raise over that entry's markdown.\n\nEntries under `assets/` are attachments rather than engrams: they are reported with their byte count and screened by the attachment path rules, the extension allowlist and the size ceiling, each refusal naming which of the three answered; an attachment past the 10 MiB ceiling is refused on its own rather than refusing the archive.\n\nEach markdown entry is completed the way `crystalline import` completes a file before it is verified. A file of the archive outside `assets/` that a note links is listed at the `assets/` path it would be stored at, the link is rewritten to it, and every link that cannot be taken is listed in `not_taken`; a file no note links stays `ignored`.\n\nNothing is written. A hostile archive is refused whole with 422 rather than partially imported: more than 1000 entries, a markdown entry over 1 MiB or a whole archive over 200 MiB once decompressed, an entry name that is not UTF-8, or any path that could escape the domain root.",
         "operationId": "preview_domain_archive_import",
         "parameters": [
           {
@@ -11239,6 +11239,42 @@
           }
         }
       },
+      "ArchiveNotTaken": {
+        "type": "object",
+        "description": "A link from an archived note to a local file that was not taken in as an attachment, and why.",
+        "required": [
+          "note",
+          "target",
+          "reason"
+        ],
+        "properties": {
+          "note": {
+            "type": "string",
+            "description": "The path of the note that links the file.",
+            "example": "report.pdf.md"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/ArchiveNotTakenReason",
+            "description": "Why the file was not taken."
+          },
+          "target": {
+            "type": "string",
+            "description": "The link target as the note names it, decoded, without a fragment.",
+            "example": "missing.png"
+          }
+        }
+      },
+      "ArchiveNotTakenReason": {
+        "type": "string",
+        "description": "Why a linked file was not taken: `missing` (no such entry in the\narchive), `outside` (the link leaves the archive), `not_allowed` (not an\nattachment type), `too_large` (past the attachment size limit) or\n`bad_name` (no usable attachment name could be made from it).",
+        "enum": [
+          "missing",
+          "outside",
+          "not_allowed",
+          "too_large",
+          "bad_name"
+        ]
+      },
       "ArchiveReport": {
         "type": "object",
         "description": "The per-entry report of a preview or an import, with the counters a confirmation dialog summarizes. The counters are tallied from the entries above them, so the two can never disagree.",
@@ -11251,7 +11287,9 @@
           "written",
           "skipped",
           "invalid",
-          "ignored"
+          "ignored",
+          "files_linked",
+          "not_taken"
         ],
         "properties": {
           "collides": {
@@ -11275,9 +11313,14 @@
             },
             "description": "Every entry of the archive, in the order the archive holds them."
           },
+          "files_linked": {
+            "type": "integer",
+            "description": "How many distinct files the notes link to were taken in as\nattachments. Each is listed in `entries` at its `assets/` path.",
+            "minimum": 0
+          },
           "ignored": {
             "type": "integer",
-            "description": "Entries an archive may carry but a domain never imports: a MANIFEST, a\ngenerated OKF index or log, anything that is neither markdown nor an\nattachment of an allowed type.",
+            "description": "Entries an archive may carry but a domain never imports: a MANIFEST, a\ngenerated OKF index or log, anything that is neither markdown nor an\nattachment of an allowed type that a note links.",
             "minimum": 0
           },
           "invalid": {
@@ -11289,6 +11332,13 @@
             "type": "integer",
             "description": "Preview only: entries that would be created.",
             "minimum": 0
+          },
+          "not_taken": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ArchiveNotTaken"
+            },
+            "description": "Every link to a local file that was not taken, once per note and\ntarget. The link is left as it was written."
           },
           "skipped": {
             "type": "integer",

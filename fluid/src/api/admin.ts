@@ -1682,6 +1682,20 @@ export interface ArchiveReport {
   skipped: number;
   invalid: number;
   ignored: number;
+  /** How many distinct linked files were taken in as attachments. */
+  filesLinked: number;
+  /** Every link to a local file that was not taken, with its reason. */
+  notTaken: ArchiveNotTaken[];
+}
+
+/** One link a note makes to a file the import did not take in. */
+export interface ArchiveNotTaken {
+  /** The path of the note that links the file. */
+  note: string;
+  /** The link target as the note names it. */
+  target: string;
+  /** missing | outside | not_allowed | too_large | bad_name. */
+  reason: string;
 }
 
 /**
@@ -1720,6 +1734,13 @@ function readArchiveReport(report: ArchiveReportWire): ArchiveReport {
     skipped: report.skipped,
     invalid: report.invalid,
     ignored: report.ignored,
+    // A server from before linked files were taken carries neither field.
+    filesLinked: asCount(report.files_linked),
+    notTaken: (report.not_taken ?? []).map((item) => ({
+      note: item.note,
+      target: item.target,
+      reason: item.reason,
+    })),
   };
 }
 

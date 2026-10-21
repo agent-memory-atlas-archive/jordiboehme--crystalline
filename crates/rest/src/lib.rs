@@ -289,6 +289,8 @@ use crate::scope::{DomainAccess, DomainRight};
         domains_admin::ResolveBody,
         archive::ArchiveEntryReport,
         archive::ArchiveReport,
+        archive::ArchiveNotTaken,
+        archive::ArchiveNotTakenReason,
         files::AttachmentView,
         files::AttachmentsResponse,
         files::UploadedAttachment,

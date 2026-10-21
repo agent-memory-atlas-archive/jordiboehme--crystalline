@@ -24,4 +24,5 @@ mod metal_runtime;
 mod read_only_rows;
 mod toon_measurement;
 mod virtual_domains;
+mod virtual_import;
 mod visibility;
