@@ -55,17 +55,10 @@ impl Engine {
         let _fence = self.fence_joins().await;
         let state_dir = self.journal_state_dir()?;
         let nobody = || DomainAudience::Accounts(HashSet::new());
-        let pending = match RenameJournal::load(&state_dir).map_err(io_error)? {
-            // A respell of this domain for another name than the question
-            // asks about now: dropped, and a fresh one is written below.
-            Some(journal) if journal.respell_only && journal.old == local && journal.new != to => {
-                self.drop_respell_journal(&state_dir, &journal);
-                None
-            }
-            other => other,
-        };
-        if let Some(journal) = pending {
+        let mut pending = RenameJournal::load(&state_dir).map_err(io_error)?;
+        if let Some(journal) = pending.take() {
             if journal.respell_only && journal.old == local {
+                // Another index's journal is neither run nor dropped here.
                 if let Some(why) = self.foreign_journal(&journal, &state_dir).await? {
                     return Err(EngineError::Conflict(format!(
                         "the rename of '{local}' to '{to}' that has not finished belongs to \
@@ -78,11 +71,20 @@ impl Engine {
                         finish_elsewhere_hint(&journal)
                     )));
                 }
-                let _origins = self.lock_rename_origins(&journal).await;
-                return self
-                    .finish_rename(journal, &state_dir, false, nobody())
-                    .await;
+                if journal.new == to {
+                    let _origins = self.lock_rename_origins(&journal).await;
+                    return self
+                        .finish_rename(journal, &state_dir, false, nobody())
+                        .await;
+                }
+                // A respell for another name than the question asks about
+                // now: dropped, and a fresh one is written below.
+                self.drop_respell_journal(&state_dir, &journal);
+            } else {
+                pending = Some(journal);
             }
+        }
+        if let Some(journal) = pending {
             return Err(EngineError::Conflict(
                 if privacy_hidden.contains(&journal.old) || privacy_hidden.contains(&journal.new) {
                     "a rename is still finishing; try again in a moment".to_string()
@@ -273,8 +275,9 @@ impl Engine {
 
     /// Whether any engram's own text or any Reflection page here still
     /// spells a domain as one of `spellings`, counted with the rewrite a
-    /// respell to `to` applies. A domain whose pages cannot be read counts as
-    /// still spelling them, so nothing is closed on a guess.
+    /// respell to `to` applies. An engram that cannot be read, or a domain
+    /// whose pages cannot be, counts as still spelling them, so nothing is
+    /// closed on a guess.
     async fn spells_any(&self, spellings: &[String], to: &str) -> Result<bool> {
         if spellings.is_empty() {
             return Ok(false);
@@ -284,9 +287,12 @@ impl Engine {
             store.engrams_referencing_domains(spellings).await?
         };
         for (domain, path) in found {
-            if let Ok(Some((_, _, text))) = self.base_text(&domain, &path).await
-                && respell_old(&text, spellings, to, BodyGate::Lossless).1 > 0
-            {
+            // An engram the index names but that cannot be read counts as
+            // still spelling them, as an unreadable page set does.
+            let Ok(Some((_, _, text))) = self.base_text(&domain, &path).await else {
+                return Ok(true);
+            };
+            if respell_old(&text, spellings, to, BodyGate::Lossless).1 > 0 {
                 return Ok(true);
             }
         }
@@ -355,12 +361,34 @@ impl Engine {
         let Ok(Some(journal)) = RenameJournal::load(&state_dir) else {
             return;
         };
-        if journal.respell_only
-            && self.holds_state_dir()
-            && !self.respell_still_asked(&journal).await
+        if !journal.respell_only
+            || !self.holds_state_dir()
+            || self.respell_still_asked(&journal).await
         {
-            self.drop_respell_journal(&state_dir, &journal);
+            return;
         }
+        // Only this machine's own index and configuration drop it, as only
+        // they run it: an engine opened with another `--db` or `--config`
+        // leaves it for them, with recovery's warning.
+        let foreign = match self.off_machine().await {
+            Ok(Some(why)) => Some(why),
+            Ok(None) => match self.foreign_journal(&journal, &state_dir).await {
+                Ok(why) => why,
+                Err(e) => Some(e.to_string()),
+            },
+            Err(e) => Some(e.to_string()),
+        };
+        if let Some(why) = foreign {
+            tracing::warn!(
+                "the unfinished respell of domain '{}' to '{}' is not asked for any more, but \
+                 it is left alone here: {why}. To drop it, {}",
+                journal.old,
+                journal.new,
+                finish_elsewhere_hint(&journal)
+            );
+            return;
+        }
+        self.drop_respell_journal(&state_dir, &journal);
     }
 
     /// The end of a respell: the question is answered, then the journal

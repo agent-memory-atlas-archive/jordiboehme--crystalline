@@ -3483,3 +3483,84 @@ both_backends!(
     a_question_whose_links_already_match_closes_on_its_own,
     a_question_whose_links_already_match_closes_on_its_own_body
 );
+
+/// A stopped respell, then the MANIFEST goes back to the old name: the
+/// adoption drops the question, and the journal with it.
+async fn changing_the_name_back_drops_a_stopped_respell_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    engine.fail_rename_after(Some(RenameStep::Relink));
+    engine
+        .finish_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .expect_err("the failpoint stops the respell");
+    assert!(m.journal().is_file());
+
+    std::fs::write(m.root.join("eng/MANIFEST.md"), manifest_named("Eng", "eng")).unwrap();
+    engine.sync(None).await.unwrap();
+    engine.adopt_domain_names().await.unwrap();
+
+    assert_eq!(saved_question(&m), None, "the question is dropped");
+    assert!(!m.journal().exists(), "and the journal with it");
+}
+both_backends!(
+    changing_the_name_back_drops_a_stopped_respell,
+    changing_the_name_back_drops_a_stopped_respell_body
+);
+
+/// A stopped respell recorded against another configuration than the one
+/// this engine opened is neither run nor dropped here, also once nobody
+/// asks for it: it belongs to that configuration.
+async fn another_configs_respell_journal_is_left_alone_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    engine.fail_rename_after(Some(RenameStep::Relink));
+    engine
+        .finish_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .expect_err("the failpoint stops the respell");
+    drop(engine);
+    let mut journal: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(m.journal()).unwrap()).unwrap();
+    journal["owner"]["config"] = serde_json::json!("/elsewhere/config.yaml");
+    std::fs::write(m.journal(), serde_json::to_vec(&journal).unwrap()).unwrap();
+
+    // Nobody asks for it any more: the MANIFEST went back to the old name.
+    std::fs::write(m.root.join("eng/MANIFEST.md"), manifest_named("Eng", "eng")).unwrap();
+    let other = m.engine(true).await;
+    assert!(other.recover_rename_journal().await.unwrap().is_none());
+    other.sync(None).await.unwrap();
+    other.adopt_domain_names().await.unwrap();
+    other.finish_rename_questions().await.unwrap();
+    assert!(
+        m.journal().is_file(),
+        "the journal stays for its own config"
+    );
+}
+both_backends!(
+    another_configs_respell_journal_is_left_alone,
+    another_configs_respell_journal_is_left_alone_body
+);
+
+/// An engram the index names but that cannot be read is no proof its links
+/// match: the question stays open.
+async fn an_unreadable_engram_keeps_the_question_open_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    std::fs::write(
+        m.root.join("ops/reflections/b.md"),
+        OPS_PAGE.replace("[[eng:", "[[platform:"),
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+    // Still in the index with its old links, and no longer UTF-8 on disk,
+    // which a read refuses rather than answer from the row.
+    std::fs::write(m.root.join("ops/pager.md"), [0xff, 0xfe, 0x00, 0x80]).unwrap();
+
+    engine.adopt_domain_names().await.unwrap();
+    assert!(engine.rename_question("eng").is_some());
+}
+both_backends!(
+    an_unreadable_engram_keeps_the_question_open,
+    an_unreadable_engram_keeps_the_question_open_body
+);
