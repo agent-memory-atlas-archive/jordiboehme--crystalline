@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use clap::Subcommand;
+use clap::{Args, Subcommand};
 use crystalline_core::automation::{
     HEADLESS_DISALLOWED_TOOLS, LEASE_RENEW_SECS, Loop, RunOutcome, RunSummary, headless_prompt,
     parse_run_summary,
@@ -66,6 +66,34 @@ const EXIT_ERROR: u8 = 2;
 /// holds the lease.
 const EXIT_NOTHING: u8 = 1;
 
+/// The settings every run starts with, for `run` and for each run `watch`
+/// starts.
+#[derive(Args, Debug, Clone)]
+pub struct RunArgs {
+    /// The most items the agent works in one run.
+    #[arg(long, default_value_t = 20)]
+    pub max_items: u32,
+    /// The most agent turns in one run.
+    #[arg(long, default_value_t = 60)]
+    pub max_turns: u32,
+    /// The model the agent uses. Defaults to Claude Code's own default.
+    #[arg(long)]
+    pub model: Option<String>,
+    /// Where the agent's stream is written, one file per run, readable by
+    /// you only. The newest 50 per loop and domain are kept. Defaults to the
+    /// runs folder in the state directory.
+    #[arg(long)]
+    pub log_dir: Option<PathBuf>,
+    /// The runner label the lease and the run record show, for example
+    /// k8s.
+    #[arg(long, default_value = "cli")]
+    pub runner: String,
+    /// Keep the run's changes local instead of sharing them as a pull
+    /// request.
+    #[arg(long)]
+    pub no_share: bool,
+}
+
 /// The four things a loop command does.
 #[derive(Subcommand, Debug)]
 pub enum LoopCommand {
@@ -79,40 +107,22 @@ pub enum LoopCommand {
     },
     /// Work what is due with a headless Claude Code agent: take the lease,
     /// run the agent with the shipped prompt, share its changes as a pull
-    /// request, record the run and release the lease. Exit 1 when nothing is
-    /// due or a run is already going, 2 on an error, else the agent's exit
-    /// code.
+    /// request, record the run and release the lease. Exit 0 when the run is
+    /// done or stopped at its item cap, 1 when nothing is due or a run is
+    /// already going, 2 when the run failed or on an error.
     Run {
         /// The domain to work. Omit to work every due domain in turn.
         #[arg(long)]
         domain: Option<String>,
-        /// The most items the agent works in one run.
-        #[arg(long, default_value_t = 20)]
-        max_items: u32,
-        /// The most agent turns in one run.
-        #[arg(long, default_value_t = 60)]
-        max_turns: u32,
-        /// The model the agent uses. Defaults to Claude Code's own default.
-        #[arg(long)]
-        model: Option<String>,
-        /// Where the agent's stream is written, one file per run. Defaults
-        /// to the runs folder in the state directory.
-        #[arg(long)]
-        log_dir: Option<PathBuf>,
-        /// The runner label the lease and the run record show, for example
-        /// k8s.
-        #[arg(long, default_value = "cli")]
-        runner: String,
-        /// Keep the run's changes local instead of sharing them as a pull
-        /// request.
-        #[arg(long)]
-        no_share: bool,
+        #[command(flatten)]
+        args: RunArgs,
         /// Show what would run and stop. Takes no lease and starts no agent.
         #[arg(long)]
         dry_run: bool,
     },
-    /// Poll the status and run when something is due. Runs until it gets
-    /// SIGTERM or Ctrl-C; a run in progress is stopped and recorded first.
+    /// Poll the status and run when something is due, with the same settings
+    /// as run. Runs until it gets SIGTERM or Ctrl-C; a run in progress is
+    /// stopped and recorded first.
     Watch {
         /// Only these domains (repeatable). Omit for every domain you may run
         /// the loop on.
@@ -121,6 +131,8 @@ pub enum LoopCommand {
         /// Seconds between two status checks.
         #[arg(long, default_value_t = 60)]
         interval: u64,
+        #[command(flatten)]
+        args: RunArgs,
     },
     /// Print the shipped prompt a headless run starts its agent with, for a
     /// runner outside the CLI.
@@ -140,8 +152,7 @@ pub async fn run(lp: Loop, command: LoopCommand, json: bool) -> anyhow::Result<(
         print!("{}", headless_prompt(lp, domain, *max_items));
         return Ok(());
     }
-    let stop = stop_signal();
-    let code = match dispatch(lp, command, json, stop).await {
+    let code = match dispatch(lp, command, json).await {
         Ok(code) => code,
         Err(e) => {
             eprintln!("Error: {e:#}");
@@ -155,12 +166,7 @@ pub async fn run(lp: Loop, command: LoopCommand, json: bool) -> anyhow::Result<(
     }
 }
 
-async fn dispatch(
-    lp: Loop,
-    command: LoopCommand,
-    json: bool,
-    stop: watch::Receiver<bool>,
-) -> anyhow::Result<u8> {
+async fn dispatch(lp: Loop, command: LoopCommand, json: bool) -> anyhow::Result<u8> {
     let client = AutomationClient::from_env().await?;
     match command {
         LoopCommand::Status { domain } => {
@@ -174,38 +180,29 @@ async fn dispatch(
         }
         LoopCommand::Run {
             domain,
-            max_items,
-            max_turns,
-            model,
-            log_dir,
-            runner,
-            no_share,
+            args,
             dry_run,
         } => {
+            let stop = stop_signal();
             let opts = RunOptions {
-                max_items,
-                max_turns,
-                model,
-                log_dir,
-                runner,
-                no_share,
+                args,
                 dry_run,
                 json,
             };
             run_due(lp, &client, domain.as_deref(), &opts, &stop).await
         }
-        LoopCommand::Watch { domain, interval } => {
+        LoopCommand::Watch {
+            domain,
+            interval,
+            args,
+        } => {
+            let claude = find_claude()?;
+            let stop = stop_signal();
             let opts = RunOptions {
-                max_items: 20,
-                max_turns: 60,
-                model: None,
-                log_dir: None,
-                runner: "cli".to_string(),
-                no_share: false,
+                args,
                 dry_run: false,
                 json,
             };
-            let claude = find_claude()?;
             watch_loop(lp, &client, &domain, interval.max(1), &claude, &opts, stop).await;
             Ok(0)
         }

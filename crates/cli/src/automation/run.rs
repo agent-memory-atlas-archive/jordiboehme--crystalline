@@ -1,21 +1,48 @@
 //! `run` and `watch`: take the lease, run the agent, share, record.
+//!
+//! The lease is renewed by a future of its own, polled beside the agent's
+//! exit, the stop signal and later the share and the record. A renew that
+//! hangs therefore never holds up a stop, and the lease stays fresh until
+//! the record answers.
 
 use super::*;
 
+/// How long one renew may take. Well under the five minutes after which a
+/// lease is stale; a renew that takes longer is retried on the next tick.
+const RENEW_LIMIT: Duration = Duration::from_secs(15);
+
+/// How long one record call may take before it is tried again.
+const RECORD_LIMIT: Duration = Duration::from_secs(60);
+
+/// The waits before each new try of a failed record.
+const RECORD_WAITS: [Duration; 3] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+];
+
+/// How many run logs are kept per loop and domain, like the run records.
+const LOGS_KEPT: usize = crystalline_core::automation::RUNS_KEPT;
+
+/// What `run` and `watch` start every run with.
 pub(super) struct RunOptions {
-    pub(super) max_items: u32,
-    pub(super) max_turns: u32,
-    pub(super) model: Option<String>,
-    pub(super) log_dir: Option<PathBuf>,
-    pub(super) runner: String,
-    pub(super) no_share: bool,
+    pub(super) args: RunArgs,
     pub(super) dry_run: bool,
     pub(super) json: bool,
 }
 
+/// The exit code of a recorded run: 2 when it failed, else 0. The agent's
+/// own code does not decide it, since `claude` exits 0 on an API error too.
+pub(super) fn exit_code(outcome: RunOutcome) -> u8 {
+    if outcome == RunOutcome::Failed {
+        EXIT_ERROR
+    } else {
+        0
+    }
+}
+
 /// Work `domain`, or every due domain in scope: 1 when nothing is due or
-/// every due domain is already running, else the last agent exit code that
-/// was not 0 (or 0).
+/// every due domain is already running, 2 when a run failed, else 0.
 pub(super) async fn run_due(
     lp: Loop,
     client: &AutomationClient,
@@ -64,7 +91,7 @@ pub(super) async fn run_due(
 pub(super) enum Ran {
     /// The lease was held elsewhere; nothing ran.
     Busy,
-    /// The agent ran and ended with this code.
+    /// The run was recorded; this is its exit code.
     Exited(u8),
 }
 
@@ -72,7 +99,7 @@ pub(super) enum Ran {
 pub(super) enum Ended {
     /// It exited by itself, with this code (`None` when a signal killed it).
     Exited(Option<i32>),
-    /// This process got a stop signal and stopped it.
+    /// This process got a stop signal and stopped it, or never started it.
     Stopped,
     /// A renew was refused: another run holds the lease now.
     LeaseLost(String),
@@ -90,14 +117,15 @@ pub(super) async fn run_one(
     opts: &RunOptions,
     stop: &watch::Receiver<bool>,
 ) -> anyhow::Result<Ran> {
-    let prompt = headless_prompt(lp, domain, opts.max_items);
+    let args = &opts.args;
+    let prompt = headless_prompt(lp, domain, args.max_items);
     if opts.dry_run {
         let shown = ClaudeRun {
             program: claude.to_path_buf(),
             mcp_config: PathBuf::from("<mcp config>"),
             prompt: "<prompt>".to_string(),
-            max_turns: opts.max_turns,
-            model: opts.model.clone(),
+            max_turns: args.max_turns,
+            model: args.model.clone(),
         };
         let mut words = vec![claude.to_string_lossy().into_owned()];
         words.extend(
@@ -115,7 +143,7 @@ pub(super) async fn run_one(
         .verb(
             "automation_lease_take",
             lp,
-            json!({ "domain": domain, "runner": opts.runner }),
+            json!({ "domain": domain, "runner": args.runner }),
         )
         .await
     {
@@ -130,7 +158,7 @@ pub(super) async fn run_one(
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("the lease answer carried no token"))?
         .to_string();
-    let renew_secs = renew_secs(take["renew_secs"].as_u64());
+    let period = Duration::from_secs(renew_secs(take["renew_secs"].as_u64()));
     let started = chrono::Utc::now();
     let lease = Lease {
         client,
@@ -139,8 +167,8 @@ pub(super) async fn run_one(
         token: &token,
     };
 
-    let log_path = match log_path(opts.log_dir.as_deref(), lp, domain, &started) {
-        Ok(path) => path,
+    let (log_path, log) = match open_log(args.log_dir.as_deref(), lp, domain, &started) {
+        Ok(opened) => opened,
         Err(e) => return lease.fail_and_err(&started, e).await,
     };
     let config = match client
@@ -161,58 +189,58 @@ pub(super) async fn run_one(
         program: claude.to_path_buf(),
         mcp_config: config.path.clone(),
         prompt,
-        max_turns: opts.max_turns,
-        model: opts.model.clone(),
+        max_turns: args.max_turns,
+        model: args.model.clone(),
     };
-    let (ended, last) = run_agent(&run, &log_path, &lease, renew_secs, stop.clone()).await;
+    let renewer = keep_renewed(&lease, period);
+    tokio::pin!(renewer);
+    let (ended, last) = run_agent(&run, log, renewer.as_mut(), stop.clone()).await;
     drop(config);
+    let renewing = !matches!(ended, Ended::LeaseLost(_));
 
     let summary = last.as_deref().and_then(parse_run_summary);
-    let (outcome, text) = judge(&ended, summary.as_ref(), opts.max_items);
-    let exit = match &ended {
-        Ended::Exited(Some(c)) => u8::try_from(*c).unwrap_or(1),
-        Ended::Exited(None) | Ended::LeaseLost(_) | Ended::Broken(_) => 1,
-        Ended::Stopped => 143,
-    };
+    let (outcome, text) = judge(&ended, summary.as_ref(), args.max_items);
+    let done = summary.as_ref().map_or(0, |s| s.done);
+    let share_it = !args.no_share && matches!(ended, Ended::Exited(_));
 
-    let share = if opts.no_share || !matches!(ended, Ended::Exited(_)) {
-        None
-    } else {
-        match client
-            .verb(
-                "automation_share",
-                lp,
-                json!({ "domain": domain, "token": token, "summary": text }),
-            )
-            .await
-        {
-            Ok(answer) => Some(answer),
-            Err(e) => {
-                eprintln!("Sharing the run's changes failed: {e:#}");
-                None
+    // The share and the record, with the lease kept fresh beside them until
+    // the record answers.
+    let finish = async {
+        let share = if share_it {
+            share_changes(&lease, &text, stop.clone()).await
+        } else {
+            None
+        };
+        let report = json!({
+            "started_at": started.to_rfc3339(),
+            "outcome": outcome,
+            "done": done,
+            "summary": text,
+        });
+        (share, lease.record(&report).await)
+    };
+    tokio::pin!(finish);
+    let (share, record) = if renewing {
+        tokio::select! {
+            finished = &mut finish => finished,
+            why = renewer.as_mut() => {
+                eprintln!("The lease on {domain} was lost while the run ended: {why}");
+                (&mut finish).await
             }
         }
+    } else {
+        finish.await
     };
-    let report = json!({
-        "started_at": started.to_rfc3339(),
-        "outcome": outcome,
-        "done": summary.as_ref().map_or(0, |s| s.done),
-        "summary": text,
-    });
-    let record = client
-        .verb(
-            "automation_run_record",
-            lp,
-            json!({ "domain": domain, "token": token, "report": report }),
-        )
-        .await;
     let record = match (&ended, record) {
         (_, Ok(record)) => record,
         (Ended::LeaseLost(why), Err(_)) => {
             anyhow::bail!("{domain}: the lease was lost during the run: {why}")
         }
-        (_, Err(e)) => return Err(e.context(format!("recording the run on {domain}"))),
+        (_, Err(e)) => anyhow::bail!(
+            "the run on {domain} could not be recorded: {e:#}. Its lease expires by itself within 5 minutes."
+        ),
     };
+    let exit = exit_code(outcome);
     if opts.json {
         println!(
             "{}",
@@ -230,12 +258,38 @@ pub(super) async fn run_one(
             println!("Shared the changes for review: {url}");
         }
         println!(
-            "Recorded the run on {domain}: {}, {} done.",
-            outcome.as_str(),
-            summary.as_ref().map_or(0, |s| s.done)
+            "Recorded the run on {domain}: {}, {done} done.",
+            outcome.as_str()
         );
     }
     Ok(Ran::Exited(exit))
+}
+
+/// Share the run's changes as a pull request: the share's answer, or `None`
+/// when it failed or a stop signal came first.
+async fn share_changes(
+    lease: &Lease<'_>,
+    summary: &str,
+    mut stop: watch::Receiver<bool>,
+) -> Option<Value> {
+    let share = lease.client.verb(
+        "automation_share",
+        lease.lp,
+        json!({ "domain": lease.domain, "token": lease.token, "summary": summary }),
+    );
+    tokio::select! {
+        answer = share => match answer {
+            Ok(answer) => Some(answer),
+            Err(e) => {
+                eprintln!("Sharing the run's changes failed: {e:#}");
+                None
+            }
+        },
+        _ = stop.wait_for(|stopped| *stopped) => {
+            eprintln!("Stopped before the run's changes were shared.");
+            None
+        }
+    }
 }
 
 /// A take refusal that means "not now": a run is going, or the loop runs on
@@ -252,6 +306,30 @@ pub(super) fn renew_secs(server: Option<u64>) -> u64 {
         .or(server)
         .unwrap_or(LEASE_RENEW_SECS)
         .max(1)
+}
+
+/// `call`, tried again after each of `waits` while it fails without a
+/// refusal (a daemon that restarts, a network gap). A refusal is the other
+/// side's answer and is returned at once.
+pub(super) async fn with_retries<T, F, Fut>(waits: &[Duration], mut call: F) -> anyhow::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<T>>,
+{
+    let mut waits = waits.iter();
+    loop {
+        match call().await {
+            Ok(answer) => return Ok(answer),
+            Err(e) if is_refusal(&e) => return Err(e),
+            Err(e) => match waits.next() {
+                Some(wait) => {
+                    eprintln!("Recording the run failed, trying again: {e:#}");
+                    tokio::time::sleep(*wait).await;
+                }
+                None => return Err(e),
+            },
+        }
+    }
 }
 
 /// The outcome a run is recorded with, and its summary text.
@@ -302,7 +380,7 @@ pub(super) fn judge(
     }
 }
 
-/// The lease a run holds, for the paths that must record before they fail.
+/// The lease a run holds.
 pub(super) struct Lease<'a> {
     client: &'a AutomationClient,
     lp: Loop,
@@ -311,7 +389,7 @@ pub(super) struct Lease<'a> {
 }
 
 impl Lease<'_> {
-    pub(super) async fn renew(&self) -> anyhow::Result<Value> {
+    async fn renew(&self) -> anyhow::Result<Value> {
         self.client
             .verb(
                 "automation_lease_renew",
@@ -321,8 +399,29 @@ impl Lease<'_> {
             .await
     }
 
+    /// Record the run (which releases the lease), each try bounded by
+    /// [`RECORD_LIMIT`] and tried again after each of [`RECORD_WAITS`].
+    async fn record(&self, report: &Value) -> anyhow::Result<Value> {
+        with_retries(&RECORD_WAITS, || async {
+            let call = self.client.verb(
+                "automation_run_record",
+                self.lp,
+                json!({ "domain": self.domain, "token": self.token, "report": report }),
+            );
+            match tokio::time::timeout(RECORD_LIMIT, call).await {
+                Ok(answer) => answer,
+                Err(_) => Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "the record took too long",
+                )
+                .into()),
+            }
+        })
+        .await
+    }
+
     /// Record a failed run (which releases the lease), then return `e`.
-    pub(super) async fn fail_and_err<T>(
+    async fn fail_and_err<T>(
         &self,
         started: &chrono::DateTime<chrono::Utc>,
         e: anyhow::Error,
@@ -333,34 +432,31 @@ impl Lease<'_> {
             "done": 0,
             "summary": format!("The run could not start: {e:#}"),
         });
-        if let Err(record) = self
-            .client
-            .verb(
-                "automation_run_record",
-                self.lp,
-                json!({ "domain": self.domain, "token": self.token, "report": report }),
-            )
-            .await
-        {
+        if let Err(record) = self.record(&report).await {
             eprintln!("Recording the failed run failed too: {record:#}");
         }
         Err(e)
     }
 }
 
-/// `<log_dir>/<loop>-<domain>-<started>.jsonl`, the folder made if needed.
-pub(super) fn log_path(
-    log_dir: Option<&Path>,
-    lp: Loop,
-    domain: &str,
-    started: &chrono::DateTime<chrono::Utc>,
-) -> anyhow::Result<PathBuf> {
-    let dir = match log_dir {
-        Some(dir) => dir.to_path_buf(),
-        None => crystalline_core::config::state_dir()?.join("runs"),
-    };
-    std::fs::create_dir_all(&dir)?;
-    let safe: String = domain
+/// Renew the lease every `period`, until a renew is refused: then it ends
+/// with the refusal. A renew that fails to reach the other side, or takes
+/// longer than [`RENEW_LIMIT`], is tried again on the next tick.
+async fn keep_renewed(lease: &Lease<'_>, period: Duration) -> String {
+    loop {
+        tokio::time::sleep(period).await;
+        match tokio::time::timeout(RENEW_LIMIT, lease.renew()).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) if is_refusal(&e) => return e.to_string(),
+            Ok(Err(e)) => eprintln!("Renewing the lease failed, trying again: {e:#}"),
+            Err(_) => eprintln!("Renewing the lease took too long, trying again."),
+        }
+    }
+}
+
+/// The domain name as it may stand in a file name.
+fn file_safe(domain: &str) -> String {
+    domain
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
@@ -369,11 +465,62 @@ pub(super) fn log_path(
                 '-'
             }
         })
+        .collect()
+}
+
+/// Create `<log_dir>/<loop>-<domain>-<started>.jsonl`, readable by this
+/// user only, the folder made if needed. Only the newest [`LOGS_KEPT`] logs
+/// of this loop and domain are kept.
+pub(super) fn open_log(
+    log_dir: Option<&Path>,
+    lp: Loop,
+    domain: &str,
+    started: &chrono::DateTime<chrono::Utc>,
+) -> anyhow::Result<(PathBuf, std::fs::File)> {
+    let dir = match log_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => crystalline_core::config::state_dir()?.join("runs"),
+    };
+    std::fs::create_dir_all(&dir)?;
+    let prefix = format!("{lp}-{}-", file_safe(domain));
+    let path = dir.join(format!(
+        "{prefix}{}.jsonl",
+        started.format("%Y%m%dT%H%M%S%.3fZ")
+    ));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let file = options.open(&path)?;
+    prune_logs(&dir, &prefix);
+    Ok((path, file))
+}
+
+/// Remove all but the newest [`LOGS_KEPT`] logs named `<prefix><time>.jsonl`.
+/// The time has no `-`, so another domain whose name starts the same way is
+/// never counted.
+fn prune_logs(dir: &Path, prefix: &str) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut ours: Vec<String> = entries
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|name| {
+            name.strip_prefix(prefix)
+                .and_then(|rest| rest.strip_suffix(".jsonl"))
+                .is_some_and(|time| {
+                    time.starts_with(|c: char| c.is_ascii_digit()) && !time.contains('-')
+                })
+        })
         .collect();
-    Ok(dir.join(format!(
-        "{lp}-{safe}-{}.jsonl",
-        started.format("%Y%m%dT%H%M%SZ")
-    )))
+    ours.sort();
+    let extra = ours.len().saturating_sub(LOGS_KEPT);
+    for name in &ours[..extra] {
+        let _ = std::fs::remove_file(dir.join(name));
+    }
 }
 
 /// The text of the session's final answer: the `result` event's `result`,
@@ -419,25 +566,41 @@ impl Scan {
     }
 }
 
-/// Run the agent to its end, renewing the lease, writing its stream to
-/// `log_path`. Returns how it ended and the text of its final answer.
-pub(super) async fn run_agent(
+/// A Crystalline credential the agent never needs: the bearer travels in
+/// the private MCP config, and the agent's own `crystalline mcp` reaches the
+/// daemon over its socket.
+pub(super) fn is_credential_var(name: &str) -> bool {
+    name.starts_with("CRYSTALLINE_")
+        && ["TOKEN", "SECRET", "PASSWORD"]
+            .iter()
+            .any(|word| name.contains(word))
+}
+
+/// Run the agent to its end, writing its stream to `log`, while `renewer`
+/// keeps the lease. Returns how it ended and the text of its final answer.
+async fn run_agent<R>(
     run: &ClaudeRun,
-    log_path: &Path,
-    lease: &Lease<'_>,
-    renew_secs: u64,
+    log: std::fs::File,
+    mut renewer: std::pin::Pin<&mut R>,
     mut stop: watch::Receiver<bool>,
-) -> (Ended, Option<String>) {
-    let log = match std::fs::File::create(log_path) {
-        Ok(file) => file,
-        Err(e) => return (Ended::Broken(format!("{}: {e}", log_path.display())), None),
-    };
+) -> (Ended, Option<String>)
+where
+    R: std::future::Future<Output = String>,
+{
+    if *stop.borrow() {
+        return (Ended::Stopped, None);
+    }
     let mut command = tokio::process::Command::from(claude_command(run));
     command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
         .kill_on_drop(true);
+    for (name, _) in std::env::vars_os() {
+        if name.to_str().is_some_and(is_credential_var) {
+            command.env_remove(name);
+        }
+    }
     #[cfg(unix)]
     command.process_group(0);
     let mut child = match command.spawn() {
@@ -458,31 +621,19 @@ pub(super) async fn run_agent(
         })
     });
 
-    let period = Duration::from_secs(renew_secs);
-    let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
-    let ended = loop {
-        tokio::select! {
-            status = child.wait() => {
-                break match status {
-                    Ok(status) => Ended::Exited(status.code()),
-                    Err(e) => Ended::Broken(e.to_string()),
-                };
-            }
-            _ = stop.wait_for(|stopped| *stopped) => {
-                stop_child(&mut child).await;
-                break Ended::Stopped;
-            }
-            _ = ticker.tick() => {
-                match lease.renew().await {
-                    Ok(_) => {}
-                    Err(e) if is_refusal(&e) => {
-                        eprintln!("The lease on {} was lost: {e:#}. Stopping the agent.", lease.domain);
-                        stop_child(&mut child).await;
-                        break Ended::LeaseLost(e.to_string());
-                    }
-                    Err(e) => eprintln!("Renewing the lease failed, trying again: {e:#}"),
-                }
-            }
+    let ended = tokio::select! {
+        status = child.wait() => match status {
+            Ok(status) => Ended::Exited(status.code()),
+            Err(e) => Ended::Broken(e.to_string()),
+        },
+        _ = stop.wait_for(|stopped| *stopped) => {
+            stop_child(&mut child).await;
+            Ended::Stopped
+        }
+        why = renewer.as_mut() => {
+            eprintln!("The lease was lost: {why}. Stopping the agent.");
+            stop_child(&mut child).await;
+            Ended::LeaseLost(why)
         }
     };
     // What is left of the stream after the agent ended. A process it left
@@ -499,7 +650,7 @@ pub(super) async fn run_agent(
 
 /// Stop the agent and everything it started: SIGTERM to its process group,
 /// then SIGKILL after [`STOP_GRACE`].
-pub(super) async fn stop_child(child: &mut tokio::process::Child) {
+async fn stop_child(child: &mut tokio::process::Child) {
     #[cfg(unix)]
     if let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok()) {
         // SAFETY: kill(2) with a negative pid signals that process group;
@@ -564,7 +715,9 @@ pub(super) async fn watch_loop(
     }
 }
 
-/// A flag that turns true on SIGTERM or Ctrl-C.
+/// A flag that turns true on SIGTERM or Ctrl-C. Only `run` and `watch` set
+/// it up: once installed, the signals no longer end the process by
+/// themselves.
 pub(super) fn stop_signal() -> watch::Receiver<bool> {
     let (tx, rx) = watch::channel(false);
     tokio::spawn(async move {
@@ -636,5 +789,93 @@ mod tests {
         scan.read(r#"{"type":"assistant","message":{"content":[{"type":"text","text":"a"}]}}"#);
         scan.read(r#"{"type":"result","result":"the end","is_error":false}"#);
         assert_eq!(scan.last().as_deref(), Some("the end"));
+    }
+
+    #[test]
+    fn a_busy_refusal_is_already_running_or_runs_on() {
+        assert!(is_busy(&anyhow::anyhow!("already running")));
+        assert!(is_busy(&anyhow::anyhow!("runs on team-server")));
+        assert!(!is_busy(&anyhow::anyhow!("the lease is gone")));
+        assert!(!is_busy(&anyhow::anyhow!("already running, said nobody")));
+    }
+
+    fn io_error() -> anyhow::Error {
+        std::io::Error::other("the daemon went away").into()
+    }
+
+    #[tokio::test]
+    async fn a_failed_record_is_tried_again_after_each_wait() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let waits = [Duration::ZERO; 3];
+        let answer = with_retries(&waits, || async {
+            let n = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n < 3 { Err(io_error()) } else { Ok(n) }
+        })
+        .await;
+        assert_eq!(answer.unwrap(), 3);
+        assert_eq!(calls.into_inner(), 4);
+    }
+
+    #[tokio::test]
+    async fn a_record_gives_up_after_the_last_wait() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let waits = [Duration::ZERO; 3];
+        let answer: anyhow::Result<()> = with_retries(&waits, || async {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(io_error())
+        })
+        .await;
+        assert!(answer.is_err());
+        assert_eq!(calls.into_inner(), 4);
+    }
+
+    #[tokio::test]
+    async fn a_refused_record_is_not_tried_again() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let waits = [Duration::ZERO; 3];
+        let answer: anyhow::Result<()> = with_retries(&waits, || async {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(anyhow::anyhow!("the lease is gone"))
+        })
+        .await;
+        assert!(answer.is_err());
+        assert_eq!(calls.into_inner(), 1);
+    }
+
+    #[test]
+    fn the_outcome_failed_always_exits_2() {
+        for (ended, summary) in [
+            (Ended::Exited(Some(0)), None),
+            (Ended::Exited(Some(3)), Some(summary(1))),
+            (Ended::Stopped, Some(summary(1))),
+        ] {
+            let (outcome, _) = judge(&ended, summary.as_ref(), 20);
+            assert_eq!(exit_code(outcome), 2);
+        }
+        assert_eq!(exit_code(RunOutcome::Done), 0);
+        assert_eq!(exit_code(RunOutcome::StoppedAtCap), 0);
+    }
+
+    #[test]
+    fn only_crystalline_credentials_are_kept_from_the_agent() {
+        for name in [
+            "CRYSTALLINE_REMOTE_TOKEN",
+            "CRYSTALLINE_REMOTE_TOKEN_FILE",
+            "CRYSTALLINE_GITHUB_TOKEN",
+            "CRYSTALLINE_AUTH_OIDC_CLIENT_SECRET",
+            "CRYSTALLINE_ADMIN_PASSWORD",
+            "CRYSTALLINE_AUTOMATION_WEBHOOK_SECRET_FILE",
+        ] {
+            assert!(is_credential_var(name), "{name}");
+        }
+        for name in [
+            "ANTHROPIC_API_KEY",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "CRYSTALLINE_REMOTE_URL",
+            "CRYSTALLINE_TEST_NO_KEYCHAIN",
+            "PATH",
+        ] {
+            assert!(!is_credential_var(name), "{name}");
+        }
     }
 }

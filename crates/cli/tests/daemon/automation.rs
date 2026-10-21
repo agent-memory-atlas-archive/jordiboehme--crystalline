@@ -279,7 +279,8 @@ fn a_run_without_a_summary_is_recorded_as_failed() {
     let env = env_with_domains("ns");
     env.fake_claude("", "I could not finish.", 0);
     let out = env.output(&["evolve", "run", "--domain", "busy"]);
-    assert_eq!(code(&out), Some(0), "the agent's code: {}", explain(&out));
+    // claude exits 0 on an API error too: a failed record is exit 2.
+    assert_eq!(code(&out), Some(2), "{}", explain(&out));
     let s = status_json(&env, "busy");
     assert_eq!(s["domains"][0]["last_run"]["outcome"], "failed", "{s}");
     // A failed run leaves nothing for a person: the finding stays due.
@@ -300,11 +301,11 @@ fn a_run_at_the_cap_is_recorded_as_stopped_at_cap() {
 }
 
 #[test]
-fn the_agent_exit_code_is_the_run_exit_code() {
+fn an_agent_that_fails_makes_the_run_exit_2() {
     let env = env_with_domains("ec");
     env.fake_claude("", SUMMARY, 3);
     let out = env.output(&["evolve", "run", "--domain", "busy"]);
-    assert_eq!(code(&out), Some(3), "{}", explain(&out));
+    assert_eq!(code(&out), Some(2), "{}", explain(&out));
     let s = status_json(&env, "busy");
     assert_eq!(s["domains"][0]["last_run"]["outcome"], "failed", "{s}");
     assert_eq!(s["domains"][0]["running"], Value::Null, "{s}");
@@ -436,7 +437,7 @@ fn a_sigterm_during_a_run_records_failed_and_releases() {
     }
     sigterm(&child);
     let status = wait_exit(&mut child, Duration::from_secs(20));
-    assert_eq!(status.code(), Some(143), "{status:?}");
+    assert_eq!(status.code(), Some(2), "{status:?}");
     let cfg = env
         .calls()
         .lines()
@@ -508,4 +509,253 @@ fn prompt_prints_the_shipped_prompt() {
             crystalline_core::automation::headless_prompt(lp, "work", 7)
         );
     }
+}
+
+/// The daemon's own process id, from the record it published.
+fn daemon_pid(env: &DaemonEnv) -> String {
+    let text = std::fs::read_to_string(env.info_path()).unwrap();
+    let record: Value = serde_json::from_str(&text).unwrap();
+    record["pid"].as_u64().unwrap().to_string()
+}
+
+/// Sends SIGCONT to the daemon when dropped, so a failed assertion never
+/// leaves it stopped.
+struct Resume(String);
+
+impl Drop for Resume {
+    fn drop(&mut self) {
+        let _ = Command::new("kill").arg("-CONT").arg(&self.0).status();
+    }
+}
+
+#[test]
+fn a_hanging_renew_does_not_hold_up_a_sigterm() {
+    let env = env_with_domains("hr");
+    let term = env.dir.join("term");
+    env.fake_claude(
+        &format!(
+            r#"trap 'echo term > "{term}"; exit 143' TERM
+sleep 30 &
+wait $!"#,
+            term = term.display()
+        ),
+        SUMMARY,
+        0,
+    );
+    let mut child = env
+        .cli(&["evolve", "run", "--domain", "busy"])
+        .env("CRYSTALLINE_LEASE_RENEW_SECS", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    while env.calls().is_empty() {
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "claude never ran"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Stop the daemon so the next renew hangs, then wait until one is due.
+    let pid = daemon_pid(&env);
+    assert!(
+        Command::new("kill")
+            .arg("-STOP")
+            .arg(&pid)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let resume = Resume(pid);
+    std::thread::sleep(Duration::from_secs(2));
+    sigterm(&child);
+    // The agent is stopped while the renew still hangs.
+    let start = Instant::now();
+    while !term.exists() {
+        assert!(
+            start.elapsed() < Duration::from_secs(8),
+            "the agent was not stopped while a renew hung"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    drop(resume);
+    let status = wait_exit(&mut child, Duration::from_secs(30));
+    assert_eq!(status.code(), Some(2), "{status:?}");
+    let cfg = env
+        .calls()
+        .lines()
+        .find_map(|l| l.strip_prefix("cfg=").map(str::to_string))
+        .unwrap();
+    assert!(!Path::new(&cfg).exists(), "the MCP config was left behind");
+    let s = status_json(&env, "busy");
+    assert_eq!(s["domains"][0]["running"], Value::Null, "{s}");
+    assert_eq!(s["domains"][0]["last_run"]["outcome"], "failed", "{s}");
+}
+
+#[test]
+fn watch_passes_the_run_flags_to_every_run() {
+    let env = env_with_domains("wf");
+    env.fake_claude("", SUMMARY, 0);
+    let logs = env.dir.join("watch-logs");
+    let mut child = env
+        .cli(&[
+            "evolve",
+            "watch",
+            "--domain",
+            "busy",
+            "--interval",
+            "1",
+            "--runner",
+            "watchpod",
+            "--max-items",
+            "5",
+            "--max-turns",
+            "9",
+            "--model",
+            "sonnet",
+            "--no-share",
+            "--log-dir",
+            logs.to_str().unwrap(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    let s = loop {
+        let s = status_json(&env, "busy");
+        if s["domains"][0]["last_run"].is_object() {
+            break s;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "watch never ran: {s}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    sigterm(&child);
+    wait_exit(&mut child, Duration::from_secs(20));
+    let run = &s["domains"][0]["last_run"];
+    assert_eq!(run["runner"], "watchpod", "{s}");
+    assert_eq!(run["outcome"], "done", "{s}");
+    let calls = env.calls();
+    assert!(calls.contains("Stop after 5 items"), "{calls}");
+    assert!(calls.contains("arg=--max-turns\narg=9\n"), "{calls}");
+    assert!(calls.contains("arg=--model\narg=sonnet\n"), "{calls}");
+    assert_eq!(std::fs::read_dir(&logs).unwrap().count(), 1);
+}
+
+#[test]
+fn a_run_while_another_holds_the_lease_exits_1() {
+    let env = env_with_domains("ar");
+    env.fake_claude("sleep 30", SUMMARY, 0);
+    let mut first = env
+        .cli(&["evolve", "run", "--domain", "busy"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    while env.calls().is_empty() {
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "claude never ran"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let second = env.output(&["evolve", "run", "--domain", "busy"]);
+    sigterm(&first);
+    wait_exit(&mut first, Duration::from_secs(20));
+    assert_eq!(code(&second), Some(1), "{}", explain(&second));
+    assert!(
+        String::from_utf8_lossy(&second.stdout).contains("busy: already running"),
+        "{}",
+        explain(&second)
+    );
+    assert_eq!(env.calls().matches("call\n").count(), 1, "{}", env.calls());
+}
+
+#[test]
+fn the_agent_gets_no_crystalline_credentials() {
+    let env = env_with_domains("cr");
+    let seen = env.dir.join("env");
+    env.fake_claude(&format!(r#"env > "{}""#, seen.display()), SUMMARY, 0);
+    let out = env
+        .cli(&["evolve", "run", "--domain", "busy"])
+        .env("CRYSTALLINE_REMOTE_TOKEN", "cmt_should_not_leak")
+        .env("CRYSTALLINE_GITHUB_TOKEN", "ghp_should_not_leak")
+        .env("CRYSTALLINE_SETUP_TOKEN_FILE", "/nowhere/setup")
+        .env(
+            "CRYSTALLINE_AUTOMATION_WEBHOOK_SECRET",
+            "hook_should_not_leak",
+        )
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), Some(0), "{}", explain(&out));
+    let seen = std::fs::read_to_string(&seen).unwrap();
+    for name in [
+        "CRYSTALLINE_REMOTE_TOKEN",
+        "CRYSTALLINE_GITHUB_TOKEN",
+        "CRYSTALLINE_SETUP_TOKEN_FILE",
+        "CRYSTALLINE_AUTOMATION_WEBHOOK_SECRET",
+    ] {
+        assert!(
+            !seen.contains(&format!("{name}=")),
+            "{name} reached the agent"
+        );
+    }
+    // What the agent's own `crystalline mcp` needs still arrives.
+    assert!(seen.contains("XDG_STATE_HOME="), "{seen}");
+}
+
+#[test]
+fn run_logs_are_private_and_only_the_newest_fifty_are_kept() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let env = env_with_domains("lg");
+    env.fake_claude("", SUMMARY, 0);
+    let logs = env.dir.join("logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    for i in 0..55 {
+        std::fs::write(
+            logs.join(format!("evolve-busy-20200101T0000{i:02}.000Z.jsonl")),
+            "{}\n",
+        )
+        .unwrap();
+    }
+    // Another domain's and another loop's logs are not counted.
+    std::fs::write(logs.join("evolve-busy-2-20200101T000000.000Z.jsonl"), "").unwrap();
+    std::fs::write(logs.join("reflect-busy-20200101T000000.000Z.jsonl"), "").unwrap();
+    let out = env.output(&[
+        "evolve",
+        "run",
+        "--domain",
+        "busy",
+        "--log-dir",
+        logs.to_str().unwrap(),
+    ]);
+    assert_eq!(code(&out), Some(0), "{}", explain(&out));
+    let mut ours: Vec<String> = std::fs::read_dir(&logs)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("evolve-busy-") && !n.starts_with("evolve-busy-2-"))
+        .collect();
+    ours.sort();
+    assert_eq!(ours.len(), 50, "{ours:?}");
+    assert_eq!(
+        ours[0], "evolve-busy-20200101T000006.000Z.jsonl",
+        "{ours:?}"
+    );
+    let newest = logs.join(ours.last().unwrap());
+    assert!(!newest.to_string_lossy().contains("2020"), "{ours:?}");
+    let mode = std::fs::metadata(&newest).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    assert!(
+        logs.join("evolve-busy-2-20200101T000000.000Z.jsonl")
+            .exists()
+    );
+    assert!(
+        logs.join("reflect-busy-20200101T000000.000Z.jsonl")
+            .exists()
+    );
 }

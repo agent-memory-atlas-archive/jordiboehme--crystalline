@@ -1,12 +1,15 @@
 //! Where the automation verbs go: the local daemon or a server, and the
 //! MCP config the agent reaches the same place with.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::*;
 
 /// Where the automation verbs go.
 pub enum AutomationClient {
-    /// The daemon on this machine, over its control socket.
-    Local,
+    /// The daemon on this machine, over its control socket. The flag turns
+    /// true once a call was answered.
+    Local(AtomicBool),
     /// A server, over the ctl route, as the token's account.
     Remote(Box<Connection>),
 }
@@ -30,7 +33,7 @@ impl AutomationClient {
         let Some(source) =
             crystalline_remote::env_source(crystalline_core::secret_env::process_var, &[])
         else {
-            return Ok(AutomationClient::Local);
+            return Ok(AutomationClient::Local(AtomicBool::new(false)));
         };
         let dir = crystalline_remote::remote_dir()?;
         let connection = tokio::task::spawn_blocking(move || Connection::open(source, &dir))
@@ -41,12 +44,28 @@ impl AutomationClient {
 
     /// Send automation verb `cmd` (a ctl request with `v` and `cmd`) and
     /// return its `data`. A refusal comes back as its bare sentence.
+    ///
+    /// Locally the daemon is settled by the first call that is answered:
+    /// that one may replace a daemon older than this binary, as other
+    /// commands do. Every later call only attaches to the daemon that is
+    /// there, so a renew, a share or a record never replaces the daemon in
+    /// the middle of a run, which would cut off the agent's own MCP session.
     pub async fn call(&self, cmd: Value) -> anyhow::Result<Value> {
         match self {
-            AutomationClient::Local => match crystalline_service::ctl_if_running(cmd).await? {
-                Some(data) => Ok(data),
-                None => Err(NoDaemon.into()),
-            },
+            AutomationClient::Local(settled) => {
+                let answer = if settled.load(Ordering::SeqCst) {
+                    crystalline_service::ctl_if_running_passive(cmd).await?
+                } else {
+                    crystalline_service::ctl_if_running(cmd).await?
+                };
+                match answer {
+                    Some(data) => {
+                        settled.store(true, Ordering::SeqCst);
+                        Ok(data)
+                    }
+                    None => Err(NoDaemon.into()),
+                }
+            }
             AutomationClient::Remote(connection) => {
                 Ok(connection.ctl_data(cmd).await.map_err(anyhow::Error::new)?)
             }
@@ -74,7 +93,7 @@ impl AutomationClient {
     /// bearer, so it is only ever written to [`PrivateConfig`].
     pub(super) async fn mcp_config(&self) -> anyhow::Result<Value> {
         match self {
-            AutomationClient::Local => {
+            AutomationClient::Local(_) => {
                 let exe = std::env::current_exe()?;
                 Ok(local_mcp_config(&exe))
             }
