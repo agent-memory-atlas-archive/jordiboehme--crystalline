@@ -3285,10 +3285,16 @@ mod tests {
     ///    sends - reaches `McpServer::discover` and comes back as a
     ///    `DiscoverResult` carrying our routing block and exactly the revisions
     ///    we advertise.
-    /// 3. The cost of a probe, pinned rather than argued: answering one arms
-    ///    `peer.require_request_metadata()`, which is one-way, so a client that
-    ///    ignores "do not fall back to `initialize`" is served the handshake and
-    ///    then refused `-32602` on its first real call.
+    /// 3. A probe costs nothing since rmcp 3.5.1 (#1248): answering one no
+    ///    longer arms the one-way metadata latch, so a client that probes and
+    ///    then falls back to `initialize` gets a whole legacy session, and its
+    ///    first real call without `_meta` is served. Up to rmcp 3.5.0 that call
+    ///    was refused `-32602`, which is what the dual-era residue in AGENTS.md
+    ///    described.
+    ///
+    /// Step 1 also pins that a bare probe no longer ends the session: rmcp
+    /// keeps waiting for either lifecycle, so a conforming probe on the same
+    /// connection is still answered, and only the end of input ends it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_bare_discover_probe_is_answered_by_rmcp_and_a_complete_one_returns_our_discover_result()
      {
@@ -3342,12 +3348,34 @@ mod tests {
                     && m.contains("io.modelcontextprotocol/clientCapabilities")),
             "and it names both missing keys: {answer}"
         );
-        drop(write);
+        // The session carries on after the refusal (rmcp 3.5.1, #1248): a
+        // conforming probe on the same connection is answered too.
+        let probe = complete_probe(
+            serde_json::json!(1),
+            crate::mcp::newest_served_protocol_version().as_str(),
+        );
+        write
+            .write_all(format!("{probe}\n").as_bytes())
+            .await
+            .unwrap();
+        write.flush().await.unwrap();
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(5), lines.next_line())
+            .await
+            .expect("the session is still open after the bare probe")
+            .unwrap()
+            .expect("a message rather than a closed pipe");
+        let v: Value = serde_json::from_str(&answer).unwrap();
+        assert_eq!(v["id"], serde_json::json!(1), "{answer}");
+        assert!(v["result"]["instructions"].is_string(), "{answer}");
+        // Only the end of input ends it, still on neither lifecycle.
+        write.shutdown().await.unwrap();
         assert!(
-            server.await.unwrap().is_err(),
-            "the bare probe still ends the session with ExpectedInitializeRequest \
-             after the error is sent; a future rmcp that carried on instead would \
-             be a lifecycle change worth noticing"
+            tokio::time::timeout(std::time::Duration::from_secs(5), server)
+                .await
+                .expect("the session ends with its input")
+                .unwrap()
+                .is_err(),
+            "a session that chose no lifecycle ends as an error"
         );
 
         // 2. The conforming probe: our handler runs.
@@ -3391,11 +3419,11 @@ mod tests {
             "and it advertises exactly what we serve: {answer}"
         );
 
-        // 3. What a probe costs, pinned rather than argued. Answering one arms
-        //    `peer.require_request_metadata()`, which is one-way. A client that
-        //    ignores the specification's "do not fall back to `initialize`" and
-        //    hands us a legacy handshake anyway is served it - `initialize` is
-        //    exempt - and then dies on its first real call.
+        // 3. What a probe costs: nothing since rmcp 3.5.1 (#1248). The
+        //    discover armed no latch, so a client that ignores the
+        //    specification's "do not fall back to `initialize`" and hands us a
+        //    legacy handshake anyway gets a whole legacy session, and its first
+        //    real call without `_meta` is served.
         write
             .write_all(
                 b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\
@@ -3410,8 +3438,7 @@ mod tests {
             .unwrap();
         write.flush().await.unwrap();
         // Both answers are in flight at once, so index them by id rather than
-        // by arrival: rmcp dispatches concurrently and the refusal is quicker
-        // than the handshake.
+        // by arrival: rmcp dispatches concurrently.
         let mut answers = std::collections::HashMap::new();
         for _ in 0..2 {
             let v: Value =
@@ -3425,18 +3452,11 @@ mod tests {
             "the legacy handshake still succeeds, at the revision rmcp negotiates \
              for one: {handshake}"
         );
-        let refused = &answers[&serde_json::json!(2)];
-        assert_eq!(
-            refused["error"]["code"],
-            serde_json::json!(-32602),
-            "{refused}"
-        );
-        assert_eq!(
-            refused["error"]["message"],
-            "request _meta is missing or has malformed required fields: \
-             io.modelcontextprotocol/protocolVersion, \
-             io.modelcontextprotocol/clientCapabilities",
-            "the latch is what refuses it, not our own guard: {refused}"
+        let listed = &answers[&serde_json::json!(2)];
+        assert!(listed["error"].is_null(), "not refused: {listed}");
+        assert!(
+            listed["result"]["tools"].is_array(),
+            "the legacy session serves a call without _meta: {listed}"
         );
 
         drop(write);

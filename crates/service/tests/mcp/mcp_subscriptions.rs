@@ -14,11 +14,16 @@
 //! `subscriptions/listen` with `method_not_found` while `legacy_request` is true
 //! (rmcp 3.1.2 `handler/server.rs:147-150`), and `uses_legacy_lifecycle`
 //! (`service.rs:196-202`) is `!requires_request_metadata && version <
-//! 2026-07-28`. A client that opens with `server/discover` arms the server
-//! peer's one-way metadata latch (`service/server.rs:541`, the only call site in
-//! the crate), which makes `requires_request_metadata` true for every later
-//! request on that connection. So the modern dispatch is reachable over stdio at
-//! any advertised revision, and every test here drives it that way.
+//! 2026-07-28`. A client's first complete modern request (one whose `_meta`
+//! carries both required keys) arms the server peer's one-way metadata latch
+//! (`service/server.rs`, the only call site in the crate), which makes
+//! `requires_request_metadata` true for every later request on that
+//! connection. So the modern dispatch is reachable over stdio at any advertised
+//! revision, and every test here drives it that way. The `server/discover`
+//! these clients open with arms nothing since rmcp 3.5.1 (#1248); it is
+//! answered from rmcp's start-up loop, which keeps waiting for either
+//! lifecycle, so the server half is waited on only after that first modern
+//! request (`support::mcp_session`).
 //!
 //! The HTTP transport arms nothing, so before 2026-07-28 was advertised the
 //! same request was classified legacy there and refused `method not found`.
@@ -49,6 +54,7 @@
 
 use std::sync::Arc;
 
+use crate::support::mcp_session::ServedSession;
 use crystalline_core::config::{DomainEntry, GlobalConfig, ResponseFormat, ServiceConfig};
 use crystalline_index::TursoStore;
 use crystalline_service::Engine;
@@ -150,15 +156,11 @@ impl Harness {
         &self,
     ) -> (
         RunningService<RoleClient, Recorder>,
-        RunningService<RoleServer, McpServer>,
+        ServedSession<McpServer>,
         Recorder,
     ) {
         let (client_io, server_io) = tokio::io::duplex(1 << 16);
-        let engine = self.engine.clone();
-        let server_task =
-            tokio::spawn(
-                async move { rmcp::serve_server(McpServer::new(engine), server_io).await },
-            );
+        let server = ServedSession::spawn(McpServer::new(self.engine.clone()), server_io);
         let recorder = Recorder::default();
         let client = recorder
             .clone()
@@ -170,7 +172,8 @@ impl Harness {
             )
             .await
             .expect("the server answers server/discover");
-        let server = server_task.await.unwrap().unwrap();
+        // The discover chose no lifecycle (rmcp 3.5.1), so the server half is
+        // handed back unwaited: the client's first modern request chooses it.
         (client, server, recorder)
     }
 
@@ -323,9 +326,7 @@ fn required_meta() -> Value {
 async fn the_acknowledgment_is_the_first_message_and_names_the_subscription() {
     let h = Harness::new().await;
     let (client_io, server_io) = tokio::io::duplex(1 << 16);
-    let engine = h.engine.clone();
-    let server_task =
-        tokio::spawn(async move { rmcp::serve_server(McpServer::new(engine), server_io).await });
+    let mut server = ServedSession::spawn(McpServer::new(h.engine.clone()), server_io);
 
     let (read, write) = tokio::io::split(client_io);
     let mut wire = Wire {
@@ -333,7 +334,9 @@ async fn the_acknowledgment_is_the_first_message_and_names_the_subscription() {
         lines: tokio::io::BufReader::new(read).lines(),
     };
 
-    // Open on the modern lifecycle, which arms the latch (see the module doc).
+    // Discover first, as a modern client does. It chooses no lifecycle; the
+    // `subscriptions/listen` below is the first complete modern request, and
+    // that one arms the latch (see the module doc).
     wire.send(json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -341,7 +344,6 @@ async fn the_acknowledgment_is_the_first_message_and_names_the_subscription() {
         "params": { "_meta": required_meta() },
     }))
     .await;
-    let server = server_task.await.unwrap().unwrap();
     let discovered = wire.recv().await.expect("server/discover is answered");
     assert_eq!(discovered["id"], json!(1));
     assert!(
@@ -366,6 +368,7 @@ async fn the_acknowledgment_is_the_first_message_and_names_the_subscription() {
         .recv()
         .await
         .expect("a subscription is acknowledged rather than refused");
+    server.started().await;
     assert_eq!(
         first["method"], "notifications/subscriptions/acknowledged",
         "the acknowledgment MUST be the first message on the stream: {first}"
@@ -910,15 +913,31 @@ async fn only_the_tool_list_moves_and_only_on_the_setting_that_gates_it() {
 /// subscription assertions above can pass on a connection that would never
 /// reach the subscription branch at all. **A guard rather than a red:** it
 /// passes before and after this task.
+///
+/// Since rmcp 3.5.1 the discover alone chooses no lifecycle, so the guard
+/// sends a first complete modern request and only then looks at the server:
+/// rmcp has handed back a running session (the lifecycle is chosen) and that
+/// session never saw an `initialize` (no peer info), so it is the modern one
+/// with its latch armed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_modern_lifecycle_is_what_these_tests_actually_drive() {
     let h = Harness::new().await;
-    let (client, _server, _recorder) = h.connect_modern().await;
+    let (client, mut server, _recorder) = h.connect_modern().await;
 
     // A legacy connection answers `initialize`; a modern one never sends it and
     // learns the same version from `server/discover`.
     let info = client.peer().peer_info().expect("the peer published info");
     assert_eq!(info.protocol_version, newest_served());
+
+    client
+        .list_all_tools()
+        .await
+        .expect("the first modern request is served");
+    let running = server.started().await;
+    assert!(
+        running.peer().peer_info().is_none(),
+        "the session was chosen by a modern request, not by an initialize"
+    );
     assert!(
         ClientConfig::default().protocol_version >= ProtocolVersion::V_2025_03_26,
         "sanity: the rmcp client default is a real revision"

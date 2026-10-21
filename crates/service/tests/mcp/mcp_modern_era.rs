@@ -38,6 +38,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::support::MockProvider;
+use crate::support::mcp_session::{ServedSession, chooses_lifecycle};
 use crystalline_core::config::{
     DomainEntry, GitHubConfig, GlobalConfig, ResponseFormat, ServiceConfig,
 };
@@ -277,17 +278,12 @@ impl Harness {
     /// rmcp client sits between the assertions and the wire.
     async fn stdio(&self) -> Wire {
         let (client_io, server_io) = tokio::io::duplex(1 << 18);
-        let engine = self.engine.clone();
-        let server =
-            tokio::spawn(
-                async move { rmcp::serve_server(McpServer::new(engine), server_io).await },
-            );
+        let server = ServedSession::spawn(McpServer::new(self.engine.clone()), server_io);
         let (read, write) = tokio::io::split(client_io);
         Wire {
             write,
             lines: tokio::io::BufReader::new(read).lines(),
-            server: Some(server),
-            running: None,
+            server,
         }
     }
 
@@ -322,23 +318,14 @@ impl Harness {
     }
 }
 
-type ServerTask = tokio::task::JoinHandle<
-    Result<
-        rmcp::service::RunningService<rmcp::RoleServer, McpServer>,
-        rmcp::service::ServerInitializeError,
-    >,
->;
-
 struct Wire {
     write: tokio::io::WriteHalf<tokio::io::DuplexStream>,
     lines: tokio::io::Lines<tokio::io::BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
-    /// The init loop's join handle until the opener has been sent. rmcp's
-    /// `serve_server` returns as soon as it has handled the first message -
-    /// whether that was an `initialize` or an inline modern request - so the
-    /// handle is awaited exactly once and the running service it yields is
+    /// The server half, waited on once the first message that chooses the
+    /// lifecycle was answered (an `initialize` or a complete modern request,
+    /// never a `server/discover` on its own; see `support::mcp_session`) and
     /// kept alive for the rest of the conversation.
-    server: Option<ServerTask>,
-    running: Option<rmcp::service::RunningService<rmcp::RoleServer, McpServer>>,
+    server: ServedSession<McpServer>,
 }
 
 impl Wire {
@@ -356,19 +343,26 @@ impl Wire {
         }
     }
 
-    /// Send the session opener and read its answer, collecting the running
-    /// service the init loop hands back.
+    /// Send the session opener and read its answer.
     async fn open(&mut self, message: Value) -> Value {
-        self.send(message).await;
-        let task = self.server.take().expect("the opener is sent once");
-        self.running = Some(task.await.unwrap().expect("the server opened a session"));
-        self.recv().await.expect("the opener was answered")
+        self.exchange(message, "the opener was answered").await
     }
 
     /// Send a request on an open session and read its answer.
     async fn call(&mut self, message: Value) -> Value {
+        self.exchange(message, "the request was answered").await
+    }
+
+    /// Send `message`, read its answer, and collect the running service the
+    /// start-up loop hands back once `message` chose the lifecycle.
+    async fn exchange(&mut self, message: Value, answered: &str) -> Value {
+        let chooses = !self.server.is_started() && chooses_lifecycle(&message);
         self.send(message).await;
-        self.recv().await.expect("the request was answered")
+        let answer = self.recv().await.expect(answered);
+        if chooses {
+            self.server.started().await;
+        }
+        answer
     }
 }
 
@@ -592,6 +586,12 @@ async fn a_legacy_peer_on_the_same_binary_is_handed_none_of_it() {
 /// there is nothing of ours in this behaviour beyond which era a peer is on.
 /// Both halves are asserted, because a removal that also broke the legacy era
 /// would be a regression rather than conformance.
+///
+/// The modern `ping` follows a first complete modern request on purpose: that
+/// request is what puts the connection on the modern lifecycle. Since rmcp
+/// 3.5.1 a `server/discover` does not, and a `ping` before the first modern
+/// request is answered by rmcp's start-up loop instead, which
+/// `a_ping_straight_after_discover_is_answered_by_rmcps_start_up_loop` pins.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ping_is_removed_for_a_modern_peer_and_still_answered_for_a_legacy_one() {
     let h = Harness::new().await;
@@ -600,7 +600,12 @@ async fn ping_is_removed_for_a_modern_peer_and_still_answered_for_a_legacy_one()
     modern_wire
         .open(modern(1, "server/discover", json!({})))
         .await;
-    let refused = modern_wire.call(modern(2, "ping", json!({}))).await;
+    let listed = modern_wire.call(modern(2, "tools/list", json!({}))).await;
+    assert!(
+        listed["result"]["tools"].is_array(),
+        "the first modern request is served: {listed}"
+    );
+    let refused = modern_wire.call(modern(3, "ping", json!({}))).await;
     assert_eq!(
         refused["error"]["code"],
         json!(-32601),
@@ -626,38 +631,92 @@ async fn ping_is_removed_for_a_modern_peer_and_still_answered_for_a_legacy_one()
     );
 }
 
+/// The refusal both missing-`_meta` tests below expect, naming both keys.
+const MISSING_META: &str = "request _meta is missing or has malformed required fields: \
+                            io.modelcontextprotocol/protocolVersion, \
+                            io.modelcontextprotocol/clientCapabilities";
+
 /// A request that omits a required `_meta` key on a connection whose latch is
 /// armed is refused `-32602`, and the message names both keys.
 ///
 /// The message text is asserted rather than the code alone: a bare code can be
 /// produced by a malformed request for reasons that have nothing to do with
 /// the lifecycle, which is the trap this program recorded at Task 4.
+///
+/// The latch is armed by a first complete modern request, not by the discover:
+/// since rmcp 3.5.1 a discover leaves the connection open to either lifecycle,
+/// and the same refusal then comes from rmcp's start-up loop instead
+/// (`a_request_missing_its_meta_straight_after_discover_is_refused_by_rmcps_start_up_loop`).
+/// Without the modern request first this test would pass on a connection whose
+/// latch was never armed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_request_missing_its_required_meta_is_refused_with_invalid_params() {
     let h = Harness::new().await;
     let mut wire = h.stdio().await;
 
-    // The opener has to be *answered*, not merely accepted: rmcp arms the
-    // latch at `service/server.rs:541` before dispatch, so a probe refused
-    // `-32022` for an unadvertised version would arm it too and make the
-    // refusal below pass on a connection that was never modern at all.
     let opened = wire.open(modern(1, "server/discover", json!({}))).await;
     assert!(
         opened["result"]["instructions"].is_string(),
-        "the connection is a modern one: {opened}"
+        "the discover is answered: {opened}"
+    );
+    // The first complete modern request has to be *answered*, not merely
+    // accepted: rmcp refuses an unadvertised version `-32022` from its start-up
+    // loop without choosing a lifecycle, so only a served request proves the
+    // latch is armed.
+    let listed = wire.call(modern(2, "tools/list", json!({}))).await;
+    assert!(
+        listed["result"]["tools"].is_array(),
+        "the connection is a modern one: {listed}"
     );
 
+    let refused = wire.call(request(3, "tools/list", json!({}))).await;
+    assert_eq!(refused["error"]["code"], json!(-32602), "{refused}");
+    assert_eq!(
+        refused["error"]["message"],
+        json!(MISSING_META),
+        "{refused}"
+    );
+}
+
+/// **What rmcp 3.5.1 changed: a discover chooses no lifecycle.** A `ping`
+/// straight after `server/discover`, before any modern request, is answered
+/// `{}` by rmcp's start-up loop, which answers a pre-handshake `ping` whatever
+/// its `_meta` says. The era's removal of `ping` therefore holds only once a
+/// first modern request has put the connection on the modern lifecycle
+/// (`ping_is_removed_for_a_modern_peer_and_still_answered_for_a_legacy_one`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ping_straight_after_discover_is_answered_by_rmcps_start_up_loop() {
+    let h = Harness::new().await;
+    let mut wire = h.stdio().await;
+
+    wire.open(modern(1, "server/discover", json!({}))).await;
+    let answered = wire.call(modern(2, "ping", json!({}))).await;
+    assert_eq!(answered["result"], json!({}), "{answered}");
+    assert!(answered["error"].is_null(), "{answered}");
+    assert!(
+        !wire.server.is_started(),
+        "and the connection is still on neither lifecycle"
+    );
+}
+
+/// The start-up loop's half of the missing-`_meta` refusal: a `tools/list`
+/// without `_meta` straight after `server/discover` is refused `-32602` with
+/// the same message, by rmcp's start-up loop rather than by an armed latch, and
+/// the connection stays open to either lifecycle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_missing_its_meta_straight_after_discover_is_refused_by_rmcps_start_up_loop() {
+    let h = Harness::new().await;
+    let mut wire = h.stdio().await;
+
+    wire.open(modern(1, "server/discover", json!({}))).await;
     let refused = wire.call(request(2, "tools/list", json!({}))).await;
     assert_eq!(refused["error"]["code"], json!(-32602), "{refused}");
     assert_eq!(
         refused["error"]["message"],
-        json!(
-            "request _meta is missing or has malformed required fields: \
-             io.modelcontextprotocol/protocolVersion, \
-             io.modelcontextprotocol/clientCapabilities"
-        ),
+        json!(MISSING_META),
         "{refused}"
     );
+    assert!(!wire.server.is_started(), "the refusal chose no lifecycle");
 }
 
 /// The tool list does not move across a `configure` that flips a setting the
@@ -900,7 +959,8 @@ async fn a_modern_request_over_http_is_served_statelessly_with_its_hints() {
 /// onboarding channel for a remote modern client - and it is a different code
 /// path from the stdio one, which is why it is asserted separately.
 ///
-/// A **bare** probe over HTTP is still the `422` `tests/mcp/http_stream.rs` pins:
+/// A **bare** probe over HTTP is still the refusal `tests/mcp/http_stream.rs` pins
+/// (`400 Session ID is required` since rmcp 3.6.0, `422` before):
 /// it carries no `_meta`, so it is classified legacy and takes the session
 /// branch. Over stdio the same probe is answered `-32602` by rmcp itself
 /// (since 3.1.4, rust-sdk #1157); nothing on our side rewrites it any more, so
@@ -1061,9 +1121,16 @@ async fn a_handshake_declaring_the_era_is_served_as_a_legacy_session() {
         None,
     )
     .await;
+    // `400 Session ID is required` since rmcp 3.6.0 (#1377); 3.5.0 answered
+    // `422 Unexpected message, expect initialize request`.
     assert!(
-        bare.starts_with("HTTP/1.1 422 Unprocessable Entity"),
+        bare.starts_with("HTTP/1.1 400 Bad Request"),
         "a bare follow-up has no session to present:\n{}",
+        head_of(&bare)
+    );
+    assert!(
+        bare.contains("Session ID is required"),
+        "{}",
         head_of(&bare)
     );
 }
@@ -2453,8 +2520,9 @@ async fn a_personal_http_share_without_an_agent_identity_names_the_setting() {
     h.share_personally(None).await;
     let addr = h.http().await;
 
-    // A refused call is answered as a JSON-RPC error, which rmcp's HTTP
-    // transport frames with a 400 rather than the 200 a result gets - the
+    // A refused call is answered as a JSON-RPC error. Since rmcp 3.5.1 (#1322)
+    // the stateless HTTP path sends an `invalid_params` error in-band with a
+    // 200, like a result, unless the request's own `_meta` is malformed. The
     // status is that layer's business, the message is ours.
     let raw = modern_post(addr, 1, "tools/call", share_kb(None)).await;
     let refused = payload(&raw);

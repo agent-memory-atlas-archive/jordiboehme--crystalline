@@ -14,8 +14,13 @@
 //! `update_branch` and a protected branch, so a direct share can be driven
 //! through the engine. Production code never depends on this; it exists only
 //! under `tests/`.
+//!
+//! [`mcp_session`] beside it holds the server half of the in-memory MCP
+//! connections the stdio tests drive.
 
 #![allow(dead_code)]
+
+pub mod mcp_session;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
