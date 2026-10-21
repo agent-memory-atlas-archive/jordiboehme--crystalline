@@ -561,6 +561,12 @@ pub struct EvolveParams {
     /// what matters most on a large archive.
     #[serde(default)]
     pub min_priority: Option<u8>,
+    /// Keep one class of finding: mechanical (completes intent the archive
+    /// already records, safe to fix without asking) or judgment (changes what
+    /// the archive claims, left for a person). A headless run passes
+    /// mechanical. Omit for both.
+    #[serde(default)]
+    pub class: Option<String>,
     /// Page size. Defaults to 10, capped at 100.
     #[serde(default)]
     pub limit: Option<usize>,

@@ -560,6 +560,75 @@ async fn min_priority_drops_the_low_scoring_tail() {
     );
 }
 
+/// The `class` filter keeps one class of finding, so a headless run can fix
+/// the mechanical ones and leave the judgment ones for a person. The scope
+/// echoes it and the total counts only the kept class.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn class_mechanical_returns_only_mechanical_findings() {
+    let (_tmp, engine) = fixture().await;
+    let all = sweep(
+        &engine,
+        TODAY,
+        EvolveParams {
+            limit: Some(100),
+            ..EvolveParams::default()
+        },
+    )
+    .await;
+
+    for (class, other) in [("mechanical", "judgment"), ("judgment", "mechanical")] {
+        let v = sweep(
+            &engine,
+            TODAY,
+            EvolveParams {
+                limit: Some(100),
+                class: Some(class.to_string()),
+                ..EvolveParams::default()
+            },
+        )
+        .await;
+        let queue = v["queue"].as_array().unwrap();
+        assert!(!queue.is_empty(), "the fixture has {class} findings");
+        assert!(
+            queue.iter().all(|row| row["class"] == class),
+            "only {class} rows: {v}"
+        );
+        assert!(
+            all["queue"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["class"] == other),
+            "the unfiltered sweep holds {other} rows too"
+        );
+        assert_eq!(v["scope"]["class"], class, "the scope echoes it");
+        assert_eq!(v["total"], queue.len());
+        assert!(v["total"].as_u64() < all["total"].as_u64());
+    }
+    assert_eq!(all["scope"]["class"], Value::Null);
+}
+
+/// Anything but `mechanical` or `judgment` is refused, naming both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unknown_class_is_refused() {
+    let (_tmp, engine) = fixture().await;
+    let e = engine
+        .evolve_detect(
+            &EvolveParams {
+                class: Some("risky".to_string()),
+                ..EvolveParams::default()
+            },
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        e,
+        "unknown class 'risky'; valid classes: mechanical, judgment"
+    );
+}
+
 /// An unknown domain, family or rule errors naming the valid set, so a caller
 /// recovers in one step. An id outside the catalog errors rather than
 /// returning silence.

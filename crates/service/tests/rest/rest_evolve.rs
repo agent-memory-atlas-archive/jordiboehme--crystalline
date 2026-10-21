@@ -356,6 +356,7 @@ async fn the_queue_refuses_an_unknown_scope_by_code() {
         ("?domains=nope", 404),
         ("?families=bogus", 422),
         ("?rules=V999", 422),
+        ("?class=risky", 422),
     ] {
         let resp = get(fixture.addr, &format!("/api/v1/evolve{query}")).await;
         assert_eq!(
@@ -431,6 +432,32 @@ async fn scoping_and_paging_pass_through() {
     assert_eq!(
         above_everything["total"], 0,
         "the priority floor reaches the engine: {above_everything}"
+    );
+}
+
+/// `?class=` narrows the queue to one class and the scope echoes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_class_filter_passes_through() {
+    let fixture = serve_anonymous().await;
+
+    let all = queue(fixture.addr, "").await;
+    let judgment = queue(fixture.addr, "?class=judgment").await;
+    assert_eq!(judgment["scope"]["class"], "judgment", "{judgment}");
+    assert!(!rows(&judgment).is_empty(), "the captures are judgment");
+    assert!(
+        rows(&judgment).iter().all(|row| row["class"] == "judgment"),
+        "{judgment}"
+    );
+    let mechanical = queue(fixture.addr, "?class=mechanical").await;
+    assert!(
+        rows(&mechanical)
+            .iter()
+            .all(|row| row["class"] == "mechanical"),
+        "{mechanical}"
+    );
+    assert_eq!(
+        judgment["total"].as_u64().unwrap() + mechanical["total"].as_u64().unwrap(),
+        all["total"].as_u64().unwrap()
     );
 }
 

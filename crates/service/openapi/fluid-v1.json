@@ -8435,6 +8435,16 @@
             "example": 50
           },
           {
+            "name": "class",
+            "in": "query",
+            "description": "Keep one class of finding: `mechanical` or `judgment`. Defaults to both.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "judgment"
+          },
+          {
             "name": "limit",
             "in": "query",
             "description": "Page size. Defaults to 10, clamped by the engine to 100.",
@@ -8575,7 +8585,7 @@
             }
           },
           "422": {
-            "description": "`families` or `rules` names something the catalog does not have.",
+            "description": "`families`, `rules` or `class` names something the catalog does not have.",
             "content": {
               "application/problem+json": {
                 "schema": {

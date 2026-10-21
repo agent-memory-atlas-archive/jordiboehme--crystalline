@@ -43,7 +43,7 @@ use crystalline_core::{
     slugify,
 };
 use crystalline_index::{
-    AckCounts, AckEntry, AttachmentRow, ChunkParams, DEFAULT_RETIRED_WEIGHT,
+    AckCounts, AckEntry, AttachmentRow, ChunkParams, Class, DEFAULT_RETIRED_WEIGHT,
     DEFAULT_SALIENCE_WEIGHT, DomainHost, DomainId, DomainKind, DomainLookup, DomainStats,
     EMBED_PAGE_SIZE, EdgeKind, EmbeddingProvider, EngramDescriptor, EngramFacts, EngramId,
     EngramRecord, EngramSummary, FactObservation, Family, FileStamp, Finding, GraphNode,
@@ -7904,6 +7904,19 @@ fn parse_families(requested: &[String]) -> Result<Vec<Family>> {
         }
     }
     Ok(out)
+}
+
+/// Parse the requested finding class, erroring on an unknown value with both
+/// valid ones named. `None` and a blank value mean both classes.
+fn parse_class(requested: Option<&str>) -> Result<Option<Class>> {
+    match requested.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(raw) if raw.eq_ignore_ascii_case("mechanical") => Ok(Some(Class::Mechanical)),
+        Some(raw) if raw.eq_ignore_ascii_case("judgment") => Ok(Some(Class::Judgment)),
+        Some(raw) => Err(EngineError::Invalid(format!(
+            "unknown class '{raw}'; valid classes: mechanical, judgment"
+        ))),
+    }
 }
 
 /// Parse the requested rule ids into their catalog spellings, erroring on an

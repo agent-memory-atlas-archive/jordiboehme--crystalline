@@ -53,6 +53,10 @@ pub struct EvolveQuery {
     #[serde(default)]
     #[param(example = 50)]
     min_priority: Option<u8>,
+    /// Keep one class of finding: `mechanical` or `judgment`. Defaults to both.
+    #[serde(default)]
+    #[param(example = "judgment")]
+    class: Option<String>,
     /// Page size. Defaults to 10, clamped by the engine to 100.
     #[serde(default)]
     #[param(example = 25)]
@@ -200,7 +204,7 @@ pub struct EvolveQuery {
         ),
         (
             status = 422,
-            description = "`families` or `rules` names something the catalog does \
+            description = "`families`, `rules` or `class` names something the catalog does \
                            not have.",
             body = ProblemDetail,
             content_type = "application/problem+json",
@@ -221,6 +225,7 @@ pub async fn queue(
                 families: csv(query.families.as_deref()),
                 rules: csv(query.rules.as_deref()),
                 min_priority: query.min_priority,
+                class: query.class,
                 limit: query.limit,
                 page: query.page,
                 include_acknowledged: query.include_acknowledged.unwrap_or(false),

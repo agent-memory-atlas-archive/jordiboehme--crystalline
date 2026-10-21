@@ -184,6 +184,7 @@ impl Engine {
         };
         let families = parse_families(&p.families)?;
         let rules = parse_rules(&p.rules)?;
+        let class = parse_class(p.class.as_deref())?;
 
         // Every LOCAL domain name this caller may see: the default sweep
         // scope, one domain swept once whatever it also answers to.
@@ -285,6 +286,7 @@ impl Engine {
             (families.is_empty() || families.contains(&f.family))
                 && (rules.is_empty() || rules.contains(&f.rule))
                 && p.min_priority.is_none_or(|min| f.priority >= min)
+                && class.is_none_or(|c| f.class == c)
         });
         // Re-ranked after the merge: each domain's report is ranked on its own,
         // and the sort is total and deterministic, so consecutive pages of an
@@ -412,6 +414,7 @@ impl Engine {
                 "families": families.iter().map(|f| f.as_str()).collect::<Vec<_>>(),
                 "rules": rules,
                 "min_priority": p.min_priority,
+                "class": class.map(|c| c.as_str()),
                 "today": today.to_string(),
             },
             "engrams_scanned": engrams_scanned,

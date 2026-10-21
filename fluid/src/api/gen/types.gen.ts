@@ -6234,6 +6234,10 @@ export type GetEvolveQueueData = {
          */
         min_priority?: number;
         /**
+         * Keep one class of finding: `mechanical` or `judgment`. Defaults to both.
+         */
+        class?: string;
+        /**
          * Page size. Defaults to 10, clamped by the engine to 100.
          */
         limit?: number;
@@ -6269,7 +6273,7 @@ export type GetEvolveQueueErrors = {
      */
     404: ProblemDetail;
     /**
-     * `families` or `rules` names something the catalog does not have.
+     * `families`, `rules` or `class` names something the catalog does not have.
      */
     422: ProblemDetail;
 };
