@@ -596,3 +596,71 @@ async fn a_pact_write_never_reports_unsourced_sections() {
         .unwrap();
     assert!(written.get("unsourced_sections").is_none(), "{written}");
 }
+
+#[tokio::test]
+async fn a_later_write_names_only_the_unsourced_section_it_changed() {
+    let fx = reflecting().await;
+    fx.engine
+        .write_reflection(&write("a.md", TWO_SECTIONS), &agent())
+        .await
+        .unwrap();
+    let stored = std::fs::read_to_string(fx.root.join("reflections/a.md")).unwrap();
+    let written = fx
+        .engine
+        .write_reflection(
+            &write("a.md", &stored.replace("Roll back.", "Roll back fast.")),
+            &agent(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        written["unsourced_sections"],
+        serde_json::json!(["Rollback"]),
+        "{written}"
+    );
+}
+
+#[tokio::test]
+async fn a_sources_only_write_reports_no_unsourced_sections() {
+    let fx = reflecting().await;
+    fx.engine
+        .write_reflection(&write("a.md", TWO_SECTIONS), &agent())
+        .await
+        .unwrap();
+    let mut p = write("a.md", "");
+    p.markdown = None;
+    p.sources = BTreeMap::from([(
+        "Night deploys".to_string(),
+        vec!["runbooks/deploy".to_string()],
+    )]);
+    let written = fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    assert_eq!(written["curated"], true, "{written}");
+    assert!(written.get("unsourced_sections").is_none(), "{written}");
+}
+
+#[tokio::test]
+async fn a_settle_reports_no_unsourced_sections() {
+    let fx = reflecting().await;
+    fx.engine
+        .write_reflection(&write("a.md", TWO_SECTIONS), &agent())
+        .await
+        .unwrap();
+    let stored = std::fs::read_to_string(fx.root.join("reflections/a.md")).unwrap();
+    std::fs::write(
+        fx.root.join("reflections/a.md"),
+        stored.replace("Roll back.", "Roll back by hand."),
+    )
+    .unwrap();
+    let id = crystalline_core::reflection::split_sections(
+        &std::fs::read_to_string(fx.root.join("reflections/a.md")).unwrap(),
+    )[2]
+    .id
+    .clone()
+    .unwrap();
+    let settled = fx
+        .engine
+        .settle_reflection("eng", "a.md", &[id], "kept", &agent())
+        .await
+        .unwrap();
+    assert!(settled.get("unsourced_sections").is_none(), "{settled}");
+}

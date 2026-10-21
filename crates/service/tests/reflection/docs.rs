@@ -1501,8 +1501,9 @@ async fn an_id_line_no_heading_can_carry_is_replaced_and_said() {
         .unwrap();
     assert_eq!(again["ids_assigned"], serde_json::json!([]), "{again}");
     // Nothing is said about ids; the one section it changed names no source.
-    assert!(
-        !again["guidance"].to_string().contains("replaced"),
+    assert_eq!(
+        again["guidance"],
+        "These sections name no source engrams: pass sources for each section you built from engrams, so the queue can follow them.",
         "{again}"
     );
     assert_eq!(
