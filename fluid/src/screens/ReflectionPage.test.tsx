@@ -36,6 +36,18 @@ vi.mock("../taskTick", async (importOriginal) => {
   };
 });
 
+const saved = vi.hoisted(() => ({ calls: [] as [Blob, string][] }));
+vi.mock("../components/downloads", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../components/downloads")>();
+  return {
+    ...actual,
+    saveBlob: (blob: Blob, name: string) => {
+      saved.calls.push([blob, name]);
+    },
+  };
+});
+
 const MARKDOWN =
   "---\ntitle: Deploying\nreflection:\n  7f3a9c2e:\n    sources:\n      - engram: runbooks/deploy\n        checksum: ab\n---\n\n# Deploying\n\nShort intro.\n\n## Night deploys\n<!-- r:7f3a9c2e -->\n\nDeploys run at night.\n";
 
@@ -111,6 +123,7 @@ function serve(
 
 beforeEach(() => {
   apiMock.mockReset();
+  saved.calls = [];
 });
 
 describe("the reflection page", () => {
@@ -744,7 +757,7 @@ describe("the reflection page header", () => {
     await user.click(screen.getByRole("button", { name: "More actions" }));
     expect(
       (await screen.findAllByRole("menuitem")).map((row) => row.textContent),
-    ).toEqual(["Print view", "Move", "Delete"]);
+    ).toEqual(["Download as Markdown", "Print view", "Move", "Delete"]);
     // Move and Delete sit under a rule, after the safe row.
     expect(screen.getByRole("separator")).toBeInTheDocument();
     expect(
@@ -755,7 +768,7 @@ describe("the reflection page header", () => {
     ).not.toContain("text-red");
   });
 
-  it("gives a commenter Print view alone and an editor the same rows as a curator", async () => {
+  it("gives a commenter Download and Print view and an editor the same rows as a curator", async () => {
     serve("comment", false);
     const first = renderApp("/d/eng/reflection/guides/deploying.md");
     await screen.findByRole("heading", { name: "Deploying", level: 1 });
@@ -763,7 +776,7 @@ describe("the reflection page header", () => {
     await user.click(screen.getByRole("button", { name: "More actions" }));
     expect(
       (await screen.findAllByRole("menuitem")).map((row) => row.textContent),
-    ).toEqual(["Print view"]);
+    ).toEqual(["Download as Markdown", "Print view"]);
     expect(screen.queryByRole("separator")).toBeNull();
     first.unmount();
     serve("edit", true);
@@ -773,7 +786,45 @@ describe("the reflection page header", () => {
     );
     expect(
       (await screen.findAllByRole("menuitem")).map((row) => row.textContent),
-    ).toEqual(["Print view", "Move", "Delete"]);
+    ).toEqual(["Download as Markdown", "Print view", "Move", "Delete"]);
+  });
+
+  it("downloads the page as Markdown without its reflection block", async () => {
+    serve("curate", true);
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "More actions" }),
+    );
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Download as Markdown" }),
+    );
+    expect(saved.calls).toHaveLength(1);
+    const [blob, name] = saved.calls[0] ?? [];
+    expect(name).toBe("deploying.md");
+    expect(blob?.type).toBe("text/markdown");
+    const text = await blob?.text();
+    expect(text).not.toContain("reflection:");
+    expect(text).not.toContain("sources:");
+    expect(text).toContain("---\ntitle: Deploying\n---");
+    expect(text).toContain("<!-- r:7f3a9c2e -->");
+    expect(text).toContain("Deploys run at night.");
+  });
+
+  it("downloads a page with no frontmatter unchanged, from the palette too", async () => {
+    const plain = "# Notes\n\nJust text.\n";
+    serve("comment", false, {
+      "/domains/eng/reflections/guides/deploying.md": () =>
+        doc({ markdown: plain }),
+    });
+    renderApp("/d/eng/reflection/guides/deploying.md");
+    const user = userEvent.setup();
+    await screen.findByRole("heading", { name: "Notes", level: 1 });
+    await user.keyboard("{Control>}k{/Control}");
+    await user.click(await screen.findByText("Download this page as Markdown"));
+    expect(saved.calls).toHaveLength(1);
+    expect(await saved.calls[0]?.[0].text()).toBe(plain);
+    expect(saved.calls[0]?.[1]).toBe("deploying.md");
   });
 
   it("prints the page from Print view", async () => {
@@ -798,10 +849,14 @@ describe("the reflection page header", () => {
     const more = await screen.findByRole("button", { name: "More actions" });
     more.focus();
     await user.keyboard("{Enter}");
-    const print = await screen.findByRole("menuitem", { name: "Print view" });
-    await waitFor(() => {
-      expect(print).toHaveFocus();
+    const download = await screen.findByRole("menuitem", {
+      name: "Download as Markdown",
     });
+    await waitFor(() => {
+      expect(download).toHaveFocus();
+    });
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("menuitem", { name: "Print view" })).toHaveFocus();
     await user.keyboard("{ArrowDown}");
     expect(screen.getByRole("menuitem", { name: "Move" })).toHaveFocus();
     await user.keyboard("{ArrowDown}");

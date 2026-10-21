@@ -341,11 +341,11 @@ describe("creating, moving and deleting pages", () => {
     serve("curate");
     renderApp("/d/eng/reflection/PACT.md");
     await screen.findByRole("link", { name: "Edit" });
-    // Print view alone: the pact can be neither moved nor deleted.
+    // Download and Print view only: the pact can be neither moved nor deleted.
     await userEvent.click(screen.getByRole("button", { name: "More actions" }));
     expect(
       (await screen.findAllByRole("menuitem")).map((row) => row.textContent),
-    ).toEqual(["Print view"]);
+    ).toEqual(["Download as Markdown", "Print view"]);
   });
 
   it("offers a commenter no New page, Move or Delete", async () => {
@@ -353,11 +353,11 @@ describe("creating, moving and deleting pages", () => {
     renderApp("/d/eng/reflection/guides/a.md");
     await screen.findByRole("heading", { name: "A" });
     expect(screen.queryByRole("button", { name: "New page" })).toBeNull();
-    // Print view alone: nothing to move or delete for this reader.
+    // Download and Print view only: nothing to move or delete for this reader.
     await userEvent.click(screen.getByRole("button", { name: "More actions" }));
     expect(
       (await screen.findAllByRole("menuitem")).map((row) => row.textContent),
-    ).toEqual(["Print view"]);
+    ).toEqual(["Download as Markdown", "Print view"]);
   });
 });
 
