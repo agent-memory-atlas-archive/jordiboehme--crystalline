@@ -9,6 +9,11 @@
 //! same for a `ping` and for a request it refuses there. A harness that opened
 //! with discover and then awaited the server task therefore waited forever.
 //!
+//! A **notification** (or a response) in that window is not neutral: the
+//! start-up loop accepts only requests, so it ends the session with
+//! `ExpectedInitializeRequest`. Under rmcp 3.5.0 the discover had already
+//! chosen the modern lifecycle and such a notification was served.
+//!
 //! [`ServedSession`] holds that task and is waited on only after a message
 //! that chooses the lifecycle was answered. [`chooses_lifecycle`] names those
 //! messages for the harnesses that write JSON-RPC lines by hand.
@@ -49,9 +54,35 @@ impl<S: Service<RoleServer>> ServedSession<S> {
         }
     }
 
-    /// Whether rmcp has handed back the running service yet.
+    /// Whether the harness has collected the running service yet. This is
+    /// the harness's own state; ask [`Self::rmcp_returned`] what rmcp did.
     pub fn is_started(&self) -> bool {
         self.running.is_some()
+    }
+
+    /// Whether `rmcp::serve_server` has returned, that is, whether rmcp has
+    /// left its start-up loop (with a running session or with an error).
+    /// rmcp returns before it dispatches the message that chose the lifecycle,
+    /// so once that message's answer was read this is reliable.
+    pub fn rmcp_returned(&self) -> bool {
+        self.running.is_some() || self.task.as_ref().is_some_and(JoinHandle::is_finished)
+    }
+
+    /// The error rmcp's start-up loop ended the session with. Panics if the
+    /// loop has not ended within [`START_TIMEOUT`] or opened a session instead.
+    pub async fn start_error(mut self) -> ServerInitializeError {
+        let task = self
+            .task
+            .take()
+            .expect("the session was not collected as started");
+        match tokio::time::timeout(START_TIMEOUT, task)
+            .await
+            .expect("rmcp's start-up loop is still waiting")
+            .expect("the start-up task did not panic")
+        {
+            Ok(_) => panic!("rmcp opened a session instead of ending the start-up loop"),
+            Err(error) => error,
+        }
     }
 
     /// The running service. Call it only after `initialize` or a complete
@@ -96,8 +127,9 @@ impl<S: Service<RoleServer>> Drop for ServedSession<S> {
 /// Whether rmcp chooses the lifecycle on `message` when it is the first such
 /// message of a stdio session: an `initialize`, or a request other than
 /// `server/discover` and `ping` whose `_meta` carries both required keys and a
-/// revision this server serves. Everything else is answered (or refused) from
-/// rmcp's start-up loop, which then keeps waiting.
+/// revision this server serves. Any other request is answered (or refused) from
+/// rmcp's start-up loop, which then keeps waiting; a notification there ends
+/// the session (see the module doc).
 pub fn chooses_lifecycle(message: &Value) -> bool {
     if message.get("id").is_none() {
         return false;

@@ -150,8 +150,10 @@ impl Harness {
     }
 
     /// A connection on the modern lifecycle: the client opens with
-    /// `server/discover`, which arms rmcp's per-request-metadata latch and puts
-    /// every later request on the modern dispatch (see the module doc).
+    /// `server/discover`, which since rmcp 3.5.1 chooses no lifecycle, and its
+    /// first complete modern request then arms rmcp's per-request-metadata
+    /// latch and puts every later request on the modern dispatch (see the
+    /// module doc). The server half comes back unwaited.
     async fn connect_modern(
         &self,
     ) -> (

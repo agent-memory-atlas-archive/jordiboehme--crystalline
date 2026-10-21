@@ -381,6 +381,19 @@ fn request(id: u32, method: &str, params: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
 }
 
+/// A legacy `initialize` at [`LEGACY`].
+fn legacy_initialize(id: u32) -> Value {
+    request(
+        id,
+        "initialize",
+        json!({
+            "protocolVersion": LEGACY,
+            "capabilities": {},
+            "clientInfo": { "name": "legacy-era-test", "version": "1.0.0" },
+        }),
+    )
+}
+
 /// A modern request: the method, its parameters and the era's `_meta`.
 fn modern(id: u32, method: &str, mut params: Value) -> Value {
     params["_meta"] = modern_meta();
@@ -694,8 +707,14 @@ async fn a_ping_straight_after_discover_is_answered_by_rmcps_start_up_loop() {
     assert_eq!(answered["result"], json!({}), "{answered}");
     assert!(answered["error"].is_null(), "{answered}");
     assert!(
-        !wire.server.is_started(),
-        "and the connection is still on neither lifecycle"
+        !wire.server.rmcp_returned(),
+        "and rmcp is still in its start-up loop, on neither lifecycle"
+    );
+    let handshake = wire.call(legacy_initialize(3)).await;
+    assert_eq!(
+        handshake["result"]["protocolVersion"],
+        json!(LEGACY),
+        "so a legacy handshake is still open to it: {handshake}"
     );
 }
 
@@ -716,7 +735,40 @@ async fn a_request_missing_its_meta_straight_after_discover_is_refused_by_rmcps_
         json!(MISSING_META),
         "{refused}"
     );
-    assert!(!wire.server.is_started(), "the refusal chose no lifecycle");
+    assert!(
+        !wire.server.rmcp_returned(),
+        "the refusal chose no lifecycle: rmcp is still in its start-up loop"
+    );
+    let handshake = wire.call(legacy_initialize(3)).await;
+    assert_eq!(
+        handshake["result"]["protocolVersion"],
+        json!(LEGACY),
+        "so a legacy handshake is still open to it: {handshake}"
+    );
+}
+
+/// A notification after `server/discover` and before the first modern request
+/// ends the stdio session: rmcp's start-up loop accepts only requests, so it
+/// gives up with `ExpectedInitializeRequest`. Under rmcp 3.5.0 the discover had
+/// already chosen the modern lifecycle and the notification was served. A
+/// conforming modern client sends a request first, so this is a pin, not a
+/// problem we work around.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_notification_straight_after_discover_ends_the_stdio_session() {
+    let h = Harness::new().await;
+    let mut wire = h.stdio().await;
+
+    wire.open(modern(1, "server/discover", json!({}))).await;
+    wire.send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+        .await;
+    let error = wire.server.start_error().await;
+    assert!(
+        matches!(
+            error,
+            rmcp::service::ServerInitializeError::ExpectedInitializeRequest(_)
+        ),
+        "{error:?}"
+    );
 }
 
 /// The tool list does not move across a `configure` that flips a setting the
