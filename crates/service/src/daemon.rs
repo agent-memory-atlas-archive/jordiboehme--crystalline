@@ -144,7 +144,7 @@ pub struct Shared {
 impl Shared {
     /// A daemon's shared state over `engine` with nothing else running, for a
     /// test that drives the control socket's handler directly.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn for_test(engine: Arc<Engine>) -> Shared {
         let (shutdown_tx, _) = watch::channel(false);
         let (sessions_tx, _) = watch::channel(0usize);

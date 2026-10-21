@@ -188,7 +188,14 @@ fn the_remote_allow_lists_are_pinned() {
             "hook_status",
             "origin_status",
             "origin_changes",
-            "file"
+            "file",
+            "automation_status",
+            "automation_lease_take",
+            "automation_lease_renew",
+            "automation_lease_release",
+            "automation_run_record",
+            "automation_share",
+            "automation_runs"
         ]
     );
     assert_eq!(
@@ -277,4 +284,134 @@ async fn the_body_is_read_only_after_the_bearer_check() {
     let oversized = crystalline_service::rest::MAX_BODY_BYTES + 1;
     let status = declared_post(&server, oversized).await;
     assert!(status.starts_with("HTTP/1.1 401"), "{status}");
+}
+
+fn verb(cmd: &str, rest: serde_json::Value) -> serde_json::Value {
+    let mut body = rest;
+    body["v"] = json!(1);
+    body["cmd"] = json!(cmd);
+    body
+}
+
+/// A runner's whole cycle over the route with a `cmt_` token: status, take,
+/// renew, record, release, and the run in the history. The take names the
+/// token's account as the lease holder, which is what an MCP write is noted
+/// against, and a second take is refused with the bare sentence.
+#[tokio::test]
+async fn a_token_runs_a_full_cycle_over_the_ctl_route() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    let token = server.token_for("keeper").await;
+    assert!(token.starts_with("cmt_"), "{token}");
+    let ask = |body: serde_json::Value| {
+        let server = &server;
+        let token = token.clone();
+        async move { server.ctl(Some(&token), body).await.1 }
+    };
+
+    let status = ask(verb(
+        "automation_status",
+        json!({ "loop": "evolve", "domains": ["open"] }),
+    ))
+    .await;
+    assert_eq!(status["ok"], true, "{status}");
+    assert_eq!(status["data"]["domains"][0]["domain"], "open", "{status}");
+
+    let take = ask(verb(
+        "automation_lease_take",
+        json!({ "loop": "evolve", "domain": "open", "runner": "k8s" }),
+    ))
+    .await;
+    assert_eq!(take["ok"], true, "{take}");
+    assert_eq!(take["data"]["renew_secs"], 60, "{take}");
+    let lease = take["data"]["token"]
+        .as_str()
+        .expect("the take carries the token");
+
+    let store = server.engine.store();
+    let account = {
+        let store = store.lock().await;
+        let id = store.domain_id("open").await.unwrap().unwrap();
+        store
+            .automation_lease(id, "evolve")
+            .await
+            .unwrap()
+            .unwrap()
+            .holder
+            .account
+    };
+    assert_eq!(account.as_deref(), Some("keeper"));
+
+    let again = ask(verb(
+        "automation_lease_take",
+        json!({ "loop": "evolve", "domain": "open", "runner": "second" }),
+    ))
+    .await;
+    assert_eq!(again["ok"], false, "{again}");
+    assert_eq!(again["error"], "already running", "{again}");
+
+    let renew = ask(verb(
+        "automation_lease_renew",
+        json!({ "loop": "evolve", "domain": "open", "token": lease }),
+    ))
+    .await;
+    assert_eq!(renew["data"]["renewed"], true, "{renew}");
+
+    let record = ask(verb(
+        "automation_run_record",
+        json!({ "loop": "evolve", "domain": "open", "token": lease,
+                "report": { "started_at": "", "outcome": "done", "done": 2, "summary": "fixed two" } }),
+    ))
+    .await;
+    assert_eq!(record["ok"], true, "{record}");
+
+    // The record released the lease; a release now finds nothing to free.
+    let release = ask(verb(
+        "automation_lease_release",
+        json!({ "loop": "evolve", "domain": "open", "token": lease }),
+    ))
+    .await;
+    assert_eq!(release["data"]["released"], false, "{release}");
+
+    let runs = ask(verb(
+        "automation_runs",
+        json!({ "loop": "evolve", "domain": "open", "limit": 5 }),
+    ))
+    .await;
+    assert_eq!(runs["data"]["runs"][0]["summary"], "fixed two", "{runs}");
+    assert_eq!(runs["data"]["runs"][0]["done"], 2, "{runs}");
+
+    let bad = ask(verb(
+        "automation_runs",
+        json!({ "loop": "sweep", "domain": "open" }),
+    ))
+    .await;
+    assert_eq!(bad["ok"], false, "{bad}");
+    assert_eq!(bad["kind"], "invalid", "{bad}");
+}
+
+/// A viewer may read `open` but not write it, so it may not run its evolve
+/// loop: the unnamed status lists nothing and a take is refused.
+#[tokio::test]
+async fn a_token_without_curation_rights_sees_nothing() {
+    let server = RemoteServer::start(Options::TOKENS).await;
+    let token = server.token_for("looker").await;
+    let (_, status) = server
+        .ctl(
+            Some(&token),
+            verb("automation_status", json!({ "loop": "evolve" })),
+        )
+        .await;
+    assert_eq!(status["ok"], true, "{status}");
+    assert_eq!(status["data"]["domains"], json!([]), "{status}");
+    let (_, take) = server
+        .ctl(
+            Some(&token),
+            verb(
+                "automation_lease_take",
+                json!({ "loop": "evolve", "domain": "open", "runner": "k8s" }),
+            ),
+        )
+        .await;
+    assert_eq!(take["ok"], false, "{take}");
+    assert!(take.get("data").is_none(), "{take}");
 }

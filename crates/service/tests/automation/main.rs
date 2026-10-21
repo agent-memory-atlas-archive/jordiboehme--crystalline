@@ -8,4 +8,5 @@ mod support;
 #[path = "../reflection/fixture.rs"]
 mod fixture;
 
+mod ctl;
 mod engine;

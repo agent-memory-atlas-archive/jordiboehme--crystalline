@@ -65,6 +65,15 @@ pub async fn serve_ctl(stream: IpcStream, shared: Arc<Shared>) {
     }
 }
 
+/// One ctl request answered as the daemon would on its control socket, over
+/// `engine` with nothing else running: the seam an integration test drives
+/// the socket's verbs through.
+#[cfg(feature = "testing")]
+#[doc(hidden)]
+pub async fn answer_for_test(engine: Arc<Engine>, req: &Value) -> Value {
+    handle(req, &Arc::new(Shared::for_test(engine))).await.0
+}
+
 /// Handle one ctl request, returning the response envelope and whether the
 /// daemon should shut down after replying.
 async fn handle(req: &Value, shared: &Arc<Shared>) -> (Value, bool) {
@@ -697,6 +706,18 @@ async fn handle(req: &Value, shared: &Arc<Shared>) -> (Value, bool) {
         // The offline change list of one domain, optionally with both sides
         // of every entry inlined (the CLI's diff), optionally narrowed to one
         // path. Never pulls.
+        // The runner's verbs for the reflect and evolve loops, as the machine
+        // owner: no account, so a share falls back to the changed files.
+        automation if crate::automation_ctl::AUTOMATION_COMMANDS.contains(&automation) => (
+            crate::automation_ctl::answer(
+                &shared.engine,
+                automation,
+                req,
+                &crate::scope::Scope::Unrestricted,
+            )
+            .await,
+            false,
+        ),
         "origin_changes" => {
             let domain = req.get("domain").and_then(Value::as_str).unwrap_or("");
             let path = req.get("path").and_then(Value::as_str);
@@ -1018,7 +1039,7 @@ fn folds_on_the_way_in(req: &Value) -> bool {
 /// domain collide with the one an alias already points at. Nor is
 /// `forget_domain`: it names a domain that was just removed, and mapping that
 /// name could only land on a different, live domain.
-const DOMAIN_REFERENCE_COMMANDS: [&str; 16] = [
+const DOMAIN_REFERENCE_COMMANDS: [&str; 22] = [
     "sync",
     "file_stamps",
     "scaffold_manifest",
@@ -1035,6 +1056,12 @@ const DOMAIN_REFERENCE_COMMANDS: [&str; 16] = [
     "origin_discard",
     "origin_resolve",
     "provision",
+    "automation_lease_take",
+    "automation_lease_renew",
+    "automation_lease_release",
+    "automation_run_record",
+    "automation_share",
+    "automation_runs",
 ];
 
 /// `req` with its `domain` spelled as the local name, when it is a command

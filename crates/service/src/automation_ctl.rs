@@ -1,0 +1,163 @@
+//! The seven automation verbs a headless runner sends: `automation_status`,
+//! `automation_lease_take`, `automation_lease_renew`,
+//! `automation_lease_release`, `automation_run_record`, `automation_share`
+//! and `automation_runs`.
+//!
+//! The control socket (the machine owner, [`Scope::Unrestricted`]) and the
+//! remote ctl route (a token's account, [`Scope::User`]) share this one
+//! translation from a request to the engine call, so the two doors cannot
+//! drift. Each door names its own scope and localizes `domain` its own way.
+
+use std::sync::Arc;
+
+use crystalline_core::automation::{Loop, RunReport};
+use serde_json::Value;
+
+use crate::control::{envelope_err, envelope_err_kind, envelope_ok};
+use crate::engine::{Engine, EngineError};
+use crate::scope::Scope;
+
+/// The verbs of this module, in the order a run uses them.
+pub const AUTOMATION_COMMANDS: [&str; 7] = [
+    "automation_status",
+    "automation_lease_take",
+    "automation_lease_renew",
+    "automation_lease_release",
+    "automation_run_record",
+    "automation_share",
+    "automation_runs",
+];
+
+/// Runs of one `automation_runs` answer when the request names no limit.
+const DEFAULT_RUNS: usize = 10;
+
+/// A failed verb: the message, and whether the request itself was wrong.
+struct Failure {
+    message: String,
+    invalid: bool,
+}
+
+impl Failure {
+    fn invalid(message: impl Into<String>) -> Failure {
+        Failure {
+            message: message.into(),
+            invalid: true,
+        }
+    }
+}
+
+impl From<EngineError> for Failure {
+    /// An argument error keeps its kind; a refusal ("already running", "runs
+    /// on <name>", a lost lease) travels as its bare sentence.
+    fn from(error: EngineError) -> Failure {
+        Failure {
+            invalid: matches!(error, EngineError::Invalid(_)),
+            message: error.to_string(),
+        }
+    }
+}
+
+fn text<'a>(request: &'a Value, key: &str) -> Result<&'a str, Failure> {
+    match request.get(key) {
+        Some(Value::String(s)) if !s.trim().is_empty() => Ok(s),
+        _ => Err(Failure::invalid(format!("{key} is required"))),
+    }
+}
+
+fn loop_of(request: &Value) -> Result<Loop, Failure> {
+    text(request, "loop")?.parse().map_err(Failure::invalid)
+}
+
+/// Run automation verb `cmd` as `scope` and wrap the answer in an envelope.
+/// `request` already names the local spelling of `domain`; `domains` of a
+/// status request are localized here, since the two doors share this.
+pub(crate) async fn answer(
+    engine: &Arc<Engine>,
+    cmd: &str,
+    request: &Value,
+    scope: &Scope,
+) -> Value {
+    match run(engine, cmd, request, scope).await {
+        Ok(data) => envelope_ok(data),
+        Err(f) if f.invalid => envelope_err_kind(f.message, crystalline_remote::INVALID_KIND),
+        Err(f) => envelope_err(f.message),
+    }
+}
+
+async fn run(
+    engine: &Arc<Engine>,
+    cmd: &str,
+    request: &Value,
+    scope: &Scope,
+) -> Result<Value, Failure> {
+    let lp = loop_of(request)?;
+    if cmd == "automation_status" {
+        let mut domains = Vec::new();
+        match request.get("domains") {
+            None | Some(Value::Null) => {}
+            Some(Value::Array(items)) => {
+                let hidden = engine.hidden_for(scope).await?;
+                for item in items {
+                    let Some(typed) = item.as_str() else {
+                        return Err(Failure::invalid("domains must be an array of names"));
+                    };
+                    domains.push(engine.localize_visible(typed, &hidden).await);
+                }
+            }
+            Some(_) => return Err(Failure::invalid("domains must be an array of names")),
+        }
+        return Ok(engine.automation_status(lp, &domains, scope).await?);
+    }
+    let domain = text(request, "domain")?;
+    let answer = match cmd {
+        "automation_lease_take" => {
+            let runner = text(request, "runner")?;
+            engine
+                .automation_lease_take(lp, domain, runner, scope)
+                .await?
+        }
+        "automation_lease_renew" => {
+            let token = text(request, "token")?;
+            engine
+                .automation_lease_renew(lp, domain, token, scope)
+                .await?
+        }
+        "automation_lease_release" => {
+            let token = text(request, "token")?;
+            engine
+                .automation_lease_release(lp, domain, token, scope)
+                .await?
+        }
+        "automation_run_record" => {
+            let token = text(request, "token")?;
+            let report: RunReport =
+                serde_json::from_value(request.get("report").cloned().unwrap_or(Value::Null))
+                    .map_err(|e| Failure::invalid(format!("invalid report: {e}")))?;
+            engine
+                .automation_run_record(lp, domain, token, &report, scope)
+                .await?
+        }
+        "automation_share" => {
+            let token = text(request, "token")?;
+            let summary = request
+                .get("summary")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            engine
+                .automation_share(lp, domain, token, summary, scope)
+                .await?
+        }
+        "automation_runs" => {
+            let limit = match request.get("limit") {
+                None | Some(Value::Null) => DEFAULT_RUNS,
+                Some(v) => v
+                    .as_u64()
+                    .and_then(|n| usize::try_from(n).ok())
+                    .ok_or_else(|| Failure::invalid("limit must be a whole number"))?,
+            };
+            engine.automation_runs(lp, domain, limit, scope).await?
+        }
+        other => return Err(Failure::invalid(format!("unknown command '{other}'"))),
+    };
+    Ok(answer)
+}
