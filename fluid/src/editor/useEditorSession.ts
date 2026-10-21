@@ -79,6 +79,13 @@ export interface EditorSessionOptions {
   validatePath: string | null;
   /** The transport save; the hook owns when it fires. */
   save: (content: string, token: string) => Promise<SessionSaveReceipt>;
+  /**
+   * Asked before a save starts, with the text about to be sent. True means the
+   * screen holds this save back to ask the author something first (it opens
+   * its own question, and asks for the save again with its answer); nothing is
+   * sent and no notice is raised, so a question is not a failed save.
+   */
+  holdSave?: (content: string) => boolean;
   /** After a successful save: rename-follow, cache seeding - screen-specific. */
   onSaved?: (receipt: SessionSaveReceipt) => void;
   /** Rebuild the surface extensions for swapped-in content (conflict/draft). */
@@ -220,6 +227,7 @@ export function useEditorSession(options: EditorSessionOptions): EditorSession {
     validateDomain,
     validatePath,
     save: transportSave,
+    holdSave,
     onSaved,
     extensionsFor,
     ariaLabel,
@@ -408,10 +416,14 @@ export function useEditorSession(options: EditorSessionOptions): EditorSession {
     // keyboard, because both call this function rather than dispatching a
     // mutation of their own: a check here is a check for either.
     if (view && !save.isPending && hardErrors === 0) {
-      setNotice(null);
       // `docText` rather than `doc.toString()`: what goes on the wire is the
       // file's own bytes, line endings included.
-      save.mutate({ content: docText(view.state), token: checksum });
+      const content = docText(view.state);
+      if (holdSave?.(content)) {
+        return;
+      }
+      setNotice(null);
+      save.mutate({ content, token: checksum });
     }
   };
   // The keymap's request, answered here where the current save is in scope.

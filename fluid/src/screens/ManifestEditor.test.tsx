@@ -16,7 +16,7 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "../api/client";
+import { ApiProblem, api } from "../api/client";
 import type { Answer } from "../test/harness";
 import {
   STARTER_DOCUMENT,
@@ -619,5 +619,195 @@ describe("the MANIFEST editor", () => {
     expect(screen.getByLabelText("MANIFEST source").textContent).toContain(
       "Route here for eng.",
     );
+  });
+});
+
+describe("the MANIFEST editor and a changed domain name", () => {
+  const NAMED =
+    "---\ntitle: Eng\ndomain_name: eng\n---\n\n# Eng\n\nRoute here for eng.\n";
+
+  /** The PUT bodies and rename bodies the mock has seen, parsed. */
+  function sent(method: string, path: string) {
+    return apiMock.mock.calls
+      .filter(
+        ([p, init]) =>
+          String(p).startsWith(path) && (init?.method ?? "GET") === method,
+      )
+      .map(([, init]) => JSON.parse(init?.body as string) as unknown);
+  }
+
+  /** Replace the name in the live buffer, as an edit of that line. */
+  function setName(editor: HTMLElement, name: string) {
+    const host = editor.closest(".cm-editor");
+    const view = host ? EditorView.findFromDOM(host as HTMLElement) : null;
+    if (!view) {
+      throw new Error("no EditorView is mounted on the buffer");
+    }
+    const text = view.state.doc.toString();
+    const at = text.indexOf("domain_name: eng");
+    act(() => {
+      view.dispatch({
+        changes: {
+          from: at + "domain_name: ".length,
+          to: at + "domain_name: eng".length,
+          insert: name,
+        },
+      });
+    });
+    return view;
+  }
+
+  function serveNamed(extra: Record<string, Answer> = {}) {
+    const put = vi.fn(() =>
+      manifestResponse({ markdown: NAMED, checksum: "m2" }),
+    );
+    serveEditor({
+      "/domains/eng/manifest": (_path, init) =>
+        init?.method === "PUT" ? put() : manifestResponse({ markdown: NAMED }),
+      ...extra,
+    });
+    return put;
+  }
+
+  async function openDialog() {
+    renderApp("/d/eng/manifest/edit");
+    const editor = await screen.findByLabelText("MANIFEST source");
+    await waitFor(() => {
+      expect(editor.textContent).toContain("domain_name: eng");
+    });
+    const view = setName(editor, "ops");
+    await screen.findByText("Unsaved changes");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "You changed the domain name",
+    });
+    return { dialog, view };
+  }
+
+  it("asks before it saves a new name and writes nothing meanwhile", async () => {
+    const put = serveNamed();
+    const { dialog } = await openDialog();
+    expect(
+      within(dialog).getByText("The MANIFEST now says ops instead of eng."),
+    ).toBeVisible();
+    expect(put).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("puts the old name back on Undo the name change and saves nothing", async () => {
+    const put = serveNamed();
+    const { dialog, view } = await openDialog();
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Undo the name change" }),
+    );
+    await waitFor(() => {
+      expect(view.state.doc.toString()).toContain("domain_name: eng");
+    });
+    expect(view.state.doc.toString()).not.toContain("ops");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(put).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("saves as typed with rename keep on Save without renaming", async () => {
+    const put = serveNamed();
+    const { dialog } = await openDialog();
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Save without renaming" }),
+    );
+    await waitFor(() => {
+      expect(put).toHaveBeenCalled();
+    });
+    expect(sent("PUT", "/domains/eng/manifest")).toEqual([
+      {
+        markdown: NAMED.replace("domain_name: eng", "domain_name: ops"),
+        rename: "keep",
+      },
+    ]);
+    expect(sent("POST", "/domains/eng/rename")).toEqual([]);
+  });
+
+  it("saves the old name with the other edits, then renames the domain", async () => {
+    const put = serveNamed({
+      "/domains/eng/rename": () => ({
+        domain: "ops",
+        previous: "eng",
+        local_only: false,
+        manifest_written: true,
+        manifest_draft: false,
+        rewritten: [],
+        left_behind: [],
+        aliases: ["eng"],
+        shadows: [],
+      }),
+    });
+    const { dialog, view } = await openDialog();
+    act(() => {
+      view.dispatch({
+        changes: { from: view.state.doc.length, insert: "More prose.\n" },
+      });
+    });
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Rename the domain" }),
+    );
+    await waitFor(() => {
+      expect(sent("POST", "/domains/eng/rename")).toHaveLength(1);
+    });
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(sent("PUT", "/domains/eng/manifest")).toEqual([
+      { markdown: `${NAMED}More prose.\n` },
+    ]);
+    expect(sent("POST", "/domains/eng/rename")).toEqual([
+      { name: "ops", local_only: false },
+    ]);
+  });
+
+  it("says in words when the rename fails after the save", async () => {
+    const put = serveNamed({
+      "/domains/eng/rename": () => {
+        throw new ApiProblem(409, "name taken", "The name ops is taken.");
+      },
+    });
+    const { dialog } = await openDialog();
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Rename the domain" }),
+    );
+    expect(await screen.findByText(/The name ops is taken/)).toBeVisible();
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("MANIFEST source")).toBeVisible();
+  });
+
+  it("opens no dialog when the save leaves the name alone", async () => {
+    const put = serveNamed();
+    renderApp("/d/eng/manifest/edit");
+    const editor = await screen.findByLabelText("MANIFEST source");
+    await waitFor(() => {
+      expect(editor.textContent).toContain("domain_name: eng");
+    });
+    await typeIntoBuffer(editor, "More prose.\n");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(put).toHaveBeenCalled();
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(sent("PUT", "/domains/eng/manifest")).toEqual([
+      { markdown: `${NAMED}More prose.\n` },
+    ]);
+  });
+
+  it("never opens the dialog for a name that fails validation", async () => {
+    const put = serveNamed({
+      "/validate": () => ({ findings: [], errors: 1 }),
+    });
+    renderApp("/d/eng/manifest/edit");
+    const editor = await screen.findByLabelText("MANIFEST source");
+    await waitFor(() => {
+      expect(editor.textContent).toContain("domain_name: eng");
+    });
+    setName(editor, "Not A Name!");
+    expect(await screen.findByText(/hard error block saving/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(put).not.toHaveBeenCalled();
   });
 });
