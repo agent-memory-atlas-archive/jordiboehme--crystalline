@@ -7153,6 +7153,7 @@ pub use reflection::{
     SectionAuthors, TARGET_TAKEN,
 };
 pub use reflection_assets::WrittenReflectionAsset;
+mod manifest_rename;
 mod rename_domain;
 mod review_mode;
 mod schemas;

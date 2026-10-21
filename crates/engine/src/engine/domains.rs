@@ -654,8 +654,16 @@ impl Engine {
             audience: None,
         }));
 
-        if let Some(name) = &kept_name {
-            self.record_kept_rename(domain, name)?;
+        // The MANIFEST is written: a failure here costs the person a banner
+        // they then answer, never the save.
+        if let Some(name) = &kept_name
+            && let Err(e) = self.record_kept_rename(domain, name)
+        {
+            tracing::warn!(
+                domain,
+                "the MANIFEST is saved, but keeping the links of its new name '{name}' could \
+                 not be recorded ({e}); the rename is asked about after the next sync"
+            );
         }
         self.refresh_routing_cache().await;
         // A switch written here moves the Reflection's mode for every file

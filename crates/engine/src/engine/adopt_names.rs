@@ -254,6 +254,9 @@ impl Engine {
         let mut report: Vec<Value> = Vec::new();
         let planned = {
             let _admin = self.domain_admin().await;
+            // A respell a failed finish left behind for a question that has
+            // since changed is dropped first, so it holds nothing back.
+            self.drop_stale_respell_journal().await;
             let busy: HashSet<String> = self.names_being_renamed().into_iter().collect();
 
             let caught_up = self.infer_missing_name_origins(&busy)?;
@@ -355,6 +358,12 @@ impl Engine {
                     }));
                 }
             }
+        }
+        // Questions whose links already match close on their own: a
+        // teammate finished the rename and the respelled files arrived.
+        let busy: HashSet<String> = self.names_being_renamed().into_iter().collect();
+        if let Err(e) = self.close_settled_rename_questions(&busy).await {
+            tracing::warn!("checking whether a rename question is settled failed: {e}");
         }
         Ok(Value::Array(report))
     }

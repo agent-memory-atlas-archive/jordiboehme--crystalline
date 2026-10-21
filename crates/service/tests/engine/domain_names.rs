@@ -1292,9 +1292,16 @@ async fn an_explicit_name_is_kept_and_the_canonical_resolves_to_it() {
 // --- the rename question ----------------------------------------------
 
 /// An explicit domain `eng` whose MANIFEST declares `eng`, adopted once, so
-/// the machine has seen `eng` as its canonical name.
+/// the machine has seen `eng` as its canonical name. A note links to it as
+/// `eng`, so a rename of its declared name leaves a link to respell and the
+/// question stays open.
 async fn adopted_explicit_eng(tmp: &Path) -> (Engine, PathBuf) {
     let root = declared_folder(tmp, "eng", "eng");
+    std::fs::write(
+        root.join("note.md"),
+        "---\ntype: engram\ntitle: Note\npermalink: note\ntags:\n  - t\nstatus: current\nrecorded_at: 2026-01-01\n---\n\n# Note\n\nSee [[eng:note]].\n",
+    )
+    .unwrap();
     let engine = adopting_engine(
         memory_store().await,
         tmp,
@@ -2181,4 +2188,42 @@ async fn a_plain_save_of_a_new_name_leaves_the_question_to_the_adoption() {
     assert_eq!(saved(tmp.path()).domains["eng"].rename_question, None);
     sync_and_adopt(&engine).await;
     assert!(engine.rename_question("eng").is_some());
+}
+
+/// Answering a question forgets who was told about it: a session told about
+/// one question is told again about the next one on the same domain.
+#[tokio::test]
+async fn an_answered_question_is_told_again_when_a_new_one_comes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (engine, root) = adopted_explicit_eng(tmp.path()).await;
+    declare(&root, "platform");
+    sync_and_adopt(&engine).await;
+    let scope = Scope::Unrestricted;
+    assert!(
+        engine
+            .rename_guidance_once("s", "eng", &scope)
+            .await
+            .is_some()
+    );
+    assert!(
+        engine
+            .rename_guidance_once("s", "eng", &scope)
+            .await
+            .is_none()
+    );
+
+    engine.keep_manifest_rename("eng", &scope).await.unwrap();
+    assert!(
+        engine
+            .rename_guidance_once("s", "eng", &scope)
+            .await
+            .is_none()
+    );
+    declare(&root, "core");
+    sync_and_adopt(&engine).await;
+    let line = engine
+        .rename_guidance_once("s", "eng", &scope)
+        .await
+        .expect("the new question is told in the same session");
+    assert!(line.contains("to core"), "{line}");
 }

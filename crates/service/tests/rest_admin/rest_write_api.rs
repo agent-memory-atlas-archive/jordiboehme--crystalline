@@ -1697,8 +1697,16 @@ async fn a_domain_is_renamed_and_a_taken_name_is_a_conflict() {
 }
 
 /// `eng` explicit and seen as `eng`, then its MANIFEST declaring `to`, synced
-/// and adopted, so the instance holds a rename question for it.
+/// and adopted, so the instance holds a rename question for it. A note
+/// links to `eng` by that name, so the question stays open.
 async fn ask_rename(fx: &Fixture, to: &str) {
+    std::fs::write(
+        fx._tmp.path().join("eng/linker.md"),
+        ALPHA
+            .replace("permalink: alpha", "permalink: linker")
+            .replace("A rule about alpha.", "See [[eng:alpha]]."),
+    )
+    .unwrap();
     let config_path = fx._tmp.path().join("config.yaml");
     let mut cfg: GlobalConfig = crystalline_core::config::load_yaml(&config_path).unwrap();
     let entry: &mut DomainEntry = cfg.domains.get_mut("eng").unwrap();
