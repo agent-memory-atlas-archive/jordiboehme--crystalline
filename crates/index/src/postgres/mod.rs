@@ -124,6 +124,7 @@ use crate::store::{
     rename_onto_taken_row, reset_spelled_references_sql, resolve_references_to_sql,
     resolve_spelled_references_sql, spelled_references_sql, spelling_plan,
 };
+use crate::store::{AutomationLease, AutomationRun, LeaseClaim, LeaseHolder};
 use crate::sweep::{SpelledRef, UnresolvedRef};
 
 /// `$from` through `$(from + count - 1)`, comma separated: an `IN` list's
@@ -920,6 +921,50 @@ fn domain_host_of(r: &sqlx::postgres::PgRow) -> DomainHost {
         heartbeat_at: cell_text(r, 2).unwrap_or_default(),
         token: cell_text(r, 3).unwrap_or_default(),
     }
+}
+
+/// The read of one automation lease row, in [`automation_lease_of`]'s column
+/// order.
+const AUTOMATION_LEASE_SQL: &str = "SELECT instance_id, account, runner, token, taken_at, renewed_at, unshared_at_start, due_at_start FROM automation_lease WHERE domain_id=$1 AND loop_kind=$2";
+
+/// The token-guarded release of one automation lease row, answering the row
+/// in [`automation_lease_of`]'s column order.
+const AUTOMATION_LEASE_RELEASE_SQL: &str = "DELETE FROM automation_lease WHERE domain_id=$1 AND loop_kind=$2 AND token=$3 RETURNING instance_id, account, runner, token, taken_at, renewed_at, unshared_at_start, due_at_start";
+
+/// An [`AutomationLease`] from a row read by [`AUTOMATION_LEASE_SQL`]'s
+/// columns.
+fn automation_lease_of(r: &PgRow) -> Result<AutomationLease> {
+    Ok(AutomationLease {
+        holder: LeaseHolder {
+            instance_id: cell_text(r, 0).unwrap_or_default(),
+            account: cell_text(r, 1),
+            runner: cell_text(r, 2).unwrap_or_default(),
+            unshared_at_start: serde_json::from_str(&cell_text(r, 6).unwrap_or_default())?,
+            due_at_start: serde_json::from_str(&cell_text(r, 7).unwrap_or_default())?,
+        },
+        token: cell_text(r, 3).unwrap_or_default(),
+        taken_at: cell_text(r, 4).unwrap_or_default(),
+        renewed_at: cell_text(r, 5).unwrap_or_default(),
+    })
+}
+
+/// An [`AutomationRun`] from a row of `automation_run`'s columns from
+/// `started_at` on.
+fn automation_run_of(r: &PgRow) -> Result<AutomationRun> {
+    let count = |i| cell_i64(r, i).unwrap_or(0).max(0) as u64;
+    Ok(AutomationRun {
+        started_at: cell_text(r, 0).unwrap_or_default(),
+        ended_at: cell_text(r, 1).unwrap_or_default(),
+        runner: cell_text(r, 2).unwrap_or_default(),
+        account: cell_text(r, 3),
+        outcome: cell_text(r, 4).unwrap_or_default(),
+        done: count(5),
+        left: count(6),
+        judgment_waiting: count(7),
+        summary: cell_text(r, 8).unwrap_or_default(),
+        pr_url: cell_text(r, 9),
+        left_items: serde_json::from_str(&cell_text(r, 10).unwrap_or_default())?,
+    })
 }
 
 pub(super) fn cell_real(row: &PgRow, idx: usize) -> Option<f64> {
@@ -2054,9 +2099,9 @@ impl Store for PostgresStore {
             let Some((id,)) = id else {
                 return Ok(false);
             };
-            // `domain_lock` and `tag_alias` name the row without a cascade,
-            // and `relation` and `link` carry its id with no key at all, so
-            // each is cleared before the row itself.
+            // `domain_lock`, the two automation tables and `tag_alias` name
+            // the row without a cascade, and `relation` and `link` carry its
+            // id with no key at all, so each is cleared before the row itself.
             for sql in [
                 "DELETE FROM domain_spelling WHERE domain_id=$1",
                 // A chunk is not content, so it does not keep the row; it
@@ -2064,6 +2109,8 @@ impl Store for PostgresStore {
                 "DELETE FROM reflection_chunk WHERE domain_id=$1",
                 "DELETE FROM tag_alias WHERE domain_id=$1",
                 "DELETE FROM domain_lock WHERE domain_id=$1",
+                "DELETE FROM automation_lease WHERE domain_id=$1",
+                "DELETE FROM automation_run WHERE domain_id=$1",
                 "DELETE FROM relation WHERE domain_id=$1",
                 "DELETE FROM link WHERE domain_id=$1",
                 "DELETE FROM domain WHERE id=$1",
@@ -4657,6 +4704,178 @@ impl Store for PostgresStore {
         .await
         .map_err(IndexError::from)?;
         Ok(row.map(|r| domain_host_of(&r)))
+    }
+
+    async fn take_automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        holder: &LeaseHolder,
+        now: &str,
+        stale_before: &str,
+    ) -> Result<LeaseClaim> {
+        // One atomic upsert, the host lock's claim: insert when unheld, or
+        // replace a row whose last renewal is older than `stale_before`. A
+        // fresh row is left untouched, whoever asks; the re-read on the same
+        // connection then tells whose token the row carries.
+        let token = crate::store::claim_token(now);
+        let mut conn = self.acquire().await?;
+        let c = conn.as_mut();
+        sqlx::query(
+            "INSERT INTO automation_lease(domain_id, loop_kind, instance_id, account, runner, \
+             token, taken_at, renewed_at, unshared_at_start, due_at_start) \
+             VALUES($1, $2, $3, $4, $5, $6, $7, $7, $8, $9) \
+             ON CONFLICT(domain_id, loop_kind) DO UPDATE SET \
+             instance_id=EXCLUDED.instance_id, account=EXCLUDED.account, runner=EXCLUDED.runner, \
+             token=EXCLUDED.token, taken_at=EXCLUDED.taken_at, renewed_at=EXCLUDED.renewed_at, \
+             unshared_at_start=EXCLUDED.unshared_at_start, due_at_start=EXCLUDED.due_at_start \
+             WHERE automation_lease.renewed_at < $10",
+        )
+        .bind(domain.0)
+        .bind(loop_kind)
+        .bind(&holder.instance_id)
+        .bind(holder.account.as_deref())
+        .bind(&holder.runner)
+        .bind(&token)
+        .bind(now)
+        .bind(serde_json::to_string(&holder.unshared_at_start)?)
+        .bind(serde_json::to_string(&holder.due_at_start)?)
+        .bind(stale_before)
+        .execute(&mut *c)
+        .await
+        .map_err(IndexError::from)?;
+        let row = sqlx::query(AUTOMATION_LEASE_SQL)
+            .bind(domain.0)
+            .bind(loop_kind)
+            .fetch_optional(&mut *c)
+            .await
+            .map_err(IndexError::from)?;
+        match row.map(|r| automation_lease_of(&r)).transpose()? {
+            Some(lease) if lease.token != token => Ok(LeaseClaim::Held(lease)),
+            _ => Ok(LeaseClaim::Acquired { token }),
+        }
+    }
+
+    async fn renew_automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        token: &str,
+        now: &str,
+    ) -> Result<bool> {
+        let mut conn = self.acquire().await?;
+        let done = sqlx::query(
+            "UPDATE automation_lease SET renewed_at=$4 \
+             WHERE domain_id=$1 AND loop_kind=$2 AND token=$3",
+        )
+        .bind(domain.0)
+        .bind(loop_kind)
+        .bind(token)
+        .bind(now)
+        .execute(conn.as_mut())
+        .await
+        .map_err(IndexError::from)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn release_automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        token: &str,
+    ) -> Result<Option<AutomationLease>> {
+        let mut conn = self.acquire().await?;
+        let row = sqlx::query(AUTOMATION_LEASE_RELEASE_SQL)
+            .bind(domain.0)
+            .bind(loop_kind)
+            .bind(token)
+            .fetch_optional(conn.as_mut())
+            .await
+            .map_err(IndexError::from)?;
+        row.map(|r| automation_lease_of(&r)).transpose()
+    }
+
+    async fn automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+    ) -> Result<Option<AutomationLease>> {
+        let mut conn = self.acquire().await?;
+        let row = sqlx::query(AUTOMATION_LEASE_SQL)
+            .bind(domain.0)
+            .bind(loop_kind)
+            .fetch_optional(conn.as_mut())
+            .await
+            .map_err(IndexError::from)?;
+        row.map(|r| automation_lease_of(&r)).transpose()
+    }
+
+    async fn record_automation_run(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        run: &AutomationRun,
+        keep: usize,
+    ) -> Result<()> {
+        let count = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
+        let mut conn = self.acquire().await?;
+        let c = conn.as_mut();
+        sqlx::query(
+            "INSERT INTO automation_run(domain_id, loop_kind, started_at, ended_at, runner, \
+             account, outcome, done, \"left\", judgment_waiting, summary, pr_url, left_items) \
+             VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+        )
+        .bind(domain.0)
+        .bind(loop_kind)
+        .bind(&run.started_at)
+        .bind(&run.ended_at)
+        .bind(&run.runner)
+        .bind(run.account.as_deref())
+        .bind(&run.outcome)
+        .bind(count(run.done))
+        .bind(count(run.left))
+        .bind(count(run.judgment_waiting))
+        .bind(&run.summary)
+        .bind(run.pr_url.as_deref())
+        .bind(serde_json::to_string(&run.left_items)?)
+        .execute(&mut *c)
+        .await
+        .map_err(IndexError::from)?;
+        // The newest `keep` by id stay; the id grows with every insert. Not
+        // one transaction: a prune that does not land is done by the next.
+        sqlx::query(
+            "DELETE FROM automation_run WHERE domain_id=$1 AND loop_kind=$2 AND id <= \
+             COALESCE((SELECT id FROM automation_run WHERE domain_id=$1 AND loop_kind=$2 \
+             ORDER BY id DESC LIMIT 1 OFFSET $3), -1)",
+        )
+        .bind(domain.0)
+        .bind(loop_kind)
+        .bind(i64::try_from(keep).unwrap_or(i64::MAX))
+        .execute(&mut *c)
+        .await
+        .map_err(IndexError::from)?;
+        Ok(())
+    }
+
+    async fn automation_runs(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        limit: usize,
+    ) -> Result<Vec<AutomationRun>> {
+        let mut conn = self.acquire().await?;
+        let rows = sqlx::query(
+            "SELECT started_at, ended_at, runner, account, outcome, done, \"left\", \
+             judgment_waiting, summary, pr_url, left_items FROM automation_run \
+             WHERE domain_id=$1 AND loop_kind=$2 ORDER BY id DESC LIMIT $3",
+        )
+        .bind(domain.0)
+        .bind(loop_kind)
+        .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+        .fetch_all(conn.as_mut())
+        .await
+        .map_err(IndexError::from)?;
+        rows.iter().map(automation_run_of).collect()
     }
 
     async fn swap_host_move(

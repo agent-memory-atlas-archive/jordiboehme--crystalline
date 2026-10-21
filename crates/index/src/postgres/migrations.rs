@@ -156,6 +156,11 @@ pub const MIGRATIONS: &[Migration] = &[
         label: "wikilink display text",
         sql: SCHEMA_V26,
     },
+    Migration {
+        version: 27,
+        label: "automation lease and runs",
+        sql: SCHEMA_V27,
+    },
 ];
 
 // The whole current schema in one step. The temporal columns stay TEXT ISO
@@ -776,6 +781,46 @@ ALTER TABLE relation ADD COLUMN IF NOT EXISTS to_alias TEXT;
 ALTER TABLE link ADD COLUMN IF NOT EXISTS to_alias TEXT;
 "#;
 
+// The automation loops (reflect and evolve run on their own): one lease per
+// domain and loop, so only one runner works on a loop at a time, and the
+// newest runs of each loop. `unshared_at_start`, `due_at_start` and
+// `left_items` are JSON text. Times are TEXT ISO strings, compared lexically.
+// Neither table cascades from `domain`: `wipe()` and the empty-row drop clear
+// them by hand, as they do `domain_lock`. Guarded, so a replay changes nothing.
+const SCHEMA_V27: &str = r#"
+CREATE TABLE IF NOT EXISTS automation_lease (
+    domain_id BIGINT NOT NULL REFERENCES domain(id),
+    loop_kind TEXT NOT NULL,
+    instance_id TEXT NOT NULL,
+    account TEXT,
+    runner TEXT NOT NULL,
+    token TEXT NOT NULL,
+    taken_at TEXT NOT NULL,
+    renewed_at TEXT NOT NULL,
+    unshared_at_start TEXT NOT NULL,
+    due_at_start TEXT NOT NULL,
+    PRIMARY KEY(domain_id, loop_kind)
+);
+
+CREATE TABLE IF NOT EXISTS automation_run (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    domain_id BIGINT NOT NULL REFERENCES domain(id),
+    loop_kind TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL,
+    runner TEXT NOT NULL,
+    account TEXT,
+    outcome TEXT NOT NULL,
+    done BIGINT NOT NULL,
+    "left" BIGINT NOT NULL,
+    judgment_waiting BIGINT NOT NULL,
+    summary TEXT NOT NULL,
+    pr_url TEXT,
+    left_items TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_automation_run_loop ON automation_run(domain_id, loop_kind, id);
+"#;
+
 const SCHEMA_V8: &str = r#"
 CREATE TABLE attachment (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -804,7 +849,8 @@ CREATE TABLE attachment_blob (
 /// so they go first. `observation_vector` references nothing and leads the
 /// list. `engram_meta_value` references `engram`, so it goes before it.
 /// `reflection` and `reflection_asset` reference `domain(id)` too, and so does
-/// `reflection_chunk`, which goes before `reflection`.
+/// `reflection_chunk`, which goes before `reflection`. `automation_lease` and
+/// `automation_run` reference `domain(id)` as well.
 pub const WIPE_TABLES: &[&str] = &[
     "observation_vector",
     "contradiction",
@@ -826,6 +872,8 @@ pub const WIPE_TABLES: &[&str] = &[
     "reflection",
     "reflection_asset",
     "domain_lock",
+    "automation_lease",
+    "automation_run",
     "domain_spelling",
     "domain",
 ];
@@ -2245,6 +2293,66 @@ mod tests {
         assert!(
             at("reflection_asset").is_some() && at("reflection_asset") < at("domain"),
             "the file rows are wiped before the domains they point at, or the foreign key refuses"
+        );
+        drop(conn);
+        store.drop_schema().await.unwrap();
+    }
+
+    /// v27, the automation lease and run record: it follows v26, a replay
+    /// converges (every `CREATE` is `IF NOT EXISTS`), and the wipe clears both
+    /// tables before the domains they point at, or the foreign key refuses.
+    #[tokio::test]
+    async fn v27_adds_the_automation_tables_and_replays_cleanly() {
+        let Ok(url) = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") else {
+            return;
+        };
+        if url.is_empty() {
+            return;
+        }
+        let at_version = |v: i64| {
+            MIGRATIONS
+                .iter()
+                .position(|m| m.version == v)
+                .unwrap_or_else(|| panic!("no migration v{v}"))
+        };
+        let (v26, v27) = (at_version(26), at_version(27));
+        assert_eq!(MIGRATIONS[v27].label, "automation lease and runs");
+        assert_eq!(v27, v26 + 1, "it follows v26");
+
+        let schema = format!("mig_automation_{}", std::process::id());
+        let store = crate::PostgresStore::open_in_schema(&url, &schema)
+            .await
+            .unwrap();
+        let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "SET search_path TO {schema}, public"
+        )))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::raw_sql(MIGRATIONS[v27].sql)
+            .execute(&mut conn)
+            .await
+            .expect("v27 applies twice");
+        sqlx::raw_sql(
+            "INSERT INTO domain (id, name, path) OVERRIDING SYSTEM VALUE VALUES (1, 'd', NULL);
+             INSERT INTO automation_lease (domain_id, loop_kind, instance_id, runner, token,
+               taken_at, renewed_at, unshared_at_start, due_at_start)
+             VALUES (1, 'reflect', 'i', 'cli', 't', 'a', 'a', '[]', '[]');
+             INSERT INTO automation_run (domain_id, loop_kind, started_at, ended_at, runner,
+               outcome, done, \"left\", judgment_waiting, summary, left_items)
+             VALUES (1, 'reflect', 'a', 'b', 'cli', 'done', 0, 0, 0, '', '[]');",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        let at = |t: &str| WIPE_TABLES.iter().position(|w| *w == t);
+        assert!(
+            at("automation_lease").is_some()
+                && at("automation_run").is_some()
+                && at("automation_lease") < at("domain")
+                && at("automation_run") < at("domain"),
+            "the lease and the runs are wiped before the domains they point at, or the foreign key refuses"
         );
         drop(conn);
         store.drop_schema().await.unwrap();

@@ -152,6 +152,11 @@ pub const MIGRATIONS: &[Migration] = &[
         label: "wikilink display text",
         sql: SCHEMA_V26,
     },
+    Migration {
+        version: 27,
+        label: "automation lease and runs",
+        sql: SCHEMA_V27,
+    },
 ];
 
 const SCHEMA_V1: &str = r#"
@@ -864,6 +869,46 @@ ALTER TABLE relation ADD COLUMN to_alias TEXT;
 ALTER TABLE link ADD COLUMN to_alias TEXT;
 "#;
 
+// The automation loops (reflect and evolve run on their own): one lease per
+// domain and loop, so only one runner works on a loop at a time, and the
+// newest runs of each loop. `unshared_at_start`, `due_at_start` and
+// `left_items` are JSON text. Times are TEXT ISO strings, compared lexically.
+// Neither table cascades from `domain`: `wipe()` and the empty-row drop clear
+// them by hand, as they do `domain_lock`.
+const SCHEMA_V27: &str = r#"
+CREATE TABLE automation_lease (
+    domain_id INTEGER NOT NULL REFERENCES domain(id),
+    loop_kind TEXT NOT NULL,
+    instance_id TEXT NOT NULL,
+    account TEXT,
+    runner TEXT NOT NULL,
+    token TEXT NOT NULL,
+    taken_at TEXT NOT NULL,
+    renewed_at TEXT NOT NULL,
+    unshared_at_start TEXT NOT NULL,
+    due_at_start TEXT NOT NULL,
+    PRIMARY KEY(domain_id, loop_kind)
+);
+
+CREATE TABLE automation_run (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain_id INTEGER NOT NULL REFERENCES domain(id),
+    loop_kind TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL,
+    runner TEXT NOT NULL,
+    account TEXT,
+    outcome TEXT NOT NULL,
+    done INTEGER NOT NULL,
+    "left" INTEGER NOT NULL,
+    judgment_waiting INTEGER NOT NULL,
+    summary TEXT NOT NULL,
+    pr_url TEXT,
+    left_items TEXT NOT NULL
+);
+CREATE INDEX idx_automation_run_loop ON automation_run(domain_id, loop_kind, id);
+"#;
+
 const SCHEMA_V9: &str = r#"
 CREATE TABLE attachment (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -892,6 +937,7 @@ CREATE TABLE attachment_blob (
 /// and leads the list. `engram_meta_value` references `engram`, so it goes
 /// before it. `reflection` and `reflection_asset` reference `domain(id)` too,
 /// and so does `reflection_chunk`, which goes before `reflection`.
+/// `automation_lease` and `automation_run` reference `domain(id)` as well.
 pub const WIPE_TABLES: &[&str] = &[
     "observation_vector",
     "contradiction",
@@ -913,6 +959,8 @@ pub const WIPE_TABLES: &[&str] = &[
     "reflection",
     "reflection_asset",
     "domain_lock",
+    "automation_lease",
+    "automation_run",
     "domain_spelling",
     "domain",
 ];
@@ -2669,6 +2717,47 @@ mod tests {
         assert!(
             stdout.contains("1 passed"),
             "the child ran the test rather than filtering it out:\n{stdout}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_automation_migration_is_v27_and_its_tables_are_wiped_before_domain() {
+        let at_version = |v: i64| {
+            MIGRATIONS
+                .iter()
+                .position(|m| m.version == v)
+                .unwrap_or_else(|| panic!("no migration v{v}"))
+        };
+        assert_eq!(
+            MIGRATIONS[at_version(27)].label,
+            "automation lease and runs"
+        );
+        assert_eq!(at_version(27), at_version(26) + 1, "it follows v26");
+        let db = Builder::new_local(":memory:").build().await.unwrap();
+        let conn = db.connect().unwrap();
+        apply_migrations(&conn, MIGRATIONS).await.unwrap();
+        for table in ["automation_lease", "automation_run"] {
+            assert_eq!(
+                scalar(
+                    &conn,
+                    &format!(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='{table}'"
+                    ),
+                )
+                .await,
+                1,
+                "v27 creates {table}"
+            );
+        }
+        let at = |name: &str| {
+            WIPE_TABLES
+                .iter()
+                .position(|t| *t == name)
+                .unwrap_or_else(|| panic!("{name} is not in WIPE_TABLES"))
+        };
+        assert!(
+            at("automation_lease") < at("domain") && at("automation_run") < at("domain"),
+            "the lease and the runs go before their domain"
         );
     }
 

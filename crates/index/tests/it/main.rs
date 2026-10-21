@@ -5,6 +5,7 @@
 //! instead of eighteen. `embed_model` and `nli_model` keep their own
 //! `#![cfg(feature = "local-embeddings")]`, which gates the module now.
 
+mod automation;
 mod contradictions;
 mod embed;
 mod embed_model;

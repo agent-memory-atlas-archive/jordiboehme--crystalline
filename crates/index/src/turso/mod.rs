@@ -63,6 +63,7 @@ use crate::store::{
     reset_spelled_references_sql, resolve_references_to_sql, resolve_spelled_references_sql,
     spelled_references_sql, spelling_plan,
 };
+use crate::store::{AutomationLease, AutomationRun, LeaseClaim, LeaseHolder};
 use crate::sweep::{SpelledRef, UnresolvedRef};
 
 /// `?from` through `?(from + count - 1)`, comma separated: an `IN` list's
@@ -1098,6 +1099,46 @@ fn domain_host_of(r: &Row) -> DomainHost {
     }
 }
 
+/// The read of one automation lease row, in [`automation_lease_of`]'s column
+/// order.
+const AUTOMATION_LEASE_SQL: &str = "SELECT instance_id, account, runner, token, taken_at, renewed_at, unshared_at_start, due_at_start FROM automation_lease WHERE domain_id=?1 AND loop_kind=?2";
+
+/// An [`AutomationLease`] from a row read by [`AUTOMATION_LEASE_SQL`]'s
+/// columns.
+fn automation_lease_of(r: &Row) -> Result<AutomationLease> {
+    Ok(AutomationLease {
+        holder: LeaseHolder {
+            instance_id: cell_text(r, 0).unwrap_or_default(),
+            account: cell_text(r, 1),
+            runner: cell_text(r, 2).unwrap_or_default(),
+            unshared_at_start: serde_json::from_str(&cell_text(r, 6).unwrap_or_default())?,
+            due_at_start: serde_json::from_str(&cell_text(r, 7).unwrap_or_default())?,
+        },
+        token: cell_text(r, 3).unwrap_or_default(),
+        taken_at: cell_text(r, 4).unwrap_or_default(),
+        renewed_at: cell_text(r, 5).unwrap_or_default(),
+    })
+}
+
+/// An [`AutomationRun`] from a row of `automation_run`'s columns from
+/// `started_at` on.
+fn automation_run_of(r: &Row) -> Result<AutomationRun> {
+    let count = |i| cell_i64(r, i).unwrap_or(0).max(0) as u64;
+    Ok(AutomationRun {
+        started_at: cell_text(r, 0).unwrap_or_default(),
+        ended_at: cell_text(r, 1).unwrap_or_default(),
+        runner: cell_text(r, 2).unwrap_or_default(),
+        account: cell_text(r, 3),
+        outcome: cell_text(r, 4).unwrap_or_default(),
+        done: count(5),
+        left: count(6),
+        judgment_waiting: count(7),
+        summary: cell_text(r, 8).unwrap_or_default(),
+        pr_url: cell_text(r, 9),
+        left_items: serde_json::from_str(&cell_text(r, 10).unwrap_or_default())?,
+    })
+}
+
 fn cell_i64(row: &Row, idx: usize) -> Option<i64> {
     match row.get_value(idx) {
         Ok(Value::Integer(i)) => Some(i),
@@ -1996,6 +2037,8 @@ impl Store for TursoStore {
                 "DELETE FROM reflection_chunk WHERE domain_id=?1",
                 "DELETE FROM tag_alias WHERE domain_id=?1",
                 "DELETE FROM domain_lock WHERE domain_id=?1",
+                "DELETE FROM automation_lease WHERE domain_id=?1",
+                "DELETE FROM automation_run WHERE domain_id=?1",
                 "DELETE FROM relation WHERE domain_id=?1",
                 "DELETE FROM link WHERE domain_id=?1",
                 "DELETE FROM domain WHERE id=?1",
@@ -4437,6 +4480,183 @@ impl Store for TursoStore {
         // One instance owns a Turso database, and its write transaction is
         // the only writer: nothing can claim in between.
         self.domain_host(domain).await
+    }
+
+    async fn take_automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        holder: &LeaseHolder,
+        now: &str,
+        stale_before: &str,
+    ) -> Result<LeaseClaim> {
+        // One atomic upsert, the host lock's claim: insert when unheld, or
+        // replace a row whose last renewal is older than `stale_before`. A
+        // fresh row is left untouched, whoever asks; the re-read then tells
+        // whose token the row carries.
+        let token = crate::store::claim_token(now);
+        self.conn
+            .execute(
+                "INSERT INTO automation_lease(domain_id, loop_kind, instance_id, account, runner, \
+                 token, taken_at, renewed_at, unshared_at_start, due_at_start) \
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9) \
+                 ON CONFLICT(domain_id, loop_kind) DO UPDATE SET \
+                 instance_id=excluded.instance_id, account=excluded.account, runner=excluded.runner, \
+                 token=excluded.token, taken_at=excluded.taken_at, renewed_at=excluded.renewed_at, \
+                 unshared_at_start=excluded.unshared_at_start, due_at_start=excluded.due_at_start \
+                 WHERE automation_lease.renewed_at < ?10",
+                vec![
+                    Value::Integer(domain.0),
+                    Value::Text(loop_kind.to_string()),
+                    Value::Text(holder.instance_id.clone()),
+                    opt_text(&holder.account),
+                    Value::Text(holder.runner.clone()),
+                    Value::Text(token.clone()),
+                    Value::Text(now.to_string()),
+                    Value::Text(serde_json::to_string(&holder.unshared_at_start)?),
+                    Value::Text(serde_json::to_string(&holder.due_at_start)?),
+                    Value::Text(stale_before.to_string()),
+                ],
+            )
+            .await?;
+        match self.automation_lease(domain, loop_kind).await? {
+            Some(lease) if lease.token != token => Ok(LeaseClaim::Held(lease)),
+            _ => Ok(LeaseClaim::Acquired { token }),
+        }
+    }
+
+    async fn renew_automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        token: &str,
+        now: &str,
+    ) -> Result<bool> {
+        let n = self
+            .conn
+            .execute(
+                "UPDATE automation_lease SET renewed_at=?4 \
+                 WHERE domain_id=?1 AND loop_kind=?2 AND token=?3",
+                vec![
+                    Value::Integer(domain.0),
+                    Value::Text(loop_kind.to_string()),
+                    Value::Text(token.to_string()),
+                    Value::Text(now.to_string()),
+                ],
+            )
+            .await?;
+        Ok(n > 0)
+    }
+
+    async fn release_automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        token: &str,
+    ) -> Result<Option<AutomationLease>> {
+        // One process owns a Turso database: the row read here is the row
+        // the token-guarded delete removes.
+        let Some(lease) = self.automation_lease(domain, loop_kind).await? else {
+            return Ok(None);
+        };
+        if lease.token != token {
+            return Ok(None);
+        }
+        let n = self
+            .conn
+            .execute(
+                "DELETE FROM automation_lease WHERE domain_id=?1 AND loop_kind=?2 AND token=?3",
+                vec![
+                    Value::Integer(domain.0),
+                    Value::Text(loop_kind.to_string()),
+                    Value::Text(token.to_string()),
+                ],
+            )
+            .await?;
+        Ok((n > 0).then_some(lease))
+    }
+
+    async fn automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+    ) -> Result<Option<AutomationLease>> {
+        let row = query_first(
+            &self.conn,
+            AUTOMATION_LEASE_SQL,
+            vec![Value::Integer(domain.0), Value::Text(loop_kind.to_string())],
+        )
+        .await?;
+        row.map(|r| automation_lease_of(&r)).transpose()
+    }
+
+    async fn record_automation_run(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        run: &AutomationRun,
+        keep: usize,
+    ) -> Result<()> {
+        let count = |n: u64| Value::Integer(i64::try_from(n).unwrap_or(i64::MAX));
+        let left_items = serde_json::to_string(&run.left_items)?;
+        self.conn
+            .execute(
+                "INSERT INTO automation_run(domain_id, loop_kind, started_at, ended_at, runner, \
+                 account, outcome, done, \"left\", judgment_waiting, summary, pr_url, left_items) \
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                vec![
+                    Value::Integer(domain.0),
+                    Value::Text(loop_kind.to_string()),
+                    Value::Text(run.started_at.clone()),
+                    Value::Text(run.ended_at.clone()),
+                    Value::Text(run.runner.clone()),
+                    opt_text(&run.account),
+                    Value::Text(run.outcome.clone()),
+                    count(run.done),
+                    count(run.left),
+                    count(run.judgment_waiting),
+                    Value::Text(run.summary.clone()),
+                    opt_text(&run.pr_url),
+                    Value::Text(left_items),
+                ],
+            )
+            .await?;
+        // The newest `keep` by id stay; the id grows with every insert. Not
+        // one transaction: a prune that does not land is done by the next.
+        self.conn
+            .execute(
+                "DELETE FROM automation_run WHERE domain_id=?1 AND loop_kind=?2 AND id <= \
+                 COALESCE((SELECT id FROM automation_run WHERE domain_id=?1 AND loop_kind=?2 \
+                 ORDER BY id DESC LIMIT 1 OFFSET ?3), -1)",
+                vec![
+                    Value::Integer(domain.0),
+                    Value::Text(loop_kind.to_string()),
+                    Value::Integer(i64::try_from(keep).unwrap_or(i64::MAX)),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn automation_runs(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        limit: usize,
+    ) -> Result<Vec<AutomationRun>> {
+        let rows = query_all(
+            &self.conn,
+            "SELECT started_at, ended_at, runner, account, outcome, done, \"left\", \
+             judgment_waiting, summary, pr_url, left_items FROM automation_run \
+             WHERE domain_id=?1 AND loop_kind=?2 ORDER BY id DESC LIMIT ?3",
+            vec![
+                Value::Integer(domain.0),
+                Value::Text(loop_kind.to_string()),
+                Value::Integer(i64::try_from(limit).unwrap_or(i64::MAX)),
+            ],
+        )
+        .await?;
+        rows.iter().map(automation_run_of).collect()
     }
 
     async fn swap_host_move(

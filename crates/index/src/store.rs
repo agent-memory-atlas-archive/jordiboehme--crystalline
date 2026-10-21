@@ -2249,6 +2249,105 @@ pub(crate) fn claim_token(now: &str) -> String {
     format!("{now} {}", uuid::Uuid::new_v4().simple())
 }
 
+/// One unshared file of a domain when an automation lease was taken, with
+/// its checksum, so the run shares only the files that are new or changed
+/// since then.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct PathChecksum {
+    /// The domain-relative path.
+    pub path: String,
+    /// The file's checksum at take time.
+    pub checksum: String,
+}
+
+/// One item a loop had due: its kind, a stable key and a version that moves
+/// only when the item really changes. Stored at take time and, for a run that
+/// ended `done`, as the items left for a person.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct DueKey {
+    /// The item kind, for example a reflect queue kind or `finding`.
+    pub kind: String,
+    /// The item's key within its kind.
+    pub key: String,
+    /// The item's version.
+    pub version: String,
+}
+
+/// Who holds an automation lease, and what the domain looked like when it
+/// was taken.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct LeaseHolder {
+    /// The holding instance's stable id.
+    pub instance_id: String,
+    /// The account the runner works as, when it has one.
+    pub account: Option<String>,
+    /// The runner label: `cli`, `n8n`, or what `--runner` names.
+    pub runner: String,
+    /// The domain's unshared files with their checksums at take time.
+    pub unshared_at_start: Vec<PathChecksum>,
+    /// The loop's due items at take time.
+    pub due_at_start: Vec<DueKey>,
+}
+
+/// The lease of one loop on one domain, as stored. A stale lease (not
+/// renewed in time) is still returned by [`Store::automation_lease`]; the
+/// caller decides what stale means.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct AutomationLease {
+    /// Who holds it.
+    pub holder: LeaseHolder,
+    /// The lease token, new on every take: renew and release name it. Never
+    /// serialized: it is the holder's to keep, so a refused take or a status
+    /// answer never hands it to someone else.
+    #[serde(skip)]
+    pub token: String,
+    /// When it was taken, RFC 3339.
+    pub taken_at: String,
+    /// When it was last renewed, RFC 3339.
+    pub renewed_at: String,
+}
+
+/// The outcome of a [`Store::take_automation_lease`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum LeaseClaim {
+    /// The lease is this caller's now, under `token`.
+    Acquired {
+        /// The take's token, which renew and release name. Serialized, unlike
+        /// [`AutomationLease::token`]: it goes back only to the caller whose
+        /// take landed, which may be a runner on the far side of a route.
+        token: String,
+    },
+    /// Another runner holds a lease that is not stale.
+    Held(AutomationLease),
+}
+
+/// One recorded run of a loop on a domain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct AutomationRun {
+    /// When the run started, RFC 3339.
+    pub started_at: String,
+    /// When the run ended, RFC 3339.
+    pub ended_at: String,
+    /// The runner label.
+    pub runner: String,
+    /// The account the run worked as, when it had one.
+    pub account: Option<String>,
+    /// `done`, `stopped at cap`, `failed`, `nothing due` or `expired`.
+    pub outcome: String,
+    /// Items done.
+    pub done: u64,
+    /// Items left for a person.
+    pub left: u64,
+    /// Judgment findings waiting (evolve).
+    pub judgment_waiting: u64,
+    /// A short summary text.
+    pub summary: String,
+    /// The pull request the run shared its changes in, when it shared.
+    pub pr_url: Option<String>,
+    /// The items left for a person, recorded only for a `done` run.
+    pub left_items: Vec<DueKey>,
+}
+
 /// The rows of a file domain that the last complete walk did not see on
 /// the disk of the instance that hosts it now, kept because the domain was
 /// taken over on a shared database and the previous host's disk may have
@@ -3940,6 +4039,66 @@ pub trait Store: Send + Sync {
     /// apply to commit instead of landing in the middle of it. A Turso
     /// database belongs to one instance, so the plain read is the same.
     async fn domain_host_held(&self, domain: DomainId) -> Result<Option<DomainHost>>;
+
+    /// Take the lease of `loop_kind` (`reflect` or `evolve`) on `domain`: one
+    /// atomic claim that lands when the lease is unheld or its last renewal
+    /// is older than `stale_before`. Every take that lands writes a new token
+    /// ([`LeaseClaim::Acquired`]); a lease that is still fresh is refused,
+    /// the same instance's included, and named ([`LeaseClaim::Held`]). The
+    /// two loops' leases never block each other.
+    async fn take_automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        holder: &LeaseHolder,
+        now: &str,
+        stale_before: &str,
+    ) -> Result<LeaseClaim>;
+
+    /// Move the lease's renewal time to `now`. `true` when the row still
+    /// carries `token`, `false` when it is gone or another take replaced it.
+    async fn renew_automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        token: &str,
+        now: &str,
+    ) -> Result<bool>;
+
+    /// Release the lease: a compare-and-delete on `token`. Returns the lease
+    /// as it was when it was deleted, `None` when the row carries another
+    /// token or there is none.
+    async fn release_automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        token: &str,
+    ) -> Result<Option<AutomationLease>>;
+
+    /// The lease of `loop_kind` on `domain` as stored, a stale one included.
+    async fn automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+    ) -> Result<Option<AutomationLease>>;
+
+    /// Record one run of `loop_kind` on `domain`, then keep only the newest
+    /// `keep` runs of that domain and loop.
+    async fn record_automation_run(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        run: &AutomationRun,
+        keep: usize,
+    ) -> Result<()>;
+
+    /// The newest `limit` runs of `loop_kind` on `domain`, newest first.
+    async fn automation_runs(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        limit: usize,
+    ) -> Result<Vec<AutomationRun>>;
 
     /// Write the domain's host move only when its stored text still is
     /// `expected`, the text the caller read ([`Store::host_move_text`]):
