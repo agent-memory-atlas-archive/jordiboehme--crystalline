@@ -532,35 +532,38 @@ export async function renameDomain(
   };
 }
 
+/** What finishing a rename the MANIFEST made did to the links. */
+export interface ManifestRenameResult {
+  /** The name the MANIFEST declared before. */
+  from: string;
+  /** The name the MANIFEST declares now. */
+  to: string;
+  rewritten: RenameRewritten[];
+  leftBehind: RenameLeftBehind[];
+}
+
 /**
  * Finish a rename the domain's MANIFEST made: respell the links that still
  * use the old name. The route answers `{domain, from, to, rewritten,
- * left_behind}`, which is read into the same report a rename gives, so the
- * domain page draws both the same way.
+ * left_behind}`; the domain keeps its name on this machine.
  */
 export async function finishManifestRename(
   domain: string,
-): Promise<RenameReport> {
+): Promise<ManifestRenameResult> {
   const report = asObject(
     await api<unknown>(`/domains/${encodeSegment(domain)}/rename/finish`, {
       method: "POST",
     }),
   );
   return {
-    domain: asString(report?.to) ?? domain,
-    previous: asString(report?.from) ?? domain,
-    localOnly: true,
-    manifestWritten: false,
-    manifestDraft: false,
-    note: null,
+    from: asString(report?.from) ?? domain,
+    to: asString(report?.to) ?? domain,
     rewritten: asArray(report?.rewritten)
       .map(readRenameRewritten)
       .filter((row): row is RenameRewritten => row !== null),
     leftBehind: asArray(report?.left_behind)
       .map(readRenameLeftBehind)
       .filter((row): row is RenameLeftBehind => row !== null),
-    aliases: [],
-    shadows: [],
   };
 }
 

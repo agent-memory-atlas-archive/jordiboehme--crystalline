@@ -65,7 +65,11 @@ import {
   syncPullKey,
   syncStatusKey,
 } from "../api/admin";
-import type { RenameReport, SyncStatus } from "../api/admin";
+import type {
+  ManifestRenameResult,
+  RenameReport,
+  SyncStatus,
+} from "../api/admin";
 import { DOMAINS_QUERY_KEY } from "../api/domains";
 import { ApiProblem, problemDetail } from "../api/client";
 import { fetchManifest, manifestKey, treeQuery } from "../api/domain";
@@ -322,7 +326,7 @@ function DomainPage({
    */
   const [finished, setFinished] = useState<{
     domain: string;
-    report: RenameReport;
+    result: ManifestRenameResult;
   } | null>(null);
   useEffect(() => {
     queryClient.removeQueries({ queryKey: renameReportKey(domain) });
@@ -621,7 +625,7 @@ function DomainPage({
 
         {renamed !== null && <RenameSummary report={renamed} />}
         {finished !== null && finished.domain === domain && (
-          <RenameSummary report={finished.report} />
+          <ManifestRenameSummary result={finished.result} />
         )}
 
         {/*
@@ -635,7 +639,8 @@ function DomainPage({
             from={summary.renamePending.from}
             to={summary.renamePending.to}
             disabledReason={renameDisabledReason}
-            onFinished={(report) => setFinished({ domain, report })}
+            onFinished={(result) => setFinished({ domain, result })}
+            reasonId={renameReasonId}
           />
         )}
 
@@ -971,15 +976,17 @@ function PendingRenameBanner({
   to,
   disabledReason,
   onFinished,
+  reasonId,
 }: {
   domain: string;
   from: string;
   to: string;
   disabledReason: string | undefined;
-  onFinished: (report: RenameReport) => void;
+  onFinished: (result: ManifestRenameResult) => void;
+  /** The id of the element that already says why renaming is shut. */
+  reasonId: string;
 }) {
   const queryClient = useQueryClient();
-  const reasonId = useId();
   const [failure, setFailure] = useState<string | null>(null);
   const answer = useMutation({
     mutationFn: async (finish: boolean) => {
@@ -1033,11 +1040,6 @@ function PendingRenameBanner({
       >
         Keep links as they are
       </button>
-      {disabledReason !== undefined && (
-        <span id={reasonId} className="sr-only">
-          {disabledReason}
-        </span>
-      )}
       {failure !== null && (
         <p role="alert" className="basis-full">
           {failure}
@@ -1057,12 +1059,24 @@ function RenameSummary({ report }: { report: RenameReport }) {
       <p>{`Renamed from ${report.previous}.`}</p>
       {report.manifestDraft && <p>The MANIFEST change waits for review.</p>}
       {report.note !== null && <p>{report.note}</p>}
-      {report.rewritten.map((row) => (
+      <RenameRows rewritten={report.rewritten} leftBehind={report.leftBehind} />
+    </div>
+  );
+}
+
+/** The rewritten and left-behind rows a rename or a finish reports. */
+function RenameRows({
+  rewritten,
+  leftBehind,
+}: Pick<ManifestRenameResult, "rewritten" | "leftBehind">) {
+  return (
+    <>
+      {rewritten.map((row) => (
         <p key={row.domain}>
           {`${row.domain}: ${plural(row.engrams, "engram", "engrams")} rewritten, ${plural(row.references, "reference", "references")}.`}
         </p>
       ))}
-      {report.leftBehind.length > 0 && (
+      {leftBehind.length > 0 && (
         <div>
           {/*
             Two different reasons share this list: a domain the caller could
@@ -1070,7 +1084,7 @@ function RenameSummary({ report }: { report: RenameReport }) {
           */}
           <p>Links left as they were:</p>
           <ul className="list-disc pl-5">
-            {report.leftBehind.map((row) => (
+            {leftBehind.map((row) => (
               <li key={`${row.domain}:${row.path}`}>
                 {`${row.domain}/${row.path} (${plural(row.references, "reference", "references")})${row.reason !== null ? `: ${row.reason}` : ""}`}
               </li>
@@ -1078,6 +1092,22 @@ function RenameSummary({ report }: { report: RenameReport }) {
           </ul>
         </div>
       )}
+    </>
+  );
+}
+
+/** What finishing a MANIFEST rename did to the links, not to the name. */
+function ManifestRenameSummary({ result }: { result: ManifestRenameResult }) {
+  const nothing =
+    result.rewritten.length === 0 && result.leftBehind.length === 0;
+  return (
+    <div
+      role="status"
+      className="flex flex-col gap-1 rounded bg-slate-50 px-3 py-2 text-sm text-slate-700 dark:bg-slate-900 dark:text-slate-300"
+    >
+      <p>{`Links now use ${result.to} instead of ${result.from}.`}</p>
+      {nothing && <p>No links needed a change.</p>}
+      <RenameRows rewritten={result.rewritten} leftBehind={result.leftBehind} />
     </div>
   );
 }

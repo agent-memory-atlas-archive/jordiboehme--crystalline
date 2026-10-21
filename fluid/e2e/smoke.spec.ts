@@ -412,11 +412,17 @@ test("the domain page asks about a rename the MANIFEST made, and keeping the lin
 }) => {
   await page.goto(`d/${RENAMED_DOMAIN}`);
 
-  await expect(
-    page.getByText(
-      `This domain was renamed from ${RENAMED_DOMAIN} to smoke-moved in its MANIFEST.`,
-    ),
-  ).toBeVisible();
+  // The daemon's watcher sees the hand edit some seconds after the script
+  // makes it, and the page reads the question when it opens: reload until the
+  // question is there, for as long as the watcher may take.
+  await expect(async () => {
+    await page.reload();
+    await expect(
+      page.getByText(
+        `This domain was renamed from ${RENAMED_DOMAIN} to smoke-moved in its MANIFEST.`,
+      ),
+    ).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
   await expect(
     page.getByRole("button", { name: "Finish the rename" }),
   ).toBeVisible();

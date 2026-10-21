@@ -2730,7 +2730,9 @@ describe("the domain's declared name", () => {
       expect(screen.queryByText(/^This domain was renamed from/)).toBeNull();
     });
     expect(calls).toEqual(["finish POST"]);
-    expect(await screen.findByText("Renamed from eng.")).toBeVisible();
+    expect(
+      await screen.findByText("Links now use platform instead of eng."),
+    ).toBeVisible();
     expect(screen.getByText(/ops: 1 engram rewritten/)).toBeVisible();
   });
 
@@ -2794,6 +2796,71 @@ describe("the domain's declared name", () => {
         "Someone changed the name again. Reload to see the new question.",
       ),
     ).toHaveAttribute("role", "alert");
+  });
+
+  it("says in words when finishing the rename fails", async () => {
+    serve(
+      {
+        "/domains": () =>
+          listingOf(
+            domainRow({
+              rename_pending: {
+                from: "eng",
+                to: "platform",
+                seen_at: "2026-10-20T10:00:00Z",
+              },
+            }),
+          ),
+        "/domains/eng/rename/finish": () => {
+          throw new ApiProblem(500, "failed", "the rewrite could not start");
+        },
+      },
+      "admin",
+    );
+
+    renderApp("/d/eng");
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Finish the rename" }),
+    );
+
+    expect(
+      await screen.findByText("the rewrite could not start"),
+    ).toHaveAttribute("role", "alert");
+    expect(screen.getByText(/^This domain was renamed from/)).toBeVisible();
+  });
+
+  it("says no links needed a change when nothing was rewritten", async () => {
+    serve(
+      {
+        "/domains": () =>
+          listingOf(
+            domainRow({
+              rename_pending: {
+                from: "eng",
+                to: "platform",
+                seen_at: "2026-10-20T10:00:00Z",
+              },
+            }),
+          ),
+        "/domains/eng/rename/finish": () => ({
+          domain: "eng",
+          from: "eng",
+          to: "platform",
+          rewritten: [],
+          left_behind: [],
+        }),
+      },
+      "admin",
+    );
+
+    renderApp("/d/eng");
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Finish the rename" }),
+    );
+
+    expect(await screen.findByText("No links needed a change.")).toBeVisible();
   });
 
   it("shows the pending rename to nobody who may not rename the domain", async () => {
