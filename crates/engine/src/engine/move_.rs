@@ -857,8 +857,13 @@ impl Engine {
             {
                 Ok(Some(relinked)) => {
                     references += relinked.references;
-                    let mut entry =
-                        json!({ "domain": linker.domain, "permalink": relinked.permalink });
+                    // The path rides along so a headless run's share can
+                    // carry the rewritten linker (the MCP dispatch notes it).
+                    let mut entry = json!({
+                        "domain": linker.domain,
+                        "permalink": relinked.permalink,
+                        "path": linker.path,
+                    });
                     // Written into a room somebody has open, which saves it.
                     if relinked.live {
                         entry["landed"] = json!("live");

@@ -1485,7 +1485,7 @@ pub async fn retire(
                 "cross_domain": false,
                 "links_rewritten": 1,
                 "references_rewritten": 2,
-                "rewritten": [{ "domain": "eng", "permalink": "alpha" }],
+                "rewritten": [{ "domain": "eng", "permalink": "alpha", "path": "alpha.md" }],
                 "attachment_warnings": []
             }),
         ),

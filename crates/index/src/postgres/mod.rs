@@ -4716,57 +4716,85 @@ impl Store for PostgresStore {
         now: &str,
         stale_before: &str,
     ) -> Result<LeaseClaim> {
-        // One atomic upsert, the host lock's claim: insert when unheld, or
-        // replace a row whose last renewal is older than `stale_before`. A
-        // fresh row is left untouched, whoever asks; the re-read on the same
-        // connection then tells whose token the row carries.
-        //
-        // The stale row the claim replaces is read in the same statement,
-        // locked (`FOR UPDATE`): a second take waiting on the lock re-reads
-        // the row the first one wrote, finds it fresh and reports nothing,
-        // so one stale lease is reported replaced once.
+        // The host lock's claim, in one transaction: lock and read the stale
+        // row (`FOR UPDATE`), then one upsert that inserts when unheld or
+        // replaces a row whose last renewal is older than `stale_before`. A
+        // fresh row is left untouched, whoever asks; the re-read then tells
+        // whose token the row carries. A second take waiting on the lock
+        // re-reads the row the first one wrote, finds it fresh and locks
+        // nothing, so one stale lease is reported replaced once.
         let token = crate::store::claim_token(now);
         let mut conn = self.acquire().await?;
         let c = conn.as_mut();
-        let replaced = sqlx::query(
-            "WITH old AS (SELECT instance_id, account, runner, token, taken_at, renewed_at, \
-             unshared_at_start, due_at_start, pr_url, written FROM automation_lease \
-             WHERE domain_id=$1 AND loop_kind=$2 AND renewed_at < $10 FOR UPDATE), \
-             up AS (INSERT INTO automation_lease(domain_id, loop_kind, instance_id, account, runner, \
-             token, taken_at, renewed_at, unshared_at_start, due_at_start) \
-             VALUES($1, $2, $3, $4, $5, $6, $7, $7, $8, $9) \
-             ON CONFLICT(domain_id, loop_kind) DO UPDATE SET \
-             instance_id=EXCLUDED.instance_id, account=EXCLUDED.account, runner=EXCLUDED.runner, \
-             token=EXCLUDED.token, taken_at=EXCLUDED.taken_at, renewed_at=EXCLUDED.renewed_at, \
-             unshared_at_start=EXCLUDED.unshared_at_start, due_at_start=EXCLUDED.due_at_start, \
-             pr_url=NULL, written='[]' \
-             WHERE automation_lease.renewed_at < $10 RETURNING token) \
-             SELECT old.* FROM old CROSS JOIN up",
-        )
-        .bind(domain.0)
-        .bind(loop_kind)
-        .bind(&holder.instance_id)
-        .bind(holder.account.as_deref())
-        .bind(&holder.runner)
-        .bind(&token)
-        .bind(now)
-        .bind(serde_json::to_string(&holder.unshared_at_start)?)
-        .bind(serde_json::to_string(&holder.due_at_start)?)
-        .bind(stale_before)
-        .fetch_optional(&mut *c)
-        .await
-        .map_err(IndexError::from)?
-        .map(|r| automation_lease_of(&r))
-        .transpose()?;
-        let row = sqlx::query(AUTOMATION_LEASE_SQL)
-            .bind(domain.0)
-            .bind(loop_kind)
-            .fetch_optional(&mut *c)
+        sqlx::query("BEGIN")
+            .execute(&mut *c)
             .await
             .map_err(IndexError::from)?;
-        match row.map(|r| automation_lease_of(&r)).transpose()? {
-            Some(lease) if lease.token != token => Ok(LeaseClaim::Held(lease)),
-            _ => Ok(LeaseClaim::Acquired { token, replaced }),
+        let claimed: Result<LeaseClaim> = async {
+            let stale = sqlx::query(
+                "SELECT instance_id, account, runner, token, taken_at, renewed_at, \
+                 unshared_at_start, due_at_start, pr_url, written FROM automation_lease \
+                 WHERE domain_id=$1 AND loop_kind=$2 AND renewed_at < $3 FOR UPDATE",
+            )
+            .bind(domain.0)
+            .bind(loop_kind)
+            .bind(stale_before)
+            .fetch_optional(&mut *c)
+            .await
+            .map_err(IndexError::from)?
+            .map(|r| automation_lease_of(&r))
+            .transpose()?;
+            sqlx::query(
+                "INSERT INTO automation_lease(domain_id, loop_kind, instance_id, account, runner, \
+                 token, taken_at, renewed_at, unshared_at_start, due_at_start) \
+                 VALUES($1, $2, $3, $4, $5, $6, $7, $7, $8, $9) \
+                 ON CONFLICT(domain_id, loop_kind) DO UPDATE SET \
+                 instance_id=EXCLUDED.instance_id, account=EXCLUDED.account, runner=EXCLUDED.runner, \
+                 token=EXCLUDED.token, taken_at=EXCLUDED.taken_at, renewed_at=EXCLUDED.renewed_at, \
+                 unshared_at_start=EXCLUDED.unshared_at_start, due_at_start=EXCLUDED.due_at_start, \
+                 pr_url=NULL, written='[]' \
+                 WHERE automation_lease.renewed_at < $10",
+            )
+            .bind(domain.0)
+            .bind(loop_kind)
+            .bind(&holder.instance_id)
+            .bind(holder.account.as_deref())
+            .bind(&holder.runner)
+            .bind(&token)
+            .bind(now)
+            .bind(serde_json::to_string(&holder.unshared_at_start)?)
+            .bind(serde_json::to_string(&holder.due_at_start)?)
+            .bind(stale_before)
+            .execute(&mut *c)
+            .await
+            .map_err(IndexError::from)?;
+            let row = sqlx::query(AUTOMATION_LEASE_SQL)
+                .bind(domain.0)
+                .bind(loop_kind)
+                .fetch_optional(&mut *c)
+                .await
+                .map_err(IndexError::from)?;
+            Ok(match row.map(|r| automation_lease_of(&r)).transpose()? {
+                Some(lease) if lease.token != token => LeaseClaim::Held(lease),
+                _ => LeaseClaim::Acquired {
+                    token: token.clone(),
+                    replaced: stale,
+                },
+            })
+        }
+        .await;
+        match claimed {
+            Ok(claim) => {
+                sqlx::query("COMMIT")
+                    .execute(&mut *c)
+                    .await
+                    .map_err(IndexError::from)?;
+                Ok(claim)
+            }
+            Err(e) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *c).await;
+                Err(e)
+            }
         }
     }
 
@@ -4797,7 +4825,6 @@ impl Store for PostgresStore {
         domain: DomainId,
         account: &str,
         paths: &[String],
-        stale_before: &str,
     ) -> Result<u64> {
         // One statement: the union of what the row holds and `paths`, so two
         // instances noting at once both land.
@@ -4806,12 +4833,11 @@ impl Store for PostgresStore {
             "UPDATE automation_lease SET written = ( \
              SELECT COALESCE(jsonb_agg(p ORDER BY p), '[]'::jsonb)::text FROM ( \
              SELECT DISTINCT p FROM jsonb_array_elements_text(written::jsonb || $3::jsonb) AS p) AS u) \
-             WHERE domain_id=$1 AND account=$2 AND renewed_at >= $4",
+             WHERE domain_id=$1 AND account=$2",
         )
         .bind(domain.0)
         .bind(account)
         .bind(serde_json::to_string(paths)?)
-        .bind(stale_before)
         .execute(conn.as_mut())
         .await
         .map_err(IndexError::from)?;

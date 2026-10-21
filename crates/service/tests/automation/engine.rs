@@ -1028,3 +1028,33 @@ async fn on_postgres_evolve_runs_on_the_host_and_a_stale_lease_expires_once() {
         .collect();
     assert_eq!(outcomes, vec!["expired"], "{runs}");
 }
+
+/// A lease that went stale but that nobody took over is still its token's:
+/// a write the runner made while it lapsed is noted and shared.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_while_the_lease_lapsed_is_still_shared() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mock = Arc::new(MockProvider::new());
+    let (eng, root) = direct_team(&tmp, mock.clone()).await;
+    let runner = with_accounts(&eng, &tmp).await;
+    let taken = eng
+        .automation_lease_take(Loop::Evolve, "brand", "k8s", &runner)
+        .await
+        .unwrap();
+    let token = taken["token"].as_str().unwrap().to_string();
+    eng.set_automation_now(Some(start() + Duration::seconds(400)));
+    write_note(&root, "notes/late.md", "written while the lease lapsed");
+    eng.note_written("brand", "runner", &["notes/late.md".to_string()])
+        .await
+        .unwrap();
+    eng.automation_lease_renew(Loop::Evolve, "brand", &token, &runner)
+        .await
+        .unwrap();
+    let shared = eng
+        .automation_share(Loop::Evolve, "brand", &token, "Late fix.", &runner)
+        .await
+        .unwrap();
+    assert_eq!(shared["outcome"], "shared", "{shared}");
+    assert_eq!(shared_files(&shared), vec!["notes/late.md"], "{shared}");
+    assert_eq!(shared["recorded"], true, "{shared}");
+}

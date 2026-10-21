@@ -58,7 +58,18 @@ async fn only_the_lease_accounts_mcp_writes_are_noted() {
     assert_eq!(reply["ok"], true, "{reply}");
     assert_eq!(noted(&server).await, vec!["run-fix.md"]);
 
-    // A move notes both ends, so the delete side reaches the pull request.
+    // A person's engram links the run's fix by its permalink; written on
+    // disk and synced, so it is not noted.
+    std::fs::write(
+        server.file("open", "linker.md"),
+        engram("Linker", "linker", "see [[run-fix]] for the fix"),
+    )
+    .unwrap();
+    server.engine.sync(Some("open")).await.unwrap();
+    assert_eq!(noted(&server).await, vec!["run-fix.md"]);
+
+    // A move notes both ends, so the delete side reaches the pull request,
+    // and every linker it rewrote.
     let (_, reply) = server
         .ctl(
             Some(&token),
@@ -69,7 +80,14 @@ async fn only_the_lease_accounts_mcp_writes_are_noted() {
         )
         .await;
     assert_eq!(reply["ok"], true, "{reply}");
-    assert_eq!(noted(&server).await, vec!["fixes/run-fix.md", "run-fix.md"]);
+    assert!(
+        reply.to_string().contains("linker"),
+        "the move rewrote the linker: {reply}"
+    );
+    assert_eq!(
+        noted(&server).await,
+        vec!["fixes/run-fix.md", "linker.md", "run-fix.md"]
+    );
 
     // An MCP write by another account is not the run's.
     let out = server.token_for("out").await;
@@ -114,5 +132,8 @@ async fn only_the_lease_accounts_mcp_writes_are_noted() {
     .unwrap();
     server.engine.sync(Some("open")).await.unwrap();
 
-    assert_eq!(noted(&server).await, vec!["fixes/run-fix.md", "run-fix.md"]);
+    assert_eq!(
+        noted(&server).await,
+        vec!["fixes/run-fix.md", "linker.md", "run-fix.md"]
+    );
 }

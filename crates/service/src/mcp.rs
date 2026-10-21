@@ -6282,8 +6282,6 @@ fn overlay_refusal(e: EngineError) -> Result<String, ErrorData> {
     }
 }
 
-/// A write receipt as a finished [`Verdict`], with the page this caller opens
-/// the engram at.
 /// The engram paths a write receipt names, by domain: its own `path`, the
 /// `from` and `to` of a move, the `source` and `new` of a split, and every
 /// linker a move rewrote. Each object's own `domain` wins over the
@@ -6311,6 +6309,8 @@ fn written_paths(receipt: &Value) -> std::collections::BTreeMap<String, Vec<Stri
     out
 }
 
+/// A write receipt as a finished [`Verdict`], with the page this caller opens
+/// the engram at.
 fn done_written(mut receipt: Value, base: &crate::web_url::WebBase) -> Verdict {
     crate::web_url::attach_engram_url(&mut receipt, base);
     Verdict::Done(receipt)

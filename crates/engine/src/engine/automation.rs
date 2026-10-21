@@ -359,26 +359,35 @@ impl Engine {
     /// lease that account holds there (R4, ruling B). The MCP tool dispatch
     /// calls this after every write-shaped tool that succeeded; nothing else
     /// does, so a write over REST, Fluid, the files or a sync is never noted
-    /// and never shared by a run. A domain with no fresh lease of that
-    /// account notes nothing.
+    /// and never shared by a run.
+    ///
+    /// The token is the rule, as for renew, share and record: a lease that
+    /// went stale and that nobody took over still notes, so a runner that
+    /// lapsed loses none of its writes. A domain where the account holds no
+    /// lease notes nothing.
+    ///
+    /// The engine cannot tell which run made an MCP write, so the note lands
+    /// in every lease the account holds on the domain, the reflect and the
+    /// evolve lease alike. A reflect runner and an evolve runner that work
+    /// one domain at the same time take separate accounts, or each pull
+    /// request carries the other run's writes.
     pub async fn note_written(&self, domain: &str, account: &str, paths: &[String]) -> Result<()> {
         if paths.is_empty() || account.is_empty() {
             return Ok(());
         }
-        let (_, stale_before) = self.automation_window();
         let store = self.store.lock().await;
         let Some(id) = store.domain_id(domain).await? else {
             return Ok(());
         };
-        store
-            .note_automation_written(id, account, paths, &stale_before)
-            .await?;
+        store.note_automation_written(id, account, paths).await?;
         Ok(())
     }
 
     /// Share what the run that holds `token` changed, as a pull request
     /// whatever the domain's `sharing` says (R4): `{outcome: "shared" |
-    /// "nothing_to_share" | "no_origin", url?, files, held_back, attributed}`.
+    /// "nothing_to_share" | "no_origin", url?, files, held_back, attributed,
+    /// recorded?}`. `recorded` (on `shared`) is `false` when the lease was
+    /// taken over during the share, so the run record will not carry the url.
     ///
     /// Only the runner's own MCP writes are shared: the paths the lease's
     /// account wrote over MCP while it held the lease
@@ -485,11 +494,19 @@ impl Engine {
             answer["attributed"] = json!(attributed);
             return Ok(answer);
         };
-        {
+        // A takeover during the share leaves the pull request open with no
+        // lease to keep its address: the answer still names it, and says it
+        // was not recorded.
+        let recorded = {
             let store = self.store.lock().await;
             store
                 .set_automation_pr_url(id, lp.as_str(), token, &url)
-                .await?;
+                .await?
+        };
+        if !recorded {
+            tracing::warn!(
+                "the {lp} run on '{domain}' shared {url}, but its lease was taken over meanwhile"
+            );
         }
         // What the pull request carries, as the share reports it.
         let carried: Vec<&Value> = ["added", "updated", "deleted"]
@@ -503,6 +520,7 @@ impl Engine {
             "files": carried,
             "held_back": held_back,
             "attributed": attributed,
+            "recorded": recorded,
         }))
     }
 

@@ -2372,6 +2372,65 @@ mod tests {
         store.drop_schema().await.unwrap();
     }
 
+    /// v28, the lease's pull request and written paths: it follows v27, a
+    /// replay converges (both `ALTER`s are `IF NOT EXISTS`), and a lease row
+    /// written without them reads a null url and an empty list.
+    #[tokio::test]
+    async fn v28_adds_the_lease_columns_and_replays_cleanly() {
+        let Ok(url) = std::env::var("CRYSTALLINE_TEST_POSTGRES_URL") else {
+            return;
+        };
+        if url.is_empty() {
+            return;
+        }
+        let at_version = |v: i64| {
+            MIGRATIONS
+                .iter()
+                .position(|m| m.version == v)
+                .unwrap_or_else(|| panic!("no migration v{v}"))
+        };
+        let (v27, v28) = (at_version(27), at_version(28));
+        assert_eq!(
+            MIGRATIONS[v28].label,
+            "automation lease pull request and written paths"
+        );
+        assert_eq!(v28, v27 + 1, "it follows v27");
+
+        let schema = format!("mig_lease_cols_{}", std::process::id());
+        let store = crate::PostgresStore::open_in_schema(&url, &schema)
+            .await
+            .unwrap();
+        let mut conn = sqlx::PgConnection::connect(&url).await.unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "SET search_path TO {schema}, public"
+        )))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::raw_sql(MIGRATIONS[v28].sql)
+            .execute(&mut conn)
+            .await
+            .expect("v28 applies twice");
+        sqlx::raw_sql(
+            "INSERT INTO domain (id, name, path) OVERRIDING SYSTEM VALUE VALUES (1, 'd', NULL);
+             INSERT INTO automation_lease (domain_id, loop_kind, instance_id, runner, token,
+               taken_at, renewed_at, unshared_at_start, due_at_start)
+             VALUES (1, 'reflect', 'i', 'cli', 't', 'a', 'a', '[]', '[]');",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM automation_lease WHERE pr_url IS NULL AND written = '[]'",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+        assert_eq!(n, 1, "a null url and an empty list");
+        drop(conn);
+        store.drop_schema().await.unwrap();
+    }
+
     /// v22, the Reflection's chunks: it follows the reflection asset table, a
     /// replay of the step converges (every `CREATE` is `IF NOT EXISTS`), it
     /// blanks the page stamps so the next walk re-reads every page, and the

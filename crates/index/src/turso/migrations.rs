@@ -2776,6 +2776,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_lease_columns_migration_is_v28_and_a_lease_row_defaults_to_nothing_written() {
+        let at_version = |v: i64| {
+            MIGRATIONS
+                .iter()
+                .position(|m| m.version == v)
+                .unwrap_or_else(|| panic!("no migration v{v}"))
+        };
+        assert_eq!(
+            MIGRATIONS[at_version(28)].label,
+            "automation lease pull request and written paths"
+        );
+        assert_eq!(at_version(28), at_version(27) + 1, "it follows v27");
+        let db = Builder::new_local(":memory:").build().await.unwrap();
+        let conn = db.connect().unwrap();
+        apply_migrations(&conn, MIGRATIONS).await.unwrap();
+        conn.execute(
+            "INSERT INTO domain(id, name, path, kind) VALUES (1, 'd', '/tmp/d', 'file')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO automation_lease (domain_id, loop_kind, instance_id, runner, token, \
+             taken_at, renewed_at, unshared_at_start, due_at_start) \
+             VALUES (1, 'reflect', 'i', 'cli', 't', 'a', 'a', '[]', '[]')",
+            (),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            scalar(
+                &conn,
+                "SELECT COUNT(*) FROM automation_lease WHERE pr_url IS NULL AND written = '[]'"
+            )
+            .await,
+            1,
+            "v28 adds pr_url (null) and written (an empty list)"
+        );
+    }
+
+    #[tokio::test]
     async fn the_reflection_migration_is_v20_and_creates_its_table() {
         let v20 = MIGRATIONS.iter().find(|m| m.version == 20).unwrap();
         assert_eq!(v20.label, "reflection index");

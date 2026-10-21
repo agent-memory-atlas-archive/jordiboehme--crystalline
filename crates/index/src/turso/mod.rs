@@ -4562,7 +4562,6 @@ impl Store for TursoStore {
         domain: DomainId,
         account: &str,
         paths: &[String],
-        stale_before: &str,
     ) -> Result<u64> {
         // One process owns a Turso database and the engine serializes its
         // store calls, so a read and a token-guarded write of each lease
@@ -4572,9 +4571,7 @@ impl Store for TursoStore {
             let Some(lease) = self.automation_lease(domain, loop_kind).await? else {
                 continue;
             };
-            if lease.holder.account.as_deref() != Some(account)
-                || lease.renewed_at.as_str() < stale_before
-            {
+            if lease.holder.account.as_deref() != Some(account) {
                 continue;
             }
             let mut written = lease.written;

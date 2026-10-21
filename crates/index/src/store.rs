@@ -2283,7 +2283,10 @@ pub struct LeaseHolder {
     pub account: Option<String>,
     /// The runner label: `cli`, `n8n`, or what `--runner` names.
     pub runner: String,
-    /// The domain's unshared files with their checksums at take time.
+    /// The domain's unshared files with their checksums at take time. Never
+    /// serialized, like [`AutomationLease::token`]: page paths stay out of
+    /// any answer a lease reaches.
+    #[serde(skip)]
     pub unshared_at_start: Vec<PathChecksum>,
     /// The loop's due items at take time.
     pub due_at_start: Vec<DueKey>,
@@ -2308,7 +2311,9 @@ pub struct AutomationLease {
     /// The pull request the run shared its changes in, once it shared.
     pub pr_url: Option<String>,
     /// The paths the holder's account wrote over MCP while it held the
-    /// lease, each once ([`Store::note_automation_written`]).
+    /// lease, each once ([`Store::note_automation_written`]). Never
+    /// serialized, like `token`.
+    #[serde(skip)]
     pub written: Vec<String>,
 }
 
@@ -4095,16 +4100,16 @@ pub trait Store: Send + Sync {
     ) -> Result<bool>;
 
     /// Add `paths` to the written paths of every lease on `domain` (either
-    /// loop) that `account` holds and that was renewed at or after
-    /// `stale_before`; a path already noted is kept once. One statement per
-    /// lease, so two writers on a shared database never lose each other's
-    /// paths. Answers how many leases noted them.
+    /// loop) that `account` holds, whatever its age: a lease that went stale
+    /// and that nobody took over is still its token's, so what its runner
+    /// wrote meanwhile is kept. A path already noted is kept once. One
+    /// statement per lease, so two writers on a shared database never lose
+    /// each other's paths. Answers how many leases noted them.
     async fn note_automation_written(
         &self,
         domain: DomainId,
         account: &str,
         paths: &[String],
-        stale_before: &str,
     ) -> Result<u64>;
 
     /// The lease of `loop_kind` on `domain` as stored, a stale one included.

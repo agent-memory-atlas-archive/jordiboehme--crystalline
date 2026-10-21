@@ -376,8 +376,9 @@ parity!(
 );
 
 /// A run's written paths and its pull request ride on the lease: a note
-/// lands only on a fresh lease of the noting account, each path once, and a
-/// take over a stale lease starts clean and names the lease it replaced.
+/// lands only on a lease of the noting account (whatever its age), each
+/// path once, and a take over a stale lease starts clean and names the
+/// lease it replaced.
 async fn lease_carries_written_and_pr_url(store: &dyn Store) {
     let d = domain(store, "eng").await;
     let first = holder("inst-a", "cli");
@@ -390,26 +391,19 @@ async fn lease_carries_written_and_pr_url(store: &dyn Store) {
     let paths = |p: &[&str]| p.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     assert_eq!(
         store
-            .note_automation_written(d, "ada", &paths(&["b.md", "a.md"]), BEFORE_T0)
+            .note_automation_written(d, "ada", &paths(&["b.md", "a.md"]))
             .await
             .unwrap(),
         1
     );
     store
-        .note_automation_written(d, "ada", &paths(&["a.md", "c.md"]), BEFORE_T0)
+        .note_automation_written(d, "ada", &paths(&["a.md", "c.md"]))
         .await
         .unwrap();
-    // Another account, or a lease gone stale, notes nothing.
+    // Another account notes nothing.
     assert_eq!(
         store
-            .note_automation_written(d, "bob", &paths(&["x.md"]), BEFORE_T0)
-            .await
-            .unwrap(),
-        0
-    );
-    assert_eq!(
-        store
-            .note_automation_written(d, "ada", &paths(&["y.md"]), "2026-10-21T10:01:00+00:00")
+            .note_automation_written(d, "bob", &paths(&["x.md"]))
             .await
             .unwrap(),
         0
@@ -431,6 +425,14 @@ async fn lease_carries_written_and_pr_url(store: &dyn Store) {
     written.sort();
     assert_eq!(written, paths(&["a.md", "b.md", "c.md"]));
     assert_eq!(lease.pr_url.as_deref(), Some("https://forge.test/pull/1"));
+    // The token, the written paths and the unshared files never serialize.
+    let shown = serde_json::to_value(&lease).unwrap();
+    assert!(shown.get("token").is_none(), "{shown}");
+    assert!(shown.get("written").is_none(), "{shown}");
+    assert!(
+        shown["holder"].get("unshared_at_start").is_none(),
+        "{shown}"
+    );
 
     let later = "2026-10-21T10:06:00+00:00";
     match store

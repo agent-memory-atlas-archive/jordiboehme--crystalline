@@ -57,7 +57,8 @@ async fn store_info_reports_turso_schema_version() {
     // home, v18 contradiction scores, v19 metadata values, v20 reflection index,
     // v21 reflection assets, v22 reflection chunks,
     // v23 reflection chunks by domain, v24 engram rows under the Reflection folder,
-    // v25 domain host move, v26 wikilink display text, v27 automation lease and runs.
+    // v25 domain host move, v26 wikilink display text, v27 automation lease and runs,
+    // v28 automation lease pull request and written paths.
     assert_eq!(info.schema_version, 28);
 }
 
