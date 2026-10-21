@@ -18,6 +18,7 @@ mod plans;
 mod recovery;
 mod reflection_search;
 mod reindex;
+mod relative_links;
 mod reparse;
 mod retired;
 mod salience;

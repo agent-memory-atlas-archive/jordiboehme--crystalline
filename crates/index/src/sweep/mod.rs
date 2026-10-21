@@ -2737,6 +2737,37 @@ fn detect_unresolved(input: &SweepInput, graph: &Graph<'_>, report: &mut SweepRe
             .as_ref()
             .filter(|d| !input.known_domains.iter().any(|k| k == *d));
 
+        // A relative note link (`[p](../pumps/p-12.md)`) is stored as the path
+        // it lands on, and no row records its form; a path is what ends in
+        // `.md`, which a permalink never does. It names a file, not a title,
+        // so a title is no repair for it, and a wikilink swap would replace
+        // text the engram does not hold: which file was meant is a person's
+        // call.
+        if reference.target_domain.is_none()
+            && reference.target.to_ascii_lowercase().ends_with(".md")
+        {
+            let written = if reference.raw.is_empty() {
+                reference.target.as_str()
+            } else {
+                reference.raw.as_str()
+            };
+            report.findings.push(
+                Finding::about("V102", fact)
+                    .with(
+                        Class::Judgment,
+                        format!("unresolved reference `{written}`"),
+                        format!(
+                            "rel_type={}; no engram at `{}` in {}",
+                            reference.rel_type, reference.target, fact.domain
+                        ),
+                        format!("repoint or remove the link to `{written}`"),
+                    )
+                    .at_line(reference.line)
+                    .scoped(targets.get(&reference.from.0).cloned().unwrap_or_default()),
+            );
+            continue;
+        }
+
         let (evidence, class, fix) = match unregistered {
             // A prefix nobody registered is not a prefix: the resolver reads
             // the whole bracket text as a title in this engram's own domain, so

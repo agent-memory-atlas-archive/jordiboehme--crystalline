@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 
 use crate::address::{self, CrystallineUrl, LinkResolver, LookupTable, Resolution};
-use crate::engram::{Engram, LinkTarget};
+use crate::engram::{Engram, LinkForm, LinkTarget};
 use crate::parse::{BodyLine, mask_inline_code};
 
 use super::scanner::{Domain, ScannedFile};
@@ -59,13 +59,31 @@ pub(crate) fn check(
     sink: &mut Sink,
 ) {
     check_duplicates(domain, sink);
+    // What a relative link can land on: the domain's files, by the path a link
+    // spells them with.
+    let paths: BTreeSet<String> = domain.files.iter().map(rel_path_of).collect();
 
     for (file, lines) in domain.files.iter().zip(file_lines) {
         let Ok(engram) = &file.parsed else { continue };
         let own_permalink = effective_permalink(file, engram);
         let own_title = engram.frontmatter.title.trim().to_lowercase();
+        let own_path = rel_path_of(file);
 
-        for link in &engram.links {
+        for (target, line) in engram
+            .links
+            .iter()
+            .map(|l| (&l.target, l.line))
+            .chain(engram.relations.iter().map(|r| (&r.target, r.line)))
+            .filter(|(t, _)| t.form == LinkForm::Relative)
+        {
+            check_relative(file, target, line, &own_path, &paths, sink);
+        }
+
+        for link in engram
+            .links
+            .iter()
+            .filter(|l| l.target.form == LinkForm::Wiki)
+        {
             check_target(
                 domain,
                 file,
@@ -78,7 +96,11 @@ pub(crate) fn check(
                 sink,
             );
         }
-        for rel in &engram.relations {
+        for rel in engram
+            .relations
+            .iter()
+            .filter(|r| r.target.form == LinkForm::Wiki)
+        {
             check_target(
                 domain,
                 file,
@@ -93,6 +115,45 @@ pub(crate) fn check(
         }
 
         check_crystalline_urls(file, lines, domain_names, lookup, sink);
+    }
+}
+
+/// A file's domain-relative path, forward-slashed: what a relative link to it
+/// resolves to.
+fn rel_path_of(file: &ScannedFile) -> String {
+    file.rel_path.to_string_lossy().replace('\\', "/")
+}
+
+/// A relative link is judged by the file it lands on: one of the domain's
+/// files is sound (the file itself is a self-link, `L004`), anything else is
+/// broken (`L001`), including a path that climbs out of the domain.
+fn check_relative(
+    file: &ScannedFile,
+    target: &LinkTarget,
+    line: usize,
+    own_path: &str,
+    paths: &BTreeSet<String>,
+    sink: &mut Sink,
+) {
+    let landed = target.stored_target(own_path);
+    if landed == own_path {
+        sink.emit(
+            &file.path,
+            Some(line),
+            "L004",
+            Severity::Warning,
+            format!("self-link to `{}`", target.target),
+            None,
+        );
+    } else if !paths.contains(&landed) {
+        sink.emit(
+            &file.path,
+            Some(line),
+            "L001",
+            Severity::Warning,
+            format!("broken link to `{}`", target.target),
+            None,
+        );
     }
 }
 

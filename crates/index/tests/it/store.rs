@@ -12472,7 +12472,7 @@ fn every_engram_reading_sql_carries_an_actor_predicate() {
         census.failures.join("\n")
     );
     assert_eq!(
-        census.sites, 188,
+        census.sites, 189,
         "the engram statement census moved; every new one needs a predicate or a waiver. \
          78 per backend in mod.rs (`BASE_PATH_SQL`, the folder counts' existence probe of one path, is the newest, on the base rows; before it `CITED_ENGRAM_SQL`, one cited engram by permalink, on the base rows; before it `ENGRAM_COVERAGE_SQL`, the coverage of one domain's engram chunks, waived below; before it the Reflection gate's two probes, \
          `ENGRAM_ROWS_UNDER_REFLECTIONS_SQL` and `HAS_ENGRAM_ROWS_SQL`, are the newest, \
@@ -12487,9 +12487,9 @@ fn every_engram_reading_sql_carries_an_actor_predicate() {
          pair write, waived by id; before them the emptiness probe of \
          `drop_empty_domain_row`, waived because a draft keeps the row too; before it the URL half \
          of `engrams_referencing_domains`, the move's `readdress_engram` and \
-         `engrams_mentioning`, all three on the base rows), 9 per backend in search.rs, 14 in the shared \
-         statement builders in store.rs: the reference-resolution expression's four \
-         arms, the three engram hops of each of the two graph frontiers, the two \
+         `engrams_mentioning`, all three on the base rows), 9 per backend in search.rs, 15 in the shared \
+         statement builders in store.rs: the reference-resolution expression's five \
+         arms (the path arm for a relative note link is the newest), the three engram hops of each of the two graph frontiers, the two \
          arms of the edge half of `engrams_referencing_domains` and the two arms of \
          `spelled_references`, all four on the base rows. Those \
          six used to be six per backend in search.rs: one copy of each frontier \

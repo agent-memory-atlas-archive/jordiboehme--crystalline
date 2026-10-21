@@ -531,6 +531,34 @@ describe("the markdown renderer", () => {
     expect(screen.queryByText(/\[\[Alpha\]\]/)).toBeNull();
   });
 
+  it("opens the engram a relative note link lands on", async () => {
+    // The resolver is asked with the path the server parsed: decoded and
+    // without the fragment, which the route keeps.
+    await renderMarkdown(
+      "See [the pump](../pumps/p%2012.md#start) and [a file](notes.txt).",
+      (inner) =>
+        inner === "../pumps/p 12.md"
+          ? { kind: "resolved", href: "/d/plant/e/kit/pump", label: "P-12" }
+          : null,
+    );
+
+    expect(screen.getByRole("link", { name: "the pump" })).toHaveAttribute(
+      "href",
+      "/d/plant/e/kit/pump#start",
+    );
+    expect(screen.getByRole("link", { name: "a file" })).not.toHaveAttribute(
+      "href",
+      expect.stringContaining("/d/plant/e/"),
+    );
+  });
+
+  it("leaves a relative note link as written when nothing resolves it", async () => {
+    await renderMarkdown("See [the pump](../pumps/p-12.md).");
+    expect(
+      screen.getByRole("link", { name: "the pump" }).getAttribute("href"),
+    ).toMatch(/pumps\/p-12\.md$/);
+  });
+
   it("marks a wikilink the index could not resolve without linking it", async () => {
     await renderMarkdown("See [[Ghost]] for the rest.", () => ({
       kind: "unresolved",

@@ -92,10 +92,20 @@ pub struct ObservationRecord {
 /// byte for byte what they were; the other two read one actor's view, with
 /// that actor's own row preferred at an address the base also answers.
 ///
-/// Three readings, in the order [`crystalline_core::address::resolve`] tries
-/// them: the target as a permalink in the target domain, the target as a title
-/// there, and - only when the row names a domain nobody registered - the whole
-/// bracket text as a permalink and then a title in the row's OWN domain.
+/// Four readings. The first two and the last are the order
+/// [`crystalline_core::address::resolve`] tries them: the target as a permalink
+/// in the target domain, the target as a title there, and - only when the row
+/// names a domain nobody registered - the whole bracket text as a permalink and
+/// then a title in the row's OWN domain. The third is the target as the path
+/// of an engram in the target domain: a relative Markdown link
+/// (`[p](../pumps/p-12.md)`) is stored as the domain-relative path it lands on
+/// ([`crystalline_core::LinkTarget::stored_target`]), and only the path can
+/// bind it, since its target's permalink may be anything. No row carries its
+/// form, so the arm is open to every row; a valid permalink never ends in
+/// `.md` (E005 holds it to a slug, and `slugify` drops the dot), so the first
+/// arm never answers a relative row, and a wikilink written with a file path,
+/// `[[pumps/p-12.md]]`, binds to that file the same way. The arm seeks
+/// `idx_engram_path_actor` on `(domain_id, path)`.
 ///
 /// The target domain of a bare reference is the row's own domain. The target
 /// domain of a prefixed one is the domain its prefix spells and nothing else:
@@ -170,6 +180,8 @@ pub(crate) fn reference_match(table: &str, candidates: ReferenceCandidates<'_>) 
           AND e.domain_id = {target_domain}{prefer} LIMIT 1), \
          (SELECT e.id FROM engram e WHERE {actor_screen} AND lower(e.title) = lower({table}.to_target) \
           AND e.domain_id = {target_domain}{prefer} LIMIT 1), \
+         (SELECT e.id FROM engram e WHERE {actor_screen} AND e.domain_id = {target_domain} \
+          AND e.path = {table}.to_target{prefer} LIMIT 1), \
          (SELECT e.id FROM engram e WHERE {actor_screen} AND {unregistered} AND e.permalink = {table}.to_raw \
           AND e.domain_id = {table}.domain_id{prefer} LIMIT 1), \
          (SELECT e.id FROM engram e WHERE {actor_screen} AND {unregistered} \
@@ -216,7 +228,7 @@ pub(crate) enum ReferenceCandidates<'a> {
 /// plan guards - `the_reference_resolve_pass_seeks_the_title_index` in
 /// `turso/mod.rs` and the registry in `tests/it/plans.rs` - explain the statement
 /// the stores actually issue. The pass runs on every sync of every domain and
-/// is O(dangling references), so each of its four arms has to be an index seek;
+/// is O(dangling references), so each of its five arms has to be an index seek;
 /// a hand-copied literal in a test is what let the title arm lose its index
 /// once already.
 #[doc(hidden)]
@@ -797,7 +809,7 @@ impl EngramRecord {
             .map(|r| RelationRecord {
                 line: r.line,
                 rel_type: r.rel_type.clone(),
-                to_target: r.target.target.clone(),
+                to_target: r.target.stored_target(path),
                 to_domain: r.target.domain.clone(),
                 to_raw: r.target.raw.clone(),
             })
@@ -807,7 +819,7 @@ impl EngramRecord {
             .iter()
             .map(|l| LinkRecord {
                 line: l.line,
-                to_target: l.target.target.clone(),
+                to_target: l.target.stored_target(path),
                 to_domain: l.target.domain.clone(),
                 to_raw: l.target.raw.clone(),
             })

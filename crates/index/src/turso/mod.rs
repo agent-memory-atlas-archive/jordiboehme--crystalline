@@ -5123,6 +5123,11 @@ mod tests {
                 "the {table} resolve pass must seek the title index, plan was: {plan}"
             );
             assert!(
+                plan.contains("idx_engram_path_actor"),
+                "the {table} resolve pass must seek the path index for a relative \
+                 link, plan was: {plan}"
+            );
+            assert!(
                 !plan.contains("SCAN engram") && !plan.contains("SCAN e "),
                 "no arm of the {table} resolve pass may scan the engram table, \
                  plan was: {plan}"

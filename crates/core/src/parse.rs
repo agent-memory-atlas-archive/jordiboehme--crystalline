@@ -38,7 +38,9 @@ use crate::yaml::YamlValue;
 ///   relation (0.22).
 /// - 2: task boxes (`[ ]`, `[x]`, `[X]`, `[~]`) and directive-led bullets
 ///   stopped reading as observations and relations (0.28.0).
-pub const PARSE_GENERATION: u32 = 2;
+/// - 3: relative Markdown links to another engram's file (`[p](../p-12.md)`)
+///   are links, and `- rel_type [text](path.md)` is a relation (0.29.0).
+pub const PARSE_GENERATION: u32 = 3;
 
 /// An error encountered while parsing an Engram.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -521,28 +523,115 @@ fn scan_body(
             };
             let mut seen: Vec<LinkTarget> = Vec::new();
             for inner in find_wikilinks(&masked) {
-                let target = LinkTarget::parse(&inner);
-                if relation_target
-                    .as_ref()
-                    .is_some_and(|(_, rt)| &target == rt)
-                {
-                    // Excluded once: a second link to the same target in the
-                    // bullet is prose like any other.
-                    relation_target = None;
-                    continue;
-                }
-                if !seen.contains(&target) {
-                    seen.push(target.clone());
-                    links.push(WikiLink {
-                        line: line_no,
-                        target,
-                    });
-                }
+                push_prose_link(
+                    LinkTarget::parse(&inner),
+                    line_no,
+                    &mut relation_target,
+                    &mut seen,
+                    &mut links,
+                );
+            }
+        }
+
+        // Relative Markdown links to another engram's file, read the same way:
+        // outside inline code, the relation's own target excluded once,
+        // deduplicated per line.
+        if line.contains("](") {
+            let mut seen: Vec<LinkTarget> = Vec::new();
+            for (_, path) in relative_note_links(line) {
+                push_prose_link(
+                    LinkTarget::relative(&path),
+                    line_no,
+                    &mut relation_target,
+                    &mut seen,
+                    &mut links,
+                );
             }
         }
     }
 
     (observations, relations, links, headings)
+}
+
+/// Add one prose link found on a line, unless it is the target of the relation
+/// bullet it sits in or the line already linked it.
+fn push_prose_link(
+    target: LinkTarget,
+    line: usize,
+    relation_target: &mut Option<(usize, LinkTarget)>,
+    seen: &mut Vec<LinkTarget>,
+    links: &mut Vec<WikiLink>,
+) {
+    if relation_target
+        .as_ref()
+        .is_some_and(|(_, rt)| &target == rt)
+    {
+        // Excluded once: a second link to the same target in the bullet is
+        // prose like any other.
+        *relation_target = None;
+        return;
+    }
+    if !seen.contains(&target) {
+        seen.push(target.clone());
+        links.push(WikiLink { line, target });
+    }
+}
+
+/// The inline links on one line that point at another engram's file: a
+/// relative destination (no scheme, no leading `/`, not a bare `#fragment`)
+/// whose path ends in `.md` in any case. Each comes with the byte offset of the
+/// `[` that opens its text, and its path read the way a reflection link is
+/// read: angle brackets or bare, backslash escapes removed, percent-decoded,
+/// without the `#fragment` and the title. A link inside inline code and an
+/// image are not links to a note.
+fn relative_note_links(line: &str) -> Vec<(usize, String)> {
+    use crate::reflection::links::{code_spans, is_relative, read_destination};
+
+    let spans = code_spans(line);
+    let in_code = |at: usize| spans.iter().any(|(s, e)| (*s..*e).contains(&at));
+    let mut out = Vec::new();
+    let mut cursor = 0;
+    while let Some(found) = line[cursor..].find("](") {
+        let close_text = cursor + found;
+        let open = close_text + 2;
+        cursor = open;
+        let Some(start) = link_text_start(line, close_text) else {
+            continue;
+        };
+        let Some(dest) = read_destination(line, open) else {
+            continue;
+        };
+        cursor = dest.close;
+        let image = line[..start].ends_with('!');
+        let note = dest.path.to_ascii_lowercase().ends_with(".md");
+        if !image && note && is_relative(&dest.path) && !in_code(close_text) {
+            out.push((start, dest.path));
+        }
+    }
+    out
+}
+
+/// The byte offset of the `[` that opens the link text closed by the `]` at
+/// `close`: the nearest unescaped `[` before it at bracket depth zero.
+fn link_text_start(line: &str, close: usize) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut depth = 0usize;
+    let mut i = close;
+    while i > 0 {
+        i -= 1;
+        let escaped = i > 0 && bytes[i - 1] == b'\\';
+        match bytes[i] {
+            b']' if !escaped => depth += 1,
+            b'[' if !escaped => {
+                if depth == 0 {
+                    return Some(i);
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The index of the last line of the top-level bullet that starts at
@@ -836,24 +925,47 @@ pub(crate) fn is_hashtag(token: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '/')
 }
 
+/// A relation bullet's type and target: `rel_type [[Target]]`, or
+/// `rel_type [text](path.md)` with a relative link to another engram's file.
+/// The wikilink form is read first, exactly as it always was.
 pub(crate) fn parse_relation(content: &str) -> Option<(String, LinkTarget)> {
+    wiki_relation(content).or_else(|| relative_relation(content))
+}
+
+fn wiki_relation(content: &str) -> Option<(String, LinkTarget)> {
     let open = content.find("[[")?;
     let after = &content[open + 2..];
     let close = after.find("]]")?;
     let inner = &after[..close];
-    let before = content[..open].trim();
+    let rel_type = relation_type(&content[..open])?;
+    Some((rel_type, LinkTarget::parse(inner)))
+}
 
-    let rel_type = if before.len() >= 2 && before.starts_with('"') && before.ends_with('"') {
-        before[1..before.len() - 1].to_string()
+/// `rel_type [text](path.md)`: the bullet's first `[` opens a relative link to
+/// a note, and what stands before it is the type.
+fn relative_relation(content: &str) -> Option<(String, LinkTarget)> {
+    let open = content.find('[')?;
+    let (_, path) = relative_note_links(content)
+        .into_iter()
+        .find(|(start, _)| *start == open)?;
+    let rel_type = relation_type(&content[..open])?;
+    Some((rel_type, LinkTarget::relative(&path)))
+}
+
+/// The relation type written before a relation's target: a quoted phrase, or a
+/// single token that does not open with `:` or `[`.
+fn relation_type(before: &str) -> Option<String> {
+    let before = before.trim();
+    if before.len() >= 2 && before.starts_with('"') && before.ends_with('"') {
+        Some(before[1..before.len() - 1].to_string())
     } else if !before.is_empty()
         && !before.contains(char::is_whitespace)
         && !before.starts_with([':', '['])
     {
-        before.to_string()
+        Some(before.to_string())
     } else {
-        return None;
-    };
-    Some((rel_type, LinkTarget::parse(inner)))
+        None
+    }
 }
 
 /// Replace inline code span contents (including the backticks) with spaces so
@@ -925,6 +1037,7 @@ fn find_wikilinks(masked: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engram::LinkForm;
 
     // Pins the current mask_inline_code/scan_body behavior before the
     // single-buffer and contains-guard refactor so the refactor cannot
@@ -1070,8 +1183,87 @@ mod tests {
     }
 
     #[test]
-    fn the_parse_generation_moved_for_task_items() {
-        assert_eq!(PARSE_GENERATION, 2);
+    fn the_parse_generation_moved_for_relative_links() {
+        assert_eq!(PARSE_GENERATION, 3);
+    }
+
+    #[test]
+    fn relative_md_links_are_untyped_links() {
+        let (_, relations, links, _) = scan_body("Read [p](../pumps/p-12.md#top) first.\n", 1);
+        assert!(relations.is_empty());
+        assert_eq!(links.len(), 1, "{links:?}");
+        assert_eq!(links[0].line, 1);
+        assert_eq!(links[0].target.form, LinkForm::Relative);
+        assert_eq!(links[0].target.target, "../pumps/p-12.md");
+        assert_eq!(links[0].target.domain, None);
+
+        // Angle brackets, percent-encoding, a title and an upper-case ending
+        // all read the same target the way a reflection link is read.
+        let (_, _, links, _) = scan_body(
+            "[a](<my notes/A b.md>) and [b](my%20notes/A%20b.md \"Title\") and [c](./C.MD)\n",
+            1,
+        );
+        let targets: Vec<&str> = links.iter().map(|l| l.target.target.as_str()).collect();
+        assert_eq!(
+            targets,
+            ["my notes/A b.md", "./C.MD"],
+            "one per line and target"
+        );
+        assert!(links.iter().all(|l| l.target.form == LinkForm::Relative));
+    }
+
+    #[test]
+    fn a_relation_bullet_takes_a_relative_link() {
+        let (_, relations, links, _) = scan_body("- part_of [Overview](../overview.md)\n", 1);
+        assert_eq!(relations.len(), 1, "{relations:?}");
+        assert_eq!(relations[0].rel_type, "part_of");
+        assert_eq!(relations[0].target.target, "../overview.md");
+        assert_eq!(relations[0].target.form, LinkForm::Relative);
+        assert!(
+            links.is_empty(),
+            "the relation's own link is not prose too: {links:?}"
+        );
+
+        // A quoted phrase works as it does for a wikilink.
+        let (_, relations, _, _) = scan_body("- \"is part of\" [Overview](overview.md)\n", 1);
+        assert_eq!(relations[0].rel_type, "is part of");
+
+        // A bullet that is only a link stays a prose link.
+        let (_, relations, links, _) = scan_body("- [Overview](../overview.md)\n", 1);
+        assert!(relations.is_empty(), "{relations:?}");
+        assert_eq!(links.len(), 1);
+
+        // A wikilink relation reads exactly as before.
+        let (_, relations, links, _) = scan_body("- part_of [[Overview]]\n", 1);
+        assert_eq!(relations[0].target.form, LinkForm::Wiki);
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn links_in_code_and_non_md_targets_are_not_edges() {
+        let body = "Code `[p](p.md)` here.\n\
+                    \n\
+                    ```\n\
+                    [fenced](fenced.md)\n\
+                    ```\n\
+                    \n\
+                    [img](pic.png) [web](https://example.test/a.md) [abs](/root/a.md)\n\
+                    [frag](#a.md) [mail](mailto:a@example.test.md) [dir](notes/)\n\
+                    ![shot](diagram.md) [addr](crystalline://ops/a.md)\n";
+        let (_, relations, links, _) = scan_body(body, 1);
+        assert!(relations.is_empty(), "{relations:?}");
+        assert!(links.is_empty(), "{links:?}");
+    }
+
+    #[test]
+    fn a_wikilink_serializes_without_a_form() {
+        let (_, _, links, _) = scan_body("[[A]] and [a](a.md)\n", 1);
+        let json = serde_json::to_value(&links).unwrap();
+        assert_eq!(
+            json[0]["target"],
+            serde_json::json!({ "domain": null, "target": "A" })
+        );
+        assert_eq!(json[1]["target"]["form"], "relative");
     }
 
     #[test]

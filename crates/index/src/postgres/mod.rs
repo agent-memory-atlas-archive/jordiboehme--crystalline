@@ -5644,9 +5644,9 @@ mod tests {
                 }
             }
             assert_eq!(
-                id_keys, 4,
+                id_keys, 5,
                 "reference_match({label}) should carry the id tie-break on every one of \
-                 its four COALESCE arms: {rendered}"
+                 its five COALESCE arms: {rendered}"
             );
         }
     }

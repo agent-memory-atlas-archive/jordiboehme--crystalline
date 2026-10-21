@@ -383,9 +383,62 @@ pub struct LinkTarget {
     /// second field a client should read.
     #[serde(skip)]
     pub raw: String,
+    /// How the reference was written: a `[[...]]` wikilink or a relative
+    /// Markdown link to another engram's file. Left out of the serialized
+    /// shape for a wikilink, so a wikilink reads as it always did.
+    #[serde(default, skip_serializing_if = "LinkForm::is_wiki")]
+    pub form: LinkForm,
+}
+
+/// How a [`LinkTarget`] was written.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LinkForm {
+    /// `[[Target]]` or `[[domain:Target]]`: the target is a title or a
+    /// permalink.
+    #[default]
+    Wiki,
+    /// `[text](../folder/file.md)`: the target is a path relative to the
+    /// folder of the engram that holds the link, percent-decoded and without
+    /// its `#fragment`.
+    Relative,
+}
+
+impl LinkForm {
+    /// Whether this is the wikilink form, the one left out of the serialized
+    /// shape.
+    pub fn is_wiki(&self) -> bool {
+        *self == LinkForm::Wiki
+    }
 }
 
 impl LinkTarget {
+    /// A relative Markdown link's target: `path` is the destination as
+    /// [`crate::parse`] read it, percent-decoded and without its `#fragment`.
+    pub fn relative(path: &str) -> LinkTarget {
+        LinkTarget {
+            domain: None,
+            target: path.to_string(),
+            raw: path.to_string(),
+            form: LinkForm::Relative,
+        }
+    }
+
+    /// The target an index row stores for this reference, written in the
+    /// engram at the domain-relative `from_path`. A wikilink stores its target
+    /// text as it is. A relative link stores the domain-relative path it lands
+    /// on (`pumps/p-12.md`), which is what binds it to the engram at that path;
+    /// one that climbs out of the domain keeps the target as written, which no
+    /// engram's path equals, so it stays unresolved.
+    pub fn stored_target(&self, from_path: &str) -> String {
+        match self.form {
+            LinkForm::Wiki => self.target.clone(),
+            LinkForm::Relative => crate::reflection::links::resolve(from_path, &self.target)
+                .filter(|p| !p.is_empty())
+                .unwrap_or_else(|| self.target.clone()),
+        }
+    }
+
     /// Parse the inside of a `[[...]]` into a target. A single leading colon
     /// group is treated as a cross-domain prefix; further colons stay in the
     /// target text.
@@ -401,6 +454,7 @@ impl LinkTarget {
                     domain: Some(domain.to_string()),
                     target: rest.to_string(),
                     raw: inner.to_string(),
+                    form: LinkForm::Wiki,
                 };
             }
         }
@@ -408,6 +462,7 @@ impl LinkTarget {
             domain: None,
             target: inner.to_string(),
             raw: inner.to_string(),
+            form: LinkForm::Wiki,
         }
     }
 }

@@ -1133,6 +1133,60 @@ fn a_bare_link_to_another_domains_title_names_the_prefixed_link() {
     );
 }
 
+/// A relative link to another engram's file is judged by the path it lands
+/// on, not as a title: a link to a file that is there is sound whatever the
+/// target's permalink, a link to a file that is not there is broken, and a
+/// link to the file itself is a self-link.
+#[test]
+fn a_relative_link_is_checked_against_the_files_of_the_domain() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().join("plant");
+    let fm = |title: &str, permalink: &str| {
+        format!(
+            "---\ntype: engram\ntitle: {title}\npermalink: {permalink}\ntags:\n- plant\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n# {title}\n\n"
+        )
+    };
+    write(
+        &root,
+        "MANIFEST.md",
+        "---\ntype: manifest\ntitle: MANIFEST\npermalink: manifest\ntags:\n- manifest\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n## Scope\n\n- Scope text here for the domain\n\n## When to Use\n\n- When testing\n",
+    );
+    write(
+        &root,
+        "overview.md",
+        &format!(
+            "{}The plant at a glance, with pumps and valves in it.\n\nA second paragraph of prose, so the body clears the minimum line count.\n",
+            fm("Overview", "start-here")
+        ),
+    );
+    write(
+        &root,
+        "pumps/p-12.md",
+        &format!(
+            "{}- part_of [Overview](../overview.md)\n\nSee [gone](../gone.md) and [me](p-12.md) and [out](../../x.md).\n\nA second paragraph of prose, so the body clears the minimum line count.\n",
+            fm("P-12", "kit/pump-twelve")
+        ),
+    );
+    let report = verify::verify_paths([root.as_path()], &VerifyOptions::default()).unwrap();
+    let mut links: Vec<(&str, &str)> = report
+        .issues
+        .iter()
+        .filter(|i| i.rule.starts_with('L'))
+        .map(|i| (i.rule, i.message.as_str()))
+        .collect();
+    links.sort_unstable();
+    assert_eq!(
+        links,
+        vec![
+            ("L001", "broken link to `../../x.md`"),
+            ("L001", "broken link to `../gone.md`"),
+            ("L004", "self-link to `p-12.md`"),
+        ],
+        "{:#?}",
+        report.issues
+    );
+}
+
 /// A file that is not UTF-8 is reported under the encoding rule, `E006`, and
 /// the rest of the domain is still verified: it never aborts the scan.
 #[test]

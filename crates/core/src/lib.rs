@@ -67,7 +67,7 @@ pub use attachment::{
 };
 pub use emit::emit_engram;
 pub use engram::{
-    EVOLVE_ACK_KEY, Engram, EvolveAck, Frontmatter, Generated, Heading, LinkTarget,
+    EVOLVE_ACK_KEY, Engram, EvolveAck, Frontmatter, Generated, Heading, LinkForm, LinkTarget,
     META_KEY_MAX_BYTES, META_VALUE_MAX_BYTES, Observation, RECOMMENDED_STATUSES, RECOMMENDED_TYPES,
     Relation, SchemaDef, Verification, Verified, WikiLink, meta_value_text,
 };

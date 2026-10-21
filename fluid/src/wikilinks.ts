@@ -230,6 +230,22 @@ export function buildWikilinkResolver(
     }
   }
 
+  // A resolved relative note link carries its address in the detail payload,
+  // since its path is neither a title nor a permalink the graph could place.
+  // It is labelled with the title the graph gives that address, when it has
+  // one yet.
+  for (const reference of [...detail.links, ...detail.relations]) {
+    const permalink = reference.permalink;
+    const key = keyOf(reference.target, home, known);
+    if (permalink === undefined || located.has(key)) {
+      continue;
+    }
+    const node = graph?.nodes.find(
+      (n) => n.domain === home && n.permalink === permalink,
+    );
+    located.set(key, { domain: home, permalink, title: node?.title ?? "" });
+  }
+
   return (inner: string) => {
     const candidates = readings(inner, known);
 

@@ -390,3 +390,70 @@ describe("a link that names its domain by another name", () => {
     expect(resolve("MoonBase:Crater Base")).toBeNull();
   });
 });
+
+describe("a relative note link", () => {
+  function relativeDetail() {
+    return readEngramDetail(
+      {
+        domain: "plant",
+        permalink: "kit/pump-twelve",
+        title: "P-12",
+        content: "",
+        links: [
+          {
+            line: 5,
+            resolved: true,
+            target: {
+              domain: null,
+              target: "../overview.md",
+              form: "relative",
+            },
+            permalink: "start-here",
+          },
+          {
+            line: 6,
+            resolved: false,
+            target: { domain: null, target: "../../old.md", form: "relative" },
+          },
+        ],
+        relations: [],
+      },
+      "plant",
+      "kit/pump-twelve",
+    );
+  }
+
+  it("goes to the engram the server says it lands on", () => {
+    // No graph yet: the detail payload already carries the address.
+    const resolve = buildWikilinkResolver(relativeDetail(), undefined);
+    expect(resolve("../overview.md")).toEqual({
+      kind: "resolved",
+      href: "/d/plant/e/start-here",
+      label: "../overview.md",
+    });
+    expect(resolve("../../old.md")).toEqual({ kind: "unresolved" });
+  });
+
+  it("is labelled with its target's title once the graph has it", () => {
+    const graph = readGraph({
+      nodes: [
+        {
+          id: 1,
+          domain: "plant",
+          permalink: "start-here",
+          title: "Overview",
+          status: "stable",
+          type: "engram",
+        },
+      ],
+      edges: [],
+      truncated: false,
+    });
+    const resolve = buildWikilinkResolver(relativeDetail(), graph);
+    expect(resolve("../overview.md")).toEqual({
+      kind: "resolved",
+      href: "/d/plant/e/start-here",
+      label: "Overview",
+    });
+  });
+});
