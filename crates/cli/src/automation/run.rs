@@ -14,6 +14,15 @@ const RENEW_LIMIT: Duration = Duration::from_secs(15);
 /// How long one record call may take before it is tried again.
 const RECORD_LIMIT: Duration = Duration::from_secs(60);
 
+/// Once a stop was seen, the record gets this long in all, so the whole stop
+/// (up to 5 s for the agent, 5 s for the rest of its stream, then this) ends
+/// inside a 30 s grace period such as Kubernetes gives a pod.
+const STOPPED_RECORD_BUDGET: Duration = Duration::from_secs(15);
+
+/// The first try of a record after a stop; a second try gets what is left of
+/// [`STOPPED_RECORD_BUDGET`].
+const STOPPED_RECORD_TRY: Duration = Duration::from_secs(10);
+
 /// The waits before each new try of a failed record.
 const RECORD_WAITS: [Duration; 3] = [
     Duration::from_secs(1),
@@ -139,14 +148,17 @@ pub(super) async fn run_one(
         println!("  {}", words.join(" "));
         return Ok(Ran::Exited(0));
     }
-    let take = match client
-        .verb(
-            "automation_lease_take",
-            lp,
-            json!({ "domain": domain, "runner": args.runner }),
-        )
-        .await
-    {
+    let take = client.verb(
+        "automation_lease_take",
+        lp,
+        json!({ "domain": domain, "runner": args.runner }),
+    );
+    let mut stopping = stop.clone();
+    let take = tokio::select! {
+        take = take => take,
+        _ = stopping.wait_for(|stopped| *stopped) => return Ok(Ran::Busy),
+    };
+    let take = match take {
         Ok(take) => take,
         Err(e) if is_refusal(&e) && is_busy(&e) => {
             println!("{domain}: {e}");
@@ -169,7 +181,7 @@ pub(super) async fn run_one(
 
     let (log_path, log) = match open_log(args.log_dir.as_deref(), lp, domain, &started) {
         Ok(opened) => opened,
-        Err(e) => return lease.fail_and_err(&started, e).await,
+        Err(e) => return lease.fail_and_err(&started, e, stop.clone()).await,
     };
     let config = match client
         .mcp_config()
@@ -177,7 +189,7 @@ pub(super) async fn run_one(
         .and_then(|c| PrivateConfig::write(&c))
     {
         Ok(config) => config,
-        Err(e) => return lease.fail_and_err(&started, e).await,
+        Err(e) => return lease.fail_and_err(&started, e, stop.clone()).await,
     };
     if !opts.json {
         println!(
@@ -217,27 +229,33 @@ pub(super) async fn run_one(
             "done": done,
             "summary": text,
         });
-        (share, lease.record(&report).await)
+        (share, lease.record(&report, stop.clone()).await)
     };
     tokio::pin!(finish);
+    let mut lost_at_end = None;
     let (share, record) = if renewing {
         tokio::select! {
             finished = &mut finish => finished,
             why = renewer.as_mut() => {
                 eprintln!("The lease on {domain} was lost while the run ended: {why}");
+                lost_at_end = Some(why);
                 (&mut finish).await
             }
         }
     } else {
         finish.await
     };
-    let record = match (&ended, record) {
+    let lost = match &ended {
+        Ended::LeaseLost(why) => Some(why.clone()),
+        _ => lost_at_end,
+    };
+    let record = match (lost, record) {
         (_, Ok(record)) => record,
-        (Ended::LeaseLost(why), Err(_)) => {
-            anyhow::bail!("{domain}: the lease was lost during the run: {why}")
-        }
-        (_, Err(e)) => anyhow::bail!(
-            "the run on {domain} could not be recorded: {e:#}. Its lease expires by itself within 5 minutes."
+        (Some(why), Err(_)) => anyhow::bail!(
+            "another run holds the lease on {domain} now, so this run was not recorded: {why}"
+        ),
+        (None, Err(e)) => anyhow::bail!(
+            "the run on {domain} could not be recorded: {e:#}. Its lease goes stale by itself within 5 minutes."
         ),
     };
     let exit = exit_code(outcome);
@@ -399,25 +417,59 @@ impl Lease<'_> {
             .await
     }
 
+    /// One record call, bounded by `limit`.
+    async fn record_once(&self, report: &Value, limit: Duration) -> anyhow::Result<Value> {
+        let call = self.client.verb(
+            "automation_run_record",
+            self.lp,
+            json!({ "domain": self.domain, "token": self.token, "report": report }),
+        );
+        match tokio::time::timeout(limit, call).await {
+            Ok(answer) => answer,
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the record took too long",
+            )
+            .into()),
+        }
+    }
+
     /// Record the run (which releases the lease), each try bounded by
     /// [`RECORD_LIMIT`] and tried again after each of [`RECORD_WAITS`].
-    async fn record(&self, report: &Value) -> anyhow::Result<Value> {
-        with_retries(&RECORD_WAITS, || async {
-            let call = self.client.verb(
-                "automation_run_record",
-                self.lp,
-                json!({ "domain": self.domain, "token": self.token, "report": report }),
-            );
-            match tokio::time::timeout(RECORD_LIMIT, call).await {
-                Ok(answer) => answer,
-                Err(_) => Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "the record took too long",
-                )
-                .into()),
+    /// Once a stop is seen, before or during that, the record gets
+    /// [`STOPPED_RECORD_BUDGET`] in all instead.
+    async fn record(
+        &self,
+        report: &Value,
+        mut stop: watch::Receiver<bool>,
+    ) -> anyhow::Result<Value> {
+        if !*stop.borrow() {
+            let tries = with_retries(&RECORD_WAITS, || self.record_once(report, RECORD_LIMIT));
+            tokio::select! {
+                answer = tries => return answer,
+                _ = stop.wait_for(|stopped| *stopped) => {}
             }
-        })
-        .await
+        }
+        self.record_stopped(report).await
+    }
+
+    /// The record after a stop: one try of [`STOPPED_RECORD_TRY`], and one
+    /// more with what is left of [`STOPPED_RECORD_BUDGET`] when the first
+    /// did not reach the other side.
+    async fn record_stopped(&self, report: &Value) -> anyhow::Result<Value> {
+        let deadline = tokio::time::Instant::now() + STOPPED_RECORD_BUDGET;
+        match self.record_once(report, STOPPED_RECORD_TRY).await {
+            Ok(answer) => Ok(answer),
+            Err(e) if is_refusal(&e) => Err(e),
+            Err(e) => {
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if left.is_zero() {
+                    return Err(e);
+                }
+                eprintln!("Recording the run failed, trying once more before stopping: {e:#}");
+                self.record_once(report, left).await
+            }
+        }
     }
 
     /// Record a failed run (which releases the lease), then return `e`.
@@ -425,6 +477,7 @@ impl Lease<'_> {
         &self,
         started: &chrono::DateTime<chrono::Utc>,
         e: anyhow::Error,
+        stop: watch::Receiver<bool>,
     ) -> anyhow::Result<T> {
         let report = json!({
             "started_at": started.to_rfc3339(),
@@ -432,7 +485,7 @@ impl Lease<'_> {
             "done": 0,
             "summary": format!("The run could not start: {e:#}"),
         });
-        if let Err(record) = self.record(&report).await {
+        if let Err(record) = self.record(&report, stop).await {
             eprintln!("Recording the failed run failed too: {record:#}");
         }
         Err(e)
@@ -454,12 +507,14 @@ async fn keep_renewed(lease: &Lease<'_>, period: Duration) -> String {
     }
 }
 
-/// The domain name as it may stand in a file name.
+/// The domain name as it may stand in a file name: letters and digits of
+/// any script, `-` and `_`; anything else, a `.` and every path separator
+/// among them, becomes `-`.
 fn file_safe(domain: &str) -> String {
     domain
         .chars()
         .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+            if c.is_alphanumeric() || matches!(c, '-' | '_') {
                 c
             } else {
                 '-'
@@ -690,7 +745,11 @@ pub(super) async fn watch_loop(
         if *stop.borrow() {
             return;
         }
-        match client.status(lp, domains).await {
+        let status = tokio::select! {
+            status = client.status(lp, domains) => status,
+            _ = stop.wait_for(|stopped| *stopped) => return,
+        };
+        match status {
             Ok(answer) => {
                 let due: Vec<String> = domains_of(&answer)
                     .iter()
@@ -876,6 +935,20 @@ mod tests {
             "PATH",
         ] {
             assert!(!is_credential_var(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_log_name_keeps_letters_of_any_script_and_no_path_parts() {
+        assert_eq!(file_safe("café"), "café");
+        assert_ne!(file_safe("café"), file_safe("cafè"));
+        assert_eq!(file_safe("team_2-docs"), "team_2-docs");
+        for name in ["../up", "a/b", "a\\b", "a..b", ".hidden"] {
+            let safe = file_safe(name);
+            assert!(
+                !safe.contains('/') && !safe.contains('\\') && !safe.contains(".."),
+                "{name} became {safe}"
+            );
         }
     }
 }

@@ -759,3 +759,50 @@ fn run_logs_are_private_and_only_the_newest_fifty_are_kept() {
             .exists()
     );
 }
+
+#[test]
+fn a_stop_during_an_unreachable_record_ends_within_the_grace_period() {
+    let env = env_with_domains("gp");
+    env.fake_claude("trap 'exit 143' TERM\nsleep 30 &\nwait $!", SUMMARY, 0);
+    let mut child = env
+        .cli(&["evolve", "run", "--domain", "busy"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    while env.calls().is_empty() {
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "claude never ran"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // The daemon stops answering, so the record after the stop hangs.
+    let pid = daemon_pid(&env);
+    assert!(
+        Command::new("kill")
+            .arg("-STOP")
+            .arg(&pid)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let resume = Resume(pid);
+    let stopped = Instant::now();
+    sigterm(&child);
+    let status = wait_exit(&mut child, Duration::from_secs(40));
+    let took = stopped.elapsed();
+    drop(resume);
+    assert!(took < Duration::from_secs(20), "the stop took {took:?}");
+    assert_eq!(status.code(), Some(2), "{status:?}");
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut stderr).unwrap();
+    assert!(stderr.contains("goes stale"), "{stderr}");
+    let cfg = env
+        .calls()
+        .lines()
+        .find_map(|l| l.strip_prefix("cfg=").map(str::to_string))
+        .unwrap();
+    assert!(!Path::new(&cfg).exists(), "the MCP config was left behind");
+}
