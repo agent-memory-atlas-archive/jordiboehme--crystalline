@@ -102,7 +102,8 @@ pub use markdown::{
 };
 pub use names::{NameInput, NameTable};
 pub use parse::{
-    FenceTracker, LosslessEngram, PARSE_GENERATION, ParseError, parse_engram, parse_engram_lossless,
+    FenceTracker, LosslessEngram, PARSE_GENERATION, ParseError, parse_engram,
+    parse_engram_lossless, wikilinks_by_line,
 };
 pub use path::fold_path_case;
 pub use prompt::{

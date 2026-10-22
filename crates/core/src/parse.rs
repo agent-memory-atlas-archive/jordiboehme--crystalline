@@ -42,7 +42,8 @@ use crate::yaml::YamlValue;
 ///   are links, and `- rel_type [text](path.md)` is a relation (0.29.0).
 /// - 4: a relative link to a folder's `index.md` or `log.md` is not a link to
 ///   an engram (0.29.0).
-pub const PARSE_GENERATION: u32 = 4;
+/// - 5: nor is a wikilink spelled as the path of one (0.29.0).
+pub const PARSE_GENERATION: u32 = 5;
 
 /// An error encountered while parsing an Engram.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -527,6 +528,7 @@ fn scan_body(
             for target in find_wikilinks(&masked)
                 .iter()
                 .filter_map(|inner| LinkTarget::wikilink(inner))
+                .filter(|target| !names_a_reserved_file(&target.target))
             {
                 push_prose_link(target, line_no, &mut relation_target, &mut seen, &mut links);
             }
@@ -613,10 +615,10 @@ fn relative_note_links(line: &str) -> Vec<(usize, String)> {
     out
 }
 
-/// Whether a relative link's path ends in a folder's `index.md` or `log.md`,
-/// in any letter case: the files Crystalline keeps beside the engrams, never
-/// an engram. A link to one is sound, like a link to a web page, and no
-/// engram's link.
+/// Whether a link's path (a relative link's, or a wikilink spelled as a
+/// path) ends in a folder's `index.md` or `log.md`, in any letter case: the
+/// files Crystalline keeps beside the engrams, never an engram. A link to one
+/// is sound, like a link to a web page, and no engram's link.
 fn names_a_reserved_file(path: &str) -> bool {
     path.rsplit('/')
         .next()
@@ -962,7 +964,9 @@ fn wiki_relation(content: &str) -> Option<(String, LinkTarget)> {
     let close = after.find("]]")?;
     let inner = &after[..close];
     let rel_type = relation_type(&content[..open])?;
-    Some((rel_type, LinkTarget::wikilink(inner)?))
+    let target = LinkTarget::wikilink(inner)?;
+    // A folder's `index.md` or `log.md` is no engram to relate to.
+    (!names_a_reserved_file(&target.target)).then_some((rel_type, target))
 }
 
 /// `rel_type [text](path.md)`: the bullet's first `[` opens a relative link to
@@ -1041,6 +1045,26 @@ pub(crate) fn mask_inline_code(line: &str) -> String {
         i += 1;
     }
     chars.into_iter().collect()
+}
+
+/// The inside of every `[[...]]` of an engram body, as written, one list per
+/// body line and in order, outside fenced code and inline code: what the
+/// parser reads as wikilinks, before it trims them. A repair that quotes a
+/// reference reads its text from here.
+pub fn wikilinks_by_line(body: &str) -> Vec<Vec<String>> {
+    body_lines(body, 1)
+        .into_iter()
+        .map(|line| {
+            if line.in_fence || !line.text.contains("[[") {
+                return Vec::new();
+            }
+            if line.text.contains('`') {
+                find_wikilinks(&mask_inline_code(line.text))
+            } else {
+                find_wikilinks(line.text)
+            }
+        })
+        .collect()
 }
 
 fn find_wikilinks(masked: &str) -> Vec<String> {
@@ -1230,7 +1254,7 @@ mod tests {
 
     #[test]
     fn the_parse_generation_moved_for_relative_links() {
-        assert_eq!(PARSE_GENERATION, 4);
+        assert_eq!(PARSE_GENERATION, 5);
     }
 
     /// `index.md` and `log.md` are the files Crystalline keeps in every
@@ -1239,6 +1263,18 @@ mod tests {
     fn a_relative_link_to_a_folders_index_or_log_is_no_link() {
         let body = "Back to [the folder](index.md), [up](../INDEX.md), [log](log.md) \
                     and [p](p.md).\n- part_of [Index](index.md)\n";
+        let (_, relations, links, _) = scan_body(body, 1);
+        assert!(relations.is_empty(), "{relations:?}");
+        let targets: Vec<&str> = links.iter().map(|l| l.target.target.as_str()).collect();
+        assert_eq!(targets, vec!["p.md"]);
+    }
+
+    /// A wikilink spelled as the path of a folder's `index.md` or `log.md`
+    /// names that file too, never an engram, prefixed or not.
+    #[test]
+    fn a_wikilink_to_a_folders_index_or_log_is_no_link() {
+        let body = "See [[guides/index.md]], [[ops:log.md|the log]], [[Guides/INDEX.md]] \
+                    and [[p.md]].\n- part_of [[index.md]]\n";
         let (_, relations, links, _) = scan_body(body, 1);
         assert!(relations.is_empty(), "{relations:?}");
         let targets: Vec<&str> = links.iter().map(|l| l.target.target.as_str()).collect();

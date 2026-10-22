@@ -203,7 +203,7 @@ async fn a_link_to_a_folders_index_or_log_is_no_broken_link() {
         note(
             "Home",
             "kit/home",
-            "Back to [the folder](index.md), [the top](../index.md) and [the log](../log.md).\n\nPart of [the overview](../overview.md).",
+            "Back to [the folder](index.md), [the top](../index.md) and [the log](../log.md).\n\nAlso [[pumps/index.md]] and [[plant:log.md]].\n\nPart of [the overview](../overview.md).",
         ),
     )
     .unwrap();

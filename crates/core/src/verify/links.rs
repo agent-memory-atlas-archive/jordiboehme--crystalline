@@ -28,6 +28,7 @@ pub(crate) fn build_lookup(domains: &[Domain]) -> LookupTable {
         // whichever domains happened to parse.
         table.register_domain(&domain.name);
         for file in &domain.files {
+            table.insert_path(&domain.name, &rel_path_of(file));
             let Ok(engram) = &file.parsed else { continue };
             let permalink = effective_permalink(file, engram);
             table.insert(&domain.name, &permalink, &engram.frontmatter.title);
@@ -86,7 +87,41 @@ pub(crate) fn check(
             check_relative(file, target, line, &own_path, &paths, sink);
         }
 
-        for link in engram.links.iter().filter(|l| !by_path(&l.target)) {
+        // A wikilink spelled as a file path of a named domain in the scan set
+        // (`[[ops:pumps/p.md]]`) binds by that path there, as the index's
+        // path arm binds it; a permalink never ends in `.md`.
+        let by_named_path = |t: &LinkTarget| {
+            t.form == LinkForm::Wiki
+                && t.target.to_ascii_lowercase().ends_with(".md")
+                && t.domain
+                    .as_deref()
+                    .is_some_and(|d| domain_names.contains(d))
+        };
+        for (target, line) in engram
+            .links
+            .iter()
+            .map(|l| (&l.target, l.line))
+            .chain(engram.relations.iter().map(|r| (&r.target, r.line)))
+            .filter(|(t, _)| !by_path(t) && by_named_path(t))
+        {
+            let named = target.domain.as_deref().unwrap_or_default();
+            if !lookup.has_path(named, &target.target) {
+                sink.emit(
+                    &file.path,
+                    Some(line),
+                    "L001",
+                    Severity::Warning,
+                    format!("broken wikilink to `{named}:{}`", target.target),
+                    None,
+                );
+            }
+        }
+
+        for link in engram
+            .links
+            .iter()
+            .filter(|l| !by_path(&l.target) && !by_named_path(&l.target))
+        {
             check_target(
                 domain,
                 file,
@@ -99,7 +134,11 @@ pub(crate) fn check(
                 sink,
             );
         }
-        for rel in engram.relations.iter().filter(|r| !by_path(&r.target)) {
+        for rel in engram
+            .relations
+            .iter()
+            .filter(|r| !by_path(&r.target) && !by_named_path(&r.target))
+        {
             check_target(
                 domain,
                 file,
