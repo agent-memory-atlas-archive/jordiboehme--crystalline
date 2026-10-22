@@ -31,7 +31,7 @@ permissions:
   contents: read
 
 # A newer push to a pull request cancels the run it supersedes. A push to main
-# keeps one group per commit and never cancels, so dev.yml sees every main run.
+# keeps one group per commit and never cancels.
 # A dispatched stress run has a group of its own, so it never queues behind or
 # replaces a main push at the same commit.
 concurrency:
@@ -76,7 +76,7 @@ jobs:
   # tested=true the test legs only compile (so main still saves the caches
   # pull requests restore) and the other heavy jobs are skipped; style,
   # cargo-deny, fluid-audit and verify-action still run, and the run still ends
-  # green, so dev.yml still fires. That check fails open as well: an API error,
+  # green. That check fails open as well: an API error,
   # an empty answer or anything unclear leaves tested=false, and the gates read
   # `!= 'true'`, so a missing output runs everything as before.
   changes:
@@ -936,13 +936,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
-
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          # The release musl entry the dev channel writes from main (build.yml key
-          # release-<target>, job id build). Read only.
-          shared-key: release-x86_64-unknown-linux-musl-build
-          save-if: false
 
       - name: Build crystalline for musl
         run: cargo build --release --locked --target x86_64-unknown-linux-musl -p crystalline

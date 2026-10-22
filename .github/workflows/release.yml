@@ -59,8 +59,7 @@ jobs:
           echo "release notes: $file"
 
   # The Fluid bundle and the six platform legs (build, sign, notarize,
-  # package, plus the .deb and .msi packages) live in build.yml, which the dev
-  # channel (dev.yml) shares. Its artifacts belong to this run, under the same
+  # package, plus the .deb and .msi packages) live in build.yml. Its artifacts belong to this run, under the same
   # names as before, so every job below downloads them unchanged.
   build:
     name: build
@@ -70,8 +69,6 @@ jobs:
     # actionlint 1.7.12 does not parse `$/` yet, so zizmor's self-repository
     # finding is ignored here.
     uses: ./.github/workflows/build.yml # zizmor: ignore[self-repository]
-    with:
-      channel: stable
     # Only the six Apple secrets, by name, never `inherit`. Once they live in
     # the `release` environment, which build.yml's signing legs declare, the
     # environment's copy wins and these resolve to nothing here; until then
@@ -278,7 +275,6 @@ jobs:
   # host-default run would drop the Windows-only crates), and one for the
   # Fluid bundle every binary embeds. No tag guard: a workflow_dispatch dry
   # run generates and checks them too, it just has nowhere to publish them.
-  # Kept out of build.yml on purpose, so the dev channel stays as it is.
   sbom:
     name: generate the SBOMs
     needs: notes
@@ -927,11 +923,9 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/crystalline.rb
           git commit -m "Update crystalline to ${VERSION}"
-          # The dev channel (dev.yml) writes Formula/crystalline-dev.rb in the
-          # same tap, and a release merge and this tag push can race on it.
-          # The two never touch the same file, so a rejected push rebases onto
-          # the other one's commit and tries again; what is written does not
-          # change.
+          # Another push to the tap can land first. A rejected push rebases
+          # onto the tap's newer commit and tries again; what is written does
+          # not change.
           for attempt in 1 2 3 4 5; do
             if git push; then
               exit 0

@@ -96,20 +96,6 @@ The MSI also registers a Windows task that starts the Crystalline daemon when yo
 </details>
 
 <details>
-<summary>Dev channel</summary>
-
-A change on main that passes CI is built and published as a pre-release, installable with Homebrew, when it asks for a dev build: put `[dev-build]` in the commit message, or merge it through a pull request that has the `dev-build` label or `[dev-build]` in its title or description. A maintainer can also run the Dev channel workflow by hand on main. Other changes, including the merge of a release, build no dev release:
-
-```sh
-brew uninstall crystalline   # if you have the stable release
-brew install jordiboehme/tap/crystalline-dev
-```
-
-Both formulae install the same `crystalline` binary, so your MCP registrations and the daemon keep working after a switch; `brew upgrade` moves to the newest dev build. The dev channel only moves forward: a dev build may migrate your index, and going back to an older stable release is not supported. To return to stable, wait for a stable release newer than your dev build, then `brew uninstall crystalline-dev && brew install jordiboehme/tap/crystalline`; the newer release takes over the running daemon on its own.
-
-</details>
-
-<details>
 <summary>Other harnesses and clients</summary>
 
 | Client | Setup |
