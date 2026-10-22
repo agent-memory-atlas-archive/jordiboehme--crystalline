@@ -363,17 +363,22 @@ impl Engine {
     }
 
     /// After a pull from a domain's origin: close every open rename question
-    /// whose links already match, because a teammate finished the rename and
-    /// the respelled files arrived with the pull. Only a pull does this. A
-    /// rename question is a person's to answer, so links respelled here (by
-    /// an agent's edit, an evolve run or a sync of local files) never close
-    /// it by themselves.
-    pub async fn settle_rename_questions_after_pull(&self) {
-        if self.read_only || self.config_path.is_none() {
+    /// whose links matched only once the pull landed, because a teammate
+    /// finished the rename and the respelled files arrived with it.
+    /// `spelled_before` is [`Engine::rename_questions_still_spelled`] taken
+    /// before the pull. Only a pull does this, and only for a question its
+    /// files settled. A rename question is a person's to answer, so links
+    /// respelled here (by a person's edit, an agent's edit or an evolve run)
+    /// never close it.
+    pub async fn settle_rename_questions_after_pull(&self, spelled_before: &HashSet<String>) {
+        if self.read_only || self.config_path.is_none() || spelled_before.is_empty() {
             return;
         }
         let busy: HashSet<String> = self.names_being_renamed().into_iter().collect();
-        if let Err(e) = self.close_settled_rename_questions(&busy).await {
+        if let Err(e) = self
+            .close_settled_rename_questions(&busy, spelled_before)
+            .await
+        {
             tracing::warn!("checking whether a rename question is settled failed: {e}");
         }
     }

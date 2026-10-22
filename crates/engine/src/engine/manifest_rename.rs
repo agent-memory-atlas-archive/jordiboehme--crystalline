@@ -227,23 +227,13 @@ impl Engine {
             .is_ok()
     }
 
-    /// Close every open rename question whose links already match: no
-    /// engram and no Reflection page here spells the domain by a name the
-    /// respell would replace any more, which is the state a teammate's
-    /// finished rename leaves once its respelled files arrive with a pull.
-    /// The question is answered "finished" and its nudges forgotten. A
-    /// domain in `busy` (a rename holds it) is left for a later pass.
-    pub(super) async fn close_settled_rename_questions(
-        &self,
-        busy: &HashSet<String>,
-    ) -> Result<()> {
-        let open: Vec<(String, DomainEntry, RenameQuestion)> = self
-            .config
+    /// Every open rename question, as `(local name, entry, question)`.
+    fn open_rename_questions(&self) -> Vec<(String, DomainEntry, RenameQuestion)> {
+        self.config
             .read()
             .unwrap()
             .domains
             .iter()
-            .filter(|(name, _)| !busy.contains(*name))
             .filter_map(|(name, entry)| {
                 let question = entry.rename_question.clone()?;
                 question
@@ -251,6 +241,53 @@ impl Engine {
                     .is_none()
                     .then(|| (name.clone(), entry.clone(), question))
             })
+            .collect()
+    }
+
+    /// The domains whose open rename question still has links here under an
+    /// old name: what a pull is measured against. Asked before a pull, so
+    /// the pull settles only a question whose old spellings the pulled files
+    /// took away, never one whose links were respelled here (by a person's
+    /// edit or an agent's). Empty, and no scan, while no question is open. A
+    /// scan that fails counts the domain as still spelled, as it does at
+    /// the settle.
+    pub async fn rename_questions_still_spelled(&self) -> HashSet<String> {
+        let open = self.open_rename_questions();
+        let mut spelled = HashSet::new();
+        if open.is_empty() {
+            return spelled;
+        }
+        let table = self.name_table_now().await;
+        for (local, entry, question) in open {
+            let (_, spellings) = respell_spellings(&local, &entry, &question, &table);
+            if self
+                .spells_any(&spellings, &question.to)
+                .await
+                .unwrap_or(true)
+            {
+                spelled.insert(local);
+            }
+        }
+        spelled
+    }
+
+    /// Close every open rename question among `spelled_before` whose links
+    /// now match: no engram and no Reflection page here spells the domain by
+    /// a name the respell would replace any more, which is the state a
+    /// teammate's finished rename leaves once its respelled files arrive
+    /// with a pull. `spelled_before` is
+    /// [`Engine::rename_questions_still_spelled`] from before that pull. The
+    /// question is answered "finished" and its nudges forgotten. A domain in
+    /// `busy` (a rename holds it) is left for a later pass.
+    pub(super) async fn close_settled_rename_questions(
+        &self,
+        busy: &HashSet<String>,
+        spelled_before: &HashSet<String>,
+    ) -> Result<()> {
+        let open: Vec<(String, DomainEntry, RenameQuestion)> = self
+            .open_rename_questions()
+            .into_iter()
+            .filter(|(name, _, _)| !busy.contains(name) && spelled_before.contains(name))
             .collect();
         if open.is_empty() {
             return Ok(());

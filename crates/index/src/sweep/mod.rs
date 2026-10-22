@@ -513,7 +513,7 @@ pub const RULES: [RuleInfo; 27] = [
         family: Family::Structure,
         base: 40,
         summary: "domain spelled by a local-only name",
-        instruction: "The link's domain prefix is a name only this machine uses - a local config key or a machine-local alias - rather than the domain's canonical name. Rewrite it with edit_engram operation find_replace, find_text the link as written and content the same link with the prefix replaced by the domain's canonical name, so the reference reads the same on every machine that has this domain.",
+        instruction: "The link's domain prefix is a name only this machine uses - a local config key or a machine-local alias - rather than the domain's canonical name. Rewrite it with edit_engram operation find_replace, find_text the link as written and content the same link with the prefix replaced by the domain's canonical name, so the reference reads the same on every machine that has this domain. While a MANIFEST rename of that domain waits for a person, the finding is judgment: leave the link, because the person finishes the rename in Fluid or with crystalline doctor --fix, or keeps the links as they are.",
     },
     RuleInfo {
         id: "V111",

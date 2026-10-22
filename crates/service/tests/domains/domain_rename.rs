@@ -3438,7 +3438,11 @@ async fn a_question_whose_links_already_match_closes_on_its_own_body(store: Arc<
         engine.rename_question("eng").is_some(),
         "old spellings are left: the question stays"
     );
+    // Before the pull: old spellings are still here.
+    let before = engine.rename_questions_still_spelled().await;
+    assert!(before.contains("eng"), "{before:?}");
 
+    // The pull brings the teammate's respelled files.
     std::fs::write(
         m.root.join("ops/pager.md"),
         engram(
@@ -3455,7 +3459,7 @@ async fn a_question_whose_links_already_match_closes_on_its_own_body(store: Arc<
     .unwrap();
     engine.sync(None).await.unwrap();
     engine.adopt_domain_names().await.unwrap();
-    engine.settle_rename_questions_after_pull().await;
+    engine.settle_rename_questions_after_pull(&before).await;
 
     assert_eq!(engine.rename_question("eng"), None);
     assert_eq!(
@@ -3548,6 +3552,7 @@ both_backends!(
 async fn an_unreadable_engram_keeps_the_question_open_body(store: Arc<Mutex<dyn Store>>) {
     let m = question_machine(store).await;
     let engine = m.engine(true).await;
+    let before = engine.rename_questions_still_spelled().await;
     std::fs::write(
         m.root.join("ops/reflections/b.md"),
         OPS_PAGE.replace("[[eng:", "[[platform:"),
@@ -3559,7 +3564,7 @@ async fn an_unreadable_engram_keeps_the_question_open_body(store: Arc<Mutex<dyn 
     std::fs::write(m.root.join("ops/pager.md"), [0xff, 0xfe, 0x00, 0x80]).unwrap();
 
     engine.adopt_domain_names().await.unwrap();
-    engine.settle_rename_questions_after_pull().await;
+    engine.settle_rename_questions_after_pull(&before).await;
     assert!(engine.rename_question("eng").is_some());
 }
 both_backends!(
@@ -3651,7 +3656,45 @@ async fn links_respelled_here_leave_the_question_open_body(store: Arc<Mutex<dyn 
 
     assert!(engine.rename_question("eng").is_some());
     assert_eq!(saved_question(&m).and_then(|q| q.answered), None);
+
+    // A later pull that brought none of it does not close it either: the
+    // links already matched before the pull.
+    let before = engine.rename_questions_still_spelled().await;
+    assert!(before.is_empty(), "{before:?}");
+    engine.settle_rename_questions_after_pull(&before).await;
+    assert!(engine.rename_question("eng").is_some());
+    assert_eq!(saved_question(&m).and_then(|q| q.answered), None);
 }
+
+/// An unattended evolve run asks for mechanical findings only; while the
+/// rename waits for a person, none of them is a V110 that would respell the
+/// old name.
+async fn a_mechanical_sweep_holds_no_v110_for_an_open_rename_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    let v = engine
+        .evolve_detect(
+            &EvolveParams {
+                domains: vec!["ops".to_string()],
+                class: Some("mechanical".to_string()),
+                ..EvolveParams::default()
+            },
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    let v110: Vec<&serde_json::Value> = v["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["rule"] == "V110" && r["evidence"].as_str().unwrap().contains("`eng`"))
+        .collect();
+    assert!(v110.is_empty(), "{v110:?}");
+}
+both_backends!(
+    a_mechanical_sweep_holds_no_v110_for_an_open_rename,
+    a_mechanical_sweep_holds_no_v110_for_an_open_rename_body
+);
 both_backends!(
     links_respelled_here_leave_the_question_open,
     links_respelled_here_leave_the_question_open_body
