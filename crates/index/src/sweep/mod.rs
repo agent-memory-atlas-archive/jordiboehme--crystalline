@@ -2500,6 +2500,16 @@ fn detect_local_spellings(input: &SweepInput, graph: &Graph<'_>, report: &mut Sw
         .map(|(spelling, canonical)| (spelling.as_str(), canonical.as_str()))
         .collect();
 
+    let mut same: HashMap<(i64, &str, Option<&str>), Vec<usize>> = HashMap::new();
+    for reference in &input.spelled_refs {
+        same.entry((
+            reference.from.0,
+            reference.raw.as_str(),
+            reference.alias.as_deref(),
+        ))
+        .or_default()
+        .push(reference.line);
+    }
     for reference in &input.spelled_refs {
         let Some(canonical) = canonical_of.get(reference.spelling.as_str()) else {
             continue;
@@ -2517,7 +2527,10 @@ fn detect_local_spellings(input: &SweepInput, graph: &Graph<'_>, report: &mut Sw
         };
         let new_raw = format!("{canonical}:{rest}");
         let alias = reference.alias.as_deref();
-        let (written, respelled) = as_written(&fact.body, &reference.raw, alias, &new_raw);
+        let ordinal = same
+            .get(&(reference.from.0, reference.raw.as_str(), alias))
+            .map_or(0, |lines| ordinal_of(lines, reference.line));
+        let (written, respelled) = as_written(&fact.body, &reference.raw, alias, &new_raw, ordinal);
         let spelling = &reference.spelling;
         let finding = if input.renames_asked.contains(spelling) {
             Finding::about("V110", fact).with(
@@ -2746,17 +2759,34 @@ fn detect_close_folders(input: &SweepInput, report: &mut SweepReport) {
 /// than swallowed by an older entry.
 fn detect_unresolved(input: &SweepInput, graph: &Graph<'_>, report: &mut SweepReport) {
     let mut targets: HashMap<i64, Vec<String>> = HashMap::new();
+    // The lines of each engram's references by raw text and display text,
+    // so a repair quotes the occurrence on its own line.
+    let mut same: HashMap<(i64, &str, Option<&str>), Vec<usize>> = HashMap::new();
     for reference in &input.unresolved {
         targets
             .entry(reference.from.0)
             .or_default()
             .push(reference.target.clone());
+        same.entry((
+            reference.from.0,
+            reference.raw.as_str(),
+            reference.alias.as_deref(),
+        ))
+        .or_default()
+        .push(reference.line.unwrap_or(0));
     }
 
     for reference in &input.unresolved {
         let Some(fact) = graph.facts.get(&reference.from.0) else {
             continue;
         };
+        let ordinal = same
+            .get(&(
+                reference.from.0,
+                reference.raw.as_str(),
+                reference.alias.as_deref(),
+            ))
+            .map_or(0, |lines| ordinal_of(lines, reference.line.unwrap_or(0)));
         if fact.is_retired() {
             continue;
         }
@@ -2827,6 +2857,7 @@ fn detect_unresolved(input: &SweepInput, graph: &Graph<'_>, report: &mut SweepRe
                             &reference.raw,
                             reference.alias.as_deref(),
                             &candidate,
+                            ordinal,
                         );
                         format!("{left} -> {right}")
                     },
@@ -2890,6 +2921,7 @@ fn detect_unresolved(input: &SweepInput, graph: &Graph<'_>, report: &mut SweepRe
                                 written,
                                 reference.alias.as_deref(),
                                 &prefixed(reference.target_domain.as_deref(), &candidate),
+                                ordinal,
                             );
                             format!("{left} -> {right}")
                         },
@@ -2944,43 +2976,54 @@ fn bracketed(text: &str, alias: Option<&str>) -> String {
     }
 }
 
-/// A mechanical repair's two sides for the reference `raw` (with display
-/// text `alias`) in `body`, the left side quoted exactly as the file holds
-/// it, spaces and an empty display text included, and the right side the
-/// same text with `raw` replaced by `new_raw`. The index keeps a reference
-/// trimmed (`[[ a | b ]]` is `a` with `b`), so a quote rebuilt from it
-/// would name text a find and replace never finds, or a different `[[a]]`
-/// in the same file. Falls back to [`bracketed`] when no wikilink in the body
-/// reads as the reference.
-fn as_written(body: &str, raw: &str, alias: Option<&str>, new_raw: &str) -> (String, String) {
-    let mut from = 0;
-    while let Some(open) = body[from..].find("[[").map(|at| from + at) {
-        let Some(close) = body[open + 2..].find("]]").map(|at| open + 2 + at) else {
-            break;
-        };
-        let inner = &body[open + 2..close];
-        from = open + 2;
-        if inner.contains('\n') {
-            continue;
-        }
-        let Some(target) = crystalline_core::LinkTarget::wikilink(inner) else {
-            continue;
-        };
-        if target.raw != raw || target.alias.as_deref() != alias {
-            continue;
-        }
-        let (left, rest) = match inner.split_once('|') {
-            Some((left, rest)) => (left, Some(rest)),
-            None => (inner, None),
-        };
-        let left = left.replacen(raw, new_raw, 1);
-        let new_inner = match rest {
-            Some(rest) => format!("{left}|{rest}"),
-            None => left,
-        };
-        return (format!("[[{inner}]]"), format!("[[{new_inner}]]"));
-    }
-    (bracketed(raw, alias), bracketed(new_raw, alias))
+/// A repair's two sides for the reference `raw` (with display text `alias`)
+/// in `body`, the left side quoted exactly as the file holds it, spaces and
+/// an empty display text included, and the right side the same text with
+/// `raw` replaced by `new_raw`. The index keeps a reference trimmed (`[[ a |
+/// b ]]` is `a` with `b`), so a quote rebuilt from it would name text a find
+/// and replace never finds, or a different `[[a]]` in the same file.
+///
+/// `ordinal` says which of the engram's references with this `raw` and
+/// `alias` this one is, in line order. The index keeps one per line, so it
+/// is quoted from the `ordinal`-th body line that holds such a wikilink, and
+/// two spellings of one reference in one file each get their own quote.
+/// Falls back to the first line that holds one, and to [`bracketed`] when
+/// no wikilink in the body reads as the reference.
+fn as_written(
+    body: &str,
+    raw: &str,
+    alias: Option<&str>,
+    new_raw: &str,
+    ordinal: usize,
+) -> (String, String) {
+    let matching: Vec<String> = crystalline_core::wikilinks_by_line(body)
+        .into_iter()
+        .filter_map(|inners| {
+            inners.into_iter().find(|inner| {
+                crystalline_core::LinkTarget::wikilink(inner)
+                    .is_some_and(|target| target.raw == raw && target.alias.as_deref() == alias)
+            })
+        })
+        .collect();
+    let Some(inner) = matching.get(ordinal).or_else(|| matching.first()) else {
+        return (bracketed(raw, alias), bracketed(new_raw, alias));
+    };
+    let (left, rest) = match inner.split_once('|') {
+        Some((left, rest)) => (left, Some(rest)),
+        None => (inner.as_str(), None),
+    };
+    let left = left.replacen(raw, new_raw, 1);
+    let new_inner = match rest {
+        Some(rest) => format!("{left}|{rest}"),
+        None => left,
+    };
+    (format!("[[{inner}]]"), format!("[[{new_inner}]]"))
+}
+
+/// Which of the references `same` (those of one engram with one raw text and
+/// display text, by line) the one at `line` is, in line order.
+fn ordinal_of(same: &[usize], line: usize) -> usize {
+    same.iter().filter(|other| **other < line).count()
 }
 
 /// The nearest existing title to an unresolved target inside `scope`, when it

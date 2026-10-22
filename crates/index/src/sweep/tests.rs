@@ -3237,6 +3237,75 @@ fn v110_and_v102_quote_the_bracket_text_as_the_file_holds_it() {
     );
 }
 
+/// Two spellings of one reference in one file: each finding quotes the text
+/// on its own line, so a find and replace changes that occurrence.
+#[test]
+fn each_spelling_of_one_reference_is_quoted_from_its_own_line() {
+    let mut holder = fact(1, "link-holder");
+    holder.body = "First [[ eng-knowledge:a ]].\n\n`[[eng-knowledge:a]]` in code.\n\nThen [[eng-knowledge:a]].\n".to_string();
+    let mut sweep = input(vec![holder]);
+    sweep.respell = vec![("eng-knowledge".to_string(), "eng".to_string())];
+    let mut first = spelled(1, "eng-knowledge", "a");
+    first.line = 9;
+    let mut second = spelled(1, "eng-knowledge", "a");
+    second.line = 13;
+    // In the order the store hands them, which need not be line order.
+    sweep.spelled_refs = vec![second, first];
+    let report = detect(&sweep);
+    let mut fixes: Vec<(Option<usize>, &str)> = report
+        .findings
+        .iter()
+        .filter(|f| f.rule == "V110")
+        .map(|f| (f.line, f.fix.as_str()))
+        .collect();
+    fixes.sort();
+    assert_eq!(
+        fixes,
+        vec![
+            (
+                Some(9),
+                "edit_engram with operation find_replace, find_text \"[[ eng-knowledge:a ]]\" and \
+                 content \"[[ eng:a ]]\""
+            ),
+            (
+                Some(13),
+                "edit_engram with operation find_replace, find_text \"[[eng-knowledge:a]]\" and \
+                 content \"[[eng:a]]\""
+            ),
+        ]
+    );
+
+    let mut target = fact(1, "release-checklist");
+    target.title = "Release Checklist".to_string();
+    let mut writer = fact(2, "runbook");
+    writer.body =
+        "Run [[Release Checklst]] first.\n\nThen [[ Release Checklst ]] again.\n".to_string();
+    let mut sweep = input(vec![target, writer]);
+    let mut late = unresolved(2, "Release Checklst");
+    late.line = Some(12);
+    let mut early = unresolved(2, "Release Checklst");
+    early.line = Some(10);
+    sweep.unresolved = vec![late, early];
+    let report = detect(&sweep);
+    let mut fixes: Vec<(Option<usize>, &str)> = report
+        .findings
+        .iter()
+        .filter(|f| f.rule == "V102")
+        .map(|f| (f.line, f.fix.as_str()))
+        .collect();
+    fixes.sort();
+    assert_eq!(
+        fixes,
+        vec![
+            (Some(10), "[[Release Checklst]] -> [[Release Checklist]]"),
+            (
+                Some(12),
+                "[[ Release Checklst ]] -> [[ Release Checklist ]]"
+            ),
+        ]
+    );
+}
+
 #[test]
 fn v110_fires_when_respell_names_a_spelled_references_prefix() {
     let mut sweep = input(vec![fact(1, "link-holder")]);
