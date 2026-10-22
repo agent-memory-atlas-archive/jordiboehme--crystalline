@@ -1790,6 +1790,68 @@ async fn a_canonical_name_edited_in_the_manifest_leaves_sources_unavailable() {
     assert!(file(&fx, "a.md").contains("domain: ops-team"), "kept");
 }
 
+/// A canonical name changed through Crystalline (an edit of the MANIFEST)
+/// is lined up in that write: the old canonical name stays an alias at once,
+/// so a source stored under it still resolves and reads current, with no
+/// sync or adoption in between.
+#[tokio::test]
+async fn a_canonical_name_edited_through_crystalline_keeps_sources_current() {
+    let fx = with_ops(
+        "",
+        "",
+        &[(
+            "runbook.md",
+            &engram("Runbook", "runbook", "- [fact] page the on-call"),
+        )],
+    )
+    .await;
+    let rename_in_manifest = |from: &str, to: &str| crystalline_service::params::EditParams {
+        identifier: "manifest".to_string(),
+        domain: "ops".to_string(),
+        operation: "find_replace".to_string(),
+        find_text: Some(format!("domain_name: {from}\n")),
+        content: Some(format!("domain_name: {to}\n")),
+        expected_replacements: Some(1),
+        ..Default::default()
+    };
+    fx.engine
+        .edit_engram(&rename_in_manifest("ops", "ops-team"))
+        .await
+        .unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let mut p = write("a.md", "# A\n\nFor people.\n\n## On call\n\nPage them.\n");
+    p.sources = BTreeMap::from([(
+        "On call".to_string(),
+        vec!["crystalline://ops/runbook".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    assert!(
+        file(&fx, "a.md").contains("domain: ops-team"),
+        "the canonical name: {}",
+        file(&fx, "a.md")
+    );
+
+    fx.engine
+        .edit_engram(&rename_in_manifest("ops-team", "ops-crew"))
+        .await
+        .unwrap();
+    assert_eq!(
+        fx.engine.local_domain_name("ops-team").await.as_deref(),
+        Some("ops"),
+        "the old canonical name is an alias at once"
+    );
+    let doc = fx
+        .engine
+        .read_reflection("eng", "a.md", &agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        doc["sections"][0]["sources"][0]["state"], "current",
+        "{doc}"
+    );
+    assert!(file(&fx, "a.md").contains("domain: ops-team"), "kept");
+}
+
 /// A page whose frontmatter cannot be rewritten key by key keeps its
 /// stored source domain through a rename, and the report lists it with
 /// why, instead of passing it over in silence.
