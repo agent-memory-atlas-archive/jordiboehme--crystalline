@@ -437,6 +437,20 @@ async fn failed_runs_back_off_until_a_run_does_not_fail() {
     assert_eq!(s["due"], true, "{s}");
 }
 
+/// A failure recorded "later" than now, after the clock went back, is no
+/// reason to wait: the backoff never outlasts its own length.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failure_from_the_future_backs_nothing_off() {
+    let fx = reflecting().await;
+    open_thread(&fx, "aaaa1111", "Still true?").await;
+    run_at(&fx, start(), RunOutcome::Failed).await;
+    fx.engine
+        .set_automation_now(Some(start() - Duration::hours(2)));
+    let s = status(&fx.engine, Loop::Reflect).await;
+    assert_eq!(s["reason"], Value::Null, "{s}");
+    assert_eq!(s["due"], true, "{s}");
+}
+
 /// The wait never grows past 6 hours, however many runs failed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_backoff_stops_at_six_hours() {

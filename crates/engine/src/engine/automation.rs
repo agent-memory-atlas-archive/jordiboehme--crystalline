@@ -961,11 +961,16 @@ impl Engine {
         let last_run = runs.first();
         // The wait after failed runs in a row, while it lasts.
         let backing_off = match failed_in_a_row(&runs) {
-            (failed, Some(ended)) if failed > 0 => DateTime::parse_from_rfc3339(ended)
-                .ok()
-                .map(|ended| ended + Duration::seconds(backoff_secs(failed)))
-                .filter(|until| self.automation_clock() < *until)
-                .map(|_| failed),
+            (failed, Some(ended)) if failed > 0 => {
+                let now = self.automation_clock();
+                // A failure "later" than now (the clock went back) starts no
+                // wait, so a wait never outlasts its own length.
+                DateTime::parse_from_rfc3339(ended)
+                    .ok()
+                    .filter(|ended| *ended <= now)
+                    .filter(|ended| now < *ended + Duration::seconds(backoff_secs(failed)))
+                    .map(|_| failed)
+            }
             _ => None,
         };
         let (_, stale_before) = self.automation_window();
