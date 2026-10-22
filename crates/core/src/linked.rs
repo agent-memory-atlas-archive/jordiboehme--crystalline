@@ -46,7 +46,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::attachment::{
@@ -225,7 +225,7 @@ pub struct TakenFile {
 }
 
 /// One link to a local file that was not taken.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotTaken {
     /// The path of the note that links it.
     pub note: String,
@@ -236,7 +236,7 @@ pub struct NotTaken {
 }
 
 /// Why a linked file was not taken.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotTakenReason {
     /// No file is there, or it is a folder or cannot be read.
@@ -422,10 +422,13 @@ impl Planner<'_> {
 /// folder named by its hash when that is too long. `None` when a segment of
 /// the note's path has nothing keepable.
 fn base_dest(note: &str, name: &str, sha256: &str) -> Option<String> {
-    let stem = note
-        .strip_suffix(".md")
-        .or_else(|| note.strip_suffix(".MD"))
-        .unwrap_or(note);
+    // `.md` in any letter case, as the import reads a note.
+    let stem = match note.len().checked_sub(3) {
+        Some(cut) if note.is_char_boundary(cut) && note[cut..].eq_ignore_ascii_case(".md") => {
+            &note[..cut]
+        }
+        _ => note,
+    };
     let folder = stem
         .split('/')
         .map(clean_asset_segment)
@@ -538,7 +541,9 @@ fn written(mut dest: String, fragment: Option<&str>) -> String {
 
 /// A reference definition (`[label]: target "title"`, up to three spaces of
 /// indent): the byte range of its target as written, angle brackets
-/// included, and the target inside them. A footnote (`[^1]: text`) is not one.
+/// included, and the target inside them. A footnote (`[^1]: text`) is not one,
+/// and neither is a line where more than a title follows the target: as
+/// CommonMark reads it, `[Note]: remember the pump` is prose.
 fn reference_definition(line: &str) -> Option<(usize, usize, &str)> {
     let indent = line.len() - line.trim_start_matches(' ').len();
     if indent > 3 {
@@ -553,13 +558,37 @@ fn reference_definition(line: &str) -> Option<(usize, usize, &str)> {
     let after = rest[label_end + 1..].strip_prefix(':')?;
     let start = line.len() - after.trim_start().len();
     let tail = &line[start..];
-    if let Some(inner) = tail.strip_prefix('<') {
+    let (end, target) = if let Some(inner) = tail.strip_prefix('<') {
         let gt = inner.find('>')?;
-        Some((start, start + gt + 2, &inner[..gt]))
+        (start + gt + 2, &inner[..gt])
     } else {
         let len = tail.find(char::is_whitespace).unwrap_or(tail.len());
-        (len > 0).then(|| (start, start + len, &tail[..len]))
+        if len == 0 {
+            return None;
+        }
+        (start + len, &tail[..len])
+    };
+    only_a_title(&line[end..]).then_some((start, end, target))
+}
+
+/// Whether `rest`, what follows a reference definition's target, is nothing
+/// or one title: `"..."`, `'...'` or `(...)`, after at least one space, with
+/// nothing but spaces after it.
+fn only_a_title(rest: &str) -> bool {
+    let trimmed = rest.trim();
+    if trimmed.is_empty() {
+        return true;
     }
+    if !rest.starts_with(char::is_whitespace) {
+        return false;
+    }
+    let close = match trimmed.chars().next() {
+        Some('"') => '"',
+        Some('\'') => '\'',
+        Some('(') => ')',
+        _ => return false,
+    };
+    trimmed.len() >= 2 && trimmed.ends_with(close) && !trimmed[1..trimmed.len() - 1].contains(close)
 }
 
 /// Lowercase hex of a digest.
@@ -585,6 +614,37 @@ mod tests {
         assert_eq!(reference_definition("    [d]: x.png"), None);
         assert_eq!(reference_definition("[d]:"), None);
         assert_eq!(reference_definition("[d] x.png"), None);
+        assert_eq!(
+            reference_definition("[d]: x.png 'T'"),
+            Some((5, 10, "x.png"))
+        );
+        assert_eq!(
+            reference_definition("[d]: x.png (T)  "),
+            Some((5, 10, "x.png"))
+        );
+    }
+
+    /// A line that reads like a definition but carries more than a title
+    /// after the target is prose, as CommonMark reads it.
+    #[test]
+    fn prose_after_a_label_is_no_reference_definition() {
+        assert_eq!(reference_definition("[Note]: remember the pump"), None);
+        assert_eq!(reference_definition("[d]: x.png \"T\" more"), None);
+        assert_eq!(reference_definition("[d]: <a b.png> then"), None);
+    }
+
+    /// `x.Md` is a note to the import, so its pictures go under `assets/x/`.
+    #[test]
+    fn a_notes_extension_is_dropped_in_any_case() {
+        let sha = "0123456789abcdef";
+        assert_eq!(
+            base_dest("notes/x.Md", "p.png", sha).as_deref(),
+            Some("assets/notes/x/p.png")
+        );
+        assert_eq!(
+            base_dest("y.MD", "p.png", sha).as_deref(),
+            Some("assets/y/p.png")
+        );
     }
 
     #[test]

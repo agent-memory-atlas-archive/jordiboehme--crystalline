@@ -4525,6 +4525,113 @@ async fn an_archive_of_converted_documents_is_accepted() {
     assert!(content.contains("- imported"), "{content}");
 }
 
+/// A note the skip policy leaves out links nothing into the domain: its
+/// pictures are not stored, so no attachment lands that no note links.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_skipped_note_stores_none_of_its_pictures() {
+    let fx = serve(Options::default()).await;
+    let admin = login(fx.addr, "root", "rootpw").await;
+    let first = "---\ntype: document\ntitle: Report\n---\n\n# Report\n\nThe first text.\n";
+    let resp = post_zip(
+        fx.addr,
+        "/api/v1/domains/eng/archive/import",
+        &admin,
+        zip_of(&[("report.pdf.md", first)]),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+
+    let second = "---\ntype: document\ntitle: Report\n---\n\n# Report\n\n![p3](report.pdf.assets/page-3.png)\n";
+    let resp = post_zip(
+        fx.addr,
+        "/api/v1/domains/eng/archive/import",
+        &admin,
+        zip_of_bytes(&[
+            ("report.pdf.md", second.as_bytes()),
+            ("report.pdf.assets/page-3.png", PNG),
+        ]),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let done: serde_json::Value = resp.json().await.unwrap();
+    let status_of = |path: &str| {
+        done["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["path"] == path)
+            .map(|e| e["status"].as_str().unwrap().to_string())
+    };
+    assert_eq!(
+        status_of("report.pdf.md").as_deref(),
+        Some("skipped"),
+        "{done}"
+    );
+    assert_eq!(status_of("assets/report.pdf/page-3.png"), None, "{done}");
+    assert_eq!(
+        status_of("report.pdf.assets/page-3.png").as_deref(),
+        Some("ignored"),
+        "{done}"
+    );
+    assert!(
+        !fx._tmp
+            .path()
+            .join("eng/assets/report.pdf/page-3.png")
+            .exists(),
+        "no picture landed for the skipped note"
+    );
+}
+
+/// A linked file that cannot be stored keeps its note out: the note is
+/// reported invalid rather than landing with a link to a file that is not
+/// there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_note_whose_picture_cannot_be_stored_is_not_imported() {
+    let fx = serve(Options::default()).await;
+    let admin = login(fx.addr, "root", "rootpw").await;
+    // A file where the picture's folder would go, so the write fails.
+    let assets = fx._tmp.path().join("eng/assets");
+    std::fs::create_dir_all(&assets).unwrap();
+    std::fs::write(assets.join("report.pdf"), b"in the way").unwrap();
+    let note = "---\ntype: document\ntitle: Report\n---\n\n# Report\n\n![p3](report.pdf.assets/page-3.png)\n";
+    let resp = post_zip(
+        fx.addr,
+        "/api/v1/domains/eng/archive/import",
+        &admin,
+        zip_of_bytes(&[
+            ("report.pdf.md", note.as_bytes()),
+            ("report.pdf.assets/page-3.png", PNG),
+        ]),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let done: serde_json::Value = resp.json().await.unwrap();
+    let entry = |path: &str| {
+        done["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["path"] == path)
+            .cloned()
+            .unwrap_or_else(|| panic!("no entry for {path}: {done}"))
+    };
+    assert_eq!(
+        entry("assets/report.pdf/page-3.png")["status"],
+        "invalid",
+        "{done}"
+    );
+    let note = entry("report.pdf.md");
+    assert_eq!(note["status"], "invalid", "{done}");
+    assert!(
+        note["reason"]
+            .as_str()
+            .unwrap()
+            .contains("could not be stored at assets/report.pdf/page-3.png"),
+        "{done}"
+    );
+    assert!(!fx._tmp.path().join("eng/report.pdf.md").exists());
+}
+
 /// A restore of an export never rewrites an engram that is complete: a
 /// `type` is free form, so `note` is not mapped to another type on the way
 /// back in, and the engram lands byte for byte.

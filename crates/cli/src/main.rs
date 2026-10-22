@@ -4561,8 +4561,68 @@ async fn domain_import_dispatch(
         config.as_deref(),
     )
     .await?;
-    print_value(&data, json);
+    if json {
+        print_value(&data, true);
+    } else {
+        for line in domain_import_lines(&data) {
+            println!("{line}");
+        }
+    }
     Ok(())
+}
+
+/// What `domain import` prints for a person: the counts, each file written,
+/// the links not taken grouped by why, and the warnings.
+fn domain_import_lines(data: &serde_json::Value) -> Vec<String> {
+    use serde_json::Value;
+    let n = |key: &str| data.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let mut lines = Vec::new();
+    if data.get("dry_run").and_then(Value::as_bool) == Some(true) {
+        lines.push("Dry run: no files were written.".to_string());
+    }
+    lines.push(format!(
+        "{} written, {} skipped, {} collisions",
+        n("files_written"),
+        n("files_skipped"),
+        n("collisions")
+    ));
+    lines.push(format!(
+        "{} linked files taken into assets/, {} files no note links left out",
+        n("files_linked"),
+        n("not_linked")
+    ));
+    lines.push(format!(
+        "{} attachments written, {} skipped",
+        n("attachments_written"),
+        n("attachments_skipped")
+    ));
+    for file in data
+        .get("files")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(path) = file.get("path").and_then(Value::as_str) {
+            lines.push(format!("  {path}"));
+        }
+    }
+    let not_taken: Vec<crystalline_core::linked::NotTaken> = data
+        .get("not_taken")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    lines.extend(cmd::not_taken_lines(&not_taken));
+    for warning in data
+        .get("warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(text) = warning.as_str() {
+            lines.push(format!("warning: {text}"));
+        }
+    }
+    lines
 }
 
 /// `domain export`: materialize a domain's engrams to a filesystem folder, over
@@ -5734,6 +5794,47 @@ fn to_core_format(f: OutputFormat) -> verify::Format {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `domain import` groups the links it did not take by why, as
+    /// `crystalline import` does, instead of printing the raw answer.
+    #[test]
+    fn domain_import_groups_the_links_not_taken() {
+        let data = serde_json::json!({
+            "domain": "vault",
+            "dry_run": false,
+            "files_written": 2,
+            "files_skipped": 0,
+            "files_linked": 1,
+            "not_linked": 3,
+            "attachments_written": 1,
+            "attachments_skipped": 0,
+            "not_taken": [
+                { "note": "a.md", "target": "gone.png", "reason": "missing" },
+                { "note": "b.md", "target": "big.png", "reason": "too_large" },
+                { "note": "a.md", "target": "../x.png", "reason": "outside" },
+            ],
+            "collisions": 0,
+            "warnings": ["c.md: refused"],
+            "files": [{ "path": "a.md", "permalink": "a" }],
+        });
+        assert_eq!(
+            domain_import_lines(&data),
+            vec![
+                "2 written, 0 skipped, 0 collisions",
+                "1 linked files taken into assets/, 3 files no note links left out",
+                "1 attachments written, 0 skipped",
+                "  a.md",
+                "Not taken:",
+                "  no such file:",
+                "    a.md -> gone.png",
+                "  outside the source folder:",
+                "    a.md -> ../x.png",
+                "  file too large:",
+                "    b.md -> big.png",
+                "warning: c.md: refused",
+            ]
+        );
+    }
 
     /// A command that ends with an exit code still gives back the host locks
     /// it claimed: the runtime wrapper runs the give-back after the command's

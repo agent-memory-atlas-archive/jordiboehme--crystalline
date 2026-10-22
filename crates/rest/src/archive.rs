@@ -960,6 +960,7 @@ async fn run_archive(
     // what the linked-file step reads.
     let now = chrono::Utc::now().fixed_offset();
     let mut pending: Vec<Pending> = Vec::new();
+    let mut candidates: Vec<(String, String)> = Vec::new();
     let mut notes: Vec<crystalline_core::linked::LinkedNote> = Vec::new();
     for item in screened {
         match item {
@@ -1018,12 +1019,37 @@ async fn run_archive(
                         findings,
                     }));
                 } else {
-                    notes.push(crystalline_core::linked::LinkedNote {
-                        rel: path.clone(),
-                        text: content,
-                    });
+                    candidates.push((path.clone(), content));
                     pending.push(Pending::Note { path, findings });
                 }
+            }
+        }
+    }
+
+    // A note the import will skip (its path is taken under the skip policy,
+    // or its permalink is held at another path) links nothing into the
+    // domain: its files are not taken, so no attachment lands that nothing
+    // links. Asked of the engine's own classification in a preview, which
+    // decides by path and permalink alone, so it answers what the import
+    // below will do.
+    let mut held_back: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    if !candidates.is_empty() {
+        let preview = state
+            .engine
+            .import_domain_files(domain, &candidates, overwrite, true)
+            .await?;
+        let skipped: std::collections::HashSet<String> = preview["files"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|row| row["action"] == "skip")
+            .filter_map(|row| row["path"].as_str().map(str::to_string))
+            .collect();
+        for (path, text) in candidates {
+            if skipped.contains(&path) {
+                held_back.insert(path, text);
+            } else {
+                notes.push(crystalline_core::linked::LinkedNote { rel: path, text });
             }
         }
     }
@@ -1060,6 +1086,10 @@ async fn run_archive(
     // before any note that links one is handed to the engine.
     let mut slots: Vec<Slot> = Vec::new();
     let mut clean: Vec<(String, String)> = Vec::new();
+    // The linked files whose write failed, with why: a note that links one
+    // is not imported, so no note lands with a link to a file that is not
+    // there.
+    let mut unstored: Vec<(String, String)> = Vec::new();
     for item in pending {
         match item {
             Pending::Decided(report) => slots.push(Slot::Decided(report)),
@@ -1164,7 +1194,10 @@ async fn run_archive(
                         .await
                     {
                         Ok(_) => ("created".to_string(), None),
-                        Err(e) => ("invalid".to_string(), Some(e.to_string())),
+                        Err(e) => {
+                            unstored.push((file.dest.clone(), e.to_string()));
+                            ("invalid".to_string(), Some(e.to_string()))
+                        }
                     }
                 };
                 slots.push(Slot::Decided(ArchiveEntryReport {
@@ -1177,14 +1210,52 @@ async fn run_archive(
                 }));
             }
             Pending::Note { path, findings } => {
-                let note = rewritten.next().ok_or_else(|| {
-                    ApiError::internal(format!("no linked-file outcome for '{path}'"))
-                })?;
+                let text = match held_back.remove(&path) {
+                    Some(text) => text,
+                    None => {
+                        rewritten
+                            .next()
+                            .ok_or_else(|| {
+                                ApiError::internal(format!("no linked-file outcome for '{path}'"))
+                            })?
+                            .text
+                    }
+                };
                 slots.push(Slot::Sent {
                     path: path.clone(),
                     findings,
                 });
-                clean.push((path, note.text));
+                clean.push((path, text));
+            }
+        }
+    }
+
+    // A note that links a file whose write failed is reported invalid and
+    // not handed over, as `crystalline import` stops on that error.
+    if !unstored.is_empty() {
+        let failed_for = |text: &str| {
+            unstored
+                .iter()
+                .find(|(dest, _)| crystalline_core::find_asset_refs(text).contains(dest))
+                .map(|(dest, e)| format!("the file it links could not be stored at {dest}: {e}"))
+        };
+        let reasons: std::collections::HashMap<String, String> = clean
+            .iter()
+            .filter_map(|(path, text)| failed_for(text).map(|reason| (path.clone(), reason)))
+            .collect();
+        clean.retain(|(path, _)| !reasons.contains_key(path));
+        for slot in &mut slots {
+            if let Slot::Sent { path, findings } = slot
+                && let Some(reason) = reasons.get(path.as_str())
+            {
+                *slot = Slot::Decided(ArchiveEntryReport {
+                    path: path.clone(),
+                    status: "invalid".to_string(),
+                    permalink: None,
+                    reason: Some(reason.clone()),
+                    bytes: None,
+                    findings: std::mem::take(findings),
+                });
             }
         }
     }

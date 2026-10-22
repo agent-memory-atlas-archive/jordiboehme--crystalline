@@ -3468,6 +3468,34 @@ pub fn import(
     Ok(())
 }
 
+/// The links an import did not take, grouped by why, as the lines both
+/// imports print: none when every link was taken.
+pub(crate) fn not_taken_lines(not_taken: &[crystalline_core::linked::NotTaken]) -> Vec<String> {
+    use crystalline_core::linked::NotTakenReason as Reason;
+    let mut lines = Vec::new();
+    if not_taken.is_empty() {
+        return lines;
+    }
+    lines.push("Not taken:".to_string());
+    for (reason, label) in [
+        (Reason::Missing, "no such file"),
+        (Reason::Outside, "outside the source folder"),
+        (Reason::NotAllowed, "file type not allowed"),
+        (Reason::TooLarge, "file too large"),
+        (Reason::BadName, "no valid asset name"),
+    ] {
+        let group: Vec<_> = not_taken.iter().filter(|n| n.reason == reason).collect();
+        if group.is_empty() {
+            continue;
+        }
+        lines.push(format!("  {label}:"));
+        for n in group {
+            lines.push(format!("    {} -> {}", n.note, n.target));
+        }
+    }
+    lines
+}
+
 fn print_import_report(r: &crystalline_core::import::ImportReport, dry_run: bool) {
     use std::io::Write as _;
 
@@ -3498,25 +3526,8 @@ fn print_import_report(r: &crystalline_core::import::ImportReport, dry_run: bool
         r.collisions
     )
     .unwrap();
-    if !r.not_taken.is_empty() {
-        use crystalline_core::linked::NotTakenReason as Reason;
-        writeln!(out, "Not taken:").unwrap();
-        for (reason, label) in [
-            (Reason::Missing, "no such file"),
-            (Reason::Outside, "outside the source folder"),
-            (Reason::NotAllowed, "file type not allowed"),
-            (Reason::TooLarge, "file too large"),
-            (Reason::BadName, "no valid asset name"),
-        ] {
-            let group: Vec<_> = r.not_taken.iter().filter(|n| n.reason == reason).collect();
-            if group.is_empty() {
-                continue;
-            }
-            writeln!(out, "  {label}:").unwrap();
-            for n in group {
-                writeln!(out, "    {} -> {}", n.note, n.target).unwrap();
-            }
-        }
+    for line in not_taken_lines(&r.not_taken) {
+        writeln!(out, "{line}").unwrap();
     }
     for w in &r.warnings {
         writeln!(out, "  warning: {w}").unwrap();
