@@ -285,6 +285,7 @@ export default function Maintenance() {
         <LastRuns
           domains={domain === EVERY_DOMAIN ? domains : [domain]}
           findings={findings}
+          partial={findings.length < queue.total}
         />
       )}
 
@@ -380,9 +381,12 @@ export default function Maintenance() {
 function LastRuns({
   domains,
   findings,
+  partial,
 }: {
   domains: string[];
   findings: EvolveFinding[];
+  /** Whether the page holds only part of the queue, as the tally says. */
+  partial: boolean;
 }) {
   const answers = useQueries({
     // The last run only: what waits for judgment is counted from the queue
@@ -404,10 +408,14 @@ function LastRuns({
     const judgment = findings.filter(
       (f) => f.domain === name && f.class === "judgment",
     ).length;
+    // A partial page may hold only some of a domain's findings: its count is
+    // a lower bound, and a zero says nothing.
     const waiting =
-      judgment > 0
-        ? ` ${plural(judgment, "finding waits", "findings wait")} for a person.`
-        : "";
+      judgment === 0
+        ? ""
+        : partial
+          ? ` At least ${plural(judgment, "finding waits", "findings wait")} for a person.`
+          : ` ${plural(judgment, "finding waits", "findings wait")} for a person.`;
     return [{ name, text: `${sentence}${waiting}` }];
   });
   if (rows.length === 0) {

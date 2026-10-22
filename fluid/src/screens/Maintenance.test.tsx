@@ -1569,6 +1569,26 @@ describe("the last maintenance runs", () => {
     );
   });
 
+  it("calls the count a lower bound when the page is partial, and leaves out a zero", async () => {
+    await open({
+      "/evolve": () => evolvePayload({ total: 50 }),
+      "/domains/eng/automation": () => ran(0),
+      "/domains/ops/automation": () => ran(0),
+    });
+    const list = await screen.findByRole("list", {
+      name: "Last maintenance runs",
+    });
+    const items = within(list).getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(items[1]).toHaveTextContent(
+      "ops: Last maintained 5 hours ago by n8n: done. At least 1 finding waits for a person.",
+    );
+    // eng has no judgment finding on this partial page: no claim of zero.
+    expect(items[0]).toHaveTextContent(
+      /^eng: Last maintained 5 hours ago by n8n: done\.$/,
+    );
+  });
+
   it("shows nothing when no domain was ever maintained", async () => {
     await open();
     await section(/^Temporal/);
