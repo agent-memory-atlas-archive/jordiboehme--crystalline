@@ -8,6 +8,9 @@
 
 #[path = "../common/mod.rs"]
 mod common;
+#[cfg(unix)]
+#[path = "../common/forge.rs"]
+mod forge;
 #[path = "../common/remote_server.rs"]
 mod remote_server;
 
@@ -17,5 +20,7 @@ mod domain_rename;
 mod domain_review;
 mod env_token;
 mod origin;
+#[cfg(unix)]
+mod remote_run;
 mod sources;
 mod users;
