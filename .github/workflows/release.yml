@@ -59,8 +59,9 @@ jobs:
           echo "release notes: $file"
 
   # The Fluid bundle and the six platform legs (build, sign, notarize,
-  # package, plus the .deb and .msi packages) live in build.yml. Its artifacts belong to this run, under the same
-  # names as before, so every job below downloads them unchanged.
+  # package, plus the .deb and .msi packages) live in build.yml. Its
+  # artifacts belong to this run, under the same names as before, so every job
+  # below downloads them unchanged.
   build:
     name: build
     needs: notes

@@ -40,7 +40,7 @@
 //!
 //! ## An unbuilt bundle answers 503
 //!
-//! With this feature on but no bundle staged (a dev build that never ran
+//! With this feature on but no bundle staged (a local build that never ran
 //! `pnpm --dir fluid build`), the embed is empty and every navigation gets a
 //! short 503 page naming that command. Not 200, because then a health check
 //! or an uptime monitor would call a UI-less binary healthy; not 404, because

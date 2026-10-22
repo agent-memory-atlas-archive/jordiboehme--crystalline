@@ -40,7 +40,7 @@ test("the version line is read, and anything else is not Crystalline", () => {
   assert.equal(shim.parseVersion(null), null);
 });
 
-test("a dev build with a pre-release suffix passes the gate", () => {
+test("a build with a pre-release suffix passes the gate", () => {
   assert.ok(shim.atLeast(shim.parseVersion("crystalline 0.24.0-dev.17").triple, shim.MINIMUM));
   assert.ok(shim.atLeast([0, 25, 0], shim.MINIMUM));
   assert.ok(!shim.atLeast([0, 23, 1], shim.MINIMUM));

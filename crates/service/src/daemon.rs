@@ -2584,7 +2584,7 @@ fn ui_startup_line(config: &GlobalConfig, addr: &str) -> String {
         return format!("crystalline web UI at {}", web_ui_address(config, addr));
     }
     // Either built without the `fluid-ui` feature, so there is no bundle at
-    // all, or a dev build whose `fluid/dist` was never built (or was built
+    // all, or a local build whose `fluid/dist` was never built (or was built
     // after the last compile of this crate: see the note in `build.rs`).
     "web UI not built into this binary".to_string()
 }

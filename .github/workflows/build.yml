@@ -130,12 +130,12 @@ jobs:
         #   Windows 11 on ARM device is ARMv8.2+, so nothing supported is
         #   excluded.
         include:
-          - {target: "aarch64-apple-darwin", "platform": "macos-arm64", "os": "macos-latest", "archive_ext": "tar.gz", "codesign": true}
-          - {target: "x86_64-apple-darwin", "platform": "macos-intel", "os": "macos-15-intel", "archive_ext": "tar.gz", "codesign": true}
-          - {target: "x86_64-unknown-linux-musl", "platform": "linux-amd64", "os": "ubuntu-latest", "archive_ext": "tar.gz", "musl": true, "deb_arch": "amd64"}
-          - {target: "aarch64-unknown-linux-musl", "platform": "linux-arm64", "os": "ubuntu-24.04-arm", "archive_ext": "tar.gz", "musl": true, "deb_arch": "arm64", "rustflags": "-C target-feature=+fp16"}
-          - {target: "x86_64-pc-windows-msvc", "platform": "windows-amd64", "os": "windows-latest", "archive_ext": "zip", "rustflags": "-C target-feature=+crt-static", "msi": true}
-          - {target: "aarch64-pc-windows-msvc", "platform": "windows-arm64", "os": "windows-11-arm", "archive_ext": "zip", "rustflags": "-C target-feature=+crt-static,+fp16", "msi": true}
+          - {target: "aarch64-apple-darwin", platform: "macos-arm64", os: "macos-latest", archive_ext: "tar.gz", codesign: true}
+          - {target: "x86_64-apple-darwin", platform: "macos-intel", os: "macos-15-intel", archive_ext: "tar.gz", codesign: true}
+          - {target: "x86_64-unknown-linux-musl", platform: "linux-amd64", os: "ubuntu-latest", archive_ext: "tar.gz", musl: true, deb_arch: "amd64"}
+          - {target: "aarch64-unknown-linux-musl", platform: "linux-arm64", os: "ubuntu-24.04-arm", archive_ext: "tar.gz", musl: true, deb_arch: "arm64", rustflags: "-C target-feature=+fp16"}
+          - {target: "x86_64-pc-windows-msvc", platform: "windows-amd64", os: "windows-latest", archive_ext: "zip", rustflags: "-C target-feature=+crt-static", msi: true}
+          - {target: "aarch64-pc-windows-msvc", platform: "windows-arm64", os: "windows-11-arm", archive_ext: "zip", rustflags: "-C target-feature=+crt-static,+fp16", msi: true}
     # The matrix reaches the shell steps as environment variables, never as
     # `${{ }}` text pasted into a script.
     env:
@@ -266,13 +266,13 @@ jobs:
           done
           if [ "${#missing[@]}" -eq 0 ]; then
             echo "sign=true" >> "$GITHUB_OUTPUT"
-          elif [ "${#missing[@]}" -eq 6 ] && [ "$GITHUB_REF_TYPE" != "tag" ] && [ "$BUILD_CHANNEL" != "dev" ]; then
+          elif [ "${#missing[@]}" -eq 6 ] && [ "$GITHUB_REF_TYPE" != "tag" ]; then
             echo "::notice::Apple signing secrets are not configured; this dry run produces an UNSIGNED macOS binary"
             echo "sign=false" >> "$GITHUB_OUTPUT"
           else
-            # A dev build is published like a tag build, so it must sign too,
-            # even though it runs on a branch rather than a tag.
-            echo "::error::Apple signing secrets missing (${missing[*]}); a tag or dev build must sign and a partial secret set is always a misconfiguration"
+            # A tag build is published, so it must sign, and a partial secret
+            # set is never a valid state.
+            echo "::error::Apple signing secrets missing (${missing[*]}); a tag build must sign and a partial secret set is always a misconfiguration"
             exit 1
           fi
 

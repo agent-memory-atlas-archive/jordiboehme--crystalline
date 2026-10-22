@@ -3854,7 +3854,7 @@ mod tests {
         assert_eq!(
             attach_policy("0.20.0", "0.21.0-dev.1"),
             AttachPolicy::Displace,
-            "a dev build of the next minor displaces the last release"
+            "a pre-release of the next minor displaces the last release"
         );
         assert_eq!(
             attach_policy("0.21.0-dev.4817", "0.21.0"),
