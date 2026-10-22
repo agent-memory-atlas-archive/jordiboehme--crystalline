@@ -223,11 +223,17 @@ fn any_due(answer: &Value) -> bool {
 /// The trigger webhook's state, when the MANIFEST turns it on.
 fn delivery_line(delivery: &Value) -> Option<String> {
     let delivery = delivery.as_object()?;
-    if delivery.get("configured") != Some(&Value::Bool(true)) {
-        return Some("trigger: no webhook URL and secret are set on this instance".to_string());
-    }
+    let configured = delivery.get("configured") == Some(&Value::Bool(true));
+    // The recorded error first: with a URL but no secret it says so.
     if let Some(error) = delivery.get("last_error").and_then(Value::as_str) {
-        return Some(format!("trigger: last delivery failed: {error}"));
+        return Some(if configured {
+            format!("trigger: last delivery failed: {error}")
+        } else {
+            format!("trigger: {error}")
+        });
+    }
+    if !configured {
+        return Some("trigger: needs a webhook URL and a secret on this instance".to_string());
     }
     Some(match delivery.get("last_sent").and_then(Value::as_str) {
         Some(at) => format!("trigger: last sent {at}"),
@@ -304,7 +310,12 @@ mod tests {
         assert_eq!(
             delivery_line(&json!({"configured": false, "last_sent": null, "last_error": null}))
                 .as_deref(),
-            Some("trigger: no webhook URL and secret are set on this instance")
+            Some("trigger: needs a webhook URL and a secret on this instance")
+        );
+        assert_eq!(
+            delivery_line(&json!({"configured": false, "last_sent": null, "last_error": "no webhook secret is set on this instance, so nothing is sent"}))
+                .as_deref(),
+            Some("trigger: no webhook secret is set on this instance, so nothing is sent")
         );
         assert_eq!(
             delivery_line(&json!({"configured": true, "last_sent": "2026-10-22T08:00:00Z", "last_error": "the receiver answered 500"}))

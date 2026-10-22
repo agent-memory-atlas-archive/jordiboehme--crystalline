@@ -972,11 +972,17 @@ pub struct WebhookTarget {
     pub secret: Option<String>,
 }
 
-/// Hand-written so the secret cannot reach a log line.
+/// Hand-written so the secret cannot reach a log line, nor the URL's
+/// userinfo, path or query (a webhook path often works as a bearer): the
+/// URL shows only its scheme and host.
 impl std::fmt::Debug for WebhookTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let origin = match url::Url::parse(&self.url) {
+            Ok(url) => format!("{}://{}", url.scheme(), url.host_str().unwrap_or("?")),
+            Err(_) => "(not a URL)".to_string(),
+        };
         f.debug_struct("WebhookTarget")
-            .field("url", &self.url)
+            .field("url", &origin)
             .field("secret", &self.secret.as_ref().map(|_| "(set)"))
             .finish()
     }

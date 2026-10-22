@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::time::Duration;
 
 use axum::Router;
@@ -17,7 +17,7 @@ use crystalline_core::automation::{Loop, RunOutcome, RunReport, webhook_signatur
 use crystalline_core::config::{AutomationConfig, GlobalConfig, WebhookConfig};
 use crystalline_service::Scope;
 use crystalline_service::automation_trigger::{
-    HttpPoster, Poster, WebhookRequest, run_automation_triggers_with, webhook_request,
+    HttpPoster, Poster, RATE_LIMIT, WebhookRequest, run_automation_triggers_with, webhook_request,
 };
 use crystalline_service::params::{DiscussParams, WriteReflectionParams};
 use crystalline_service::{Engine, ReflectionCaller};
@@ -59,11 +59,16 @@ impl Hit {
 struct Recorder {
     tx: mpsc::UnboundedSender<Hit>,
     status: Arc<AtomicU16>,
+    /// The next post panics before it records anything.
+    panic_next: Arc<AtomicBool>,
 }
 
 #[async_trait::async_trait]
 impl Poster for Recorder {
     async fn post(&self, request: WebhookRequest) -> Result<(), String> {
+        if self.panic_next.swap(false, Ordering::SeqCst) {
+            panic!("the poster broke");
+        }
         let _ = self.tx.send(Hit {
             headers: request.headers,
             body: request.body,
@@ -81,17 +86,24 @@ struct Hook {
     url: String,
     hits: mpsc::UnboundedReceiver<Hit>,
     status: Arc<AtomicU16>,
+    panic_next: Arc<AtomicBool>,
     poster: Arc<Recorder>,
 }
 
 fn hook() -> Hook {
     let (tx, hits) = mpsc::unbounded_channel();
     let status = Arc::new(AtomicU16::new(204));
+    let panic_next = Arc::new(AtomicBool::new(false));
     Hook {
         url: "https://hooks.example/webhook/abc".to_string(),
         hits,
         status: status.clone(),
-        poster: Arc::new(Recorder { tx, status }),
+        panic_next: panic_next.clone(),
+        poster: Arc::new(Recorder {
+            tx,
+            status,
+            panic_next,
+        }),
     }
 }
 
@@ -247,7 +259,7 @@ async fn a_new_thread_sends_one_signed_webhook_within_a_minute() {
     open_thread(&fx.engine, "Still true?").await;
     let hit = hook.next(minutes(2)).await.expect("one webhook");
     assert!(
-        hit.at - opened <= Duration::from_secs(61),
+        hit.at - opened <= Duration::from_secs(60),
         "sent {:?} after the thread",
         hit.at - opened
     );
@@ -521,8 +533,8 @@ async fn a_failed_delivery_retries_three_times_and_is_reported() {
         at = retry.at;
     }
     assert!(
-        hook.next(minutes(10)).await.is_none(),
-        "three retries, no more"
+        hook.next(minutes(4)).await.is_none(),
+        "three retries, then a wait"
     );
 
     let delivery = fx.engine.automation_delivery("eng", Loop::Reflect);
@@ -737,7 +749,7 @@ async fn the_wire_carries_the_signed_request() {
         &counts,
         now,
     );
-    HttpPoster.post(request.clone()).await.unwrap();
+    HttpPoster::default().post(request.clone()).await.unwrap();
 
     let got = tokio::time::timeout(Duration::from_secs(5), taken.recv())
         .await
@@ -770,13 +782,13 @@ async fn the_wire_carries_the_signed_request() {
 
     // A refusal is reported by its status.
     status.store(500, Ordering::SeqCst);
-    let refused = HttpPoster.post(request).await.unwrap_err();
+    let refused = HttpPoster::default().post(request).await.unwrap_err();
     assert_eq!(refused, "the receiver answered 500");
 
     // A receiver that is not there is reported without the URL, whose path
     // often works as a bearer.
     let gone = reqwest::Url::parse("http://127.0.0.1:1/webhook/s3cr3t-path").unwrap();
-    let failed = HttpPoster
+    let failed = HttpPoster::default()
         .post(webhook_request(
             &gone,
             SECRET,
@@ -788,7 +800,7 @@ async fn the_wire_carries_the_signed_request() {
         ))
         .await
         .unwrap_err();
-    assert!(failed.starts_with("the request failed"), "{failed}");
+    assert!(failed.starts_with("could not connect"), "{failed}");
     assert!(
         !failed.contains("s3cr3t-path") && !failed.contains(SECRET),
         "{failed}"
@@ -816,4 +828,294 @@ async fn evolve_sends_again_after_the_count_drops_and_crosses_again() {
     let hit = hook.next(minutes(6)).await.expect("the second crossing");
     assert_eq!(hit.json()["counts"]["mechanical"], 1);
     task.stop().await;
+}
+
+// --- fix round 1 ------------------------------------------------------------
+
+/// A delivery that fails all four attempts, the first inside `first`: the
+/// hits.
+async fn four_failed_attempts(hook: &mut Hook, first: Duration) -> Vec<Hit> {
+    let mut hits = vec![hook.next(first).await.expect("a first attempt")];
+    for _ in 0..3 {
+        hits.push(hook.next(minutes(3)).await.expect("a retry"));
+    }
+    hits
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_held_lease_stops_the_retries() {
+    let mut hook = hook();
+    hook.status.store(500, Ordering::SeqCst);
+    let fx = reflecting("reflect_trigger: webhook\n", Some(&hook.url)).await;
+    let task = start(&fx.engine, &hook).await;
+    open_thread(&fx.engine, "Still true?").await;
+    hook.next(minutes(2)).await.expect("the first attempt");
+    // A runner starts before the first retry.
+    let token = take(&fx.engine).await;
+    assert!(
+        hook.next(minutes(5)).await.is_none(),
+        "no retry while the lease is held"
+    );
+    // When it goes with the thread still waiting, the release sends.
+    hook.status.store(204, Ordering::SeqCst);
+    fx.engine
+        .automation_lease_release(Loop::Reflect, "eng", &token, &Scope::Unrestricted)
+        .await
+        .unwrap();
+    hook.next(minutes(2)).await.expect("one on release");
+    task.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_release_inside_five_minutes_waits_for_the_cap() {
+    let mut hook = hook();
+    let fx = reflecting("reflect_trigger: webhook\n", Some(&hook.url)).await;
+    let task = start(&fx.engine, &hook).await;
+    open_thread(&fx.engine, "Still true?").await;
+    let first = hook.next(minutes(2)).await.expect("the first webhook");
+    // A run starts, a second question arrives, the run stops without
+    // answering: the release is owed a send, but the cap holds it back.
+    let token = take(&fx.engine).await;
+    open_thread(&fx.engine, "And this?").await;
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    fx.engine
+        .automation_lease_release(Loop::Reflect, "eng", &token, &Scope::Unrestricted)
+        .await
+        .unwrap();
+    let held = hook.next(minutes(10)).await.expect("the held-back send");
+    let gap = held.at - first.at;
+    assert!(
+        gap >= RATE_LIMIT && gap <= RATE_LIMIT + Duration::from_secs(2),
+        "sent {gap:?} after the first"
+    );
+    assert_eq!(held.json()["counts"]["waiting_for_the_agent"], 2);
+    assert!(hook.next(minutes(10)).await.is_none(), "one, not more");
+    task.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_delivery_that_failed_every_retry_is_owed_with_a_growing_wait() {
+    let mut hook = hook();
+    hook.status.store(500, Ordering::SeqCst);
+    let fx = reflecting("reflect_trigger: webhook\n", Some(&hook.url)).await;
+    let task = start(&fx.engine, &hook).await;
+    open_thread(&fx.engine, "Still true?").await;
+    let mut last = four_failed_attempts(&mut hook, minutes(2))
+        .await
+        .pop()
+        .unwrap()
+        .at;
+    for wait in [5, 10] {
+        let again = four_failed_attempts(&mut hook, minutes(wait + 1)).await;
+        let gap = again[0].at - last;
+        assert!(
+            gap >= minutes(wait) && gap <= minutes(wait) + Duration::from_secs(2),
+            "sent again {gap:?} after a failed delivery, wanted {wait} minutes"
+        );
+        last = again[3].at;
+    }
+    // The receiver is back; the third wait is 20 minutes.
+    hook.status.store(204, Ordering::SeqCst);
+    let sent = hook.next(minutes(25)).await.expect("sent again");
+    let gap = sent.at - last;
+    assert!(
+        gap >= minutes(20) && gap <= minutes(20) + Duration::from_secs(2),
+        "{gap:?}"
+    );
+    let delivery = recorded(&fx.engine, Loop::Reflect).await;
+    assert!(delivery.last_sent.is_some(), "{delivery:?}");
+    task.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn evolve_is_sent_again_after_a_failed_delivery() {
+    let mut hook = hook();
+    hook.status.store(500, Ordering::SeqCst);
+    let fx = maintaining(&hook.url, 1).await;
+    let task = start(&fx.engine, &hook).await;
+    let last = hook.next(minutes(6)).await.expect("the first attempt");
+    let mut last = last.at;
+    for _ in 0..3 {
+        last = hook.next(minutes(3)).await.expect("a retry").at;
+    }
+    hook.status.store(204, Ordering::SeqCst);
+    let again = hook
+        .next(minutes(10))
+        .await
+        .expect("the crossing is still owed");
+    let gap = again.at - last;
+    assert!(
+        gap >= minutes(5) && gap <= minutes(5) + Duration::from_secs(2),
+        "{gap:?}"
+    );
+    assert_eq!(again.json()["counts"]["mechanical"], 1);
+    task.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_delivery_that_panics_frees_its_slot() {
+    let mut hook = hook();
+    hook.panic_next.store(true, Ordering::SeqCst);
+    let fx = reflecting("reflect_trigger: webhook\n", Some(&hook.url)).await;
+    let task = start(&fx.engine, &hook).await;
+    let opened = Instant::now();
+    open_thread(&fx.engine, "Still true?").await;
+    let hit = hook
+        .next(minutes(10))
+        .await
+        .expect("a send after the broken one");
+    let after = hit.at - opened;
+    assert!(
+        after >= minutes(5) && after <= minutes(7),
+        "sent {after:?} after the thread"
+    );
+    task.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_evolve_runs_own_fixes_send_nothing() {
+    let mut hook = hook();
+    let fx = maintaining(&hook.url, 1).await;
+    let task = start(&fx.engine, &hook).await;
+    hook.next(minutes(6)).await.expect("the crossing");
+    let token = fx
+        .engine
+        .automation_lease_take(Loop::Evolve, "eng", "n8n", &Scope::Unrestricted)
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // The run wires the missing reciprocal relation.
+    std::fs::write(
+        fx.root.join("full-text-doc.md"),
+        engram(
+            "Full text doc",
+            "full-text-doc",
+            "The full migration write-up with the shard tables.\n\n- [context] the source the summary was cut from\n- [lesson] keep the tables out of the summary\n- summarized_by [[Summary doc]]",
+        ),
+    )
+    .unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let status = fx
+        .engine
+        .automation_status(Loop::Evolve, &["eng".to_string()], &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert_eq!(status["domains"][0]["counts"]["mechanical"], 0, "{status}");
+    fx.engine
+        .automation_run_record(
+            Loop::Evolve,
+            "eng",
+            &token,
+            &RunReport {
+                started_at: String::new(),
+                outcome: RunOutcome::Done,
+                done: 1,
+                summary: "Wired one relation.".into(),
+            },
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert!(
+        hook.next(minutes(30)).await.is_none(),
+        "the run's own fixes make nothing due"
+    );
+    task.stop().await;
+}
+
+/// A listener at `/webhook/abc` that answers 302 to `/elsewhere`, and
+/// counts what reaches `/elsewhere`.
+async fn redirecting() -> (SocketAddr, Arc<AtomicU16>) {
+    let reached = Arc::new(AtomicU16::new(0));
+    let counter = reached.clone();
+    let app = Router::new()
+        .route(
+            "/webhook/abc",
+            post(|| async { (StatusCode::FOUND, [("location", "/elsewhere")]) }),
+        )
+        .route(
+            "/elsewhere",
+            post(move || {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::OK
+                }
+            })
+            .get(|| async { StatusCode::OK }),
+        );
+    let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = socket.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(socket, app).await.unwrap();
+    });
+    (addr, reached)
+}
+
+fn some_request(url: &str) -> WebhookRequest {
+    let url = reqwest::Url::parse(url).unwrap();
+    webhook_request(
+        &url,
+        SECRET,
+        Loop::Reflect,
+        "eng",
+        "home.example",
+        &serde_json::json!({"waiting_for_the_agent": 1}),
+        chrono::Utc::now(),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_redirect_is_not_followed_and_counts_as_failed() {
+    let (addr, reached) = redirecting().await;
+    let failed = HttpPoster::default()
+        .post(some_request(&format!("http://{addr}/webhook/abc")))
+        .await
+        .unwrap_err();
+    assert_eq!(failed, "the receiver answered 302");
+    assert_eq!(reached.load(Ordering::SeqCst), 0, "not followed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_receiver_that_never_answers_times_out() {
+    assert_eq!(HttpPoster::default().timeout(), Duration::from_secs(10));
+    // Accepts the connection and never answers.
+    let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = socket.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((stream, _)) = socket.accept().await {
+            held.push(stream);
+        }
+    });
+    let began = std::time::Instant::now();
+    let failed = HttpPoster::with_timeout(Duration::from_millis(300))
+        .post(some_request(&format!("http://{addr}/webhook/abc")))
+        .await
+        .unwrap_err();
+    assert!(began.elapsed() < Duration::from_secs(5));
+    assert!(failed.starts_with("timed out"), "{failed}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_connection_names_its_kind() {
+    let failed = HttpPoster::default()
+        .post(some_request("http://127.0.0.1:1/webhook/s3cr3t-path"))
+        .await
+        .unwrap_err();
+    assert!(failed.starts_with("could not connect"), "{failed}");
+    assert!(failed.to_lowercase().contains("refused"), "{failed}");
+    assert!(!failed.contains("s3cr3t-path"), "{failed}");
+}
+
+#[test]
+fn debug_shows_only_the_scheme_and_host_of_the_url() {
+    let request = some_request("https://user:pw@hooks.example/webhook/s3cr3t?token=t0k3n");
+    let shown = format!("{request:?}");
+    assert!(shown.contains("https://hooks.example"), "{shown}");
+    for hidden in ["user", "pw@", "s3cr3t", "t0k3n", SECRET] {
+        assert!(!shown.contains(hidden), "{hidden} in {shown}");
+    }
 }

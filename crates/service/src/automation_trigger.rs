@@ -21,11 +21,18 @@
 //! - When a lease goes away and work is still due, at once (seen on the
 //!   [`LEASE_TICK`]); for evolve the threshold still applies.
 //!
+//! Reflect sends again whenever a look finds people still waiting (any
+//! event arms one), held only by the cap below; evolve sends again only on
+//! a new crossing, a release or a failed delivery.
+//!
 //! At most one delivery per domain and loop per [`RATE_LIMIT`], and that cap
 //! wins over everything above, a release included. A failed attempt is
-//! retried after each of [`RETRY_DELAYS`]; every attempt is logged, and the
-//! outcome is recorded with [`Engine::record_delivery`]. The body carries
-//! counts only, never content or paths, and the secret is never logged.
+//! retried after each of [`RETRY_DELAYS`], unless a run took the lease in
+//! the meantime; every attempt is logged, and the outcome is recorded with
+//! [`Engine::record_delivery`]. A delivery whose attempts all failed stays
+//! owed and is sent again, while the work is due, after the next of
+//! [`FAILED_DELIVERY_WAITS`]. The body carries counts only, never content
+//! or paths, and the secret is never logged.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -45,8 +52,8 @@ use crate::Engine;
 use crate::scope::Scope;
 
 /// How long after the first event a look runs, so what arrives in that
-/// window is sent as one.
-pub const PEOPLE_WINDOW: Duration = Duration::from_secs(60);
+/// window is sent as one, and the send still leaves within 60 s.
+pub const PEOPLE_WINDOW: Duration = Duration::from_secs(55);
 
 /// How long a domain's sources must be quiet before page updates alone are
 /// sent.
@@ -69,6 +76,17 @@ pub const RETRY_DELAYS: [Duration; 3] = [
     Duration::from_secs(90),
 ];
 
+/// The waits before a delivery that failed every attempt is sent again:
+/// one per failed delivery in a row, the last one repeating. A delivery
+/// that gets through starts the list over.
+pub const FAILED_DELIVERY_WAITS: [Duration; 5] = [
+    Duration::from_secs(5 * 60),
+    Duration::from_secs(10 * 60),
+    Duration::from_secs(20 * 60),
+    Duration::from_secs(40 * 60),
+    Duration::from_secs(60 * 60),
+];
+
 /// How long one attempt may take before it counts as failed.
 pub const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -86,7 +104,7 @@ const NO_SECRET: &str = "no webhook secret is set on this instance, so nothing i
 /// daemon; it does no work before its first window, so the start never
 /// waits on it, and the deliveries in flight are dropped on shutdown.
 pub async fn run_automation_triggers(engine: Arc<Engine>, shutdown: watch::Receiver<bool>) {
-    run_automation_triggers_with(engine, shutdown, Arc::new(HttpPoster)).await;
+    run_automation_triggers_with(engine, shutdown, Arc::new(HttpPoster::default())).await;
 }
 
 /// [`run_automation_triggers`] posting through `poster`: the daemon's posts
@@ -103,7 +121,7 @@ pub async fn run_automation_triggers_with(
     let mut evolve_tick = tokio::time::interval_at(start + EVOLVE_TICK, EVOLVE_TICK);
     evolve_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut triggers = Triggers::new(engine, poster);
-    let mut deliveries: JoinSet<(String, Loop)> = JoinSet::new();
+    let mut deliveries: JoinSet<Outcome> = JoinSet::new();
     let mut listening = true;
     loop {
         let wake = triggers.next_wake();
@@ -117,10 +135,14 @@ pub async fn run_automation_triggers_with(
             _ = lease_tick.tick() => triggers.lease_tick(&mut deliveries).await,
             _ = evolve_tick.tick() => triggers.evolve_tick(&mut deliveries).await,
             _ = sleep_until(wake), if wake.is_some() => triggers.due_looks(&mut deliveries).await,
-            Some(done) = deliveries.join_next() => {
-                if let Ok(key) = done {
-                    triggers.delivered(&key);
-                }
+            Some(done) = deliveries.join_next_with_id() => {
+                let (id, outcome) = match done {
+                    Ok((id, outcome)) => (id, outcome),
+                    // A delivery that panicked or was cut off counts as one
+                    // that failed, so its slot is never left in flight.
+                    Err(e) => (e.id(), Outcome::Broken),
+                };
+                triggers.delivered(id, outcome, Instant::now());
             }
         }
     }
@@ -159,6 +181,10 @@ struct Slot {
     urgent: bool,
     /// When the last delivery started.
     last_attempt: Option<Instant>,
+    /// Deliveries in a row that failed every attempt.
+    failures: usize,
+    /// No delivery before this, after a delivery that failed.
+    not_before: Option<Instant>,
     /// A delivery is running (its retries included).
     in_flight: bool,
     /// The count the last look saw: reflect's updates, evolve's
@@ -174,10 +200,25 @@ impl Slot {
     }
 }
 
+/// How a delivery ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    /// The receiver took it.
+    Sent,
+    /// Every attempt failed (or the delivery broke off).
+    Failed,
+    /// A runner took the lease before a retry: the release sends.
+    LeaseHeld,
+    /// The delivery task panicked or was cut off; counts as failed.
+    Broken,
+}
+
 struct Triggers {
     engine: Arc<Engine>,
     poster: Arc<dyn Poster>,
     slots: HashMap<(String, Loop), Slot>,
+    /// The domain and loop of each delivery in flight, by task id.
+    in_flight: HashMap<tokio::task::Id, (String, Loop)>,
     /// The domains with a webhook trigger, as the last lease tick read them.
     reflect_domains: Vec<String>,
     evolve_domains: Vec<String>,
@@ -191,6 +232,7 @@ impl Triggers {
             engine,
             poster,
             slots: HashMap::new(),
+            in_flight: HashMap::new(),
             reflect_domains: Vec::new(),
             evolve_domains: Vec::new(),
             warned: None,
@@ -238,7 +280,7 @@ impl Triggers {
     /// Read the trigger domains again, and send at once where a lease went
     /// away with work still due. A reflect domain seen for the first time
     /// gets its first look here.
-    async fn lease_tick(&mut self, deliveries: &mut JoinSet<(String, Loop)>) {
+    async fn lease_tick(&mut self, deliveries: &mut JoinSet<Outcome>) {
         if self.engine.webhook_target().is_none() {
             return;
         }
@@ -276,13 +318,13 @@ impl Triggers {
         }
     }
 
-    async fn evolve_tick(&mut self, deliveries: &mut JoinSet<(String, Loop)>) {
+    async fn evolve_tick(&mut self, deliveries: &mut JoinSet<Outcome>) {
         for domain in self.evolve_domains.clone() {
             self.look(&domain, Loop::Evolve, false, deliveries).await;
         }
     }
 
-    async fn due_looks(&mut self, deliveries: &mut JoinSet<(String, Loop)>) {
+    async fn due_looks(&mut self, deliveries: &mut JoinSet<Outcome>) {
         let now = Instant::now();
         let due: Vec<(String, Loop)> = self
             .slots
@@ -298,9 +340,35 @@ impl Triggers {
         }
     }
 
-    fn delivered(&mut self, key: &(String, Loop)) {
-        if let Some(slot) = self.slots.get_mut(key) {
-            slot.in_flight = false;
+    fn delivered(&mut self, id: tokio::task::Id, outcome: Outcome, now: Instant) {
+        let Some((domain, lp)) = self.in_flight.remove(&id) else {
+            return;
+        };
+        if outcome == Outcome::Broken {
+            self.engine.record_delivery(
+                &domain,
+                lp,
+                Err("the delivery stopped before it was sent".to_string()),
+            );
+        }
+        let slot = self.slot(&domain, lp);
+        slot.in_flight = false;
+        match outcome {
+            Outcome::Sent => {
+                slot.failures = 0;
+                slot.not_before = None;
+            }
+            Outcome::Failed | Outcome::Broken => {
+                // Still owed: sent again after a wait that grows with each
+                // delivery in a row that failed, if the work is still due.
+                let wait =
+                    FAILED_DELIVERY_WAITS[slot.failures.min(FAILED_DELIVERY_WAITS.len() - 1)];
+                slot.failures += 1;
+                slot.not_before = Some(now + wait);
+                slot.urgent = true;
+                slot.arm(now + wait);
+            }
+            Outcome::LeaseHeld => slot.after_lease = true,
         }
     }
 
@@ -310,7 +378,7 @@ impl Triggers {
         domain: &str,
         lp: Loop,
         urgent: bool,
-        deliveries: &mut JoinSet<(String, Loop)>,
+        deliveries: &mut JoinSet<Outcome>,
     ) {
         let Some(target) = self.engine.webhook_target() else {
             return;
@@ -401,15 +469,19 @@ impl Triggers {
         if !send {
             return;
         }
-        // A delivery in flight (its retries end well inside the limit) or
-        // one inside the limit holds this send back.
-        if let Some(last) = slot.last_attempt
-            && (slot.in_flight || now < last + RATE_LIMIT)
-        {
-            // The send is owed: the look the limit's end runs sends it
+        // A delivery in flight, the cap since the last one, or the wait
+        // after a failed one holds this send back.
+        let hold_until = slot
+            .last_attempt
+            .map(|last| last + RATE_LIMIT)
+            .into_iter()
+            .chain(slot.not_before)
+            .max();
+        if slot.in_flight || hold_until.is_some_and(|until| now < until) {
+            // The send is owed: the look at the hold's end sends it
             // whatever the quiet rule or the crossing says by then.
             slot.urgent = true;
-            slot.arm((last + RATE_LIMIT).max(now + RETRY_DELAYS[0]));
+            slot.arm(hold_until.unwrap_or(now).max(now + RETRY_DELAYS[0]));
             return;
         }
         slot.urgent = false;
@@ -424,7 +496,8 @@ impl Triggers {
             lp,
             counts,
         };
-        deliveries.spawn(send.run());
+        let task = deliveries.spawn(send.run());
+        self.in_flight.insert(task.id(), (domain.to_string(), lp));
     }
 }
 
@@ -442,7 +515,7 @@ fn usable_url(text: &str) -> Result<reqwest::Url, String> {
 }
 
 /// One webhook, ready to post: the bytes signed are the bytes sent.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WebhookRequest {
     /// Where it goes.
     pub url: reqwest::Url,
@@ -450,6 +523,29 @@ pub struct WebhookRequest {
     pub headers: Vec<(&'static str, String)>,
     /// `{event, domain, instance, counts, sent_at}`, serialized once.
     pub body: Vec<u8>,
+}
+
+/// Hand-written: the URL shows only its scheme and host (a path or a query
+/// often works as a bearer, and userinfo is a password), the headers only
+/// their names and the body only its length.
+impl std::fmt::Debug for WebhookRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<&str> = self.headers.iter().map(|(name, _)| *name).collect();
+        f.debug_struct("WebhookRequest")
+            .field("url", &url_origin(&self.url))
+            .field("headers", &names)
+            .field("body_bytes", &self.body.len())
+            .finish()
+    }
+}
+
+/// `scheme://host[:port]` of `url`, nothing more.
+pub fn url_origin(url: &reqwest::Url) -> String {
+    let host = url.host_str().unwrap_or("?");
+    match url.port() {
+        Some(port) => format!("{}://{host}:{port}", url.scheme()),
+        None => format!("{}://{host}", url.scheme()),
+    }
 }
 
 /// The webhook for `lp` on `domain`, signed with `secret` at `now`: the
@@ -495,23 +591,55 @@ pub trait Poster: Send + Sync {
 }
 
 /// The daemon's [`Poster`]: a POST through the client crystalline-remote
-/// builds (no redirects followed), at most [`ATTEMPT_TIMEOUT`] per attempt.
-pub struct HttpPoster;
+/// builds (no redirects followed, so a 3xx counts as failed), built once on
+/// the first post and reused, at most [`HttpPoster::timeout`] per attempt.
+pub struct HttpPoster {
+    client: tokio::sync::OnceCell<reqwest::Client>,
+    timeout: Duration,
+}
+
+impl Default for HttpPoster {
+    /// [`ATTEMPT_TIMEOUT`] per attempt.
+    fn default() -> HttpPoster {
+        HttpPoster::with_timeout(ATTEMPT_TIMEOUT)
+    }
+}
+
+impl HttpPoster {
+    /// A poster that gives each attempt `timeout`.
+    pub fn with_timeout(timeout: Duration) -> HttpPoster {
+        HttpPoster {
+            client: tokio::sync::OnceCell::new(),
+            timeout,
+        }
+    }
+
+    /// How long one attempt may take.
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    async fn client(&self) -> Result<&reqwest::Client, String> {
+        self.client
+            .get_or_try_init(|| async {
+                // The first build reads the system proxy settings, which is
+                // slow on macOS; it runs on a blocking thread once.
+                crystalline_remote::warm_http_client().await;
+                crystalline_remote::http_client().map_err(|e| e.to_string())
+            })
+            .await
+    }
+}
 
 #[async_trait::async_trait]
 impl Poster for HttpPoster {
     async fn post(&self, request: WebhookRequest) -> Result<(), String> {
-        crystalline_remote::warm_http_client().await;
-        let client = crystalline_remote::http_client().map_err(|e| e.to_string())?;
-        let mut builder = client.post(request.url).timeout(ATTEMPT_TIMEOUT);
+        let client = self.client().await?;
+        let mut builder = client.post(request.url).timeout(self.timeout);
         for (name, value) in request.headers {
             builder = builder.header(name, value);
         }
-        let answer = builder
-            .body(request.body)
-            .send()
-            .await
-            .map_err(|e| format!("the request failed: {}", e.without_url()))?;
+        let answer = builder.body(request.body).send().await.map_err(describe)?;
         let code = answer.status();
         if code.is_success() {
             Ok(())
@@ -519,6 +647,28 @@ impl Poster for HttpPoster {
             Err(format!("the receiver answered {}", code.as_u16()))
         }
     }
+}
+
+/// A failed request in words an operator can act on: its kind (timed out,
+/// could not connect, which covers a refused connection, a name that does
+/// not resolve and a TLS failure) and the innermost cause, which names a
+/// host at most, never the URL's path or query.
+fn describe(error: reqwest::Error) -> String {
+    let kind = if error.is_timeout() {
+        "timed out"
+    } else if error.is_connect() {
+        "could not connect"
+    } else {
+        "the request failed"
+    };
+    let mut innermost = None;
+    let mut cause = std::error::Error::source(&error);
+    while let Some(next) = cause {
+        innermost = Some(next.to_string());
+        cause = next.source();
+    }
+    let cause = innermost.unwrap_or_else(|| error.without_url().to_string());
+    format!("{kind}: {cause}")
 }
 
 /// One delivery: the first attempt and its retries.
@@ -533,7 +683,7 @@ struct Delivering {
 }
 
 impl Delivering {
-    async fn run(self) -> (String, Loop) {
+    async fn run(self) -> Outcome {
         let lp = self.lp;
         let domain = self.domain.clone();
         // The host only: a webhook path often works as a bearer.
@@ -542,6 +692,17 @@ impl Delivering {
         for attempt in 1..=attempts {
             if attempt > 1 {
                 tokio::time::sleep(RETRY_DELAYS[attempt - 2]).await;
+                // Never while a run holds the lease: the release sends if
+                // the work is still due.
+                if matches!(
+                    self.engine.automation_lease_fresh(&domain, lp).await,
+                    Ok(true)
+                ) {
+                    tracing::info!(
+                        "{lp} trigger for '{domain}': a run took the lease, so the retries stop"
+                    );
+                    return Outcome::LeaseHeld;
+                }
             }
             let now = Utc::now();
             let request = webhook_request(
@@ -560,7 +721,7 @@ impl Delivering {
                     );
                     let sent_at = now.to_rfc3339_opts(SecondsFormat::Secs, true);
                     self.engine.record_delivery(&domain, lp, Ok(sent_at));
-                    return (domain, lp);
+                    return Outcome::Sent;
                 }
                 Err(why) => {
                     tracing::warn!(
@@ -570,6 +731,6 @@ impl Delivering {
                 }
             }
         }
-        (domain, lp)
+        Outcome::Failed
     }
 }
