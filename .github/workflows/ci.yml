@@ -895,10 +895,11 @@ jobs:
       # fail without failing the job (continue-on-error), because a new
       # advisory has nothing to do with the merged tree and would only turn
       # main red; the report step below turns it into a warning instead.
+      # The registry request retries (three tries) so one timeout is not an advisory.
       - name: pnpm audit --prod
         id: audit
         continue-on-error: ${{ github.event_name == 'push' }}
-        run: pnpm audit --prod
+        run: '"$GITHUB_WORKSPACE"/scripts/ci/retry.sh 3 pnpm audit --prod'
 
       # Runs on both: failure() on a pull request (the step failed the job),
       # the outcome on main (continue-on-error left the job green). Writes the
