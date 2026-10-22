@@ -56,6 +56,7 @@ impl Engine {
         // exactly what the routing block reads for this virtual domain, so
         // refresh the cache the sync `routing_text` serves.
         self.refresh_routing_cache().await;
+        self.ask_rename_after_manifest_write(domain).await;
 
         Ok(json!({ "domain": domain, "manifest": "MANIFEST.md", "created": true }))
     }
@@ -351,6 +352,7 @@ impl Engine {
             .any(|change| is_manifest_path(&change.path))
         {
             self.refresh_routing_cache().await;
+            self.ask_rename_after_manifest_write(domain).await;
         }
         self.announce_paths(domain, announced, None);
         Ok(json!({

@@ -3808,3 +3808,71 @@ both_backends!(
     a_write_respells_the_old_name_after_the_rename_is_finished,
     a_write_respells_the_old_name_after_the_rename_is_finished_body
 );
+
+/// A scan that fails before the pull counts the question as one that may
+/// have been respelled here: it stays open, whatever the pull brings.
+async fn a_failed_scan_before_a_pull_keeps_the_question_open_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    engine.fail_next_rename_scan();
+    let before = engine.rename_questions_already_clean().await;
+    assert!(before.contains("eng"), "fail closed: {before:?}");
+
+    std::fs::write(
+        m.root.join("ops/pager.md"),
+        engram(
+            "Pager",
+            "pager",
+            "See [[platform:alpha]], then crystalline://platform/alpha, then [[platform:alpha]].",
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        m.root.join("ops/reflections/b.md"),
+        OPS_PAGE.replace("[[eng:", "[[platform:"),
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+    engine.adopt_domain_names().await.unwrap();
+    engine.settle_rename_questions_after_pull(&before).await;
+    assert!(engine.rename_question("eng").is_some());
+}
+both_backends!(
+    a_failed_scan_before_a_pull_keeps_the_question_open,
+    a_failed_scan_before_a_pull_keeps_the_question_open_body
+);
+
+/// `doctor --fix` respells local spellings, but never the old name of a
+/// domain whose rename question is open or answered "keep", and `doctor`
+/// does not list those as spellings to fix.
+async fn doctor_fix_leaves_a_held_old_name_alone_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    let held = |report: &serde_json::Value| {
+        report["local_spellings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row.to_string().contains("\"eng\""))
+    };
+
+    let report = engine.name_report().await.unwrap();
+    assert!(!held(&report), "open: {report}");
+    engine.fix_local_spellings().await.unwrap();
+    let pager = std::fs::read_to_string(m.root.join("ops/pager.md")).unwrap();
+    assert!(pager.contains("See [[eng:alpha]]"), "{pager}");
+
+    engine
+        .keep_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .unwrap();
+    let report = engine.name_report().await.unwrap();
+    assert!(!held(&report), "kept: {report}");
+    engine.fix_local_spellings().await.unwrap();
+    let pager = std::fs::read_to_string(m.root.join("ops/pager.md")).unwrap();
+    assert!(pager.contains("See [[eng:alpha]]"), "{pager}");
+}
+both_backends!(
+    doctor_fix_leaves_a_held_old_name_alone,
+    doctor_fix_leaves_a_held_old_name_alone_body
+);

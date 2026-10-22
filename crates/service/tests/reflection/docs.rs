@@ -1710,9 +1710,11 @@ async fn a_local_rename_keeps_the_sources_of_the_renamed_domain_current() {
     );
 }
 
-/// A canonical name changed by editing the MANIFEST, outside a rename,
-/// leaves the stored name resolving nowhere: its sources read unavailable,
-/// never missing, and stay on the page.
+/// A canonical name changed by editing the MANIFEST on disk, outside a
+/// rename and before any adoption lines it up, leaves the stored name
+/// resolving nowhere: its sources read unavailable, never missing, and stay
+/// on the page. (A MANIFEST write through Crystalline lines the name up in
+/// that write, keeping the old canonical name as an alias.)
 #[tokio::test]
 async fn a_canonical_name_edited_in_the_manifest_leaves_sources_unavailable() {
     let fx = with_ops(
@@ -1749,10 +1751,13 @@ async fn a_canonical_name_edited_in_the_manifest_leaves_sources_unavailable() {
         "the canonical name: {}",
         file(&fx, "a.md")
     );
-    fx.engine
-        .edit_engram(&rename_in_manifest("ops-team", "ops-crew"))
-        .await
-        .unwrap();
+    let manifest_path = fx.tmp.path().join("ops/MANIFEST.md");
+    let on_disk = std::fs::read_to_string(&manifest_path).unwrap();
+    std::fs::write(
+        &manifest_path,
+        on_disk.replacen("domain_name: ops-team\n", "domain_name: ops-crew\n", 1),
+    )
+    .unwrap();
     fx.engine.sync(None).await.unwrap();
     let doc = fx
         .engine

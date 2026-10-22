@@ -416,6 +416,10 @@ impl Engine {
                 self.heal_reflection_rows_after(domain, path).await;
             }
         }
+        // A new `domain_name` asks its question in the write that made it.
+        if path == MANIFEST_PATH {
+            self.ask_rename_after_manifest_write(domain).await;
+        }
     }
 
     /// Whether a batch of changed relative paths holds a domain's MANIFEST.

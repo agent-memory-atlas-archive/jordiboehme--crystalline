@@ -3,7 +3,7 @@
 //! or kept (the question is closed and the alias stays), and the question
 //! that closes on its own once no link here uses an old name any more.
 
-use crystalline_core::config::{RenameAnswer, RenameQuestion};
+use crystalline_core::config::{NameOrigin, RenameAnswer, RenameQuestion};
 use crystalline_core::relink::BodyGate;
 
 use super::rename_domain::{
@@ -241,6 +241,11 @@ impl Engine {
 
     /// The old spellings of every domain with a rename question, split by
     /// its answer: `(open, kept)`. A finished question holds nothing.
+    ///
+    /// A domain named on purpose whose MANIFEST declares a name other than
+    /// the one this machine adopted, a change on disk the next adoption will
+    /// ask about, counts as open already: until the question exists, nothing
+    /// respells the name it would ask about.
     pub(super) fn rename_spellings_by_answer(
         &self,
         table: &crystalline_core::names::NameTable,
@@ -248,6 +253,21 @@ impl Engine {
         let mut asked = Vec::new();
         let mut kept = Vec::new();
         for (local, entry) in &self.config.read().unwrap().domains {
+            let declared = table.canonical(local).unwrap_or(local);
+            let pending = match (&entry.canonical_seen, entry.name_origin) {
+                (Some(seen), origin) if seen != declared && origin != Some(NameOrigin::Derived) => {
+                    Some(RenameQuestion {
+                        from: seen.clone(),
+                        to: declared.to_string(),
+                        seen_at: String::new(),
+                        answered: None,
+                    })
+                }
+                _ => None,
+            };
+            if let Some(question) = &pending {
+                asked.extend(respell_spellings(local, entry, question, table).0);
+            }
             let Some(question) = &entry.rename_question else {
                 continue;
             };
@@ -284,8 +304,8 @@ impl Engine {
     /// one the pull's own MANIFEST change created included, and never one
     /// whose links were already respelled here (by a person's edit or an
     /// agent's) before it. Empty, and no scan, while no question is open. A
-    /// scan that fails counts the domain as still spelled, so the pull may
-    /// settle it, as it does at the settle.
+    /// scan that fails counts the question as clean already, so it stays
+    /// open: a pull closes only what it can tell its own files settled.
     pub async fn rename_questions_already_clean(&self) -> HashSet<String> {
         let open = self.open_rename_questions();
         let mut clean = HashSet::new();
@@ -295,10 +315,12 @@ impl Engine {
         let table = self.name_table_now().await;
         for (local, entry, question) in open {
             let (_, spellings) = respell_spellings(&local, &entry, &question, &table);
+            // Fail closed: a scan that fails cannot tell, so the pull leaves
+            // the question to a person.
             if !self
                 .spells_any(&spellings, &question.to)
                 .await
-                .unwrap_or(true)
+                .unwrap_or(false)
             {
                 clean.insert(local);
             }
@@ -351,6 +373,13 @@ impl Engine {
     /// whose pages cannot be, counts as still spelling them, so nothing is
     /// closed on a guess.
     async fn spells_any(&self, spellings: &[String], to: &str) -> Result<bool> {
+        #[cfg(any(test, feature = "testing"))]
+        if self
+            .fail_next_rename_scan
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(EngineError::Invalid("the scan failed (test seam)".into()));
+        }
         if spellings.is_empty() {
             return Ok(false);
         }

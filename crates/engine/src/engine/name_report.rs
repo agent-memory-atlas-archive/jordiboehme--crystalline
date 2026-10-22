@@ -261,10 +261,13 @@ impl Engine {
         table: &NameTable,
         busy: &HashSet<String>,
     ) -> Result<Vec<(String, String, BTreeMap<String, (String, usize)>, bool)>> {
+        // The old names a rename question holds (open, or answered keep) are
+        // a person's to respell, never doctor's.
+        let held = self.rename_held_spellings(table);
         let spellings: Vec<String> = table
             .spellings()
             .into_iter()
-            .filter(|(spelling, _)| table.normalize(spelling).is_some())
+            .filter(|(spelling, _)| table.normalize(spelling).is_some() && !held.contains(spelling))
             .map(|(spelling, _)| spelling)
             .collect();
         if spellings.is_empty() {
@@ -279,7 +282,7 @@ impl Engine {
             let Ok(Some((_, _, text))) = self.base_text(&domain, &path).await else {
                 continue;
             };
-            let counts = count_respellings(&text, table);
+            let counts = count_respellings(&text, table, &held);
             if !counts.is_empty() {
                 let in_draft = self.draft_holds_fix(&domain, &path, table, busy).await;
                 out.push((domain, path, counts, in_draft));
@@ -323,7 +326,9 @@ impl Engine {
             return false;
         };
         match view.text_at(&source, &desc).await {
-            Ok(Some(text)) => respell_local(&text, table).1 == 0,
+            Ok(Some(text)) => {
+                respell_local(&text, table, &self.rename_held_spellings(table)).1 == 0
+            }
             _ => false,
         }
     }
@@ -345,7 +350,8 @@ impl Engine {
         let Some(text) = view.text_at(&source, &desc).await? else {
             return Ok(0);
         };
-        let count = respell_local(&text, table).1;
+        let held = self.rename_held_spellings(table);
+        let count = respell_local(&text, table, &held).1;
         if count == 0 {
             return Ok(0);
         }
@@ -358,7 +364,7 @@ impl Engine {
             &actor,
             None,
             scope,
-            |current| Ok(respell_local(current, table).0),
+            |current| Ok(respell_local(current, table, &held).0),
         )
         .await?;
         Ok(count)
@@ -367,17 +373,27 @@ impl Engine {
 
 /// `text` with every domain spelling the table would rewrite replaced by its
 /// canonical name, and how many were.
-fn respell_local(text: &str, table: &NameTable) -> (String, usize) {
+fn respell_local(text: &str, table: &NameTable, held: &HashSet<String>) -> (String, usize) {
     crystalline_core::relink::respell_domains(text, &|domain: &str| {
+        if held.contains(domain) {
+            return None;
+        }
         table.normalize(domain).map(str::to_string)
     })
 }
 
 /// How many times each rewritable spelling occurs in `text`'s links, with
 /// its canonical name.
-fn count_respellings(text: &str, table: &NameTable) -> BTreeMap<String, (String, usize)> {
+fn count_respellings(
+    text: &str,
+    table: &NameTable,
+    held: &HashSet<String>,
+) -> BTreeMap<String, (String, usize)> {
     let counts: RefCell<BTreeMap<String, (String, usize)>> = RefCell::new(BTreeMap::new());
     crystalline_core::relink::respell_domains(text, &|domain: &str| {
+        if held.contains(domain) {
+            return None;
+        }
         let canonical = table.normalize(domain)?;
         counts
             .borrow_mut()

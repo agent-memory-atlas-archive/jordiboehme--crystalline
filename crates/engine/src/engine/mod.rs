@@ -998,6 +998,10 @@ pub struct Engine {
     detection_walks: std::sync::atomic::AtomicU64,
     #[cfg(any(test, feature = "testing"))]
     fail_next_source_edit: std::sync::atomic::AtomicBool,
+    // When armed, the next rename-question scan fails once. See
+    // `Engine::fail_next_rename_scan`.
+    #[cfg(any(test, feature = "testing"))]
+    fail_next_rename_scan: std::sync::atomic::AtomicBool,
     // Beside it: when armed, the next swap a move's rewrite of a virtual
     // linker makes loses as if another writer had won, once, and is retried.
     // See `Engine::lose_next_relink_swap`.
@@ -2353,6 +2357,8 @@ impl Engine {
             #[cfg(any(test, feature = "testing"))]
             fail_next_source_edit: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "testing"))]
+            fail_next_rename_scan: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(any(test, feature = "testing"))]
             lose_next_relink_swap: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "testing"))]
             hold_next_draft_edit: std::sync::atomic::AtomicU64::new(0),
@@ -2474,6 +2480,15 @@ impl Engine {
     #[cfg(any(test, feature = "testing"))]
     pub fn fail_next_source_edit(&self) {
         self.fail_next_source_edit
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Make the next scan for a rename question's old spellings fail, once,
+    /// as a store error would. Nothing in the daemon, the CLI or the MCP
+    /// surface calls this.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn fail_next_rename_scan(&self) {
+        self.fail_next_rename_scan
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 

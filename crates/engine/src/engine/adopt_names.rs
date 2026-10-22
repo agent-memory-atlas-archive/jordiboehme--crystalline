@@ -284,7 +284,7 @@ impl Engine {
                 self.refresh_names().await;
             }
             let table = self.name_table_now().await;
-            self.record_canonicals(&table, &busy, &mut report)?
+            self.record_canonicals(&table, &busy, &mut report, None)?
         };
         #[cfg(any(test, feature = "testing"))]
         {
@@ -401,6 +401,42 @@ impl Engine {
         }
     }
 
+    /// After a write landed `domain`'s MANIFEST: record what its new
+    /// `domain_name` means for this machine in that same write, as the next
+    /// adoption would (the alias, `canonical_seen`, and the rename question
+    /// for a domain named on purpose), so no later write respells the old
+    /// name before the question exists. A domain whose name is derived is
+    /// renamed by the next adoption, as before; nothing is planned here.
+    ///
+    /// Never waits: the write that calls this may hold a write ticket a
+    /// running adoption's rename waits for, so while an adoption or a domain
+    /// change is under way this leaves it to that one, and the write funnel
+    /// holds the old name meanwhile (see [`Engine::rename_held_spellings`]).
+    pub(super) async fn ask_rename_after_manifest_write(&self, domain: &str) {
+        if self.read_only || self.config_path.is_none() || !self.holds_state_dir() {
+            return;
+        }
+        if !matches!(self.off_machine().await, Ok(None)) {
+            return;
+        }
+        let Ok(_adopting) = self.adoption_lock.try_lock() else {
+            return;
+        };
+        let Ok(_admin) = self.domain_admin.try_lock() else {
+            return;
+        };
+        let busy: HashSet<String> = self.names_being_renamed().into_iter().collect();
+        let table = self.name_table_now().await;
+        let mut report = Vec::new();
+        if let Err(e) = self.record_canonicals(&table, &busy, &mut report, Some(domain)) {
+            tracing::warn!(
+                domain,
+                "recording the name the MANIFEST of '{domain}' declares failed; the next sync \
+                 tries again: {e}"
+            );
+        }
+    }
+
     /// What a daemon or an embedded server runs once its first sync has
     /// returned. The names are lined up with the MANIFESTs first (the one-time
     /// catch-up for a configuration from before 0.20.0, and any `domain_name`
@@ -481,13 +517,14 @@ impl Engine {
         table: &NameTable,
         busy: &HashSet<String>,
         report: &mut Vec<Value>,
+        only: Option<&str>,
     ) -> Result<Vec<(String, String)>> {
         let mut planned = Vec::new();
         let mut file_guard = self.file_config.write().unwrap();
         let mut file = self.adoption_file_config(&file_guard)?;
         let mut changed = false;
         for (name, entry) in file.domains.iter_mut() {
-            if self.adoption_skips(name, busy) {
+            if self.adoption_skips(name, busy) || only.is_some_and(|only| only != name) {
                 continue;
             }
             let canonical = table.canonical(name).unwrap_or(name).to_string();

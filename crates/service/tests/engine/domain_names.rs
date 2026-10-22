@@ -2227,3 +2227,88 @@ async fn an_answered_question_is_told_again_when_a_new_one_comes() {
         .expect("the new question is told in the same session");
     assert!(line.contains("to core"), "{line}");
 }
+
+/// What `domain`'s engram `permalink` holds as stored.
+async fn stored_content(engine: &Engine, domain: &str, permalink: &str) -> String {
+    read(engine, domain, permalink).await["content"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// A MANIFEST write that changes an explicit domain's `domain_name` asks the
+/// rename question in that same write, with no sync and no adoption after
+/// it, so no later write respells the old name before the question exists.
+#[tokio::test]
+async fn a_manifest_write_that_renames_asks_in_the_same_write() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (engine, _root) = adopted_explicit_eng(tmp.path()).await;
+
+    engine
+        .edit_engram(&replace_manifest_name("eng", "eng", "platform"))
+        .await
+        .unwrap();
+    let question = engine
+        .rename_question("eng")
+        .expect("the write asked the question");
+    assert_eq!(
+        (question.from.as_str(), question.to.as_str()),
+        ("eng", "platform")
+    );
+
+    engine
+        .write_engram(&write_params("eng", "Later", "See [[eng:note]]."))
+        .await
+        .unwrap();
+    let later = stored_content(&engine, "eng", "later").await;
+    assert!(later.contains("See [[eng:note]]."), "{later}");
+}
+
+/// The same for a virtual domain's MANIFEST engram.
+#[tokio::test]
+async fn a_virtual_manifest_write_that_renames_asks_in_the_same_write() {
+    let tmp = tempfile::tempdir().unwrap();
+    let engine = adopting_engine(
+        memory_store().await,
+        tmp.path(),
+        vec![(
+            "scratch",
+            DomainEntry::virtual_domain().with_name_origin(NameOrigin::Explicit),
+        )],
+    );
+    engine.domain_add_virtual("scratch").await.unwrap();
+    sync_and_adopt(&engine).await;
+    assert_eq!(
+        saved(tmp.path()).domains["scratch"]
+            .canonical_seen
+            .as_deref(),
+        Some("scratch")
+    );
+
+    engine
+        .edit_engram(&replace_manifest_name("scratch", "scratch", "notes"))
+        .await
+        .unwrap();
+    let question = engine
+        .rename_question("scratch")
+        .expect("the write asked the question");
+    assert_eq!(question.to, "notes");
+}
+
+/// A file domain whose MANIFEST changed on disk waits for the watch sync's
+/// adoption to ask. Until then a write keeps the old name as written too.
+#[tokio::test]
+async fn a_name_changed_on_disk_is_held_until_the_adoption_asks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (engine, root) = adopted_explicit_eng(tmp.path()).await;
+    declare(&root, "platform");
+    engine.sync(None).await.unwrap();
+    assert_eq!(engine.rename_question("eng"), None, "not adopted yet");
+
+    engine
+        .write_engram(&write_params("eng", "Meanwhile", "See [[eng:note]]."))
+        .await
+        .unwrap();
+    let meanwhile = stored_content(&engine, "eng", "meanwhile").await;
+    assert!(meanwhile.contains("See [[eng:note]]."), "{meanwhile}");
+}
