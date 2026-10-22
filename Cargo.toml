@@ -71,6 +71,9 @@ pgvector = { version = "0.4.2", default-features = false, features = ["sqlx"] }
 notify = "8.2.0"
 interprocess = "2.4.6"
 sha2 = "0.11.1"
+# The webhook signature (`crystalline_core::automation::webhook_signature`):
+# HMAC-SHA256 over the same sha2 line.
+hmac = "0.13.0"
 chrono = "0.4.45"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

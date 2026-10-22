@@ -1014,6 +1014,12 @@ pub struct Engine {
     // read to the next day. See `Engine::set_automation_now`.
     #[cfg(any(test, feature = "testing"))]
     automation_now: std::sync::Mutex<Option<DateTime<FixedOffset>>>,
+    // What each loop's trigger webhook last did on each domain, as the
+    // daemon's trigger task records it. Kept in memory: a restart forgets
+    // it, and the next send writes it again. See `Engine::record_delivery`.
+    automation_deliveries: std::sync::Mutex<
+        HashMap<(String, crystalline_core::automation::Loop), automation::DeliveryRecord>,
+    >,
     // A seam that is a gate rather than a stopwatch: when armed, the next move
     // or delete of a Reflection signals `entered` after its live-room screen,
     // then waits for `release` before it takes the page lock. See
@@ -2352,6 +2358,7 @@ impl Engine {
             hold_next_draft_edit: std::sync::atomic::AtomicU64::new(0),
             #[cfg(any(test, feature = "testing"))]
             automation_now: std::sync::Mutex::new(None),
+            automation_deliveries: std::sync::Mutex::new(HashMap::new()),
             #[cfg(any(test, feature = "testing"))]
             hold_next_room_screen: std::sync::Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
@@ -7128,6 +7135,7 @@ mod asset_home;
 mod automation;
 pub use asset_home::{ASSET_EXISTS, MOVE_ONTO_A_FILE};
 pub(crate) use asset_home::{AssetHome, ReplaceRule, WrittenAsset};
+pub use automation::{Delivery, WebhookTarget};
 mod attachments;
 mod close_folders;
 pub use close_folders::FolderProbe;

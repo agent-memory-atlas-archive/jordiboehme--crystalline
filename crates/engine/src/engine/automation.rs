@@ -123,7 +123,9 @@ fn running_json(lease: &AutomationLease) -> Value {
 impl Engine {
     /// Whether `lp` is due on each of `domains`, or on every domain `scope`
     /// may run it on when none are named: `{loop, domains: [{domain, loop,
-    /// due, counts, left_for_person, running, runs_on, last_run}]}`.
+    /// due, counts, left_for_person, running, runs_on, reason, last_run,
+    /// delivery}]}`; `delivery` ([`Delivery`]) is null unless the MANIFEST
+    /// turns the loop's webhook trigger on.
     ///
     /// Reflect counts the queue a headless run works (threads waiting for
     /// the agent, feedback, page updates; no update of a page open in a live
@@ -871,6 +873,13 @@ impl Engine {
             }),
         };
         let is_due = running.is_none() && due.as_ref().is_some_and(|d| !d.items.is_empty());
+        // The trigger's delivery only where the MANIFEST turns it on.
+        let delivery = if self.loop_trigger(domain, lp).await == crystalline_core::Trigger::Webhook
+        {
+            json!(self.automation_delivery(domain, lp))
+        } else {
+            Value::Null
+        };
         Ok(json!({
             "domain": domain,
             "loop": lp,
@@ -887,6 +896,7 @@ impl Engine {
                 _ => None,
             },
             "last_run": last_run.as_ref().map(run_json),
+            "delivery": delivery,
         }))
     }
 
@@ -928,6 +938,166 @@ impl Engine {
                 },
             })
             .collect())
+    }
+}
+
+/// What one loop's trigger webhook last did on one domain, for the status
+/// answer and the policies card.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Delivery {
+    /// When the last webhook was taken by its receiver, RFC 3339.
+    pub last_sent: Option<String>,
+    /// Why the last delivery failed; cleared by the next one that works.
+    pub last_error: Option<String>,
+    /// Whether this instance has a webhook URL and a secret to sign with.
+    pub configured: bool,
+}
+
+/// What the engine keeps of a [`Delivery`]: everything but `configured`,
+/// which is read from the config each time.
+#[derive(Debug, Clone, Default)]
+pub(super) struct DeliveryRecord {
+    last_sent: Option<String>,
+    last_error: Option<String>,
+}
+
+/// The instance's trigger webhook as the settings give it:
+/// `automation.webhook.url` and `automation.webhook.secret`, the
+/// environment overlay applied.
+#[derive(Clone)]
+pub struct WebhookTarget {
+    /// The address, as set; the sender parses it before it posts.
+    pub url: String,
+    /// The signing secret, when one is set.
+    pub secret: Option<String>,
+}
+
+/// Hand-written so the secret cannot reach a log line.
+impl std::fmt::Debug for WebhookTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebhookTarget")
+            .field("url", &self.url)
+            .field("secret", &self.secret.as_ref().map(|_| "(set)"))
+            .finish()
+    }
+}
+
+impl Engine {
+    /// The instance's trigger webhook, or `None` when no URL is set.
+    pub fn webhook_target(&self) -> Option<WebhookTarget> {
+        let config = self.config.read().unwrap();
+        let webhook = config.automation.as_ref()?.webhook.as_ref()?;
+        let url = webhook
+            .url
+            .as_deref()
+            .map(str::trim)
+            .filter(|u| !u.is_empty())?;
+        Some(WebhookTarget {
+            url: url.to_string(),
+            secret: webhook
+                .secret
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+        })
+    }
+
+    /// How many mechanical findings make the evolve trigger send
+    /// (`automation.evolve_threshold`).
+    pub fn evolve_threshold(&self) -> u64 {
+        self.config.read().unwrap().automation_evolve_threshold()
+    }
+
+    /// The trigger the MANIFEST of `domain` sets for `lp`; off when it sets
+    /// none or the MANIFEST cannot be read. A virtual domain's MANIFEST is
+    /// read from the database.
+    pub async fn loop_trigger(&self, domain: &str, lp: Loop) -> crystalline_core::Trigger {
+        let Ok(source) = self.manifest_markdown(domain).await else {
+            return crystalline_core::Trigger::Off;
+        };
+        let Ok(engram) = parse_engram(&source) else {
+            return crystalline_core::Trigger::Off;
+        };
+        Manifest::from_engram(&engram, &source).trigger(lp)
+    }
+
+    /// Every registered domain whose MANIFEST sets `<lp>_trigger: webhook`,
+    /// sorted.
+    pub async fn webhook_domains(&self, lp: Loop) -> Vec<String> {
+        let mut names = self.known_domain_names();
+        names.sort();
+        names.dedup();
+        let mut out = Vec::new();
+        for name in names {
+            if self.loop_trigger(&name, lp).await == crystalline_core::Trigger::Webhook {
+                out.push(name);
+            }
+        }
+        out
+    }
+
+    /// Whether a fresh lease of `lp` is held on `domain`: one read of the
+    /// lease row, without the work a status computes.
+    pub async fn automation_lease_fresh(&self, domain: &str, lp: Loop) -> Result<bool> {
+        let store = self.store.lock().await;
+        let Some(id) = store.domain_id(domain).await? else {
+            return Ok(false);
+        };
+        let lease = store.automation_lease(id, lp.as_str()).await?;
+        drop(store);
+        let (_, stale_before) = self.automation_window();
+        Ok(lease.is_some_and(|lease| lease.renewed_at.as_str() >= stale_before.as_str()))
+    }
+
+    /// The name this instance shows people: the label its host locks carry,
+    /// else the one it was given, else its id.
+    pub fn instance_name(&self) -> String {
+        if let Some(label) = self.resolved_label.lock().unwrap().clone()
+            && !label.is_empty()
+        {
+            return label;
+        }
+        if !self.label.is_empty() {
+            return self.label.clone();
+        }
+        self.instance_id.clone()
+    }
+
+    /// What the trigger webhook of `lp` last did on `domain`.
+    pub fn automation_delivery(&self, domain: &str, lp: Loop) -> Delivery {
+        let configured = self.webhook_target().is_some_and(|t| t.secret.is_some());
+        let record = self
+            .automation_deliveries
+            .lock()
+            .unwrap()
+            .get(&(domain.to_string(), lp))
+            .cloned()
+            .unwrap_or_default();
+        Delivery {
+            last_sent: record.last_sent,
+            last_error: record.last_error,
+            configured,
+        }
+    }
+
+    /// Record how a delivery of the trigger webhook of `lp` on `domain`
+    /// ended: `Ok` with the time its receiver took it, which clears the last
+    /// error, or `Err` with why it failed, which keeps the last time sent.
+    pub fn record_delivery(
+        &self,
+        domain: &str,
+        lp: Loop,
+        outcome: std::result::Result<String, String>,
+    ) {
+        let mut deliveries = self.automation_deliveries.lock().unwrap();
+        let record = deliveries.entry((domain.to_string(), lp)).or_default();
+        match outcome {
+            Ok(sent_at) => {
+                record.last_sent = Some(sent_at);
+                record.last_error = None;
+            }
+            Err(error) => record.last_error = Some(error),
+        }
     }
 }
 

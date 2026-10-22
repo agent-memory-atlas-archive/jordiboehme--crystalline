@@ -806,6 +806,18 @@ pub async fn run_serve(
         });
     }
 
+    // The loop triggers: a signed webhook to `automation.webhook.url` when
+    // loop work waits on a domain whose MANIFEST turns its trigger on. Idle
+    // without a URL; it does no work before its first window, so the start
+    // never waits on it.
+    {
+        let e = engine.clone();
+        let rx = shared.watch();
+        tokio::spawn(async move {
+            crate::automation_trigger::run_automation_triggers(e, rx).await;
+        });
+    }
+
     // The source poller: each connected server's routing model and
     // maintenance status, asked through their etags every SOURCE_POLL, and a
     // cheap look at sources.json and config.yaml every SOURCE_LOOK. A no-op

@@ -124,6 +124,27 @@ pub fn cap_summary(text: &str, max: usize) -> &str {
     &text[..end]
 }
 
+/// The `X-Crystalline-Signature` value of a trigger webhook:
+/// `sha256=<hex>`, the lowercase hex HMAC-SHA256 under `secret` of
+/// `timestamp`, a dot and `body`. The timestamp is the one the
+/// `X-Crystalline-Timestamp` header carries, so a receiver that checks its
+/// age refuses a replay.
+pub fn webhook_signature(secret: &[u8], timestamp: &str, body: &[u8]) -> String {
+    use hmac::{Hmac, KeyInit, Mac};
+    let mut mac =
+        Hmac::<sha2::Sha256>::new_from_slice(secret).expect("HMAC takes a key of any length");
+    mac.update(timestamp.as_bytes());
+    mac.update(b".");
+    mac.update(body);
+    let code = mac.finalize().into_bytes();
+    let mut out = String::with_capacity(7 + code.len() * 2);
+    out.push_str("sha256=");
+    for byte in code {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
 /// The reflect loop's shipped prompt, with `{domain}` and `{max_items}` to
 /// fill in.
 const REFLECT_PROMPT: &str = include_str!("automation/reflect-prompt.md");

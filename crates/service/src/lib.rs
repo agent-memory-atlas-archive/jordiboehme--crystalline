@@ -10,6 +10,7 @@
 //! commands and the CLI data commands all funnel through that one engine.
 
 pub(crate) mod automation_ctl;
+pub mod automation_trigger;
 pub mod client;
 pub mod control;
 pub mod daemon;

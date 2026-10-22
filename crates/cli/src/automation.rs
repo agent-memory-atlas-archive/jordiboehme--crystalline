@@ -220,6 +220,21 @@ fn any_due(answer: &Value) -> bool {
     domains_of(answer).iter().any(|d| d["due"] == true)
 }
 
+/// The trigger webhook's state, when the MANIFEST turns it on.
+fn delivery_line(delivery: &Value) -> Option<String> {
+    let delivery = delivery.as_object()?;
+    if delivery.get("configured") != Some(&Value::Bool(true)) {
+        return Some("trigger: no webhook URL and secret are set on this instance".to_string());
+    }
+    if let Some(error) = delivery.get("last_error").and_then(Value::as_str) {
+        return Some(format!("trigger: last delivery failed: {error}"));
+    }
+    Some(match delivery.get("last_sent").and_then(Value::as_str) {
+        Some(at) => format!("trigger: last sent {at}"),
+        None => "trigger: nothing sent yet".to_string(),
+    })
+}
+
 fn count_line(counts: &Value) -> String {
     let Some(map) = counts.as_object() else {
         return String::new();
@@ -264,6 +279,9 @@ fn print_status(answer: &Value) {
         if left > 0 {
             println!("  left for a person: {left}");
         }
+        if let Some(line) = delivery_line(&d["delivery"]) {
+            println!("  {line}");
+        }
         if let Some(run) = d["last_run"].as_object() {
             println!(
                 "  last run: {} at {}, {} done",
@@ -272,5 +290,31 @@ fn print_status(answer: &Value) {
                 run.get("done").and_then(Value::as_u64).unwrap_or(0),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::delivery_line;
+    use serde_json::json;
+
+    #[test]
+    fn the_delivery_line_says_what_the_trigger_did() {
+        assert_eq!(delivery_line(&json!(null)), None);
+        assert_eq!(
+            delivery_line(&json!({"configured": false, "last_sent": null, "last_error": null}))
+                .as_deref(),
+            Some("trigger: no webhook URL and secret are set on this instance")
+        );
+        assert_eq!(
+            delivery_line(&json!({"configured": true, "last_sent": "2026-10-22T08:00:00Z", "last_error": "the receiver answered 500"}))
+                .as_deref(),
+            Some("trigger: last delivery failed: the receiver answered 500")
+        );
+        assert_eq!(
+            delivery_line(&json!({"configured": true, "last_sent": "2026-10-22T08:00:00Z", "last_error": null}))
+                .as_deref(),
+            Some("trigger: last sent 2026-10-22T08:00:00Z")
+        );
     }
 }

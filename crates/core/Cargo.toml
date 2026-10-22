@@ -26,6 +26,7 @@ globset = { workspace = true }
 uuid = { workspace = true }
 url = { workspace = true }
 sha2 = { workspace = true }
+hmac = { workspace = true }
 anyhow = { workspace = true }
 whoami = { workspace = true }
 
