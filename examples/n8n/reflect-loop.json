@@ -3,7 +3,7 @@
   "nodes": [
     {
       "parameters": {
-        "content": "## Crystalline reflect loop\n\nRuns the reflect loop of one domain when something is due. See docs/automation.md in the Crystalline repository.\n\n1. Create a Bearer Auth credential **Crystalline runner token** with the `cmt_` token of an agent account that may curate the domain's Reflection. Pick it on every HTTP Request node and on **Crystalline MCP**.\n2. Create an Anthropic credential and pick a model on **Claude**.\n3. Edit **Settings**: the server address, the domain and the item cap.\n4. Run `crystalline reflect prompt --domain <domain> --max-items <cap>` and paste what it prints into the prompt of **Work the queue**. Paste it again after a Crystalline upgrade.\n5. Optional: turn on `reflect_trigger: webhook` in the domain's MANIFEST, set the instance's `automation.webhook.url` to this workflow's production webhook URL and `automation.webhook.secret` to a long random value, and give n8n the same value as `CRYSTALLINE_WEBHOOK_SECRET`. An instance has one webhook URL for both loops and every domain, so only one of the two loop workflows takes the webhook; the other runs on its schedule. **Check the signature** drops an event for the other loop. A webhook for another domain only starts a status check of the domain in **Settings**.\n\nn8n does not renew the lease while the agent works. A lease is stale after 5 minutes, so keep the item cap small. For longer runs use `crystalline reflect run`.",
+        "content": "## Crystalline reflect loop\n\nRuns the reflect loop of one domain when something is due. See docs/automation.md in the Crystalline repository.\n\n1. Create a Bearer Auth credential **Crystalline runner token** with the `cmt_` token of an agent account that may curate the domain's Reflection. Pick it on every HTTP Request node and on **Crystalline MCP**.\n2. Create an Anthropic credential and pick a model on **Claude**.\n3. Edit **Settings**: the server address, the domain and the item cap.\n4. Run `crystalline reflect prompt --domain <domain> --max-items <cap>` and paste what it prints into the prompt of **Work the queue**. Paste it again after a Crystalline upgrade.\n5. Optional: turn on `reflect_trigger: webhook` in the domain's MANIFEST, set the instance's `automation.webhook.url` to this workflow's production webhook URL and `automation.webhook.secret` to a long random value, and give n8n the same value as `CRYSTALLINE_WEBHOOK_SECRET`. An instance has one webhook URL for both loops and every domain, so only one of the two loop workflows takes the webhook; the other runs on its schedule. **Check the signature** drops an event for the other loop. A webhook for another domain only starts a status check of the domain in **Settings**.\n\n6. Import `renew-lease.json` too, pick the credential on its HTTP Request node, and pick that workflow on **Keep the lease fresh**. It renews the lease every 60 seconds while the agent works, without holding up this workflow, and stops when the run is recorded.\n\nIf a renew fails three times, the renewing stops and the lease is stale 5 minutes after the last renew. Another run may then take it over: this run's share and record are refused, and the writes it made are not in a pull request. For long runs use `crystalline reflect run`.",
         "height": 520,
         "width": 620
       },
@@ -121,7 +121,7 @@
             "caseSensitive": true,
             "leftValue": "",
             "typeValidation": "strict",
-            "version": 3
+            "version": 2
           },
           "conditions": [
             {
@@ -143,7 +143,7 @@
       "id": "1a54918c-b722-5cc8-8808-c2daa8fe2708",
       "name": "Due?",
       "type": "n8n-nodes-base.if",
-      "typeVersion": 2.3,
+      "typeVersion": 2.2,
       "position": [
         880,
         300
@@ -182,7 +182,7 @@
             "caseSensitive": true,
             "leftValue": "",
             "typeValidation": "strict",
-            "version": 3
+            "version": 2
           },
           "conditions": [
             {
@@ -204,10 +204,47 @@
       "id": "9f0bf417-a7c2-5b82-81b3-f0c79ea996f5",
       "name": "Lease taken?",
       "type": "n8n-nodes-base.if",
-      "typeVersion": 2.3,
+      "typeVersion": 2.2,
       "position": [
         1320,
         280
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// What renew-lease.json needs to renew this run's lease.\nconst settings = $('Settings').first().json;\nreturn [{\n  json: {\n    url: settings.url,\n    domain: settings.domain,\n    loop: 'reflect',\n    token: $('Take the lease').first().json.data.token,\n  },\n}];\n"
+      },
+      "id": "ed809bad-f5ef-5bd4-b719-2081ffaeb9fc",
+      "name": "The lease",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "3c06b1fb-62f3-5b21-b409-1d8ff040071f",
+      "name": "Keep the lease fresh",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1760,
+        60
       ]
     },
     {
@@ -223,7 +260,7 @@
       "type": "@n8n/n8n-nodes-langchain.agent",
       "typeVersion": 3.1,
       "position": [
-        1540,
+        1760,
         260
       ],
       "onError": "continueRegularOutput"
@@ -242,7 +279,7 @@
       "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
       "typeVersion": 1.6,
       "position": [
-        1480,
+        1700,
         480
       ],
       "credentials": {
@@ -281,7 +318,7 @@
       "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
       "typeVersion": 1.4,
       "position": [
-        1680,
+        1900,
         480
       ],
       "credentials": {
@@ -302,7 +339,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1880,
+        2100,
         260
       ]
     },
@@ -313,7 +350,7 @@
             "caseSensitive": true,
             "leftValue": "",
             "typeValidation": "strict",
-            "version": 3
+            "version": 2
           },
           "conditions": [
             {
@@ -335,9 +372,9 @@
       "id": "a67db8e0-7392-591c-be52-a1b716ec5851",
       "name": "Agent ended?",
       "type": "n8n-nodes-base.if",
-      "typeVersion": 2.3,
+      "typeVersion": 2.2,
       "position": [
-        2100,
+        2320,
         260
       ]
     },
@@ -357,7 +394,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        2320,
+        2540,
         160
       ],
       "credentials": {
@@ -384,7 +421,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        2540,
+        2760,
         280
       ],
       "credentials": {
@@ -479,12 +516,34 @@
       "main": [
         [
           {
-            "node": "Work the queue",
+            "node": "The lease",
             "type": "main",
             "index": 0
           }
         ],
         []
+      ]
+    },
+    "The lease": {
+      "main": [
+        [
+          {
+            "node": "Keep the lease fresh",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keep the lease fresh": {
+      "main": [
+        [
+          {
+            "node": "Work the queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Claude": {

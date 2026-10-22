@@ -18,6 +18,14 @@
 #
 # GitHub may start a scheduled job some minutes late. For answers within
 # minutes, use the Kubernetes examples instead.
+#
+# A runner image in a private registry (for example a private GHCR package)
+# needs a docker login step before docker run, and `packages: read` in the
+# job's permissions for GITHUB_TOKEN.
+#
+# A cancelled job is killed about 10 seconds after GitHub stops it, before
+# the run could record itself (it needs about 25 seconds). Its lease then goes
+# stale by itself within 5 minutes, and the next run takes it over.
 name: crystalline loops
 
 on:

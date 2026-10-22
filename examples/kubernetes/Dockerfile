@@ -43,7 +43,10 @@ RUN groupadd --gid 65532 nonroot \
     && useradd --uid 65532 --gid 65532 --create-home --home-dir /home/nonroot nonroot \
     && mkdir -p /data \
     && chown 65532:65532 /data
-ENV HOME=/home/nonroot \
+# The version is pinned on purpose, and the root filesystem is read-only in
+# the Kubernetes examples, so Claude Code must not try to update itself.
+ENV DISABLE_AUTOUPDATER=1 \
+    HOME=/home/nonroot \
     XDG_CONFIG_HOME=/data/config \
     XDG_STATE_HOME=/data/state \
     XDG_CACHE_HOME=/data/cache

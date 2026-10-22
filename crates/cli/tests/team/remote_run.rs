@@ -75,6 +75,10 @@ impl Runner {
         self.home.path().join("seen-config")
     }
 
+    fn env_names(&self) -> PathBuf {
+        self.home.path().join("agent-env")
+    }
+
     fn go(&self) -> PathBuf {
         self.home.path().join("go")
     }
@@ -86,6 +90,7 @@ impl Runner {
         std::fs::create_dir_all(self.bin()).unwrap();
         let script = format!(
             r#"#!/bin/sh
+env | cut -d= -f1 > "{env}"
 prev=""
 for a in "$@"; do
   if [ "$prev" = "--mcp-config" ]; then printf '%s' "$a" > "{seen}.tmp"; mv "{seen}.tmp" "{seen}"; fi
@@ -100,6 +105,7 @@ exit 0
 "#,
             seen = self.seen().display(),
             go = self.go().display(),
+            env = self.env_names().display(),
         );
         let path = self.bin().join("claude");
         std::fs::write(&path, script).unwrap();
@@ -317,6 +323,19 @@ fn a_remote_evolve_run_shares_the_agents_mcp_write_as_a_pull_request() {
     assert_eq!(
         during["domains"][0]["running"]["account"], "runner",
         "{during}"
+    );
+
+    // The bearer is in the config only, never in the agent's environment.
+    let names = std::fs::read_to_string(runner.env_names()).unwrap();
+    assert!(
+        names.lines().any(|n| n == "CRYSTALLINE_REMOTE_URL"),
+        "the fake saw its environment: {names}"
+    );
+    assert!(
+        !names
+            .lines()
+            .any(|n| n.starts_with("CRYSTALLINE_REMOTE_TOKEN")),
+        "the agent got the remote token: {names}"
     );
 
     agent_writes(&config);

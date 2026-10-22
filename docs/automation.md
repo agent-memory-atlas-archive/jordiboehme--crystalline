@@ -56,7 +56,7 @@ claude --mcp-config <config> --strict-mcp-config --setting-sources "" --tools ""
   --output-format stream-json --verbose --max-turns 60 -p "<the shipped prompt>"
 ```
 
-So the agent sees only the Crystalline MCP server, no built-in tools, no settings files and no hooks. `crystalline reflect run --dry-run` prints the command, with placeholders for the config and the prompt. These flags were checked against Claude Code 2.1.304.
+So the agent sees only the Crystalline MCP server, no built-in tools, no settings files and no hooks. When something is due and `claude` is on `PATH`, `crystalline reflect run --dry-run` prints the command, with placeholders for the config and the prompt. These flags were checked against Claude Code 2.1.304.
 
 The agent gets no Crystalline credentials in its environment: every variable that starts with `CRYSTALLINE_` and holds `TOKEN`, `SECRET` or `PASSWORD` is removed. The remote bearer is in the MCP config only, and the config with its folder is removed when the run ends, also after an error or a stop. Your Anthropic credential (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`) is passed on as it is.
 
@@ -149,9 +149,10 @@ A local run acts as the machine owner (see [Sharing as a pull request](#sharing-
 
 ## At home: n8n
 
-[`examples/n8n/`](../examples/n8n/) has three workflows to import into n8n:
+[`examples/n8n/`](../examples/n8n/) has four workflows to import into n8n:
 
 - `reflect-loop.json` and `evolve-loop.json`: a Schedule trigger at a fixed time (reflect every day at 06:00, evolve every Sunday at 03:00), an optional Webhook trigger with the signature check, the status check, the lease, an AI Agent with the MCP Client Tool, the share and the run record.
+- `renew-lease.json`: a small workflow the two loop workflows start, without waiting for it, right after they take the lease. It renews the lease every 60 seconds while the agent works.
 - `capture.json`: send text to a webhook, and an agent writes it as an engram with `write_engram`.
 
 Each workflow has a note with its setup steps. In short:
@@ -160,12 +161,13 @@ Each workflow has a note with its setup steps. In short:
 2. Create an Anthropic credential and pick a model.
 3. Edit the Settings node: the server address, the domain and the item cap.
 4. Run `crystalline reflect prompt --domain eng --max-items 10` and paste what it prints into the AI Agent's prompt. Paste it again after a Crystalline upgrade, since the prompt may change.
+5. Import `renew-lease.json`, pick the credential on its HTTP Request node and pick that workflow on the node Keep the lease fresh.
 
-The MCP Client Tool leaves out the twelve tools a headless run may not call. The HTTP Request nodes send the ctl verbs the CLI sends: `automation_status`, `automation_lease_take`, `automation_share` and `automation_run_record`, each a `POST /api/v1/ctl` with a body such as `{"v": 1, "cmd": "automation_status", "loop": "reflect", "domains": ["eng"]}`. The answer is `{"v": 1, "ok": true, "data": ...}`, or `ok: false` with an `error` such as `already running`.
+The MCP Client Tool leaves out the twelve tools a headless run may not call. The HTTP Request nodes send the ctl verbs the CLI sends: `automation_status`, `automation_lease_take`, `automation_lease_renew`, `automation_share` and `automation_run_record`, each a `POST /api/v1/ctl` with a body such as `{"v": 1, "cmd": "automation_status", "loop": "reflect", "domains": ["eng"]}`. The answer is `{"v": 1, "ok": true, "data": ...}`, or `ok: false` with an `error` such as `already running`.
 
 An instance has one webhook URL (`automation.webhook.url`) for both loops and every domain whose trigger is on. So only one of the two loop workflows takes the webhook, and the other runs on its schedule. Its signature check drops an event for the other loop, and a webhook for another domain only starts a status check of the domain in Settings.
 
-n8n does not renew the lease while the AI Agent works. After 5 minutes the lease is stale, and the next schedule or a webhook may start a second run that takes it over; the first run's record then answers `ok: false`. Keep the item cap and the agent's iterations small. For long runs use `crystalline <loop> run` in a container.
+An n8n node cannot renew the lease while the AI Agent node works, so the renewing runs in `renew-lease.json` beside it. It stops when a renew is refused: the run was recorded (which releases the lease) or another run took it over. It also stops after 2 hours. A failed call is tried 3 times, 5 seconds apart. If that fails too, the renewing stops and the lease is stale 5 minutes after the last renew. The next schedule or a webhook may then start a second run that takes the lease over. Two agents then work the same queue, the first run's share and record are refused (`ok: false`), and the writes the first run made are in no pull request. Keep the item cap and the agent's iterations small. For long runs use `crystalline <loop> run` in a container.
 
 ## At work: a runner job
 
@@ -201,7 +203,7 @@ When it sends:
 - Reflect, people waiting (a thread for the agent, feedback): within 60 seconds of the first event, so what arrives in that window is one webhook. It sends again on new events once the 5-minute cap below has passed.
 - Reflect, page updates only: after 30 minutes without a further source change on that domain, so a busy day or a bulk import sends one webhook, not hundreds. The quiet clock is per domain.
 - Evolve: when the mechanical count reaches `automation.evolve_threshold`, once per crossing. A weekly schedule in the runner stays the normal case.
-- When a lease is released and work is still due: at once (for evolve the threshold still applies). This is how a thread that arrived during a run gets its own run.
+- When a lease is released and work is still due: within a minute (for evolve the threshold still applies). This is how a thread that arrived during a run gets its own run.
 
 At most one webhook per domain and loop per 5 minutes, and that cap wins over everything above. A failed attempt is tried again after 10, 30 and 90 seconds, unless a run took the lease in the meantime. A delivery that failed every attempt is sent again while the work is due, after 5, 10, 20, 40 and then every 60 minutes. A delivery that gets through starts the list over.
 
@@ -221,24 +223,38 @@ X-Crystalline-Signature: sha256=<hex>
 
 The body carries counts only, never content or paths. `event` is `reflect` or `evolve`; evolve counts are `mechanical` and `judgment`. The signature is the lowercase hex HMAC-SHA256, under the secret, of the timestamp, a dot and the raw body. The timestamp is unix seconds and is part of what is signed, so a receiver that refuses an old one refuses a replay.
 
-Check it on the raw bytes, not on a body parsed and written out again. In a shell:
+Check it on the raw bytes, not on a body parsed and written out again. In a shell, to check a webhook by hand:
 
 ```sh
+now=$(date +%s)
+age=$(( now > timestamp ? now - timestamp : timestamp - now ))
 expected="sha256=$(printf '%s.%s' "$timestamp" "$body" | openssl dgst -sha256 -hmac "$secret" | sed 's/^.* //')"
-[ "$expected" = "$signature" ] && echo "signed by the instance"
+if [ "$age" -le 300 ] && [ "$expected" = "$signature" ]; then echo "signed by the instance"; fi
 ```
+
+A receiver in code compares in constant time, as the n8n Code node below does.
 
 In an n8n Code node after a Webhook node with the option Raw Body on (the n8n templates do this):
 
 ```js
 const crypto = require('crypto');
-const headers = $input.first().json.headers;
-const timestamp = headers['x-crystalline-timestamp'];
+const headers = $input.first().json.headers || {};
+const timestamp = String(headers['x-crystalline-timestamp'] || '');
+const signature = String(headers['x-crystalline-signature'] || '');
+// A missing or old timestamp fails: NaN is not <= 300.
+const age = Math.abs(Date.now() / 1000 - Number(timestamp));
+if (!timestamp || !(age <= 300)) {
+  throw new Error('The webhook has no timestamp or is older than 5 minutes.');
+}
 const body = await this.helpers.getBinaryDataBuffer(0, 'data');
 const expected = 'sha256=' + crypto.createHmac('sha256', $env.CRYSTALLINE_WEBHOOK_SECRET)
-  .update(timestamp + '.').update(body).digest('hex');
-if (expected !== headers['x-crystalline-signature'] || Math.abs(Date.now() / 1000 - timestamp) > 300) {
-  throw new Error('not signed by the instance');
+  .update(timestamp + '.')
+  .update(body)
+  .digest('hex');
+const given = Buffer.from(signature);
+const wanted = Buffer.from(expected);
+if (given.length !== wanted.length || !crypto.timingSafeEqual(given, wanted)) {
+  throw new Error('The webhook signature does not match.');
 }
 ```
 
