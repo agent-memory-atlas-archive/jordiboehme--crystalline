@@ -1462,3 +1462,77 @@ async fn a_cross_domain_move_turns_relative_links_into_addresses() {
         "one target, read once per line: {b}"
     );
 }
+
+/// A bare wikilink spelled as a path the source domain has no file at is
+/// read from the domain root, so after a move into another domain it would
+/// bind to a same-path file there: it names the source domain instead and
+/// stays unresolved, as it was.
+#[tokio::test]
+async fn a_cross_domain_move_gives_a_missing_path_wikilink_its_domain() {
+    let f = Fixture::new().await;
+    seed(
+        f.notes(),
+        "guides/a.md",
+        &engram("Ay", "guides/a", "See [[guides/missing.md|M]]."),
+    );
+    seed(
+        f.ops(),
+        "guides/missing.md",
+        &engram("Decoy", "guides/decoy", "Not the one."),
+    );
+    f.sync().await;
+
+    let receipt = f
+        .mv("guides/a", "notes", "guides/a.md", Some("ops"), None)
+        .await
+        .unwrap();
+    assert!(receipt.get("links_failed").is_none(), "{receipt}");
+    let a = read(f.ops(), "guides/a.md");
+    assert!(a.contains("See [[notes:guides/missing.md|M]]."), "{a}");
+    let a = read_receipt(&f, "ops", "guides/a").await;
+    assert_eq!(
+        edges(&a),
+        vec![("guides/missing.md".to_string(), false, None)],
+        "{a}"
+    );
+}
+
+/// A wikilink from another domain spelled as the moved engram's path,
+/// `[[notes:guides/a.md]]`, binds by path and follows the file like every
+/// other form: to its new path inside its domain, and to its new address
+/// when it leaves for another domain.
+#[tokio::test]
+async fn a_prefixed_path_wikilink_follows_a_move() {
+    let f = Fixture::new().await;
+    seed(
+        f.notes(),
+        "guides/a.md",
+        &engram("Ay", "guides/a", "The engram."),
+    );
+    seed(
+        f.ops(),
+        "linker.md",
+        &engram("Linker", "linker", "See [[notes:guides/a.md|A]]."),
+    );
+    f.sync().await;
+
+    let receipt = f
+        .mv("guides/a", "notes", "archive/a.md", None, Some("keep"))
+        .await
+        .unwrap();
+    assert_eq!(receipt["links_rewritten"], 1, "{receipt}");
+    let linker = read(f.ops(), "linker.md");
+    assert!(linker.contains("See [[notes:archive/a.md|A]]."), "{linker}");
+    let l = read_receipt(&f, "ops", "linker").await;
+    assert!(edges(&l)[0].1, "{l}");
+
+    let receipt = f
+        .mv("guides/a", "notes", "x/a.md", Some("vault"), None)
+        .await
+        .unwrap();
+    assert_eq!(receipt["links_rewritten"], 1, "{receipt}");
+    let linker = read(f.ops(), "linker.md");
+    assert!(linker.contains("See [[vault:x/a.md|A]]."), "{linker}");
+    let l = read_receipt(&f, "ops", "linker").await;
+    assert!(edges(&l)[0].1, "{l}");
+}

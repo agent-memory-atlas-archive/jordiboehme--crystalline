@@ -28,6 +28,12 @@ pub(super) struct Relocation<'a> {
     /// For a move into another domain, the `domain:permalink` address the
     /// source domain's links to it name afterwards.
     pub(super) across: Option<&'a str>,
+    /// The domain it lives in after the move (the one it moved from, when
+    /// it stayed).
+    pub(super) to_domain: &'a str,
+    /// Every spelling of the domain it moved from, which a wikilink spelled
+    /// as its path may carry as a prefix (`[[notes:guides/a.md]]`).
+    pub(super) spellings: &'a HashSet<String>,
 }
 
 /// How a move into another domain rewrites the moved engram's own links that
@@ -431,11 +437,24 @@ impl Engine {
         // A move into another domain: the source domain's links that bind by
         // path name the engram's new address instead.
         let across = format!("{dest_domain}:{new_permalink}");
+        let src_spellings: HashSet<String> = if (relocated || cross) && update_links {
+            self.name_table_now()
+                .await
+                .spellings()
+                .into_iter()
+                .filter(|(_, local)| *local == p.domain)
+                .map(|(spelling, _)| spelling)
+                .collect()
+        } else {
+            HashSet::new()
+        };
         let relocation = ((relocated || cross) && update_links).then_some(Relocation {
             domain_id: src.domain_id,
             from: &src.path,
             to: &dest_rel,
             across: cross.then_some(across.as_str()),
+            to_domain: &dest_domain,
+            spellings: &src_spellings,
         });
         let linkers = if (readdressed || relocated) && update_links {
             self.move_linkers(&src, &hidden).await?
@@ -1280,12 +1299,15 @@ impl Engine {
                             .insert(target.target.clone(), dest_rel.to_string());
                         continue;
                     }
-                    if let Some(found) = self.descriptor_at(src_domain, &target.target).await? {
-                        out.paths.insert(
-                            target.target.clone(),
-                            format!("{src_domain}:{}", found.permalink),
-                        );
-                    }
+                    // Read in the destination from now on, so it names the
+                    // source domain: by permalink where an engram stands at
+                    // the path, by the path where none does (it stays
+                    // unresolved, as it was).
+                    let address = match self.descriptor_at(src_domain, &target.target).await? {
+                        Some(found) => format!("{src_domain}:{}", found.permalink),
+                        None => format!("{src_domain}:{}", target.target),
+                    };
+                    out.paths.insert(target.target.clone(), address);
                 }
             }
         }
@@ -1716,6 +1738,25 @@ impl Engine {
                 crystalline_core::relink::respell_path_wikilinks(&respelled, moved.from, moved.to);
             relinked = respelled;
             count += respelled_count + path_count;
+        }
+        // A wikilink spelled as the file's path with a prefix naming its old
+        // domain (`[[notes:guides/a.md]]`) binds by path from any domain, so
+        // it follows the file to its new path, in its new domain.
+        if let Some(moved) = relocation {
+            let (readdressed, prefixed_count) =
+                crystalline_core::relink::readdress_prefixed_path_wikilinks(
+                    &relinked,
+                    &|domain, target| {
+                        (moved.spellings.contains(domain) && target == moved.from).then(|| {
+                            match moved.across {
+                                Some(_) => format!("{}:{}", moved.to_domain, moved.to),
+                                None => format!("{domain}:{}", moved.to),
+                            }
+                        })
+                    },
+                );
+            relinked = readdressed;
+            count += prefixed_count;
         }
         if count == 0 {
             return None;

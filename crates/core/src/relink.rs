@@ -505,7 +505,26 @@ pub fn readdress_path_wikilinks(
     map: &dyn Fn(&str) -> Option<String>,
 ) -> (String, usize) {
     rewrite_body_lines(source, BodyGate::Lossless, &|line| {
-        through(LinkDialect::Addressed, line, |l| path_wikilink_line(l, map))
+        through(LinkDialect::Addressed, line, |l| {
+            path_wikilink_line(l, &|domain, target| {
+                domain.is_none().then(|| map(target)).flatten()
+            })
+        })
+    })
+}
+
+/// Rewrite every prefixed wikilink whose domain prefix and target `map`
+/// answers (`[[notes:guides/a.md]]` to `[[notes:archive/a.md]]`), so it names
+/// the answer instead; the display text after a `|` stays as written. A bare
+/// wikilink and one inside code are never handed to `map`.
+pub fn readdress_prefixed_path_wikilinks(
+    source: &str,
+    map: &dyn Fn(&str, &str) -> Option<String>,
+) -> (String, usize) {
+    rewrite_body_lines(source, BodyGate::Lossless, &|line| {
+        through(LinkDialect::Addressed, line, |l| {
+            path_wikilink_line(l, &|domain, target| domain.and_then(|d| map(d, target)))
+        })
     })
 }
 
@@ -517,7 +536,9 @@ pub fn readdress_path_wikilinks(
 pub fn respell_path_wikilinks(source: &str, from: &str, to: &str) -> (String, usize) {
     rewrite_body_lines(source, BodyGate::Lossless, &|line| {
         through(LinkDialect::Addressed, line, |l| {
-            path_wikilink_line(l, &|target| (target == from).then(|| to.to_string()))
+            path_wikilink_line(l, &|domain, target| {
+                (domain.is_none() && target == from).then(|| to.to_string())
+            })
         })
     })
 }
@@ -525,8 +546,12 @@ pub fn respell_path_wikilinks(source: &str, from: &str, to: &str) -> (String, us
 /// One body line under [`respell_path_wikilinks`] and
 /// [`readdress_path_wikilinks`]: the wikilinks found the way [`relink_line`]
 /// finds them, over the line with inline code masked, and every bare one
-/// whose target `map` answers renamed.
-fn path_wikilink_line(line: &str, map: &dyn Fn(&str) -> Option<String>) -> (String, usize) {
+/// whose domain prefix (none for a bare one) and target `map` answers
+/// renamed to the answer.
+fn path_wikilink_line(
+    line: &str,
+    map: &dyn Fn(Option<&str>, &str) -> Option<String>,
+) -> (String, usize) {
     let original: Vec<char> = line.chars().collect();
     let masked: Vec<char> = if line.contains('`') {
         mask_inline_code(line).chars().collect()
@@ -544,9 +569,7 @@ fn path_wikilink_line(line: &str, map: &dyn Fn(&str) -> Option<String>) -> (Stri
             let end = target_end(&masked, i + 2, close);
             let inner: String = masked[i + 2..end].iter().collect();
             let target = LinkTarget::parse(&inner);
-            if target.domain.is_none()
-                && let Some(to) = map(&target.target)
-            {
+            if let Some(to) = map(target.domain.as_deref(), &target.target) {
                 out.push_str("[[");
                 out.push_str(&to);
                 out.extend(&original[end..close]);
@@ -722,6 +745,20 @@ mod tests {
         );
         assert_eq!(out.unwritable, vec!["[odd [[x]]](b.md)".to_string()]);
         assert!(out.text.starts_with(ENGRAM_HEAD));
+    }
+
+    #[test]
+    fn a_prefixed_path_wikilink_can_be_readdressed() {
+        let source =
+            format!("{ENGRAM_HEAD}[[notes:guides/a.md|A]] [[guides/a.md]] [[ops:guides/a.md]]\n");
+        let (out, n) = readdress_prefixed_path_wikilinks(&source, &|domain, target| {
+            (domain == "notes" && target == "guides/a.md").then(|| "notes:archive/a.md".to_string())
+        });
+        assert_eq!(n, 1, "{out}");
+        assert!(
+            out.ends_with("[[notes:archive/a.md|A]] [[guides/a.md]] [[ops:guides/a.md]]\n"),
+            "{out}"
+        );
     }
 
     #[test]

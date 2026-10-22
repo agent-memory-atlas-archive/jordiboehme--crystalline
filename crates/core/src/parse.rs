@@ -616,13 +616,12 @@ fn relative_note_links(line: &str) -> Vec<(usize, String)> {
 }
 
 /// Whether a link's path (a relative link's, or a wikilink spelled as a
-/// path) ends in a folder's `index.md` or `log.md`, in any letter case: the
-/// files Crystalline keeps beside the engrams, never an engram. A link to one
-/// is sound, like a link to a web page, and no engram's link.
+/// path) ends in a folder's `index.md` or `log.md`: the files Crystalline
+/// keeps beside the engrams, never an engram. A link to one is sound, like a
+/// link to a web page, and no engram's link. The names are exact, as the
+/// walker reserves them: a file named `Index.md` is an engram like any other.
 fn names_a_reserved_file(path: &str) -> bool {
-    path.rsplit('/')
-        .next()
-        .is_some_and(|name| crate::index::is_reserved_file(&name.to_ascii_lowercase()))
+    crate::index::is_reserved_path(path)
 }
 
 /// The byte offset of the `[` that opens a link to another engram's file,
@@ -1261,7 +1260,7 @@ mod tests {
     /// folder, never engrams: a link back to one is sound and no edge.
     #[test]
     fn a_relative_link_to_a_folders_index_or_log_is_no_link() {
-        let body = "Back to [the folder](index.md), [up](../INDEX.md), [log](log.md) \
+        let body = "Back to [the folder](index.md), [up](../index.md), [log](log.md) \
                     and [p](p.md).\n- part_of [Index](index.md)\n";
         let (_, relations, links, _) = scan_body(body, 1);
         assert!(relations.is_empty(), "{relations:?}");
@@ -1269,11 +1268,21 @@ mod tests {
         assert_eq!(targets, vec!["p.md"]);
     }
 
+    /// Only the exact names are reserved, as the walker reserves them: an
+    /// engram a person named `Index.md` or `LOG.md` keeps its links.
+    #[test]
+    fn an_engram_named_index_in_another_case_keeps_its_links() {
+        let body = "See [the index](Index.md), [[guides/LOG.md]] and [[ops:notes/Index.md]].\n";
+        let (_, _, links, _) = scan_body(body, 1);
+        let targets: Vec<&str> = links.iter().map(|l| l.target.target.as_str()).collect();
+        assert_eq!(targets, vec!["guides/LOG.md", "notes/Index.md", "Index.md"]);
+    }
+
     /// A wikilink spelled as the path of a folder's `index.md` or `log.md`
     /// names that file too, never an engram, prefixed or not.
     #[test]
     fn a_wikilink_to_a_folders_index_or_log_is_no_link() {
-        let body = "See [[guides/index.md]], [[ops:log.md|the log]], [[Guides/INDEX.md]] \
+        let body = "See [[guides/index.md]], [[ops:log.md|the log]], [[Guides/index.md]] \
                     and [[p.md]].\n- part_of [[index.md]]\n";
         let (_, relations, links, _) = scan_body(body, 1);
         assert!(relations.is_empty(), "{relations:?}");
