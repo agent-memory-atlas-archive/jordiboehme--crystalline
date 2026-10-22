@@ -689,6 +689,7 @@ impl Engine {
         // Once every pull has finished and let go of its origin lock, which a
         // rename takes: a pulled MANIFEST may declare a new name.
         self.adopt_domain_names_after("the update").await;
+        self.settle_rename_questions_after_pull().await;
         Ok(json!({ "domains": domains, "errors": errors }))
     }
 
@@ -1375,6 +1376,7 @@ impl Engine {
         // After the loop, when every pull has let go of its origin lock.
         if moved {
             self.adopt_domain_names_after("the origin poll").await;
+            self.settle_rename_questions_after_pull().await;
         }
     }
 

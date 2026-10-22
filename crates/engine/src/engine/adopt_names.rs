@@ -359,13 +359,23 @@ impl Engine {
                 }
             }
         }
-        // Questions whose links already match close on their own: a
-        // teammate finished the rename and the respelled files arrived.
+        Ok(Value::Array(report))
+    }
+
+    /// After a pull from a domain's origin: close every open rename question
+    /// whose links already match, because a teammate finished the rename and
+    /// the respelled files arrived with the pull. Only a pull does this. A
+    /// rename question is a person's to answer, so links respelled here (by
+    /// an agent's edit, an evolve run or a sync of local files) never close
+    /// it by themselves.
+    pub async fn settle_rename_questions_after_pull(&self) {
+        if self.read_only || self.config_path.is_none() {
+            return;
+        }
         let busy: HashSet<String> = self.names_being_renamed().into_iter().collect();
         if let Err(e) = self.close_settled_rename_questions(&busy).await {
             tracing::warn!("checking whether a rename question is settled failed: {e}");
         }
-        Ok(Value::Array(report))
     }
 
     /// [`Engine::adopt_domain_names`] for a caller whose own work has landed

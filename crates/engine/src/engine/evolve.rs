@@ -1,5 +1,17 @@
 use super::*;
 
+/// The domain names a sweep reads, built once per sweep by
+/// [`Engine::sweep_domain_names`].
+struct SweepNames {
+    /// Every spelling of every domain the caller may see (`V102`).
+    known: Vec<String>,
+    /// The `(spelling, canonical name)` pairs `V110` reads.
+    respell: Vec<(String, String)>,
+    /// The spellings among `respell` whose domain's MANIFEST rename waits
+    /// for a person's answer.
+    asked: Vec<String>,
+}
+
 /// The close-folder rule, whose acknowledgment answers a pair of folders and
 /// so can sit on any engram of the two.
 pub(super) const FOLDER_PAIR_RULE: &str = "V112";
@@ -180,7 +192,7 @@ impl Engine {
         // its domain's canonical name. Both are filtered by `hidden` the way
         // a write's own normalization is, so a finding never names a domain
         // this caller may not see (see [`Engine::sweep_domain_names`]).
-        let (known_domains, respell) = self.sweep_domain_names(&hidden).await;
+        let names = self.sweep_domain_names(&hidden).await;
 
         let named: Vec<String> = if p.domains.is_empty() {
             local_domains.clone()
@@ -226,8 +238,7 @@ impl Engine {
                 .sweep_domain(
                     name,
                     today,
-                    &known_domains,
-                    &respell,
+                    &names,
                     p.include_acknowledged,
                     true,
                     scope,
@@ -749,19 +760,10 @@ impl Engine {
         scope: &crate::scope::Scope,
     ) -> Result<Vec<Finding>> {
         let hidden = self.hidden_for(scope).await?;
-        let (known_domains, respell) = self.sweep_domain_names(&hidden).await;
+        let names = self.sweep_domain_names(&hidden).await;
         let today = Utc::now().date_naive();
         let Some(swept) = self
-            .sweep_domain(
-                domain,
-                today,
-                &known_domains,
-                &respell,
-                true,
-                false,
-                scope,
-                &hidden,
-            )
+            .sweep_domain(domain, today, &names, true, false, scope, &hidden)
             .await?
         else {
             return Ok(Vec::new());
@@ -789,25 +791,52 @@ impl Engine {
     /// [`Engine::known_domain_names`] - which is the whole of what makes
     /// `V102` stop calling a target spelled by a canonical name or a
     /// machine-local alias unregistered.
-    async fn sweep_domain_names(
-        &self,
-        hidden: &HashSet<String>,
-    ) -> (Vec<String>, Vec<(String, String)>) {
+    ///
+    /// A domain whose MANIFEST rename waits for a person's answer here
+    /// (Part B) is that person's to finish: its old spellings stay in
+    /// `respell` but are named in `asked` too, so `V110` speaks about them as
+    /// judgment and an agent never answers the question by respelling the
+    /// links itself. Once the person chose to keep the links as they are,
+    /// the old names are labels on purpose and leave `respell` altogether.
+    async fn sweep_domain_names(&self, hidden: &HashSet<String>) -> SweepNames {
         let table = self.name_table_now().await;
-        let mut known_domains: Vec<String> = Vec::new();
+        let mut asked: Vec<String> = Vec::new();
+        let mut kept: Vec<String> = Vec::new();
+        for (local, entry) in &self.config.read().unwrap().domains {
+            let Some(question) = &entry.rename_question else {
+                continue;
+            };
+            let (old, _) =
+                super::manifest_rename::respell_spellings(local, entry, question, &table);
+            match question.answered {
+                None => asked.extend(old),
+                Some(crystalline_core::config::RenameAnswer::Keep) => kept.extend(old),
+                Some(crystalline_core::config::RenameAnswer::Finished) => {}
+            }
+        }
+        let mut known: Vec<String> = Vec::new();
         let mut respell: Vec<(String, String)> = Vec::new();
         for (spelling, local) in table.spellings() {
             if hidden.contains(&local) {
                 continue;
             }
-            known_domains.push(spelling.clone());
-            if let Some(canonical) = table.normalize(&spelling) {
+            known.push(spelling.clone());
+            if let Some(canonical) = table.normalize(&spelling)
+                && !kept.contains(&spelling)
+            {
                 respell.push((spelling, canonical.to_string()));
             }
         }
-        known_domains.sort();
-        known_domains.dedup();
-        (known_domains, respell)
+        known.sort();
+        known.dedup();
+        asked.retain(|spelling| respell.iter().any(|(s, _)| s == spelling));
+        asked.sort();
+        asked.dedup();
+        SweepNames {
+            known,
+            respell,
+            asked,
+        }
     }
 
     /// Acknowledge a finding: record on the engram that this rule's finding was
@@ -1224,8 +1253,7 @@ impl Engine {
         &self,
         name: &str,
         today: NaiveDate,
-        known_domains: &[String],
-        respell: &[(String, String)],
+        names: &SweepNames,
         include_acknowledged: bool,
         count_pending: bool,
         scope: &crate::scope::Scope,
@@ -1353,7 +1381,8 @@ impl Engine {
         // written prefix is one of `respell`'s spellings. Base rows only,
         // like the store call it reuses; empty when `respell` is empty,
         // which costs no read at all.
-        let spellings: Vec<String> = respell
+        let spellings: Vec<String> = names
+            .respell
             .iter()
             .map(|(spelling, _)| spelling.clone())
             .collect();
@@ -1482,8 +1511,9 @@ impl Engine {
             unresolved,
             tags: vocab.tags,
             tag_aliases: vocab.aliases,
-            known_domains: known_domains.to_vec(),
-            respell: respell.to_vec(),
+            known_domains: names.known.clone(),
+            respell: names.respell.clone(),
+            renames_asked: names.asked.clone(),
             spelled_refs,
             attachments,
             shadowed_asset_refs,

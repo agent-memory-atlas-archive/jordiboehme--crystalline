@@ -1085,6 +1085,11 @@ pub struct SweepInput {
     /// never names a hidden domain's canonical name. Empty on a machine
     /// where every domain's local name already is its canonical one.
     pub respell: Vec<(String, String)>,
+    /// The spellings among [`SweepInput::respell`] whose domain's MANIFEST
+    /// rename still waits for a person's answer on this instance. A link
+    /// spelled with one is that person's to respell (they finish the rename
+    /// or keep the links), so `V110` speaks about it as judgment.
+    pub renames_asked: Vec<String>,
     /// This domain's own references whose written prefix is one of
     /// [`SweepInput::respell`]'s spellings, base rows only, from
     /// [`crate::Store::spelled_references`]. `V110`'s whole input: a
@@ -1176,6 +1181,7 @@ impl SweepInput {
             tag_aliases: Vec::new(),
             known_domains: Vec::new(),
             respell: Vec::new(),
+            renames_asked: Vec::new(),
             spelled_refs: Vec::new(),
             attachments: Vec::new(),
             shadowed_asset_refs: Vec::new(),
@@ -2473,9 +2479,12 @@ fn permalink_off_its_folder(fact: &EngramFacts) -> Option<Finding> {
 /// canonical one - answers with nothing to look at, whatever `spelled_refs`
 /// carries.
 ///
-/// Mechanical, always: the reference already resolves through the local
-/// name (local names always win), so rewriting the prefix to the canonical
-/// spelling changes nothing the archive claims.
+/// Mechanical: the reference already resolves through the local name (local
+/// names always win), so rewriting the prefix to the canonical spelling
+/// changes nothing the archive claims. Judgment while the spelling's domain
+/// has a MANIFEST rename waiting for a person ([`SweepInput::renames_asked`]):
+/// respelling the links is how that person finishes the rename, so an agent
+/// leaves it to them and the fix names the two ways they do it.
 ///
 /// Scoped by the spelling alone ([`scope_for`]'s one-path arm, shared with
 /// `V007`/`V008`): an engram naming two different local-only domains draws
@@ -2508,24 +2517,36 @@ fn detect_local_spellings(input: &SweepInput, graph: &Graph<'_>, report: &mut Sw
         };
         let new_raw = format!("{canonical}:{rest}");
         let alias = reference.alias.as_deref();
-        let (written, respelled) = (bracketed(&reference.raw, alias), bracketed(&new_raw, alias));
+        let (written, respelled) = as_written(&fact.body, &reference.raw, alias, &new_raw);
+        let spelling = &reference.spelling;
+        let finding = if input.renames_asked.contains(spelling) {
+            Finding::about("V110", fact).with(
+                Class::Judgment,
+                format!("link spells domain `{spelling}` by the name its MANIFEST renamed"),
+                format!(
+                    "`{written}` names domain `{spelling}`, which its MANIFEST now names \
+                     `{canonical}`; the rename waits for a person to finish it or to keep the \
+                     links as they are"
+                ),
+                "leave this link to a person: they finish the rename in Fluid or with \
+                 crystalline doctor --fix, or keep the links as they are"
+                    .to_string(),
+            )
+        } else {
+            Finding::about("V110", fact).with(
+                Class::Mechanical,
+                format!("link spells domain `{spelling}` by a name only this machine uses"),
+                format!(
+                    "`{written}` names domain `{spelling}`, a name only this machine uses; the \
+                     domain's name is `{canonical}`"
+                ),
+                format!(
+                    "edit_engram with operation find_replace, find_text \"{written}\" and content \"{respelled}\""
+                ),
+            )
+        };
         report.findings.push(
-            Finding::about("V110", fact)
-                .with(
-                    Class::Mechanical,
-                    format!(
-                        "link spells domain `{}` by a name only this machine uses",
-                        reference.spelling
-                    ),
-                    format!(
-                        "`{written}` names domain `{}`, a name only this machine uses; the domain's \
-                         name is `{canonical}`",
-                        reference.spelling
-                    ),
-                    format!(
-                        "edit_engram with operation find_replace, find_text \"{written}\" and content \"{respelled}\""
-                    ),
-                )
+            finding
                 .at_line((reference.line > 0).then_some(reference.line))
                 .scoped([reference.spelling.clone()]),
         );
@@ -2800,11 +2821,15 @@ fn detect_unresolved(input: &SweepInput, graph: &Graph<'_>, report: &mut SweepRe
                         reference.rel_type, fact.domain, reference.raw
                     ),
                     Class::Judgment,
-                    format!(
-                        "{} -> {}",
-                        bracketed(&reference.raw, reference.alias.as_deref()),
-                        bracketed(&candidate, reference.alias.as_deref())
-                    ),
+                    {
+                        let (left, right) = as_written(
+                            &fact.body,
+                            &reference.raw,
+                            reference.alias.as_deref(),
+                            &candidate,
+                        );
+                        format!("{left} -> {right}")
+                    },
                 ),
                 None => (
                     format!(
@@ -2859,14 +2884,15 @@ fn detect_unresolved(input: &SweepInput, graph: &Graph<'_>, report: &mut SweepRe
                         // A display text rides along on both sides for the
                         // same reason: it is part of the text the file holds,
                         // and the author's words for a reader.
-                        format!(
-                            "{} -> {}",
-                            bracketed(written, reference.alias.as_deref()),
-                            bracketed(
+                        {
+                            let (left, right) = as_written(
+                                &fact.body,
+                                written,
+                                reference.alias.as_deref(),
                                 &prefixed(reference.target_domain.as_deref(), &candidate),
-                                reference.alias.as_deref()
-                            )
-                        ),
+                            );
+                            format!("{left} -> {right}")
+                        },
                     ),
                     None => (
                         format!(
@@ -2908,13 +2934,53 @@ fn prefixed(domain: Option<&str>, target: &str) -> String {
 }
 
 /// A reference written back as the file holds it: `[[text]]`, or
-/// `[[text|alias]]` for a reference with display text. A repair quotes both of
-/// its sides through this, so the left side is text that occurs in the engram.
+/// `[[text|alias]]` for a reference with display text. The stand-in for
+/// [`as_written`] when the body holds no wikilink that reads as the
+/// reference.
 fn bracketed(text: &str, alias: Option<&str>) -> String {
     match alias {
         Some(alias) => format!("[[{text}|{alias}]]"),
         None => format!("[[{text}]]"),
     }
+}
+
+/// A mechanical repair's two sides for the reference `raw` (with display
+/// text `alias`) in `body`, the left side quoted exactly as the file holds
+/// it, spaces and an empty display text included, and the right side the
+/// same text with `raw` replaced by `new_raw`. The index keeps a reference
+/// trimmed (`[[ a | b ]]` is `a` with `b`), so a quote rebuilt from it
+/// would name text a find and replace never finds, or a different `[[a]]`
+/// in the same file. Falls back to [`bracketed`] when no wikilink in the body
+/// reads as the reference.
+fn as_written(body: &str, raw: &str, alias: Option<&str>, new_raw: &str) -> (String, String) {
+    let mut from = 0;
+    while let Some(open) = body[from..].find("[[").map(|at| from + at) {
+        let Some(close) = body[open + 2..].find("]]").map(|at| open + 2 + at) else {
+            break;
+        };
+        let inner = &body[open + 2..close];
+        from = open + 2;
+        if inner.contains('\n') {
+            continue;
+        }
+        let Some(target) = crystalline_core::LinkTarget::wikilink(inner) else {
+            continue;
+        };
+        if target.raw != raw || target.alias.as_deref() != alias {
+            continue;
+        }
+        let (left, rest) = match inner.split_once('|') {
+            Some((left, rest)) => (left, Some(rest)),
+            None => (inner, None),
+        };
+        let left = left.replacen(raw, new_raw, 1);
+        let new_inner = match rest {
+            Some(rest) => format!("{left}|{rest}"),
+            None => left,
+        };
+        return (format!("[[{inner}]]"), format!("[[{new_inner}]]"));
+    }
+    (bracketed(raw, alias), bracketed(new_raw, alias))
 }
 
 /// The nearest existing title to an unresolved target inside `scope`, when it

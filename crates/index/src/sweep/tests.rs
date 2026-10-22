@@ -3195,6 +3195,48 @@ fn v110_quotes_an_aliased_link_exactly() {
     );
 }
 
+/// The index keeps a reference trimmed, so the repair is quoted from the
+/// body as written: spaces inside the brackets and an empty display text
+/// stay, and a find and replace finds the text it names.
+#[test]
+fn v110_and_v102_quote_the_bracket_text_as_the_file_holds_it() {
+    let mut holder = fact(1, "link-holder");
+    holder.body = "See [[ eng-knowledge:a | the a ]] and [[eng-knowledge:b|]].\n".to_string();
+    let mut sweep = input(vec![holder]);
+    sweep.respell = vec![("eng-knowledge".to_string(), "eng".to_string())];
+    let mut spaced = spelled(1, "eng-knowledge", "a");
+    spaced.alias = Some("the a".to_string());
+    sweep.spelled_refs = vec![spaced, spelled(1, "eng-knowledge", "b")];
+    let report = detect(&sweep);
+    let fixes: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|f| f.rule == "V110")
+        .map(|f| f.fix.as_str())
+        .collect();
+    assert_eq!(
+        fixes,
+        vec![
+            "edit_engram with operation find_replace, find_text \"[[ eng-knowledge:a | the a ]]\" \
+             and content \"[[ eng:a | the a ]]\"",
+            "edit_engram with operation find_replace, find_text \"[[eng-knowledge:b|]]\" and \
+             content \"[[eng:b|]]\"",
+        ]
+    );
+
+    let mut target = fact(1, "release-checklist");
+    target.title = "Release Checklist".to_string();
+    let mut writer = fact(2, "runbook");
+    writer.body = "Run [[ Release Checklst |]] first.\n".to_string();
+    let mut sweep = input(vec![target, writer]);
+    sweep.unresolved = vec![unresolved(2, "Release Checklst")];
+    let finding = only(&detect(&sweep), "V102");
+    assert_eq!(
+        finding.fix,
+        "[[ Release Checklst |]] -> [[ Release Checklist |]]"
+    );
+}
+
 #[test]
 fn v110_fires_when_respell_names_a_spelled_references_prefix() {
     let mut sweep = input(vec![fact(1, "link-holder")]);

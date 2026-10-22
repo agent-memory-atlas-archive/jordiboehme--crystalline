@@ -481,7 +481,7 @@ impl Engine {
 /// and the ones that reach `local` through `table` today, which are the ones
 /// it rewrites. The question's `from`, the aliases and the local name, never
 /// the name the links get.
-fn respell_spellings(
+pub(super) fn respell_spellings(
     local: &str,
     entry: &DomainEntry,
     question: &RenameQuestion,

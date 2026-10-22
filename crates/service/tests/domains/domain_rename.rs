@@ -3428,8 +3428,8 @@ both_backends!(
 );
 
 /// A question closes on its own once no link here uses an old name any
-/// more, as after a teammate's finished rename arrives with a pull: the
-/// adoption after the sync answers it, and the listing shows no rename.
+/// more after a teammate's finished rename arrives with a pull: the pull
+/// answers it, and the listing shows no rename.
 async fn a_question_whose_links_already_match_closes_on_its_own_body(store: Arc<Mutex<dyn Store>>) {
     let m = question_machine(store).await;
     let engine = m.engine(true).await;
@@ -3455,6 +3455,7 @@ async fn a_question_whose_links_already_match_closes_on_its_own_body(store: Arc<
     .unwrap();
     engine.sync(None).await.unwrap();
     engine.adopt_domain_names().await.unwrap();
+    engine.settle_rename_questions_after_pull().await;
 
     assert_eq!(engine.rename_question("eng"), None);
     assert_eq!(
@@ -3558,9 +3559,100 @@ async fn an_unreadable_engram_keeps_the_question_open_body(store: Arc<Mutex<dyn 
     std::fs::write(m.root.join("ops/pager.md"), [0xff, 0xfe, 0x00, 0x80]).unwrap();
 
     engine.adopt_domain_names().await.unwrap();
+    engine.settle_rename_questions_after_pull().await;
     assert!(engine.rename_question("eng").is_some());
 }
 both_backends!(
     an_unreadable_engram_keeps_the_question_open,
     an_unreadable_engram_keeps_the_question_open_body
+);
+
+/// The `V110` findings in `ops` that speak about a link spelled `eng`.
+async fn v110_on_eng(engine: &Engine) -> Vec<serde_json::Value> {
+    let v = engine
+        .evolve_detect(
+            &EvolveParams {
+                domains: vec!["ops".to_string()],
+                ..EvolveParams::default()
+            },
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    v["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["rule"] == "V110" && r["evidence"].as_str().unwrap().contains("`eng`"))
+        .cloned()
+        .collect()
+}
+
+/// While the rename waits for a person, a link under the old name is that
+/// person's to respell: `V110` is judgment and its fix names the two ways
+/// they finish it, never an edit for an agent to apply.
+async fn an_open_rename_makes_v110_for_the_old_name_judgment_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    let found = v110_on_eng(&engine).await;
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0]["class"], "judgment", "{:?}", found[0]);
+    let fix = found[0]["fix"].as_str().unwrap();
+    assert!(fix.contains("crystalline doctor --fix"), "{fix}");
+    assert!(!fix.contains("find_replace"), "{fix}");
+}
+both_backends!(
+    an_open_rename_makes_v110_for_the_old_name_judgment,
+    an_open_rename_makes_v110_for_the_old_name_judgment_body
+);
+
+/// A person who kept the links as they are kept the old name as a label:
+/// `V110` no longer speaks about it at all.
+async fn a_kept_rename_raises_no_v110_for_the_old_name_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    engine
+        .keep_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .unwrap();
+    let found = v110_on_eng(&engine).await;
+    assert!(found.is_empty(), "{found:?}");
+}
+both_backends!(
+    a_kept_rename_raises_no_v110_for_the_old_name,
+    a_kept_rename_raises_no_v110_for_the_old_name_body
+);
+
+/// Only a person answers a rename question. Links respelled here by hand or
+/// by an agent's edit, then synced and lined up again, leave it open: the
+/// banner and the doctor entry stay until the person chooses.
+async fn links_respelled_here_leave_the_question_open_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    let pager = std::fs::read_to_string(m.root.join("ops/pager.md")).unwrap();
+    engine
+        .edit_engram(&EditParams {
+            identifier: "pager".to_string(),
+            domain: "ops".to_string(),
+            operation: "find_replace".to_string(),
+            content: Some("[[platform:alpha]], then crystalline://platform/alpha".to_string()),
+            find_text: Some("[[eng:alpha]], then crystalline://engineering/alpha".to_string()),
+            ..EditParams::default()
+        })
+        .await
+        .unwrap_or_else(|e| panic!("{e}: {pager}"));
+    std::fs::write(
+        m.root.join("ops/reflections/b.md"),
+        OPS_PAGE.replace("[[eng:", "[[platform:"),
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+    engine.adopt_domain_names().await.unwrap();
+
+    assert!(engine.rename_question("eng").is_some());
+    assert_eq!(saved_question(&m).and_then(|q| q.answered), None);
+}
+both_backends!(
+    links_respelled_here_leave_the_question_open,
+    links_respelled_here_leave_the_question_open_body
 );
