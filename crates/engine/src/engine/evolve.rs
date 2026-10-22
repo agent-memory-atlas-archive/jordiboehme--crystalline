@@ -800,20 +800,7 @@ impl Engine {
     /// the old names are labels on purpose and leave `respell` altogether.
     async fn sweep_domain_names(&self, hidden: &HashSet<String>) -> SweepNames {
         let table = self.name_table_now().await;
-        let mut asked: Vec<String> = Vec::new();
-        let mut kept: Vec<String> = Vec::new();
-        for (local, entry) in &self.config.read().unwrap().domains {
-            let Some(question) = &entry.rename_question else {
-                continue;
-            };
-            let (old, _) =
-                super::manifest_rename::respell_spellings(local, entry, question, &table);
-            match question.answered {
-                None => asked.extend(old),
-                Some(crystalline_core::config::RenameAnswer::Keep) => kept.extend(old),
-                Some(crystalline_core::config::RenameAnswer::Finished) => {}
-            }
-        }
+        let (mut asked, kept) = self.rename_spellings_by_answer(&table);
         let mut known: Vec<String> = Vec::new();
         let mut respell: Vec<(String, String)> = Vec::new();
         for (spelling, local) in table.spellings() {

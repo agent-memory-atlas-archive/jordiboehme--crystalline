@@ -3439,8 +3439,8 @@ async fn a_question_whose_links_already_match_closes_on_its_own_body(store: Arc<
         "old spellings are left: the question stays"
     );
     // Before the pull: old spellings are still here.
-    let before = engine.rename_questions_still_spelled().await;
-    assert!(before.contains("eng"), "{before:?}");
+    let before = engine.rename_questions_already_clean().await;
+    assert!(!before.contains("eng"), "{before:?}");
 
     // The pull brings the teammate's respelled files.
     std::fs::write(
@@ -3552,7 +3552,7 @@ both_backends!(
 async fn an_unreadable_engram_keeps_the_question_open_body(store: Arc<Mutex<dyn Store>>) {
     let m = question_machine(store).await;
     let engine = m.engine(true).await;
-    let before = engine.rename_questions_still_spelled().await;
+    let before = engine.rename_questions_already_clean().await;
     std::fs::write(
         m.root.join("ops/reflections/b.md"),
         OPS_PAGE.replace("[[eng:", "[[platform:"),
@@ -3659,8 +3659,8 @@ async fn links_respelled_here_leave_the_question_open_body(store: Arc<Mutex<dyn 
 
     // A later pull that brought none of it does not close it either: the
     // links already matched before the pull.
-    let before = engine.rename_questions_still_spelled().await;
-    assert!(before.is_empty(), "{before:?}");
+    let before = engine.rename_questions_already_clean().await;
+    assert!(before.contains("eng"), "{before:?}");
     engine.settle_rename_questions_after_pull(&before).await;
     assert!(engine.rename_question("eng").is_some());
     assert_eq!(saved_question(&m).and_then(|q| q.answered), None);
@@ -3698,4 +3698,113 @@ both_backends!(
 both_backends!(
     links_respelled_here_leave_the_question_open,
     links_respelled_here_leave_the_question_open_body
+);
+
+/// The usual teammate case: one pull brings the MANIFEST rename and the
+/// respelled files together. The question the adoption after it records
+/// was never seen clean before the pull, so that pull settles it.
+async fn a_pull_with_the_rename_and_its_respelled_files_closes_its_question_body(
+    store: Arc<Mutex<dyn Store>>,
+) {
+    let m = machine(store).await;
+    let mut cfg = crystalline_service::overlay::load_file(&m.config_path()).unwrap();
+    cfg.domains.get_mut("eng").unwrap().name_origin = Some(NameOrigin::Explicit);
+    crystalline_core::config::save_yaml(&m.config_path(), &cfg).unwrap();
+    let engine = m.engine(true).await;
+    engine.sync(None).await.unwrap();
+    engine.adopt_domain_names().await.unwrap();
+    assert_eq!(engine.rename_question("eng"), None);
+
+    let before = engine.rename_questions_already_clean().await;
+    // The pull: the teammate's MANIFEST rename and their respelled link.
+    std::fs::write(
+        m.root.join("eng/MANIFEST.md"),
+        manifest_named("Eng", "platform"),
+    )
+    .unwrap();
+    std::fs::write(
+        m.root.join("ops/pager.md"),
+        engram("Pager", "pager", "See [[platform:alpha]] before paging."),
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+    engine.adopt_domain_names().await.unwrap();
+    assert!(
+        saved_question(&m).is_some(),
+        "the adoption records the question"
+    );
+    engine.settle_rename_questions_after_pull(&before).await;
+
+    assert_eq!(engine.rename_question("eng"), None);
+    assert_eq!(
+        saved_question(&m).and_then(|q| q.answered),
+        Some(RenameAnswer::Finished)
+    );
+}
+both_backends!(
+    a_pull_with_the_rename_and_its_respelled_files_closes_its_question,
+    a_pull_with_the_rename_and_its_respelled_files_closes_its_question_body
+);
+
+/// The text of `ops`'s engram `permalink` as stored.
+async fn ops_content(engine: &Engine, permalink: &str) -> String {
+    engine
+        .read_engram(&read_params(permalink, "ops"), &Scope::Unrestricted)
+        .await
+        .unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// While a rename question is open, and after "keep", a write keeps a link
+/// under the old name as written: respelling it is the person's answer, not
+/// the write's.
+async fn a_write_keeps_the_old_name_while_asked_and_after_keep_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    engine
+        .write_engram(&write_params("ops", "Asked", "See [[eng:alpha]]."))
+        .await
+        .unwrap();
+    let asked = ops_content(&engine, "asked").await;
+    assert!(asked.contains("See [[eng:alpha]]."), "{asked}");
+
+    engine
+        .keep_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .unwrap();
+    engine
+        .write_engram(&write_params("ops", "Kept", "See [[eng:alpha]]."))
+        .await
+        .unwrap();
+    let kept = ops_content(&engine, "kept").await;
+    assert!(kept.contains("See [[eng:alpha]]."), "{kept}");
+}
+both_backends!(
+    a_write_keeps_the_old_name_while_asked_and_after_keep,
+    a_write_keeps_the_old_name_while_asked_and_after_keep_body
+);
+
+/// Once the rename is finished, a write spells the domain by its new name
+/// again, as it does with no question at all.
+async fn a_write_respells_the_old_name_after_the_rename_is_finished_body(
+    store: Arc<Mutex<dyn Store>>,
+) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    engine
+        .finish_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .unwrap();
+    engine
+        .write_engram(&write_params("ops", "Later", "See [[eng:alpha]]."))
+        .await
+        .unwrap();
+    let later = ops_content(&engine, "later").await;
+    assert!(later.contains("See [[platform:alpha]]."), "{later}");
+}
+both_backends!(
+    a_write_respells_the_old_name_after_the_rename_is_finished,
+    a_write_respells_the_old_name_after_the_rename_is_finished_body
 );
