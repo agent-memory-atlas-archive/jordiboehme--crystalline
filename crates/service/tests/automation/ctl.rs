@@ -141,3 +141,25 @@ async fn a_status_names_at_most_a_hundred_domains_and_a_summary_is_a_string() {
     assert_eq!(share["kind"], "invalid", "{share}");
     assert_eq!(share["error"], "summary must be a string", "{share}");
 }
+
+/// `force` on a status asks past the wait after failed runs, for a run a
+/// person starts by hand; anything but a boolean is refused.
+#[tokio::test]
+async fn a_status_takes_force_as_a_boolean() {
+    let fx = fixture(&[("MANIFEST.md", &manifest(""))]).await;
+    let forced = ask(
+        &fx,
+        "automation_status",
+        json!({ "loop": "evolve", "domains": ["eng"], "force": true }),
+    )
+    .await;
+    assert_eq!(forced["ok"], true, "{forced}");
+    let wrong = ask(
+        &fx,
+        "automation_status",
+        json!({ "loop": "evolve", "domains": ["eng"], "force": "yes" }),
+    )
+    .await;
+    assert_eq!(wrong["kind"], "invalid", "{wrong}");
+    assert_eq!(wrong["error"], "force must be true or false", "{wrong}");
+}

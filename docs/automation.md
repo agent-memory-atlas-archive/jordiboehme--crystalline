@@ -28,6 +28,7 @@ Every runner asks first. When nothing is due, it ends at once and starts no agen
 | `--runner LABEL` | `cli` | The label the lease and the run record show, for example `k8s` or `n8n`. |
 | `--no-share` | off | Keep the run's changes local instead of sharing them. |
 | `--dry-run` | off | `run` only: show the command it would start, take no lease and start no agent. |
+| `--force` | off | `run` only: run even while the loop backs off after failed runs. |
 
 Exit codes, so a shell `if` reads naturally:
 
@@ -116,6 +117,8 @@ Each domain has one lease per loop. A reflect lease and an evolve lease never bl
 The lease token is a bearer secret. Whoever holds it can renew, share and record for that lease. Keep it out of logs.
 
 A run record keeps when the run started and ended, the runner label, the account, the outcome (`done`, `stopped_at_cap`, `failed`, `nothing_due` or `expired`), the items done, the items left for a person, the judgment findings waiting (evolve), a summary of at most 2 KiB and the pull request. The last 50 runs per domain and loop are kept in the index, so a full reindex that rebuilds the index loses them.
+
+After a failed run the loop backs off on that domain: status says `backing off after N failed runs` and is not due, and the webhook waits too, until 5 minutes after the last failure, doubled for each further failed run in a row and at most 6 hours. A run that did not fail ends the wait; an `expired` run neither counts nor ends it. `crystalline <loop> run --force` starts a run anyway.
 
 A stop signal (SIGTERM or Ctrl-C) stops the agent, records the run as failed and releases the lease. All of it ends within about 25 seconds, so a Kubernetes pod with the default grace period of 30 seconds records its run. A run that cannot record leaves a lease that goes stale by itself within 5 minutes.
 

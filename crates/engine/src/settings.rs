@@ -661,7 +661,7 @@ pub fn registry() -> &'static [SettingSpec] {
         },
         SettingSpec {
             key: "automation.evolve_threshold",
-            doc: "How many open maintenance findings make the evolve loop count as due and send its webhook (default 20, minimum 1)",
+            doc: "How many mechanical maintenance findings make the evolve trigger send its webhook (default 20, minimum 1). A run is due from the first one.",
             kind: SettingKind::U64,
             startup_effective: false,
             secret: false,

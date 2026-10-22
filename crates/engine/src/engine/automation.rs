@@ -11,7 +11,7 @@
 use super::*;
 use crystalline_core::automation::{
     LEASE_RENEW_SECS, LEASE_STALE_SECS, Loop, RUNS_KEPT, RunOutcome, RunReport, SUMMARY_MAX_BYTES,
-    cap_summary,
+    backoff_reason, backoff_secs, cap_summary,
 };
 use crystalline_index::{
     AutomationLease, AutomationRun, DueKey, LeaseClaim, LeaseHolder, PathChecksum,
@@ -88,6 +88,23 @@ fn scope_account(scope: &Scope) -> Option<String> {
     }
 }
 
+/// How many runs in a row failed, newest first, and when the newest of them
+/// ended. A run that expired neither counts nor breaks the row; any other
+/// outcome ends it.
+fn failed_in_a_row(runs: &[AutomationRun]) -> (u32, Option<&str>) {
+    let mut failed = 0u32;
+    let mut last = None;
+    for run in runs {
+        if run.outcome == RunOutcome::Failed.as_str() {
+            failed += 1;
+            last.get_or_insert(run.ended_at.as_str());
+        } else if run.outcome != RunOutcome::Expired.as_str() {
+            break;
+        }
+    }
+    (failed, last)
+}
+
 fn same_item(a: &DueKey, b: &DueKey) -> bool {
     a.kind == b.kind && a.key == b.key && a.version == b.version
 }
@@ -139,11 +156,31 @@ impl Engine {
     /// another instance names it in `runs_on` and is never due here. A named
     /// domain the caller may not run the loop on is refused; the unnamed
     /// scope leaves it out.
+    ///
+    /// After failed runs the loop backs off on that domain: it is not due,
+    /// and `reason` says "backing off after N failed runs", until 5 minutes
+    /// after the last failure, doubled for each further failed run in a row
+    /// and at most 6 hours. A run that did not fail ends the row.
     pub async fn automation_status(
         &self,
         lp: Loop,
         domains: &[String],
         scope: &Scope,
+    ) -> Result<Value> {
+        self.automation_status_forced(lp, domains, scope, false)
+            .await
+    }
+
+    /// [`Engine::automation_status`], and with `force` a loop that backs off
+    /// after failed runs is due anyway when it has work: what a person who
+    /// starts a run by hand (`<loop> run --force`) asks. Nothing else is
+    /// skipped.
+    pub async fn automation_status_forced(
+        &self,
+        lp: Loop,
+        domains: &[String],
+        scope: &Scope,
+        force: bool,
     ) -> Result<Value> {
         let named: Vec<String> = if domains.is_empty() {
             self.loop_domains(lp, scope).await?
@@ -159,7 +196,7 @@ impl Engine {
         };
         let mut out = Vec::with_capacity(named.len());
         for domain in &named {
-            out.push(self.loop_status(lp, domain, scope, true).await?);
+            out.push(self.loop_status(lp, domain, scope, true, force).await?);
         }
         Ok(json!({ "loop": lp, "domains": out }))
     }
@@ -200,7 +237,7 @@ impl Engine {
                 Err(e) => return Err(e),
             };
             let counted = may_run && counts;
-            let mut entry = self.loop_status(lp, domain, scope, counted).await?;
+            let mut entry = self.loop_status(lp, domain, scope, counted, false).await?;
             if let Some(obj) = entry.as_object_mut() {
                 if !may_run {
                     for key in ["last_run", "running"] {
@@ -711,6 +748,11 @@ impl Engine {
     /// ([`Engine::reflection_home_here`]); evolve on the instance that holds
     /// the domain's host lock, which off a shared database is this one.
     async fn loop_runs(&self, lp: Loop, domain: &str, scope: &Scope) -> Runs {
+        // An instance started read-only writes nothing, so a run there
+        // could do nothing.
+        if self.read_only {
+            return Runs::Nowhere(EngineError::ReadOnly);
+        }
         match lp {
             Loop::Reflect => {
                 if self.reflection_home_here(domain).await {
@@ -891,32 +933,40 @@ impl Engine {
     /// `counted` is whether the caller may run the loop: only then are the
     /// due items worked out (they need the right to curate the Reflection or
     /// to write the knowledge). Without it the entry still shows the lease,
-    /// the last run and the delivery, and counts nothing.
+    /// the last run and the delivery, and counts nothing. `force` skips the
+    /// backoff after failed runs, and nothing else.
     async fn loop_status(
         &self,
         lp: Loop,
         domain: &str,
         scope: &Scope,
         counted: bool,
+        force: bool,
     ) -> Result<Value> {
         let runs_on = self.loop_runs(lp, domain, scope).await;
         let id = {
             let store = self.store.lock().await;
             store.domain_id(domain).await?
         };
-        let (lease, last_run) = match id {
+        let (lease, runs) = match id {
             Some(id) => {
                 let store = self.store.lock().await;
                 (
                     store.automation_lease(id, lp.as_str()).await?,
-                    store
-                        .automation_runs(id, lp.as_str(), 1)
-                        .await?
-                        .into_iter()
-                        .next(),
+                    store.automation_runs(id, lp.as_str(), RUNS_KEPT).await?,
                 )
             }
-            None => (None, None),
+            None => (None, Vec::new()),
+        };
+        let last_run = runs.first();
+        // The wait after failed runs in a row, while it lasts.
+        let backing_off = match failed_in_a_row(&runs) {
+            (failed, Some(ended)) if failed > 0 => DateTime::parse_from_rfc3339(ended)
+                .ok()
+                .map(|ended| ended + Duration::seconds(backoff_secs(failed)))
+                .filter(|until| self.automation_clock() < *until)
+                .map(|_| failed),
+            _ => None,
         };
         let (_, stale_before) = self.automation_window();
         let running = lease.filter(|lease| lease.renewed_at.as_str() >= stale_before.as_str());
@@ -946,7 +996,9 @@ impl Engine {
                 "judgment": due.as_ref().map_or(0, |d| d.judgment),
             }),
         };
-        let is_due = running.is_none() && due.as_ref().is_some_and(|d| !d.items.is_empty());
+        let is_due = running.is_none()
+            && (force || backing_off.is_none())
+            && due.as_ref().is_some_and(|d| !d.items.is_empty());
         // The trigger's delivery only where the MANIFEST turns it on.
         let delivery = if self.loop_trigger(domain, lp).await == crystalline_core::Trigger::Webhook
         {
@@ -966,10 +1018,10 @@ impl Engine {
                 _ => None,
             },
             "reason": match runs_on {
-                Runs::Nowhere(_) => Some(NOT_HOSTED_HERE),
-                _ => None,
+                Runs::Nowhere(_) => Some(NOT_HOSTED_HERE.to_string()),
+                _ => backing_off.map(backoff_reason),
             },
-            "last_run": last_run.as_ref().map(run_json),
+            "last_run": last_run.map(run_json),
             "delivery": delivery,
         }))
     }

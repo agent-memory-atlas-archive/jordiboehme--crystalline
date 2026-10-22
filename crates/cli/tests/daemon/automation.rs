@@ -283,8 +283,33 @@ fn a_run_without_a_summary_is_recorded_as_failed() {
     assert_eq!(code(&out), Some(2), "{}", explain(&out));
     let s = status_json(&env, "busy");
     assert_eq!(s["domains"][0]["last_run"]["outcome"], "failed", "{s}");
-    // A failed run leaves nothing for a person: the finding stays due.
-    assert_eq!(s["domains"][0]["due"], true, "{s}");
+    // A failed run leaves nothing for a person, but the loop backs off
+    // before it tries again.
+    assert_eq!(s["domains"][0]["due"], false, "{s}");
+    assert_eq!(
+        s["domains"][0]["reason"], "backing off after 1 failed run",
+        "{s}"
+    );
+    let out = env.output(&["evolve", "status", "--domain", "busy"]);
+    assert_eq!(code(&out), Some(1), "{}", explain(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("busy: backing off after 1 failed run"),
+        "{}",
+        explain(&out)
+    );
+    let out = env.output(&["evolve", "run", "--domain", "busy"]);
+    assert_eq!(code(&out), Some(1), "{}", explain(&out));
+    assert_eq!(env.calls().matches("call\n").count(), 1, "{}", env.calls());
+
+    // A person starts it anyway.
+    let out = env.output(&["evolve", "run", "--domain", "busy", "--force"]);
+    assert_eq!(code(&out), Some(2), "{}", explain(&out));
+    assert_eq!(env.calls().matches("call\n").count(), 2, "{}", env.calls());
+    let s = status_json(&env, "busy");
+    assert_eq!(
+        s["domains"][0]["reason"], "backing off after 2 failed runs",
+        "{s}"
+    );
 }
 
 #[test]

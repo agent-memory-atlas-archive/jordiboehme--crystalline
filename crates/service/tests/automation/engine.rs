@@ -350,6 +350,10 @@ async fn a_failed_run_parks_nothing() {
         report(RunOutcome::Failed, 0, &"x".repeat(5000)),
     )
     .await;
+    // The loop backs off for 5 minutes after the failure; then the item
+    // that run did not settle is due again.
+    fx.engine
+        .set_automation_now(Some(start() + Duration::seconds(301)));
     let s = status(&fx.engine, Loop::Reflect).await;
     assert_eq!(s["due"], true, "{s}");
     assert_eq!(s["left_for_person"], 0, "{s}");
@@ -359,6 +363,126 @@ async fn a_failed_run_parks_nothing() {
         2048,
         "the summary is capped"
     );
+}
+
+/// Record one run of `outcome` on `eng` at `now`.
+async fn run_at(fx: &Fx, now: DateTime<FixedOffset>, outcome: RunOutcome) {
+    fx.engine.set_automation_now(Some(now));
+    let token = take(&fx.engine, Loop::Reflect, "eng", "cli").await;
+    record(
+        &fx.engine,
+        Loop::Reflect,
+        "eng",
+        &token,
+        report(outcome, 0, ""),
+    )
+    .await;
+}
+
+/// A run that fails the same way every time costs one run per wait, not one
+/// per poll: after N failed runs in a row the loop is not due, and says why,
+/// until 5 minutes after the last failure, doubled for each further one. A
+/// person can still start a run with force, and a run that did not fail
+/// ends the wait.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_runs_back_off_until_a_run_does_not_fail() {
+    let fx = reflecting().await;
+    open_thread(&fx, "aaaa1111", "Still true?").await;
+    run_at(&fx, start(), RunOutcome::Failed).await;
+    let s = status(&fx.engine, Loop::Reflect).await;
+    assert_eq!(s["due"], false, "{s}");
+    assert_eq!(s["reason"], "backing off after 1 failed run", "{s}");
+    assert_eq!(
+        s["counts"]["waiting_for_the_agent"], 1,
+        "the work is still counted: {s}"
+    );
+
+    // A person who starts a run by hand skips the wait, and only the wait.
+    let forced = fx
+        .engine
+        .automation_status_forced(
+            Loop::Reflect,
+            &["eng".to_string()],
+            &Scope::Unrestricted,
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(forced["domains"][0]["due"], true, "{forced}");
+
+    // A second failure 6 minutes in: the wait doubles to 10 minutes from it.
+    let second = start() + Duration::seconds(360);
+    run_at(&fx, second, RunOutcome::Failed).await;
+    fx.engine
+        .set_automation_now(Some(second + Duration::seconds(599)));
+    let s = status(&fx.engine, Loop::Reflect).await;
+    assert_eq!(s["reason"], "backing off after 2 failed runs", "{s}");
+    assert_eq!(s["due"], false, "{s}");
+    fx.engine
+        .set_automation_now(Some(second + Duration::seconds(601)));
+    let s = status(&fx.engine, Loop::Reflect).await;
+    assert_eq!(s["due"], true, "{s}");
+    assert_eq!(s["reason"], Value::Null, "{s}");
+
+    // A run that stops at its cap ends the row; the next failure waits 5
+    // minutes again.
+    let capped = second + Duration::seconds(700);
+    run_at(&fx, capped, RunOutcome::StoppedAtCap).await;
+    run_at(&fx, capped + Duration::seconds(10), RunOutcome::Failed).await;
+    let s = status(&fx.engine, Loop::Reflect).await;
+    assert_eq!(s["reason"], "backing off after 1 failed run", "{s}");
+    fx.engine
+        .set_automation_now(Some(capped + Duration::seconds(311)));
+    let s = status(&fx.engine, Loop::Reflect).await;
+    assert_eq!(s["due"], true, "{s}");
+}
+
+/// The wait never grows past 6 hours, however many runs failed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_backoff_stops_at_six_hours() {
+    let fx = reflecting().await;
+    open_thread(&fx, "aaaa1111", "Still true?").await;
+    let mut now = start();
+    for _ in 0..12 {
+        run_at(&fx, now, RunOutcome::Failed).await;
+        now += Duration::seconds(1);
+    }
+    let last = now - Duration::seconds(1);
+    fx.engine
+        .set_automation_now(Some(last + Duration::seconds(6 * 3600 - 1)));
+    let s = status(&fx.engine, Loop::Reflect).await;
+    assert_eq!(s["reason"], "backing off after 12 failed runs", "{s}");
+    fx.engine
+        .set_automation_now(Some(last + Duration::seconds(6 * 3600 + 1)));
+    let s = status(&fx.engine, Loop::Reflect).await;
+    assert_eq!(s["due"], true, "{s}");
+}
+
+/// An instance started read-only writes nothing, so no loop runs there:
+/// status says it is not hosted here and a take is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_only_instance_runs_no_loop() {
+    let fx = fixture(&[("stub-note.md", &engram("Stub note", "stub-note", STUB))]).await;
+    write_summary_pair(&fx.root);
+    fx.engine.sync(None).await.unwrap();
+    let cfg = fx.engine.config();
+    let store = fx.engine.store();
+    let read_only = Engine::new(store, cfg, None, None).with_read_only(true);
+    read_only.set_automation_now(Some(start()));
+    for lp in [Loop::Evolve, Loop::Reflect] {
+        let answer = read_only
+            .automation_status(lp, &["eng".to_string()], &Scope::Unrestricted)
+            .await
+            .unwrap();
+        let s = &answer["domains"][0];
+        assert_eq!(s["due"], false, "{s}");
+        assert_eq!(s["reason"], "not hosted here", "{s}");
+        let refused = read_only
+            .automation_lease_take(lp, "eng", "cli", &Scope::Unrestricted)
+            .await
+            .unwrap_err();
+        assert!(matches!(refused, EngineError::ReadOnly), "{refused}");
+    }
 }
 
 /// The age of the one `source_changed` item in `eng`'s queue.

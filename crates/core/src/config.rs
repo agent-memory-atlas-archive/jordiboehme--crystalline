@@ -451,8 +451,9 @@ impl GlobalConfig {
             .unwrap_or(DEFAULT_LOGIN_FREE_ATTEMPTS)
     }
 
-    /// `automation.evolve_threshold`: how many open maintenance findings make
-    /// the evolve loop due. Absent means [`DEFAULT_EVOLVE_THRESHOLD`].
+    /// `automation.evolve_threshold`: how many mechanical maintenance
+    /// findings make the evolve trigger send its webhook. Absent means
+    /// [`DEFAULT_EVOLVE_THRESHOLD`].
     pub fn automation_evolve_threshold(&self) -> u64 {
         self.automation
             .as_ref()
@@ -1190,8 +1191,9 @@ pub struct AutomationConfig {
     /// waiting. Absent means it sends none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webhook: Option<WebhookConfig>,
-    /// How many open maintenance findings make the evolve loop due. Absent
-    /// means [`DEFAULT_EVOLVE_THRESHOLD`].
+    /// How many mechanical maintenance findings make the evolve trigger send
+    /// its webhook; a run is due from the first one. Absent means
+    /// [`DEFAULT_EVOLVE_THRESHOLD`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evolve_threshold: Option<u64>,
 }

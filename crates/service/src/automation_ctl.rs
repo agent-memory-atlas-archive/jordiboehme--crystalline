@@ -114,7 +114,16 @@ async fn run(
             }
             Some(_) => return Err(Failure::invalid("domains must be an array of names")),
         }
-        return Ok(engine.automation_status(lp, &domains, scope).await?);
+        // `force` skips the wait after failed runs, for a run a person
+        // starts by hand.
+        let force = match request.get("force") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(force)) => *force,
+            Some(_) => return Err(Failure::invalid("force must be true or false")),
+        };
+        return Ok(engine
+            .automation_status_forced(lp, &domains, scope, force)
+            .await?);
     }
     let domain = text(request, "domain")?;
     let answer = match cmd {

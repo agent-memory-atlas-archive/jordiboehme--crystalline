@@ -119,6 +119,10 @@ pub enum LoopCommand {
         /// Show what would run and stop. Takes no lease and starts no agent.
         #[arg(long)]
         dry_run: bool,
+        /// Run even while the loop backs off after failed runs. Nothing else
+        /// is skipped: a domain with nothing due or a run going stays as it is.
+        #[arg(long)]
+        force: bool,
     },
     /// Poll the status and run when something is due, with the same settings
     /// as run. Runs until it gets SIGTERM or Ctrl-C; a run in progress is
@@ -170,7 +174,7 @@ async fn dispatch(lp: Loop, command: LoopCommand, json: bool) -> anyhow::Result<
     let client = AutomationClient::from_env().await?;
     match command {
         LoopCommand::Status { domain } => {
-            let answer = client.status(lp, &domain).await?;
+            let answer = client.status(lp, &domain, false).await?;
             if json {
                 println!("{answer}");
             } else {
@@ -182,12 +186,14 @@ async fn dispatch(lp: Loop, command: LoopCommand, json: bool) -> anyhow::Result<
             domain,
             args,
             dry_run,
+            force,
         } => {
             let stop = stop_signal();
             let opts = RunOptions {
                 args,
                 dry_run,
                 json,
+                force,
             };
             run_due(lp, &client, domain.as_deref(), &opts, &stop).await
         }
@@ -202,6 +208,7 @@ async fn dispatch(lp: Loop, command: LoopCommand, json: bool) -> anyhow::Result<
                 args,
                 dry_run: false,
                 json,
+                force: false,
             };
             watch_loop(lp, &client, &domain, interval.max(1), &claude, &opts, stop).await;
             Ok(0)

@@ -80,12 +80,23 @@ impl AutomationClient {
         self.call(request).await
     }
 
-    pub(super) async fn status(&self, lp: Loop, domains: &[String]) -> anyhow::Result<Value> {
-        let rest = if domains.is_empty() {
+    /// The status of `lp` on `domains`, or on every domain in scope. With
+    /// `force` a loop that backs off after failed runs counts as due when it
+    /// has work.
+    pub(super) async fn status(
+        &self,
+        lp: Loop,
+        domains: &[String],
+        force: bool,
+    ) -> anyhow::Result<Value> {
+        let mut rest = if domains.is_empty() {
             json!({})
         } else {
             json!({ "domains": domains })
         };
+        if force {
+            rest["force"] = json!(true);
+        }
         self.verb("automation_status", lp, rest).await
     }
 

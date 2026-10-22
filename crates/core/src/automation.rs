@@ -21,6 +21,34 @@ pub const RUNS_KEPT: usize = 50;
 /// boundary.
 pub const SUMMARY_MAX_BYTES: usize = 2048;
 
+/// How long a loop waits after one failed run before it is due again, in
+/// seconds; each further failed run in a row doubles it.
+pub const BACKOFF_FIRST_SECS: i64 = 300;
+
+/// The longest wait after failed runs, in seconds (6 hours).
+pub const BACKOFF_MAX_SECS: i64 = 6 * 3600;
+
+/// How long a loop waits after `failed` failed runs in a row before it is due
+/// again: 5 minutes after the first, doubled for each further one, at most 6
+/// hours. Nothing after none.
+pub fn backoff_secs(failed: u32) -> i64 {
+    if failed == 0 {
+        return 0;
+    }
+    // 300 s shifted by 7 is already past the cap, so a longer run of
+    // failures cannot overflow the shift.
+    let doublings = (failed - 1).min(7);
+    (BACKOFF_FIRST_SECS << doublings).min(BACKOFF_MAX_SECS)
+}
+
+/// The status reason while a loop waits after `failed` failed runs in a row.
+pub fn backoff_reason(failed: u32) -> String {
+    match failed {
+        1 => "backing off after 1 failed run".to_string(),
+        n => format!("backing off after {n} failed runs"),
+    }
+}
+
 /// One of the two loops a runner works.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -258,6 +286,19 @@ fn next_count(lines: &[&str], from: usize, key: &str) -> Option<(usize, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_backoff_doubles_from_five_minutes_up_to_six_hours() {
+        assert_eq!(backoff_secs(0), 0);
+        assert_eq!(backoff_secs(1), 300);
+        assert_eq!(backoff_secs(2), 600);
+        assert_eq!(backoff_secs(3), 1200);
+        assert_eq!(backoff_secs(7), 19200);
+        assert_eq!(backoff_secs(8), 21600);
+        assert_eq!(backoff_secs(50), 21600);
+        assert_eq!(backoff_reason(1), "backing off after 1 failed run");
+        assert_eq!(backoff_reason(3), "backing off after 3 failed runs");
+    }
 
     #[test]
     fn a_loop_reads_and_writes_its_word() {

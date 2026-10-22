@@ -38,6 +38,8 @@ pub(super) struct RunOptions {
     pub(super) args: RunArgs,
     pub(super) dry_run: bool,
     pub(super) json: bool,
+    /// Skip the wait after failed runs (`run --force`).
+    pub(super) force: bool,
 }
 
 /// The exit code of a recorded run: 2 when it failed, else 0. The agent's
@@ -60,7 +62,7 @@ pub(super) async fn run_due(
     stop: &watch::Receiver<bool>,
 ) -> anyhow::Result<u8> {
     let named: Vec<String> = domain.map(str::to_string).into_iter().collect();
-    let answer = client.status(lp, &named).await?;
+    let answer = client.status(lp, &named, opts.force).await?;
     let due: Vec<String> = domains_of(&answer)
         .iter()
         .filter(|d| d["due"] == true)
@@ -73,6 +75,8 @@ pub(super) async fn run_due(
                 println!("{name}: already running");
             } else if let Some(home) = d["runs_on"].as_str() {
                 println!("{name}: runs on {home}");
+            } else if let Some(reason) = d["reason"].as_str() {
+                println!("{name}: {reason}");
             }
         }
         println!("Nothing is due.");
@@ -746,7 +750,7 @@ pub(super) async fn watch_loop(
             return;
         }
         let status = tokio::select! {
-            status = client.status(lp, domains) => status,
+            status = client.status(lp, domains, false) => status,
             _ = stop.wait_for(|stopped| *stopped) => return,
         };
         match status {
