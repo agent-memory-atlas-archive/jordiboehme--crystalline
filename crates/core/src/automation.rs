@@ -41,11 +41,15 @@ pub fn backoff_secs(failed: u32) -> i64 {
     (BACKOFF_FIRST_SECS << doublings).min(BACKOFF_MAX_SECS)
 }
 
+/// How every [`backoff_reason`] starts, so a reader can tell the wait after
+/// failed runs from the other reasons a loop is not due.
+pub const BACKOFF_REASON_PREFIX: &str = "backing off after ";
+
 /// The status reason while a loop waits after `failed` failed runs in a row.
 pub fn backoff_reason(failed: u32) -> String {
     match failed {
-        1 => "backing off after 1 failed run".to_string(),
-        n => format!("backing off after {n} failed runs"),
+        1 => format!("{BACKOFF_REASON_PREFIX}1 failed run"),
+        n => format!("{BACKOFF_REASON_PREFIX}{n} failed runs"),
     }
 }
 

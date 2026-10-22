@@ -20,6 +20,9 @@
 //!   stays above it).
 //! - When a lease goes away and work is still due, at once (seen on the
 //!   [`LEASE_TICK`]); for evolve the threshold still applies.
+//! - While the loop backs off after failed runs, nothing; the slot looks
+//!   again every [`RATE_LIMIT`] and sends what it was owed once the wait
+//!   ends.
 //!
 //! Reflect sends again whenever a look finds people still waiting (any
 //! event arms one), held only by the cap below; evolve sends again only on
@@ -40,7 +43,7 @@ use std::time::Duration;
 
 use chrono::{SecondsFormat, Utc};
 use crystalline_core::Trigger;
-use crystalline_core::automation::{Loop, webhook_signature};
+use crystalline_core::automation::{BACKOFF_REASON_PREFIX, Loop, webhook_signature};
 use crystalline_engine::changes::Change;
 use serde_json::{Value, json};
 use tokio::sync::broadcast::error::RecvError;
@@ -419,6 +422,19 @@ impl Triggers {
             }
         };
         let entry = &status["domains"][0];
+        // The loop backs off after failed runs: nothing is sent while it
+        // waits, and nothing new may come to wake the slot when it ends, so
+        // the slot looks again on its own, keeping a send it was owed.
+        if entry["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.starts_with(BACKOFF_REASON_PREFIX))
+        {
+            let now = Instant::now();
+            let slot = self.slot(domain, lp);
+            slot.urgent |= urgent;
+            slot.arm(now + RATE_LIMIT);
+            return;
+        }
         if !entry["runs_on"].is_null() || !entry["reason"].is_null() {
             return;
         }

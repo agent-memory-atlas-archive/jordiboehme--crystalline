@@ -866,6 +866,47 @@ async fn a_held_lease_stops_the_retries() {
     task.stop().await;
 }
 
+/// A run that failed releases its lease while the loop backs off: nothing
+/// is sent during the wait, and the waiting thread is sent once it ends,
+/// with no new event to wake the trigger.
+#[tokio::test(start_paused = true)]
+async fn a_failed_run_waits_out_its_backoff_then_sends() {
+    let mut hook = hook();
+    let fx = reflecting("reflect_trigger: webhook\n", Some(&hook.url)).await;
+    let task = start(&fx.engine, &hook).await;
+    let token = take(&fx.engine).await;
+    open_thread(&fx.engine, "Still true?").await;
+    fx.engine
+        .automation_run_record(
+            Loop::Reflect,
+            "eng",
+            &token,
+            &RunReport {
+                started_at: String::new(),
+                outcome: RunOutcome::Failed,
+                done: 0,
+                summary: String::new(),
+            },
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    assert!(
+        hook.next(minutes(6)).await.is_none(),
+        "nothing while the loop backs off"
+    );
+    // The five minutes after the failure are over.
+    fx.engine.set_automation_now(Some(
+        chrono::DateTime::parse_from_rfc3339("2026-10-21T10:06:00+00:00").unwrap(),
+    ));
+    let hit = hook
+        .next(minutes(6))
+        .await
+        .expect("sent once the wait ends");
+    assert_eq!(hit.json()["counts"]["waiting_for_the_agent"], 1);
+    task.stop().await;
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_release_inside_five_minutes_waits_for_the_cap() {
     let mut hook = hook();
