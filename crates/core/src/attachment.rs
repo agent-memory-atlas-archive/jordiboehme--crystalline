@@ -546,6 +546,8 @@ mod tests {
             ("100%.pdf", Some("100.pdf")),
             ("###", None),
             ("café.png", Some("café.png")),
+            // Combining marks are letters of their script, as in Fluid.
+            ("हिंदी नोट.png", Some("हिंदी-नोट.png")),
         ];
         for (input, want) in cases {
             assert_eq!(clean_asset_segment(input).as_deref(), want, "{input}");

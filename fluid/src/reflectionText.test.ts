@@ -179,6 +179,14 @@ describe("display helpers", () => {
     expect(stripProvenance("# No frontmatter\n")).toBe("# No frontmatter\n");
   });
 
+  it("keeps the closing fence of a frontmatter with CRLF line ends", () => {
+    // A `reflection:` block last in the frontmatter must not swallow the
+    // closing `---\r`.
+    const page =
+      "---\r\ntitle: D\r\nreflection:\r\n  7f3a9c2e:\r\n    reflected: ab\r\n---\r\n\r\n# D\r\n";
+    expect(stripProvenance(page)).toBe("---\r\ntitle: D\r\n---\r\n\r\n# D\r\n");
+  });
+
   it("drops the fences with the block when it was the only key, as the engine does", () => {
     // Byte for byte the room text core Task 18 serves (`without_provenance`):
     // no empty fences, no leading blank line.

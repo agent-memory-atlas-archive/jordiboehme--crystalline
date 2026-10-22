@@ -152,7 +152,7 @@ function truncateToBytes(value: string, maxBytes: number): string {
 function slug(part: string): string {
   const safe = part
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}._-]+/gu, "-")
+    .replace(/[^\p{Alphabetic}\p{N}._-]+/gu, "-")
     .replace(/-{2,}/g, "-");
   return truncateToBytes(safe, MAX_NAME_BYTES)
     .replace(/^[.-]+/, "")
