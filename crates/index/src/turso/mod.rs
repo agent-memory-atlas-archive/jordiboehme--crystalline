@@ -63,6 +63,7 @@ use crate::store::{
     reset_spelled_references_sql, resolve_references_to_sql, resolve_spelled_references_sql,
     spelled_references_sql, spelling_plan,
 };
+use crate::store::{AutomationLease, AutomationRun, LeaseClaim, LeaseHolder};
 use crate::sweep::{SpelledRef, UnresolvedRef};
 
 /// `?from` through `?(from + count - 1)`, comma separated: an `IN` list's
@@ -605,7 +606,7 @@ impl TursoStore {
         }
 
         for batch in record.relations.chunks(INSERT_CHUNK) {
-            let mut params: Vec<Value> = Vec::with_capacity(batch.len() * 7);
+            let mut params: Vec<Value> = Vec::with_capacity(batch.len() * 8);
             for rel in batch {
                 params.push(Value::Integer(engram_id));
                 params.push(Value::Integer(domain.0));
@@ -614,16 +615,17 @@ impl TursoStore {
                 params.push(Value::Text(rel.to_target.clone()));
                 params.push(opt_text(&rel.to_domain));
                 params.push(Value::Text(rel.to_raw.clone()));
+                params.push(opt_text(&rel.to_alias));
             }
             let sql = format!(
-                "INSERT INTO relation(engram_id, domain_id, line, rel_type, to_target, to_domain, to_raw, to_id) VALUES {}",
-                value_rows(7, batch.len(), Some("NULL"))
+                "INSERT INTO relation(engram_id, domain_id, line, rel_type, to_target, to_domain, to_raw, to_alias, to_id) VALUES {}",
+                value_rows(8, batch.len(), Some("NULL"))
             );
             self.conn.execute(&sql, params).await?;
         }
 
         for batch in record.links.chunks(INSERT_CHUNK) {
-            let mut params: Vec<Value> = Vec::with_capacity(batch.len() * 6);
+            let mut params: Vec<Value> = Vec::with_capacity(batch.len() * 7);
             for link in batch {
                 params.push(Value::Integer(engram_id));
                 params.push(Value::Integer(domain.0));
@@ -631,10 +633,11 @@ impl TursoStore {
                 params.push(Value::Text(link.to_target.clone()));
                 params.push(opt_text(&link.to_domain));
                 params.push(Value::Text(link.to_raw.clone()));
+                params.push(opt_text(&link.to_alias));
             }
             let sql = format!(
-                "INSERT INTO link(engram_id, domain_id, line, to_target, to_domain, to_raw, to_id) VALUES {}",
-                value_rows(6, batch.len(), Some("NULL"))
+                "INSERT INTO link(engram_id, domain_id, line, to_target, to_domain, to_raw, to_alias, to_id) VALUES {}",
+                value_rows(7, batch.len(), Some("NULL"))
             );
             self.conn.execute(&sql, params).await?;
         }
@@ -1009,6 +1012,7 @@ fn unresolved_ref_from_row(r: &Row) -> UnresolvedRef {
         // A row written before `to_raw` existed reads as an empty string, which
         // the repair treats as "nothing extra to score" rather than as a match.
         raw: cell_text(r, 7).unwrap_or_default(),
+        alias: cell_text(r, 8),
         // The parser writes 0 when it has no line to report, which the sweep
         // reads as "no line" rather than as line zero.
         line: cell_i64(r, 5).filter(|l| *l > 0).map(|l| l as usize),
@@ -1093,6 +1097,48 @@ fn domain_host_of(r: &Row) -> DomainHost {
         heartbeat_at: cell_text(r, 2).unwrap_or_default(),
         token: cell_text(r, 3).unwrap_or_default(),
     }
+}
+
+/// The read of one automation lease row, in [`automation_lease_of`]'s column
+/// order.
+const AUTOMATION_LEASE_SQL: &str = "SELECT instance_id, account, runner, token, taken_at, renewed_at, unshared_at_start, due_at_start, pr_url, written FROM automation_lease WHERE domain_id=?1 AND loop_kind=?2";
+
+/// An [`AutomationLease`] from a row read by [`AUTOMATION_LEASE_SQL`]'s
+/// columns.
+fn automation_lease_of(r: &Row) -> Result<AutomationLease> {
+    Ok(AutomationLease {
+        holder: LeaseHolder {
+            instance_id: cell_text(r, 0).unwrap_or_default(),
+            account: cell_text(r, 1),
+            runner: cell_text(r, 2).unwrap_or_default(),
+            unshared_at_start: serde_json::from_str(&cell_text(r, 6).unwrap_or_default())?,
+            due_at_start: serde_json::from_str(&cell_text(r, 7).unwrap_or_default())?,
+        },
+        token: cell_text(r, 3).unwrap_or_default(),
+        taken_at: cell_text(r, 4).unwrap_or_default(),
+        renewed_at: cell_text(r, 5).unwrap_or_default(),
+        pr_url: cell_text(r, 8),
+        written: serde_json::from_str(&cell_text(r, 9).unwrap_or_else(|| "[]".to_string()))?,
+    })
+}
+
+/// An [`AutomationRun`] from a row of `automation_run`'s columns from
+/// `started_at` on.
+fn automation_run_of(r: &Row) -> Result<AutomationRun> {
+    let count = |i| cell_i64(r, i).unwrap_or(0).max(0) as u64;
+    Ok(AutomationRun {
+        started_at: cell_text(r, 0).unwrap_or_default(),
+        ended_at: cell_text(r, 1).unwrap_or_default(),
+        runner: cell_text(r, 2).unwrap_or_default(),
+        account: cell_text(r, 3),
+        outcome: cell_text(r, 4).unwrap_or_default(),
+        done: count(5),
+        left: count(6),
+        judgment_waiting: count(7),
+        summary: cell_text(r, 8).unwrap_or_default(),
+        pr_url: cell_text(r, 9),
+        left_items: serde_json::from_str(&cell_text(r, 10).unwrap_or_default())?,
+    })
 }
 
 fn cell_i64(row: &Row, idx: usize) -> Option<i64> {
@@ -1609,11 +1655,11 @@ pub fn folder_level_sql(rel: &str, under: &str) -> String {
 #[doc(hidden)]
 pub fn unresolved_refs_sql(src_screen: &str, rel_pending: &str, link_pending: &str) -> String {
     format!(
-        "SELECT r.engram_id, 0 AS kind, r.rel_type, r.to_domain, r.to_target, r.line, e.path, r.to_raw \
+        "SELECT r.engram_id, 0 AS kind, r.rel_type, r.to_domain, r.to_target, r.line, e.path, r.to_raw, r.to_alias \
          FROM relation r JOIN engram e ON e.id=r.engram_id \
          WHERE {src_screen} AND {rel_pending} AND r.domain_id=?1 \
          UNION ALL \
-         SELECT l.engram_id, 1, 'links_to', l.to_domain, l.to_target, l.line, e.path, l.to_raw \
+         SELECT l.engram_id, 1, 'links_to', l.to_domain, l.to_target, l.line, e.path, l.to_raw, l.to_alias \
          FROM link l JOIN engram e ON e.id=l.engram_id \
          WHERE {src_screen} AND {link_pending} AND l.domain_id=?1 \
          ORDER BY 7, 6, 2, 5"
@@ -1993,6 +2039,8 @@ impl Store for TursoStore {
                 "DELETE FROM reflection_chunk WHERE domain_id=?1",
                 "DELETE FROM tag_alias WHERE domain_id=?1",
                 "DELETE FROM domain_lock WHERE domain_id=?1",
+                "DELETE FROM automation_lease WHERE domain_id=?1",
+                "DELETE FROM automation_run WHERE domain_id=?1",
                 "DELETE FROM relation WHERE domain_id=?1",
                 "DELETE FROM link WHERE domain_id=?1",
                 "DELETE FROM domain WHERE id=?1",
@@ -2076,6 +2124,7 @@ impl Store for TursoStore {
                         line: cell_i64(r, 1).unwrap_or(0).max(0) as usize,
                         spelling: cell_text(r, 2).unwrap_or_default(),
                         raw: cell_text(r, 3).unwrap_or_default(),
+                        alias: cell_text(r, 5),
                     },
                 )
             })
@@ -4435,6 +4484,254 @@ impl Store for TursoStore {
         self.domain_host(domain).await
     }
 
+    async fn take_automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        holder: &LeaseHolder,
+        now: &str,
+        stale_before: &str,
+    ) -> Result<LeaseClaim> {
+        // One atomic upsert, the host lock's claim: insert when unheld, or
+        // replace a row whose last renewal is older than `stale_before`. A
+        // fresh row is left untouched, whoever asks; the re-read then tells
+        // whose token the row carries. One instance owns a Turso database,
+        // so the row read before the claim is the row a landed claim
+        // replaced.
+        let token = crate::store::claim_token(now);
+        let before = self.automation_lease(domain, loop_kind).await?;
+        self.conn
+            .execute(
+                "INSERT INTO automation_lease(domain_id, loop_kind, instance_id, account, runner, \
+                 token, taken_at, renewed_at, unshared_at_start, due_at_start) \
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9) \
+                 ON CONFLICT(domain_id, loop_kind) DO UPDATE SET \
+                 instance_id=excluded.instance_id, account=excluded.account, runner=excluded.runner, \
+                 token=excluded.token, taken_at=excluded.taken_at, renewed_at=excluded.renewed_at, \
+                 unshared_at_start=excluded.unshared_at_start, due_at_start=excluded.due_at_start, \
+                 pr_url=NULL, written='[]' \
+                 WHERE automation_lease.renewed_at < ?10",
+                vec![
+                    Value::Integer(domain.0),
+                    Value::Text(loop_kind.to_string()),
+                    Value::Text(holder.instance_id.clone()),
+                    opt_text(&holder.account),
+                    Value::Text(holder.runner.clone()),
+                    Value::Text(token.clone()),
+                    Value::Text(now.to_string()),
+                    Value::Text(serde_json::to_string(&holder.unshared_at_start)?),
+                    Value::Text(serde_json::to_string(&holder.due_at_start)?),
+                    Value::Text(stale_before.to_string()),
+                ],
+            )
+            .await?;
+        match self.automation_lease(domain, loop_kind).await? {
+            Some(lease) if lease.token != token => Ok(LeaseClaim::Held(lease)),
+            _ => Ok(LeaseClaim::Acquired {
+                token,
+                replaced: before,
+            }),
+        }
+    }
+
+    async fn set_automation_pr_url(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        token: &str,
+        pr_url: &str,
+    ) -> Result<bool> {
+        let n = self
+            .conn
+            .execute(
+                "UPDATE automation_lease SET pr_url=?4 \
+                 WHERE domain_id=?1 AND loop_kind=?2 AND token=?3",
+                vec![
+                    Value::Integer(domain.0),
+                    Value::Text(loop_kind.to_string()),
+                    Value::Text(token.to_string()),
+                    Value::Text(pr_url.to_string()),
+                ],
+            )
+            .await?;
+        Ok(n > 0)
+    }
+
+    async fn note_automation_written(
+        &self,
+        domain: DomainId,
+        account: &str,
+        paths: &[String],
+    ) -> Result<u64> {
+        // One process owns a Turso database and the engine serializes its
+        // store calls, so a read and a token-guarded write of each lease
+        // cannot interleave with another note.
+        let mut noted = 0;
+        for loop_kind in ["reflect", "evolve"] {
+            let Some(lease) = self.automation_lease(domain, loop_kind).await? else {
+                continue;
+            };
+            if lease.holder.account.as_deref() != Some(account) {
+                continue;
+            }
+            let mut written = lease.written;
+            for path in paths {
+                if !written.contains(path) {
+                    written.push(path.clone());
+                }
+            }
+            let n = self
+                .conn
+                .execute(
+                    "UPDATE automation_lease SET written=?4 \
+                     WHERE domain_id=?1 AND loop_kind=?2 AND token=?3",
+                    vec![
+                        Value::Integer(domain.0),
+                        Value::Text(loop_kind.to_string()),
+                        Value::Text(lease.token.clone()),
+                        Value::Text(serde_json::to_string(&written)?),
+                    ],
+                )
+                .await?;
+            noted += n;
+        }
+        Ok(noted)
+    }
+
+    async fn renew_automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        token: &str,
+        now: &str,
+    ) -> Result<bool> {
+        let n = self
+            .conn
+            .execute(
+                "UPDATE automation_lease SET renewed_at=?4 \
+                 WHERE domain_id=?1 AND loop_kind=?2 AND token=?3",
+                vec![
+                    Value::Integer(domain.0),
+                    Value::Text(loop_kind.to_string()),
+                    Value::Text(token.to_string()),
+                    Value::Text(now.to_string()),
+                ],
+            )
+            .await?;
+        Ok(n > 0)
+    }
+
+    async fn release_automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        token: &str,
+    ) -> Result<Option<AutomationLease>> {
+        // One process owns a Turso database: the row read here is the row
+        // the token-guarded delete removes.
+        let Some(lease) = self.automation_lease(domain, loop_kind).await? else {
+            return Ok(None);
+        };
+        if lease.token != token {
+            return Ok(None);
+        }
+        let n = self
+            .conn
+            .execute(
+                "DELETE FROM automation_lease WHERE domain_id=?1 AND loop_kind=?2 AND token=?3",
+                vec![
+                    Value::Integer(domain.0),
+                    Value::Text(loop_kind.to_string()),
+                    Value::Text(token.to_string()),
+                ],
+            )
+            .await?;
+        Ok((n > 0).then_some(lease))
+    }
+
+    async fn automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+    ) -> Result<Option<AutomationLease>> {
+        let row = query_first(
+            &self.conn,
+            AUTOMATION_LEASE_SQL,
+            vec![Value::Integer(domain.0), Value::Text(loop_kind.to_string())],
+        )
+        .await?;
+        row.map(|r| automation_lease_of(&r)).transpose()
+    }
+
+    async fn record_automation_run(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        run: &AutomationRun,
+        keep: usize,
+    ) -> Result<()> {
+        let count = |n: u64| Value::Integer(i64::try_from(n).unwrap_or(i64::MAX));
+        let left_items = serde_json::to_string(&run.left_items)?;
+        self.conn
+            .execute(
+                "INSERT INTO automation_run(domain_id, loop_kind, started_at, ended_at, runner, \
+                 account, outcome, done, \"left\", judgment_waiting, summary, pr_url, left_items) \
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                vec![
+                    Value::Integer(domain.0),
+                    Value::Text(loop_kind.to_string()),
+                    Value::Text(run.started_at.clone()),
+                    Value::Text(run.ended_at.clone()),
+                    Value::Text(run.runner.clone()),
+                    opt_text(&run.account),
+                    Value::Text(run.outcome.clone()),
+                    count(run.done),
+                    count(run.left),
+                    count(run.judgment_waiting),
+                    Value::Text(run.summary.clone()),
+                    opt_text(&run.pr_url),
+                    Value::Text(left_items),
+                ],
+            )
+            .await?;
+        // The newest `keep` by id stay; the id grows with every insert. Not
+        // one transaction: a prune that does not land is done by the next.
+        self.conn
+            .execute(
+                "DELETE FROM automation_run WHERE domain_id=?1 AND loop_kind=?2 AND id <= \
+                 COALESCE((SELECT id FROM automation_run WHERE domain_id=?1 AND loop_kind=?2 \
+                 ORDER BY id DESC LIMIT 1 OFFSET ?3), -1)",
+                vec![
+                    Value::Integer(domain.0),
+                    Value::Text(loop_kind.to_string()),
+                    Value::Integer(i64::try_from(keep).unwrap_or(i64::MAX)),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn automation_runs(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        limit: usize,
+    ) -> Result<Vec<AutomationRun>> {
+        let rows = query_all(
+            &self.conn,
+            "SELECT started_at, ended_at, runner, account, outcome, done, \"left\", \
+             judgment_waiting, summary, pr_url, left_items FROM automation_run \
+             WHERE domain_id=?1 AND loop_kind=?2 ORDER BY id DESC LIMIT ?3",
+            vec![
+                Value::Integer(domain.0),
+                Value::Text(loop_kind.to_string()),
+                Value::Integer(i64::try_from(limit).unwrap_or(i64::MAX)),
+            ],
+        )
+        .await?;
+        rows.iter().map(automation_run_of).collect()
+    }
+
     async fn swap_host_move(
         &self,
         domain: DomainId,
@@ -5121,6 +5418,11 @@ mod tests {
             assert!(
                 plan.contains("idx_engram_title_lower"),
                 "the {table} resolve pass must seek the title index, plan was: {plan}"
+            );
+            assert!(
+                plan.contains("idx_engram_path_actor"),
+                "the {table} resolve pass must seek the path index for a relative \
+                 link, plan was: {plan}"
             );
             assert!(
                 !plan.contains("SCAN engram") && !plan.contains("SCAN e "),

@@ -490,11 +490,14 @@ impl Engine {
         // one spelling of a domain and text that now spells it another way
         // (its canonical name, an alias, a former local name) are one link.
         let names = self.name_table_now().await;
+        // A relative link's row holds the path it lands on, not the text it was
+        // written with, so that path is what the row is matched by.
         let resolves = |kind: EdgeKind, line: usize, target: &LinkTarget| -> bool {
+            let stored = target.stored_target(&desc.path);
             outbound.iter().any(|o| {
                 o.kind == kind
                     && o.line == line
-                    && o.to_target == target.target
+                    && o.to_target == stored
                     && super::names::same_domain(
                         &names,
                         o.to_domain.as_deref(),
@@ -504,39 +507,104 @@ impl Engine {
             })
         };
 
+        // `permalink` is the address a resolved relative link lands on, which
+        // its text cannot say: the path it names may carry any permalink. A
+        // reader (Fluid's engram page) routes the link through it. Left out for
+        // a wikilink, whose text already is a permalink or a title.
         #[derive(serde::Serialize)]
         struct RelationOut<'a> {
             line: usize,
             rel_type: &'a str,
             target: &'a LinkTarget,
             resolved: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            permalink: Option<String>,
         }
         #[derive(serde::Serialize)]
         struct LinkOut<'a> {
             line: usize,
             target: &'a LinkTarget,
             resolved: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            permalink: Option<String>,
         }
 
-        let relations: Vec<RelationOut> = engram
+        // A reference that bound by path: a relative link, or a bare wikilink
+        // spelled as a file path (`[[pumps/p-12.md]]`), which the index's path
+        // arm binds the same way. A permalink never ends in `.md`, so a stored
+        // target that does is a path. The rule is verify's and the index's:
+        // the path is compared exactly, case included, so the lookup below
+        // keeps only the engram whose path equals it. A prefixed wikilink is
+        // left out: its path is in another domain, which the lookup does not
+        // read.
+        let landed = |resolved: bool, target: &LinkTarget| -> Option<String> {
+            let by_path = target.form == LinkForm::Relative
+                || (target.domain.is_none() && target.target.ends_with(".md"));
+            (resolved && by_path).then(|| target.stored_target(&desc.path))
+        };
+        let mut relations: Vec<RelationOut> = engram
             .relations
             .iter()
-            .map(|r| RelationOut {
-                line: r.line,
-                rel_type: &r.rel_type,
-                target: &r.target,
-                resolved: resolves(EdgeKind::Relation, r.line, &r.target),
+            .map(|r| {
+                let resolved = resolves(EdgeKind::Relation, r.line, &r.target);
+                RelationOut {
+                    line: r.line,
+                    rel_type: &r.rel_type,
+                    target: &r.target,
+                    resolved,
+                    permalink: landed(resolved, &r.target),
+                }
             })
             .collect();
-        let links: Vec<LinkOut> = engram
+        let mut links: Vec<LinkOut> = engram
             .links
             .iter()
-            .map(|l| LinkOut {
-                line: l.line,
-                target: &l.target,
-                resolved: resolves(EdgeKind::Link, l.line, &l.target),
+            .map(|l| {
+                let resolved = resolves(EdgeKind::Link, l.line, &l.target);
+                LinkOut {
+                    line: l.line,
+                    target: &l.target,
+                    resolved,
+                    permalink: landed(resolved, &l.target),
+                }
             })
             .collect();
+        // The paths above become the permalinks of the engrams at them, one
+        // lookup per distinct path. The permalink is a convenience for the
+        // reader, so a lookup that fails leaves it out rather than failing
+        // the read.
+        let paths: BTreeSet<String> = relations
+            .iter()
+            .filter_map(|r| r.permalink.clone())
+            .chain(links.iter().filter_map(|l| l.permalink.clone()))
+            .collect();
+        if !paths.is_empty() {
+            let mut at: HashMap<String, String> = HashMap::new();
+            let store = self.store.lock().await;
+            for path in paths {
+                let found = match store.list_engrams(&desc.domain, Some(&path), None).await {
+                    Ok(rows) => rows.into_iter().find(|found| found.path == path),
+                    Err(e) => {
+                        tracing::debug!(
+                            domain = desc.domain.as_str(),
+                            path = path.as_str(),
+                            "a linked engram's permalink could not be looked up: {e}"
+                        );
+                        None
+                    }
+                };
+                if let Some(found) = found {
+                    at.insert(path, found.permalink);
+                }
+            }
+            for slot in relations
+                .iter_mut()
+                .map(|r| &mut r.permalink)
+                .chain(links.iter_mut().map(|l| &mut l.permalink))
+            {
+                *slot = slot.take().and_then(|path| at.get(&path).cloned());
+            }
+        }
         let resolved_outbound = relations.iter().filter(|r| r.resolved).count()
             + links.iter().filter(|l| l.resolved).count();
 

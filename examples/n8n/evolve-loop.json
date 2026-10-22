@@ -1,0 +1,631 @@
+{
+  "name": "Crystalline evolve loop",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Crystalline evolve loop\n\nRuns the evolve loop of one domain when something is due. See docs/automation.md in the Crystalline repository.\n\n1. Create a Bearer Auth credential **Crystalline runner token** with the `cmt_` token of an agent account that may write the domain. Use another account than the reflect workflow. Pick it on every HTTP Request node and on **Crystalline MCP**.\n2. Create an Anthropic credential and pick a model on **Claude**.\n3. Edit **Settings**: the server address, the domain and the item cap.\n4. Run `crystalline evolve prompt --domain <domain> --max-items <cap>` and paste what it prints into the prompt of **Fix the findings**. Paste it again after a Crystalline upgrade.\n5. Optional: turn on `evolve_trigger: webhook` in the domain's MANIFEST, set the instance's `automation.webhook.url` to this workflow's production webhook URL and `automation.webhook.secret` to a long random value, and give n8n the same value as `CRYSTALLINE_WEBHOOK_SECRET`. An instance has one webhook URL for both loops and every domain, so only one of the two loop workflows takes the webhook; the other runs on its schedule. **Check the signature** drops an event for the other loop. A webhook for another domain only starts a status check of the domain in **Settings**.\n\n6. Import `renew-lease.json` too, pick the credential on its HTTP Request node, and pick that workflow on **Keep the lease fresh**. It renews the lease every 60 seconds while the agent works, without holding up this workflow, and stops when the run is recorded.\n\nIf a renew fails three times, the renewing stops and the lease is stale 5 minutes after the last renew. Another run may then take it over: this run's share and record are refused, and the writes it made are not in a pull request. For long runs use `crystalline evolve run`.",
+        "height": 520,
+        "width": 620
+      },
+      "id": "3c33dd37-b21e-5a64-aece-888c8b79e846",
+      "name": "About this workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -120,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "weeksInterval": 1,
+              "triggerAtDay": [
+                0
+              ],
+              "triggerAtHour": 3,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "2931debf-f5de-5cd0-9806-af6ea7f1dd58",
+      "name": "Every Sunday at 03:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "crystalline-evolve",
+        "authentication": "none",
+        "responseMode": "onReceived",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "95fc58ab-f689-53d8-9042-d20688502d44",
+      "name": "Crystalline webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        400
+      ],
+      "webhookId": "cdca2016-cda0-5e16-bab2-8cf153f3982f"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Checks that the webhook came from your Crystalline instance.\n// Needs NODE_FUNCTION_ALLOW_BUILTIN=crypto and the secret in\n// CRYSTALLINE_WEBHOOK_SECRET (with N8N_BLOCK_ENV_ACCESS_IN_NODE=false), the\n// same value as the instance's automation.webhook.secret.\nconst crypto = require('crypto');\nconst secret = $env.CRYSTALLINE_WEBHOOK_SECRET;\nif (!secret) {\n  throw new Error('Set CRYSTALLINE_WEBHOOK_SECRET in the n8n environment.');\n}\nconst headers = $input.first().json.headers || {};\nconst timestamp = String(headers['x-crystalline-timestamp'] || '');\nconst signature = String(headers['x-crystalline-signature'] || '');\n// Refuse a replay: the timestamp is unix seconds and is part of what is signed.\nconst age = Math.abs(Date.now() / 1000 - Number(timestamp));\nif (!timestamp || !(age <= 300)) {\n  throw new Error('The webhook has no timestamp or is older than 5 minutes.');\n}\n// The signature covers the raw body bytes, so the Webhook node keeps them\n// (option Raw Body) in the binary property data.\nconst body = await this.helpers.getBinaryDataBuffer(0, 'data');\nconst expected = 'sha256=' + crypto.createHmac('sha256', secret)\n  .update(timestamp + '.')\n  .update(body)\n  .digest('hex');\nconst given = Buffer.from(signature);\nconst wanted = Buffer.from(expected);\nif (given.length !== wanted.length || !crypto.timingSafeEqual(given, wanted)) {\n  throw new Error('The webhook signature does not match.');\n}\nconst event = JSON.parse(body.toString('utf8'));\nif (event.event !== 'evolve') {\n  return [];\n}\nreturn [{ json: { event: event.event, domain: event.domain, counts: event.counts } }];\n"
+      },
+      "id": "745c244a-5478-5490-aada-05b2a0501e6c",
+      "name": "Check the signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Edit these values. The token is not here: it is the credential\n// \"Crystalline runner token\" (Bearer Auth) on the HTTP Request nodes and on\n// the MCP Client Tool.\nreturn [{\n  json: {\n    // The server's address as n8n reaches it, without a trailing slash. A\n    // host name the server does not know must be in its\n    // CRYSTALLINE_SERVICE_ALLOWED_HOSTS.\n    url: 'https://crystalline.example.com',\n    // The domain this workflow works.\n    domain: 'eng',\n    // The item cap. Use the same number as in the prompt you pasted.\n    maxItems: 10,\n    // The runner label the run record shows.\n    runner: 'n8n',\n    startedAt: new Date().toISOString(),\n  },\n}];\n"
+      },
+      "id": "7309f59f-ce1f-5284-8d1b-e0c468ab42c8",
+      "name": "Settings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Settings').first().json.url }}/api/v1/ctl",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ v: 1, cmd: 'automation_status', loop: 'evolve', domains: [$('Settings').first().json.domain] }) }}",
+        "options": {}
+      },
+      "id": "194cf627-6da1-5076-a776-29d2c717ffa9",
+      "name": "Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        660,
+        300
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Crystalline runner token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "2032f37f-84f1-5a85-b679-ed4a6a98dc37",
+              "leftValue": "={{ $json.ok === true && $json.data.domains[0].due === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": false,
+        "options": {}
+      },
+      "id": "1a54918c-b722-5cc8-8808-c2daa8fe2708",
+      "name": "Due?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Settings').first().json.url }}/api/v1/ctl",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ v: 1, cmd: 'automation_lease_take', loop: 'evolve', domain: $('Settings').first().json.domain, runner: $('Settings').first().json.runner }) }}",
+        "options": {}
+      },
+      "id": "d55ff791-bdbe-5967-bc29-9f5ae001dd04",
+      "name": "Take the lease",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1100,
+        280
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Crystalline runner token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cdf90085-c35e-5c34-b6c5-8548a7c57738",
+              "leftValue": "={{ $json.ok === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": false,
+        "options": {}
+      },
+      "id": "9f0bf417-a7c2-5b82-81b3-f0c79ea996f5",
+      "name": "Lease taken?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// What renew-lease.json needs to renew this run's lease.\nconst settings = $('Settings').first().json;\nreturn [{\n  json: {\n    url: settings.url,\n    domain: settings.domain,\n    loop: 'evolve',\n    token: $('Take the lease').first().json.data.token,\n  },\n}];\n"
+      },
+      "id": "ed809bad-f5ef-5bd4-b719-2081ffaeb9fc",
+      "name": "The lease",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "3c06b1fb-62f3-5b21-b409-1d8ff040071f",
+      "name": "Keep the lease fresh",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1760,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "Paste here what this prints: crystalline evolve prompt --domain eng --max-items 10",
+        "options": {
+          "maxIterations": 40
+        }
+      },
+      "id": "98c7875c-bcbd-5dc8-bc5f-a77f377e4ab9",
+      "name": "Fix the findings",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1760,
+        260
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "options": {}
+      },
+      "id": "11b88435-4ea9-54b1-98d6-8b3f3c22698b",
+      "name": "Claude",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        1700,
+        480
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Anthropic account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "endpointUrl": "={{ $('Settings').first().json.url }}/",
+        "serverTransport": "httpStreamable",
+        "authentication": "bearerAuth",
+        "include": "except",
+        "options": {
+          "timeout": 120000
+        },
+        "excludeTools": [
+          "delete_engram",
+          "move_engram",
+          "split_engram",
+          "remove_domain",
+          "add_domain",
+          "configure",
+          "provision",
+          "share_changes",
+          "update_domain",
+          "resolve_conflict",
+          "withdraw_proposal",
+          "discard_changes"
+        ]
+      },
+      "id": "50f4ca0b-7d87-59af-a015-7c4d3ff173e3",
+      "name": "Crystalline MCP",
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1.4,
+      "position": [
+        1900,
+        480
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Crystalline runner token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Reads the summary block the agent ends with (Done, Left for a person,\n// Errors) into the run record, the way crystalline evolve run does.\nconst settings = $('Settings').first().json;\nconst token = $('Take the lease').first().json.data.token;\nconst answer = $input.first().json;\nconst text = typeof answer.output === 'string' ? answer.output : '';\nconst lines = text.split('\\n').map((line) =>\n  line.trim().replace(/[*_]/g, '').replace(/^[-+] /, '').trim());\nconst count = (line, key) => {\n  const m = line.match(new RegExp('^' + key + '\\\\s*:\\\\s*(\\\\d+)', 'i'));\n  return m ? Number(m[1]) : null;\n};\nconst next = (from) => {\n  let i = from;\n  while (i < lines.length && (lines[i] === '' || lines[i].startsWith('```'))) i++;\n  return i;\n};\nlet parsed = null;\nfor (let i = lines.length - 1; i >= 0 && !parsed; i--) {\n  const done = count(lines[i], 'Done');\n  if (done === null) continue;\n  const l = next(i + 1);\n  const left = l < lines.length ? count(lines[l], 'Left for a person') : null;\n  if (left === null) continue;\n  const e = next(l + 1);\n  const errors = e < lines.length ? count(lines[e], 'Errors') : null;\n  if (errors === null) continue;\n  const rest = lines.slice(e + 1).filter((line) => !line.startsWith('```')).join('\\n').trim();\n  parsed = { done, left, errors, rest };\n}\nlet outcome = 'failed';\nlet summary = 'The agent ended without a summary block.';\nlet done = 0;\nif (answer.error) {\n  summary = 'The agent could not run: ' + JSON.stringify(answer.error).slice(0, 500);\n} else if (parsed) {\n  done = parsed.done;\n  outcome = parsed.done >= settings.maxItems ? 'stopped_at_cap' : 'done';\n  summary = `Done: ${parsed.done}. Left for a person: ${parsed.left}. Errors: ${parsed.errors}.`;\n  if (parsed.rest) summary += '\\n\\n' + parsed.rest;\n}\nreturn [{ json: { domain: settings.domain, token, outcome, done, summary, agentEnded: !answer.error } }];\n"
+      },
+      "id": "c4266b1c-2620-5905-b678-99e0d7d8adb3",
+      "name": "Read the summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2100,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ae7a1fc1-830d-5a49-b803-4f211e3ca3e6",
+              "leftValue": "={{ $json.agentEnded === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": false,
+        "options": {}
+      },
+      "id": "a67db8e0-7392-591c-be52-a1b716ec5851",
+      "name": "Agent ended?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2320,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Settings').first().json.url }}/api/v1/ctl",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ v: 1, cmd: 'automation_share', loop: 'evolve', domain: $('Read the summary').first().json.domain, token: $('Read the summary').first().json.token, summary: $('Read the summary').first().json.summary }) }}",
+        "options": {}
+      },
+      "id": "d6e88334-86b0-51a5-b719-a470800431aa",
+      "name": "Share as a pull request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2540,
+        160
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Crystalline runner token"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Settings').first().json.url }}/api/v1/ctl",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ v: 1, cmd: 'automation_run_record', loop: 'evolve', domain: $('Read the summary').first().json.domain, token: $('Read the summary').first().json.token, report: { started_at: $('Settings').first().json.startedAt, outcome: $('Read the summary').first().json.outcome, done: $('Read the summary').first().json.done, summary: $('Read the summary').first().json.summary } }) }}",
+        "options": {}
+      },
+      "id": "36f3ef31-2656-5ef2-bcab-6bd798452c53",
+      "name": "Record the run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2760,
+        280
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Crystalline runner token"
+        }
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Every Sunday at 03:00": {
+      "main": [
+        [
+          {
+            "node": "Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Crystalline webhook": {
+      "main": [
+        [
+          {
+            "node": "Check the signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check the signature": {
+      "main": [
+        [
+          {
+            "node": "Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Settings": {
+      "main": [
+        [
+          {
+            "node": "Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Status": {
+      "main": [
+        [
+          {
+            "node": "Due?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Due?": {
+      "main": [
+        [
+          {
+            "node": "Take the lease",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Take the lease": {
+      "main": [
+        [
+          {
+            "node": "Lease taken?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lease taken?": {
+      "main": [
+        [
+          {
+            "node": "The lease",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "The lease": {
+      "main": [
+        [
+          {
+            "node": "Keep the lease fresh",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keep the lease fresh": {
+      "main": [
+        [
+          {
+            "node": "Fix the findings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Fix the findings",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Crystalline MCP": {
+      "ai_tool": [
+        [
+          {
+            "node": "Fix the findings",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fix the findings": {
+      "main": [
+        [
+          {
+            "node": "Read the summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read the summary": {
+      "main": [
+        [
+          {
+            "node": "Agent ended?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent ended?": {
+      "main": [
+        [
+          {
+            "node": "Share as a pull request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record the run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Share as a pull request": {
+      "main": [
+        [
+          {
+            "node": "Record the run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "active": false
+}

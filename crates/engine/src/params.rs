@@ -144,6 +144,12 @@ pub struct ReadParams {
     /// link you may only READ still opens the draft for reading.
     #[serde(default)]
     pub share_link: Option<String>,
+    /// Also return the pictures the engram links to (png, jpeg, gif, webp) as
+    /// image content, so you can look at them. At most 8 pictures and 5 MiB
+    /// in all; the rest stay resource links. Pass it when a picture is marked
+    /// as needing vision. Only for a domain on this machine.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_images: bool,
 }
 
 /// Parameters for `edit_engram`.
@@ -355,8 +361,11 @@ pub struct MoveParams {
     pub permalink: Option<String>,
     /// Rewrite every reference to the moved engram when its address changes:
     /// `[[old]]` and `[[domain:old]]` links, relations and `crystalline://domain/old`
-    /// URLs (a #fragment is kept), in every domain you can see. Defaults to
-    /// true; false leaves them dangling.
+    /// URLs (a #fragment is kept), in every domain you can see. A relative
+    /// Markdown link ([text](../path.md)) follows the file instead: when the
+    /// path changes inside the domain, links to it and its own relative links
+    /// are rewritten so they land on the same files. Defaults to true; false
+    /// leaves them dangling.
     #[serde(default)]
     pub update_links: Option<bool>,
 }
@@ -552,6 +561,12 @@ pub struct EvolveParams {
     /// what matters most on a large archive.
     #[serde(default)]
     pub min_priority: Option<u8>,
+    /// Keep one class of finding: mechanical (completes intent the archive
+    /// already records, safe to fix without asking) or judgment (changes what
+    /// the archive claims, left for a person). A headless run passes
+    /// mechanical. Omit for both.
+    #[serde(default)]
+    pub class: Option<String>,
     /// Page size. Defaults to 10, capped at 100.
     #[serde(default)]
     pub limit: Option<usize>,
@@ -644,8 +659,9 @@ pub struct WriteReflectionParams {
     /// id or heading text (a heading this write creates included): a
     /// permalink for an engram in this domain, a
     /// `crystalline://<domain>/<permalink>` address for one in another
-    /// domain you can read. Naming a section here curates it: its
-    /// reflected text moves to what you wrote. Without markdown and
+    /// domain you can read. Naming a section here curates it: it records
+    /// what the section reflects (an agent's own text is reflected with or
+    /// without sources). Without markdown and
     /// operation, sources curate the sections as the page stands: none of
     /// its text is rewritten, though a heading without an id line still gets
     /// one and addresses are spelled with current domain names.
@@ -655,7 +671,9 @@ pub struct WriteReflectionParams {
     /// path inside reflections/, assets/...
     #[serde(default)]
     pub to: Option<String>,
-    /// settle: the section ids whose change you settle.
+    /// settle: the section ids whose change you settle; leave it out to
+    /// settle the whole page, its top included. A heading with no id line
+    /// yet is left out: it gets one on the next write, then settle again.
     #[serde(default, deserialize_with = "null_as_default")]
     pub sections: Vec<String>,
     /// settle: kept (the person's text stands and the sources stay) or

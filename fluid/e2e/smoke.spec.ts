@@ -403,6 +403,38 @@ for (const share of [false, true]) {
   }
 }
 
+// `run-smoke.sh` changes this domain's declared name by hand once the daemon
+// is up, which leaves a rename question for the domain page to ask.
+const RENAMED_DOMAIN = process.env.FLUID_E2E_RENAMED_DOMAIN ?? "smoke-rename";
+
+test("the domain page asks about a rename the MANIFEST made, and keeping the links closes it", async ({
+  page,
+}) => {
+  await page.goto(`d/${RENAMED_DOMAIN}`);
+
+  // The daemon's watcher sees the hand edit some seconds after the script
+  // makes it, and the page reads the question when it opens: reload until the
+  // question is there, for as long as the watcher may take.
+  await expect(async () => {
+    await page.reload();
+    await expect(
+      page.getByText(
+        `This domain was renamed from ${RENAMED_DOMAIN} to smoke-moved in its MANIFEST.`,
+      ),
+    ).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
+  await expect(
+    page.getByRole("button", { name: "Finish the rename" }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Keep links as they are" }).click();
+
+  await expect(page.getByText(/^This domain was renamed from/)).toBeHidden();
+  await expect(
+    page.getByRole("button", { name: "Keep links as they are" }),
+  ).toBeHidden();
+});
+
 test("the Rename dialog opens from the domain page and can be cancelled", async ({
   page,
 }) => {
@@ -571,6 +603,91 @@ test("an undeclared MANIFEST section explains itself and can be started", async 
     "## Tag Aliases",
   );
   await expect(page.getByText("Unsaved changes")).toBeVisible();
+});
+
+test("a changed domain name in the MANIFEST editor asks what it means", async ({
+  page,
+}) => {
+  // The three answers on a real buffer. The saves and the rename are answered
+  // here rather than by the daemon: a rename would move the domain every
+  // later test reads, and what this proves is the dialog and what each button
+  // sends, not the engine's rename.
+  const puts: Record<string, unknown>[] = [];
+  const renames: Record<string, unknown>[] = [];
+  await page.route(`**/api/v1/domains/${DOMAIN}/manifest`, async (route) => {
+    if (route.request().method() !== "PUT") {
+      return route.fallback();
+    }
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    puts.push(body);
+    return route.fulfill({ json: { markdown: body.markdown, checksum: "x" } });
+  });
+  await page.route(`**/api/v1/domains/${DOMAIN}/rename`, (route) => {
+    renames.push(route.request().postDataJSON() as Record<string, unknown>);
+    return route.fulfill({
+      json: {
+        domain: "renamed-smoke",
+        previous: DOMAIN,
+        local_only: false,
+        manifest_written: true,
+        manifest_draft: false,
+        rewritten: [],
+        left_behind: [],
+        aliases: [DOMAIN],
+        shadows: [],
+      },
+    });
+  });
+  const dialogName = "You changed the domain name";
+  const typeName = async () => {
+    await page.goto(`d/${DOMAIN}/manifest/edit`);
+    const editor = page.getByLabel("MANIFEST source");
+    await editor.click();
+    await page.keyboard.press("ControlOrMeta+Home");
+    await page.keyboard.press("End");
+    await page.keyboard.type("\ndomain_name: renamed-smoke");
+    await expect(page.getByText("Unsaved changes")).toBeVisible();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: dialogName });
+    await expect(dialog).toBeVisible();
+    await expect(
+      dialog.getByText(
+        `The MANIFEST now says renamed-smoke instead of ${DOMAIN}.`,
+      ),
+    ).toBeVisible();
+    expect(puts).toHaveLength(0);
+    return { editor, dialog };
+  };
+
+  // Undo: the old name goes back into the buffer and nothing is saved.
+  const first = await typeName();
+  const editor = first.editor;
+  let dialog = first.dialog;
+  await dialog.getByRole("button", { name: "Undo the name change" }).click();
+  await expect(editor).not.toContainText("renamed-smoke");
+  await expect(editor).toContainText(`domain_name: ${DOMAIN}`);
+  expect(puts).toHaveLength(0);
+
+  // Save without renaming: the text as typed, with rename: keep.
+  dialog = (await typeName()).dialog;
+  await dialog.getByRole("button", { name: "Save without renaming" }).click();
+  await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+  expect(puts).toHaveLength(1);
+  expect(puts[0]).toMatchObject({ rename: "keep" });
+  expect(String(puts[0]?.markdown)).toContain("domain_name: renamed-smoke");
+  expect(renames).toHaveLength(0);
+
+  // Rename the domain: saved under the old name, then renamed, then the
+  // engram view of the new name.
+  puts.length = 0;
+  dialog = (await typeName()).dialog;
+  await dialog.getByRole("button", { name: "Rename the domain" }).click();
+  await expect(page).toHaveURL(/\/d\/renamed-smoke/);
+  expect(puts).toHaveLength(1);
+  expect(puts[0]).not.toHaveProperty("rename");
+  expect(String(puts[0]?.markdown)).toContain(`domain_name: ${DOMAIN}`);
+  expect(renames).toEqual([{ name: "renamed-smoke", local_only: false }]);
+  await page.unrouteAll({ behavior: "ignoreErrors" });
 });
 
 test("an engram renders its mermaid fence as a diagram", async ({ page }) => {

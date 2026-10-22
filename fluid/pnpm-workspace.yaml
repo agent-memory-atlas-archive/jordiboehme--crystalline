@@ -1,3 +1,11 @@
+# pnpm's own version is enforced by corepack from the "packageManager" pin in
+# package.json (CI, the Fluid image and the release job enable corepack before
+# any pnpm command). pnpm 12 would also switch to that version itself and then
+# record it in a second YAML document at the top of pnpm-lock.yaml, and
+# GitHub's dependency graph reads only the first document of a pnpm lockfile
+# (dependabot/dependabot-core#15904), so Dependabot alerts for Fluid would go
+# silent. `ignore` turns that switch off, and with it the second document.
+pmOnFail: ignore
 minimumReleaseAgeExclude:
   - "@codemirror/search@6.7.2"
   - "@typescript-eslint/eslint-plugin@8.70.0"
@@ -17,7 +25,7 @@ overrides:
   "nanoid@<3.3.18": ^3.3.18
   # GHSA-p98j-92pf-mc4p: mermaid 12.0.0 allows dompurify ^3.4.12, keep it at the fixed release
   "dompurify@<3.4.16": ^3.4.16
-  # GHSA-238p-pmpm-9mq7: mermaid 12 allows katex ^0.16.47, keep it at the fixed release.
+  # GHSA-238p-pmpm-9mq7: mermaid 12.2 allows katex ^0.18.0, keep it at the fixed release.
   # One copy for the whole app: mermaid and micromark-extension-math use the
   # KaTeX the reader sets math with (0.19.0).
   "katex@<0.19.0": ^0.19.0

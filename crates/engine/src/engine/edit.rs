@@ -241,6 +241,7 @@ impl Engine {
             None
         };
         let mut heading_stripped: Option<String> = None;
+        let mut placed_after_section = false;
         let mut manifest_text: Option<String> = None;
         let mut written_text: Option<String> = None;
         let edited = self
@@ -268,7 +269,7 @@ impl Engine {
                     // the actor it records (above), and a `verified` entry is
                     // held against the actor IT records, which only the arm
                     // that builds it knows.
-                    let (text, stripped) = self.apply_edit(
+                    let (text, stripped, placed) = self.apply_edit(
                         current,
                         p,
                         &desc.permalink,
@@ -277,6 +278,7 @@ impl Engine {
                         ack.as_ref(),
                     )?;
                     heading_stripped = stripped;
+                    placed_after_section = placed;
                     if let Some(facts) = &switch_facts {
                         super::reflection::screen_switch(current, &text, facts)?;
                     } else if is_manifest {
@@ -355,6 +357,7 @@ impl Engine {
                 .note(&mut response);
         }
         note_heading_stripped(&mut response, heading_stripped);
+        note_placed_after_section(&mut response, placed_after_section);
         let verify = domain_verify_config(&source);
         if let Some(text) = &manifest_text {
             note_manifest_findings(&mut response, text, verify.as_ref());
@@ -1052,7 +1055,9 @@ impl Engine {
     /// of its content because it repeated the target's own heading, which
     /// only `replace_section` and `insert_after_section` can report (see
     /// [`crystalline_core::emit::SectionEdit`]); `None` for every other
-    /// operation and for content placed as sent.
+    /// operation and for content placed as sent; and whether an
+    /// `insert_after_section` put its content after the whole section
+    /// ([`crystalline_core::emit::SectionEdit::placed_after_section`]).
     #[allow(clippy::too_many_arguments)]
     fn apply_edit(
         &self,
@@ -1062,7 +1067,7 @@ impl Engine {
         actor: &str,
         model: Option<&str>,
         ack: Option<&AckDraft>,
-    ) -> Result<(String, Option<String>)> {
+    ) -> Result<(String, Option<String>, bool)> {
         // The three section edits share one dispatch with every other kind
         // of document that edits sections. Replace and insert_after put their
         // content under a heading that stays: a repeat of that heading is
@@ -1072,7 +1077,7 @@ impl Engine {
             let content = self.require_content(p)?;
             let section = self.require_section(p)?;
             let edit = apply_section_op(source, op, section, content).map_err(section_err)?;
-            return Ok((edit.text, edit.heading_stripped));
+            return Ok((edit.text, edit.heading_stripped, edit.placed_after_section));
         }
         let text = match p.operation.as_str() {
             "append" => append_body(source, self.require_content(p)?),
@@ -1109,7 +1114,7 @@ impl Engine {
                 )));
             }
         };
-        Ok((text, None))
+        Ok((text, None, false))
     }
 
     /// Refuses a `set_frontmatter` the single-line writers would get wrong.

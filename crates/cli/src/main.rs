@@ -15,6 +15,7 @@ use crystalline_core::config;
 use crystalline_core::text::plural;
 use crystalline_core::verify::{self, VerifyOptions};
 
+mod automation;
 mod cmd;
 mod desktop_state;
 mod doctor;
@@ -327,6 +328,10 @@ enum Command {
         /// directory's own final path component.
         #[arg(long)]
         strip_prefix: Option<String>,
+        /// The status given to a file that has none: `stable` (the default) or
+        /// `legacy`, the rule before 0.29.0.
+        #[arg(long, value_enum, default_value_t = ImportStatus::Stable)]
+        status: ImportStatus,
         /// Print the full change report without writing anything.
         #[arg(long)]
         dry_run: bool,
@@ -754,6 +759,13 @@ enum Command {
         #[arg(long)]
         config: Option<PathBuf>,
     },
+    /// Work the reflect loop headless: see what is due, run a Claude Code
+    /// agent on a domain's Reflection queue, or watch and run when work
+    /// comes in.
+    Reflect {
+        #[command(subcommand)]
+        command: automation::LoopCommand,
+    },
     /// Sweep for the maintenance the knowledge needs and print a ranked queue.
     ///
     /// Read-only: it detects temporal and lifecycle debt, structural gaps,
@@ -763,7 +775,14 @@ enum Command {
     /// contradiction; it never confirms a contradiction and changes nothing
     /// itself. Work the queue with the write verbs and re-run
     /// the same scope to confirm it shrank.
+    ///
+    /// `status`, `run`, `watch` and `prompt` work the evolve loop headless:
+    /// a runner checks what is due and a Claude Code agent works the
+    /// mechanical findings.
+    #[command(args_conflicts_with_subcommands = true)]
     Evolve {
+        #[command(subcommand)]
+        command: Option<automation::LoopCommand>,
         /// Restrict the sweep to these domains (repeatable). Omit to sweep
         /// every registered domain.
         #[arg(long)]
@@ -920,6 +939,15 @@ enum PromptKind {
     /// satisfying the prompt module's determinism and latency contracts by
     /// construction.
     Connector,
+}
+
+/// The `status` `crystalline import` gives a file that has none.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum ImportStatus {
+    /// `stable`, the default.
+    Stable,
+    /// `legacy` with `temporal_confidence: inferred`, the rule before 0.29.0.
+    Legacy,
 }
 
 /// How `prompt system` renders its output. `Text` and `Json` are the two
@@ -1357,9 +1385,10 @@ enum DomainCommand {
         #[arg(long)]
         config: Option<PathBuf>,
     },
-    /// Load already-well-formed engram files into a virtual domain, verbatim.
-    /// Distinct from `crystalline import`, which converts a legacy tree into a
-    /// file domain's directory.
+    /// Load engram files into a virtual domain. A file that lacks a field a
+    /// reader needs is completed, as `crystalline import` does; the files the
+    /// notes link to are stored as attachments. Distinct from `crystalline
+    /// import`, which converts a legacy tree into a file domain's directory.
     Import {
         /// The source directory of engram `.md` files.
         path: PathBuf,
@@ -2137,6 +2166,7 @@ fn run() -> anyhow::Result<()> {
             domain,
             map,
             strip_prefix,
+            status,
             dry_run,
             config,
         }) => cmd::import(
@@ -2144,6 +2174,10 @@ fn run() -> anyhow::Result<()> {
             &domain,
             map.as_deref(),
             strip_prefix.as_deref(),
+            match status {
+                ImportStatus::Stable => crystalline_core::import::MissingStatus::Stable,
+                ImportStatus::Legacy => crystalline_core::import::MissingStatus::Legacy,
+            },
             dry_run,
             config.as_deref(),
             cli.json,
@@ -2238,6 +2272,23 @@ fn run() -> anyhow::Result<()> {
         Some(Command::Ctl { command }) => on_runtime(move || run_ctl(command, cli.json)),
         Some(Command::Users { command }) => on_runtime(move || users::run(command, cli.json)),
         Some(Command::Kept { command }) => kept::run(command, cli.json),
+        Some(Command::Reflect { command }) => on_runtime(move || {
+            automation::run(
+                crystalline_core::automation::Loop::Reflect,
+                command,
+                cli.json,
+            )
+        }),
+        Some(Command::Evolve {
+            command: Some(command),
+            ..
+        }) => on_runtime(move || {
+            automation::run(
+                crystalline_core::automation::Loop::Evolve,
+                command,
+                cli.json,
+            )
+        }),
         Some(
             cmd @ (Command::Read { .. }
             | Command::Search { .. }
@@ -3979,6 +4030,7 @@ async fn run_data(command: Command, db: Option<PathBuf>, json: bool) -> anyhow::
             config,
         ),
         Command::Evolve {
+            command: _,
             domain,
             families,
             rules,
@@ -4488,7 +4540,7 @@ fn print_retag_preview(preview: &serde_json::Value) {
     }
 }
 
-/// `domain import`: verbatim load engram files into a virtual domain, over the
+/// `domain import`: load engram files into a virtual domain, over the
 /// daemon when one owns the index, else against a directly opened store.
 async fn domain_import_dispatch(
     domain: String,
@@ -4504,12 +4556,73 @@ async fn domain_import_dispatch(
         &path,
         overwrite,
         dry_run,
+        true,
         db.as_deref(),
         config.as_deref(),
     )
     .await?;
-    print_value(&data, json);
+    if json {
+        print_value(&data, true);
+    } else {
+        for line in domain_import_lines(&data) {
+            println!("{line}");
+        }
+    }
     Ok(())
+}
+
+/// What `domain import` prints for a person: the counts, each file written,
+/// the links not taken grouped by why, and the warnings.
+fn domain_import_lines(data: &serde_json::Value) -> Vec<String> {
+    use serde_json::Value;
+    let n = |key: &str| data.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let mut lines = Vec::new();
+    if data.get("dry_run").and_then(Value::as_bool) == Some(true) {
+        lines.push("Dry run: no files were written.".to_string());
+    }
+    lines.push(format!(
+        "{} written, {} skipped, {} collisions",
+        n("files_written"),
+        n("files_skipped"),
+        n("collisions")
+    ));
+    lines.push(format!(
+        "{} linked files taken into assets/, {} files no note links left out",
+        n("files_linked"),
+        n("not_linked")
+    ));
+    lines.push(format!(
+        "{} attachments written, {} skipped",
+        n("attachments_written"),
+        n("attachments_skipped")
+    ));
+    for file in data
+        .get("files")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(path) = file.get("path").and_then(Value::as_str) {
+            lines.push(format!("  {path}"));
+        }
+    }
+    let not_taken: Vec<crystalline_core::linked::NotTaken> = data
+        .get("not_taken")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    lines.extend(cmd::not_taken_lines(&not_taken));
+    for warning in data
+        .get("warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(text) = warning.as_str() {
+            lines.push(format!("warning: {text}"));
+        }
+    }
+    lines
 }
 
 /// `domain export`: materialize a domain's engrams to a filesystem folder, over
@@ -5681,6 +5794,47 @@ fn to_core_format(f: OutputFormat) -> verify::Format {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `domain import` groups the links it did not take by why, as
+    /// `crystalline import` does, instead of printing the raw answer.
+    #[test]
+    fn domain_import_groups_the_links_not_taken() {
+        let data = serde_json::json!({
+            "domain": "vault",
+            "dry_run": false,
+            "files_written": 2,
+            "files_skipped": 0,
+            "files_linked": 1,
+            "not_linked": 3,
+            "attachments_written": 1,
+            "attachments_skipped": 0,
+            "not_taken": [
+                { "note": "a.md", "target": "gone.png", "reason": "missing" },
+                { "note": "b.md", "target": "big.png", "reason": "too_large" },
+                { "note": "a.md", "target": "../x.png", "reason": "outside" },
+            ],
+            "collisions": 0,
+            "warnings": ["c.md: refused"],
+            "files": [{ "path": "a.md", "permalink": "a" }],
+        });
+        assert_eq!(
+            domain_import_lines(&data),
+            vec![
+                "2 written, 0 skipped, 0 collisions",
+                "1 linked files taken into assets/, 3 files no note links left out",
+                "1 attachments written, 0 skipped",
+                "  a.md",
+                "Not taken:",
+                "  no such file:",
+                "    a.md -> gone.png",
+                "  outside the source folder:",
+                "    a.md -> ../x.png",
+                "  file too large:",
+                "    b.md -> big.png",
+                "warning: c.md: refused",
+            ]
+        );
+    }
 
     /// A command that ends with an exit code still gives back the host locks
     /// it claimed: the runtime wrapper runs the give-back after the command's

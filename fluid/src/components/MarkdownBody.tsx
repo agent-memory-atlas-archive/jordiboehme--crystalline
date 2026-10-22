@@ -84,7 +84,7 @@ import { keepWithNext } from "../markdown/keepWithNext";
 import { remarkTaskState } from "../markdown/taskState";
 import { printUrl } from "../printUrl";
 import { SOURCE_ATTR, spanPieces } from "../reflectionQuotes";
-import { WIKILINK, parseWikiTarget, referenceState } from "../wikilinks";
+import { WIKILINK, referenceState, wikilinkWords } from "../wikilinks";
 import type { WikilinkResolution, WikilinkResolver } from "../wikilinks";
 import Callout from "./Callout";
 import CopyCode from "./CopyCode";
@@ -281,7 +281,8 @@ function element(resolution: WikilinkResolution, literal: string): HastNode {
       tagName: "a",
       properties: { href: resolution.href, [WIKILINK_MARKER]: "resolved" },
       // The label rather than the literal: the brackets were the source's way
-      // of marking a reference, and a link marks it now.
+      // of marking a reference, and a link marks it now. The resolver already
+      // made the author's display text (`[[a|b]]`) the label.
       children: [{ type: "text", value: resolution.label }],
     };
   }
@@ -503,7 +504,7 @@ const TASK_NA_BOX = "data-task-box";
 function itemWords(node: HastNode): string {
   return words(node).replace(
     WIKILINK,
-    (_link, inner: string) => parseWikiTarget(inner).target,
+    (link, inner: string) => wikilinkWords(inner) ?? link,
   );
 }
 
@@ -594,6 +595,15 @@ interface TaskTick {
 }
 
 const TaskTickContext = createContext<TaskTick | undefined>(undefined);
+
+/**
+ * What the server made of the engram's references, which is where a relative
+ * note link (`../pumps/p-12.md`) learns the page it opens. Only an engram page
+ * has one. A context rather than a prop of the component map, because the
+ * resolver changes when the graph lands, and a new component map would draw
+ * the whole document again.
+ */
+const NoteLinksContext = createContext<WikilinkResolver | undefined>(undefined);
 
 /** One GitHub task box, wired to what the page allows. */
 function TaskInput({
@@ -1048,6 +1058,41 @@ function refusalOf(
   return assets === undefined ? null : assets.refused(target);
 }
 
+/**
+ * The page a relative link to another engram's file opens, or null when it is
+ * not one or the server did not resolve it. The resolver is asked with the
+ * path the way the server parsed it, decoded and without the fragment; the
+ * fragment goes on the route, so `#heading` still lands on the heading.
+ */
+function noteRoute(
+  notes: WikilinkResolver | undefined,
+  href: string | undefined,
+): string | null {
+  if (notes === undefined || href === undefined) {
+    return null;
+  }
+  const hash = href.indexOf("#");
+  const written = hash === -1 ? href : href.slice(0, hash);
+  const fragment = hash === -1 ? "" : href.slice(hash);
+  if (
+    !/\.md$/i.test(written) ||
+    written.startsWith("/") ||
+    /^[a-z][a-z0-9+.-]*:/i.test(written)
+  ) {
+    return null;
+  }
+  let path = written;
+  try {
+    path = decodeURIComponent(written);
+  } catch {
+    // A target that is not encoded is read as it is.
+  }
+  const resolution = notes(path);
+  return resolution?.kind === "resolved"
+    ? `${resolution.href}${fragment}`
+    : null;
+}
+
 /** The classes every link in a document wears, wherever it points. */
 const LINK_CLASSES =
   "text-link underline decoration-(--link-line) decoration-1 underline-offset-[3px] hover:no-underline";
@@ -1058,7 +1103,10 @@ const LINK_CLASSES =
  * Three destinations, in the order they are decided. A resolved wikilink is a
  * screen of this app and navigates in place; the route was built by the
  * resolver from the graph's own addresses, so there is nothing left to
- * validate. An `assets/` target is an attachment of this engram's own domain
+ * validate. A relative link to another engram's file (`../pumps/p-12.md`) on an
+ * engram page is one too, when the server resolved it: its path is not the
+ * page's address, so the route is the one the server's answer gives. An
+ * `assets/` target is an attachment of this engram's own domain
  * and points at the files route, in a new tab because what comes back is a pdf
  * or a spreadsheet rather than a page of this app - and whether that opens or
  * downloads is the server's disposition to decide, not this anchor's.
@@ -1092,9 +1140,18 @@ function MarkdownAnchor({
   /** What a relative target resolves against, when known. */
   assets?: AssetResolver;
 }) {
+  const notes = useContext(NoteLinksContext);
   if (wikilinkKind(node) === "resolved" && typeof href === "string") {
     return (
       <Link to={href} className={LINK_CLASSES}>
+        {children}
+      </Link>
+    );
+  }
+  const note = noteRoute(notes, href);
+  if (note !== null) {
+    return (
+      <Link to={note} className={LINK_CLASSES}>
         {children}
       </Link>
     );
@@ -1943,14 +2000,16 @@ export default function MarkdownBody({
       <TitleNoteContext.Provider value={titleNote}>
         <HeadingAsideContext.Provider value={headingAside}>
           <TaskTickContext.Provider value={taskTick}>
-            {anchors ? (
-              <SectionAnchorProvider pageUrl={anchors.pageUrl}>
-                {rendered}
-                <SectionLinkStatus />
-              </SectionAnchorProvider>
-            ) : (
-              rendered
-            )}
+            <NoteLinksContext.Provider value={wikilinks}>
+              {anchors ? (
+                <SectionAnchorProvider pageUrl={anchors.pageUrl}>
+                  {rendered}
+                  <SectionLinkStatus />
+                </SectionAnchorProvider>
+              ) : (
+                rendered
+              )}
+            </NoteLinksContext.Provider>
           </TaskTickContext.Provider>
         </HeadingAsideContext.Provider>
       </TitleNoteContext.Provider>

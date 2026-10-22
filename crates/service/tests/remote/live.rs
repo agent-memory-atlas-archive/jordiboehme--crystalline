@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 
 use crate::fixture::{HOSTED, INVALID_FILE, Options, PIC, Play, RemoteServer, SHOT};
 use crate::local::LocalMachine;
+use crate::support::mcp_session::ServedSession;
 
 async fn connect(
     server: McpServer,
@@ -345,7 +346,9 @@ async fn discover_instructions(server: McpServer) -> String {
     use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
 
     let (client_io, server_io) = tokio::io::duplex(1 << 16);
-    let task = tokio::spawn(async move { rmcp::serve_server(server, server_io).await });
+    // The discover chooses no lifecycle (rmcp 3.5.1), so the server half is
+    // never waited on here: it is kept alive until the text is read.
+    let _server = ServedSession::spawn(server, server_io);
     let newest = crystalline_service::mcp::SERVED_PROTOCOL_VERSIONS
         .last()
         .unwrap()
@@ -359,7 +362,6 @@ async fn discover_instructions(server: McpServer) -> String {
         )
         .await
         .expect("the server answered server/discover");
-    let _server = task.await.unwrap().unwrap();
     client
         .peer()
         .peer_info()

@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::emit::emit_engram;
 use crate::engram::{Engram, Generated};
+use crate::linked::{DirSource, LinkedNote, LinkedSource, NotTaken, take_linked_files};
 use crate::parse::{ParseError, parse_engram, parse_engram_lossless};
 
 /// The OKF actor the importer records as the writer of the engrams it
@@ -103,7 +104,23 @@ pub struct ImportOptions {
     pub strip_prefix: Option<String>,
     /// When set, nothing is written; the report describes what would happen.
     pub dry_run: bool,
+    /// The `status` given to a file that has none.
+    pub missing_status: MissingStatus,
 }
+
+/// The `status` an import gives a file that carries none.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MissingStatus {
+    /// `stable`: the file is taken as it is, and its `temporal_confidence`
+    /// is kept where it has a valid one.
+    #[default]
+    Stable,
+    /// `legacy` with `temporal_confidence: inferred`, the rule before 0.29.0.
+    Legacy,
+}
+
+/// The tag an import adds to a file that has no tags at all.
+pub const IMPORTED_TAG: &str = "imported";
 
 /// What an importer did with one source file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -139,6 +156,13 @@ pub struct ImportReport {
     pub files_copied: usize,
     /// Files that could not be processed.
     pub files_skipped: usize,
+    /// Distinct files notes link to that were taken into `assets/`, files the
+    /// domain already held included.
+    pub files_linked: usize,
+    /// Non-markdown files no note links, copied verbatim to their own path.
+    pub not_linked: usize,
+    /// Links to local files that were not taken, with the reason.
+    pub not_taken: Vec<NotTaken>,
     /// Files whose `type` was set or remapped.
     pub type_mapped: usize,
     /// Temporal fields backfilled (each of `status` and `recorded_at` counts
@@ -224,6 +248,8 @@ pub fn import_tree(options: &ImportOptions) -> Result<ImportReport, ImportError>
         crate::layout::ReflectionMode::Off
     });
 
+    // Phase 1: complete every note, so the linked-file step sees them all.
+    let mut planned: Vec<Planned> = Vec::new();
     for entry in &entries {
         if matches!(
             layout.classify(&entry.rel),
@@ -235,29 +261,109 @@ pub fn import_tree(options: &ImportOptions) -> Result<ImportReport, ImportError>
                 entry.rel,
                 crate::reflection::REFLECTION_NOT_IMPORTED
             ));
-            report.files.push(FileChange {
-                path: entry.rel.clone(),
-                action: FileAction::Skipped,
-                changes: Vec::new(),
-            });
+            planned.push(Planned::Skipped(skipped_change(&entry.rel)));
             continue;
         }
         if !entry.is_md {
-            copy_verbatim(entry, options, &mut report)?;
+            planned.push(Planned::Verbatim(entry));
             continue;
         }
-        convert_markdown(
+        planned.push(prepare_markdown(
             entry,
             options,
             &strip_prefix,
-            &options.type_map,
             now,
             &mut permalinks,
             &mut report,
-        )?;
+        ));
     }
 
+    // Phase 2: take the files the notes link to and rewrite the links.
+    let mut notes: Vec<LinkedNote> = planned
+        .iter()
+        .filter_map(|p| match p {
+            Planned::Markdown(m) => Some(LinkedNote {
+                rel: m.rel.clone(),
+                text: m.text.clone(),
+            }),
+            _ => None,
+        })
+        .collect();
+    let domain_files = DirSource {
+        root: options.domain_dir.clone(),
+    };
+    let outcome = take_linked_files(
+        &mut notes,
+        &DirSource {
+            root: options.src_dir.clone(),
+        },
+        &|dest| domain_files.sha256(dest).ok(),
+    );
+    let mut rewritten = notes.into_iter();
+
+    // Phase 3: copy the taken files first, so a failed copy leaves no written
+    // note that links a missing asset; then write the notes, copy the rest.
+    for taken in &outcome.taken {
+        if taken.reused || options.dry_run {
+            continue;
+        }
+        let from = options.src_dir.join(&taken.source_rel);
+        let dest = options.domain_dir.join(&taken.dest);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(io_err(parent))?;
+        }
+        crate::config::copy_atomic(&from, &dest).map_err(io_err(&from))?;
+    }
+    for item in planned {
+        match item {
+            Planned::Skipped(change) => report.files.push(change),
+            Planned::Verbatim(entry) => {
+                if outcome.linked_sources.contains(&entry.rel) {
+                    continue;
+                }
+                copy_verbatim(entry, options, &mut report)?;
+                report.not_linked += 1;
+            }
+            Planned::Markdown(m) => {
+                let note = rewritten.next().expect("one rewritten note per note");
+                write_markdown(*m, note.text, options, &mut report)?;
+            }
+        }
+    }
+    report.files_linked = outcome.taken.len();
+    report.not_taken = outcome.not_taken;
+
     Ok(report)
+}
+
+/// One source entry after phase 1.
+enum Planned<'a> {
+    /// Already counted and warned about; only its report line is left.
+    Skipped(FileChange),
+    /// A non-markdown file, copied as it is unless a note links it.
+    Verbatim(&'a Entry),
+    /// A completed note waiting for its links to be settled.
+    Markdown(Box<PreparedNote>),
+}
+
+/// A note completed in memory.
+struct PreparedNote {
+    rel: String,
+    /// The emitted text, LF line endings.
+    text: String,
+    changes: Vec<String>,
+    type_mapped: bool,
+    temporal_backfilled: usize,
+    sentinels_dropped: usize,
+    prefix_stripped: bool,
+}
+
+fn skipped_change(rel: &str) -> FileChange {
+    FileChange {
+        path: rel.to_string(),
+        action: FileAction::Skipped,
+        changes: Vec::new(),
+    }
 }
 
 fn copy_verbatim(
@@ -291,16 +397,14 @@ fn copy_verbatim(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn convert_markdown(
-    entry: &Entry,
+fn prepare_markdown<'a>(
+    entry: &'a Entry,
     options: &ImportOptions,
     strip_prefix: &str,
-    type_map: &IndexMap<String, String>,
     now: DateTime<FixedOffset>,
     permalinks: &mut HashMap<String, String>,
     report: &mut ImportReport,
-) -> Result<(), ImportError> {
+) -> Planned<'a> {
     let source = match std::fs::read_to_string(&entry.abs) {
         Ok(s) => s,
         Err(e) => {
@@ -308,27 +412,24 @@ fn convert_markdown(
             report
                 .warnings
                 .push(format!("{}: could not read file: {e}", entry.rel));
-            report.files.push(FileChange {
-                path: entry.rel.clone(),
-                action: FileAction::Skipped,
-                changes: Vec::new(),
-            });
-            return Ok(());
+            return Planned::Skipped(skipped_change(&entry.rel));
         }
     };
 
-    let mtime = mtime_date(&entry.abs);
-    let mut transformed = match transform_engram(&source, type_map, strip_prefix, mtime, now) {
+    let complete_opts = CompleteOptions {
+        rel_path: &entry.rel,
+        type_map: &options.type_map,
+        strip_prefix,
+        mtime: mtime_date(&entry.abs),
+        now,
+        missing_status: options.missing_status,
+    };
+    let mut transformed = match complete_engram(&source, &complete_opts) {
         Ok(t) => t,
         Err(e) => {
             report.files_skipped += 1;
             report.warnings.push(format!("{}: {e}", entry.rel));
-            report.files.push(FileChange {
-                path: entry.rel.clone(),
-                action: FileAction::Skipped,
-                changes: Vec::new(),
-            });
-            return Ok(());
+            return Planned::Skipped(skipped_change(&entry.rel));
         }
     };
 
@@ -343,34 +444,50 @@ fn convert_markdown(
         permalinks.insert(final_permalink, entry.rel.clone());
     }
 
-    let output = emit_engram(&transformed.engram);
+    // Written as LF, the one line ending Crystalline stores: the body is
+    // carried over verbatim apart from its line endings.
+    let text = crate::to_lf(&emit_engram(&transformed.engram)).into_owned();
+    Planned::Markdown(Box::new(PreparedNote {
+        rel: entry.rel.clone(),
+        text,
+        changes: transformed.changes,
+        type_mapped: transformed.type_mapped,
+        temporal_backfilled: transformed.temporal_backfilled,
+        sentinels_dropped: transformed.sentinels_dropped,
+        prefix_stripped: transformed.prefix_stripped,
+    }))
+}
+
+fn write_markdown(
+    note: PreparedNote,
+    text: String,
+    options: &ImportOptions,
+    report: &mut ImportReport,
+) -> Result<(), ImportError> {
     if !options.dry_run {
-        let dest = options.domain_dir.join(&entry.rel);
+        let dest = options.domain_dir.join(&note.rel);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(io_err(parent))?;
         }
         // Write-then-rename (crate::config::write_atomic), not a direct
         // write: a crash mid-write can no longer leave a truncated engram
         // file at `dest`.
-        // Written as LF, the one line ending Crystalline stores: the body is
-        // carried over verbatim apart from its line endings.
-        let output = crate::to_lf(&output);
-        crate::config::write_atomic(&dest, output.as_bytes()).map_err(io_err(&dest))?;
+        crate::config::write_atomic(&dest, text.as_bytes()).map_err(io_err(&dest))?;
     }
 
     report.files_converted += 1;
-    if transformed.type_mapped {
+    if note.type_mapped {
         report.type_mapped += 1;
     }
-    report.temporal_backfilled += transformed.temporal_backfilled;
-    report.sentinels_dropped += transformed.sentinels_dropped;
-    if transformed.prefix_stripped {
+    report.temporal_backfilled += note.temporal_backfilled;
+    report.sentinels_dropped += note.sentinels_dropped;
+    if note.prefix_stripped {
         report.prefixes_stripped += 1;
     }
     report.files.push(FileChange {
-        path: entry.rel.clone(),
+        path: note.rel,
         action: FileAction::Converted,
-        changes: transformed.changes,
+        changes: note.changes,
     });
     Ok(())
 }
@@ -399,28 +516,55 @@ fn resolve_collision(
     }
 }
 
-/// The result of transforming one Engram's frontmatter. `engram` is ready to
-/// pass to [`emit_engram`] once any permalink collision is resolved by the
-/// caller.
-struct Transformed {
-    engram: Engram,
-    changes: Vec<String>,
-    type_mapped: bool,
-    temporal_backfilled: usize,
-    sentinels_dropped: usize,
-    prefix_stripped: bool,
+/// What [`complete_engram`] needs besides the file's text.
+#[derive(Debug, Clone)]
+pub struct CompleteOptions<'a> {
+    /// The file's path relative to the domain root, forward-slashed, with its
+    /// `.md`. A missing permalink is derived from it the way sync does.
+    pub rel_path: &'a str,
+    /// Legacy `type` to Crystalline `type` mapping.
+    pub type_map: &'a IndexMap<String, String>,
+    /// The leading permalink segment to strip.
+    pub strip_prefix: &'a str,
+    /// The file's modification date, used for a missing `recorded_at`.
+    pub mtime: Option<NaiveDate>,
+    /// The time recorded as the write time of the provenance.
+    pub now: DateTime<FixedOffset>,
+    /// The `status` given to a file that has none.
+    pub missing_status: MissingStatus,
 }
 
-/// Apply every per-file transformation rule to one Engram's source text.
-/// Pure function, no filesystem access, so it is exercised directly in unit
-/// tests without a source tree on disk.
-fn transform_engram(
-    source: &str,
-    type_map: &IndexMap<String, String>,
-    strip_prefix: &str,
-    mtime: Option<NaiveDate>,
-    now: DateTime<FixedOffset>,
-) -> Result<Transformed, ParseError> {
+/// The result of completing one Engram's frontmatter. `engram` is ready to
+/// pass to [`emit_engram`] once any permalink collision is resolved by the
+/// caller.
+#[derive(Debug, Clone)]
+pub struct Completed {
+    /// The completed Engram.
+    pub engram: Engram,
+    /// A human description of each change, in order.
+    pub changes: Vec<String>,
+    /// `type` was set or remapped.
+    pub type_mapped: bool,
+    /// Temporal fields backfilled (`status` and `recorded_at` count apart).
+    pub temporal_backfilled: usize,
+    /// Sentinel dates dropped.
+    pub sentinels_dropped: usize,
+    /// A source-tree permalink prefix was stripped.
+    pub prefix_stripped: bool,
+    /// A missing permalink was derived from the path.
+    pub permalink_backfilled: bool,
+    /// The file had no tags and got [`IMPORTED_TAG`].
+    pub tagged_imported: bool,
+}
+
+/// Complete one Engram's frontmatter so OKF readers accept it: every
+/// per-file rule shared by all import routes. Pure function, no filesystem
+/// access, so it is exercised directly in unit tests.
+pub fn complete_engram(source: &str, opts: &CompleteOptions) -> Result<Completed, ParseError> {
+    let type_map = opts.type_map;
+    let strip_prefix = opts.strip_prefix;
+    let mtime = opts.mtime;
+    let now = opts.now;
     let lossless = parse_engram_lossless(source)?;
     let mut engram = lossless.engram;
     let mut changes = Vec::new();
@@ -428,6 +572,8 @@ fn transform_engram(
     let mut temporal_backfilled = 0usize;
     let mut sentinels_dropped = 0usize;
     let mut prefix_stripped = false;
+    let mut permalink_backfilled = false;
+    let mut tagged_imported = false;
 
     // a. Ensure `type`: missing becomes the default; a legacy value is
     // remapped and the original value is kept as a deduped tag.
@@ -450,17 +596,47 @@ fn transform_engram(
 
     // b. Temporal backfill only where absent.
     if fm.status.as_deref().map(str::trim).unwrap_or("").is_empty() {
-        fm.status = Some("legacy".to_string());
-        fm.temporal_confidence = Some("inferred".to_string());
+        match opts.missing_status {
+            MissingStatus::Stable => {
+                fm.status = Some("stable".to_string());
+                let kept = fm
+                    .temporal_confidence
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|c| matches!(*c, "explicit" | "inferred"));
+                match kept {
+                    Some(c) => changes.push(format!(
+                        "status: missing -> `stable` (temporal_confidence: {c} kept)"
+                    )),
+                    None => {
+                        fm.temporal_confidence = Some("inferred".to_string());
+                        changes.push(
+                            "status: missing -> `stable` (temporal_confidence: inferred)"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            MissingStatus::Legacy => {
+                fm.status = Some("legacy".to_string());
+                fm.temporal_confidence = Some("inferred".to_string());
+                changes.push(
+                    "status: missing -> `legacy` (temporal_confidence: inferred)".to_string(),
+                );
+            }
+        }
         temporal_backfilled += 1;
-        changes.push("status: missing -> `legacy` (temporal_confidence: inferred)".to_string());
     }
-    if fm.recorded_at.is_none()
-        && let Some(date) = mtime
-    {
+    if fm.recorded_at.is_none() {
+        // The file's own date where there is one, else the day of the import:
+        // no route can leave `recorded_at` out by passing no mtime.
+        let (date, from) = match mtime {
+            Some(date) => (date, "file mtime"),
+            None => (now.date_naive(), "import date"),
+        };
         fm.recorded_at = Some(date);
         temporal_backfilled += 1;
-        changes.push(format!("recorded_at: missing -> `{date}` (file mtime)"));
+        changes.push(format!("recorded_at: missing -> `{date}` ({from})"));
     }
 
     // c. Drop sentinel far-future `valid_to` and far-past `valid_from`
@@ -480,8 +656,7 @@ fn transform_engram(
         changes.push(format!("valid_from: dropped sentinel `{from}`"));
     }
 
-    // d. Strip a leading source-prefix permalink segment. A missing
-    // permalink stays missing; sync derives one later.
+    // d. Strip a leading source-prefix permalink segment.
     if let Some(p) = &fm.permalink
         && let Some((first, rest)) = p.split_once('/')
         && first == strip_prefix
@@ -493,6 +668,23 @@ fn transform_engram(
         ));
         fm.permalink = Some(stripped);
         prefix_stripped = true;
+    }
+
+    // d2. A permalink still missing is written the way sync derives it.
+    if fm.permalink.as_deref().is_none_or(str::is_empty) {
+        let derived = crate::slugify(opts.rel_path);
+        if derived.is_empty() {
+            // A name with no ASCII letter or digit slugifies to nothing, and
+            // an empty permalink is worse than none: leave it missing.
+            changes.push(format!(
+                "warning: no permalink could be derived from `{}`, none written",
+                opts.rel_path
+            ));
+        } else {
+            changes.push(format!("permalink: missing -> `{derived}`"));
+            fm.permalink = Some(derived);
+            permalink_backfilled = true;
+        }
     }
 
     // e. Add write provenance only when the file carries none. A file that
@@ -512,16 +704,61 @@ fn transform_engram(
     }
 
     // f. Tags: `parse_engram_lossless` already normalizes a comma-separated
-    // string into a list, so nothing further is needed here.
+    // string into a list. A file with none gets the `imported` tag; a file
+    // with tags is never changed.
+    if fm.tags.is_empty() {
+        fm.tags.push(IMPORTED_TAG.to_string());
+        tagged_imported = true;
+        changes.push(format!("tags: none -> `{IMPORTED_TAG}`"));
+    }
 
-    Ok(Transformed {
+    Ok(Completed {
         engram,
         changes,
         type_mapped,
         temporal_backfilled,
         sentinels_dropped,
         prefix_stripped,
+        permalink_backfilled,
+        tagged_imported,
     })
+}
+
+/// The text `domain import` and the archive upload store for one note: the
+/// note completed by [`complete_engram`] with no type map (a `type` is free
+/// form, so a present one is never remapped; only a missing one is set), no
+/// prefix to strip and a missing status read as `stable`, or `None` when the
+/// note needs nothing and is kept byte for byte.
+///
+/// Both routes take files that are often Crystalline's own (an export, a
+/// backup), so a file that already carries everything a reader requires is
+/// not rewritten: adding write provenance alone, or a permalink that could
+/// not be derived, is no reason to change it. With no file date at hand a
+/// missing `recorded_at` becomes the day of `now`.
+pub fn complete_for_import(
+    source: &str,
+    rel_path: &str,
+    now: DateTime<FixedOffset>,
+) -> Result<Option<String>, ParseError> {
+    let type_map = IndexMap::new();
+    let completed = complete_engram(
+        source,
+        &CompleteOptions {
+            rel_path,
+            type_map: &type_map,
+            strip_prefix: "",
+            mtime: None,
+            now,
+            missing_status: MissingStatus::Stable,
+        },
+    )?;
+    let needed = completed.type_mapped
+        || completed.temporal_backfilled > 0
+        || completed.sentinels_dropped > 0
+        || completed.prefix_stripped
+        || completed.permalink_backfilled
+        || completed.tagged_imported;
+    Ok(needed.then(|| crate::to_lf(&emit_engram(&completed.engram)).into_owned()))
 }
 
 fn mtime_date(path: &Path) -> Option<NaiveDate> {
@@ -638,8 +875,35 @@ mod tests {
         DateTime::parse_from_rfc3339("2026-07-02T00:00:00+00:00").unwrap()
     }
 
-    fn t(source: &str) -> Transformed {
-        transform_engram(source, &default_type_map(), "legacy-kb", None, now()).unwrap()
+    fn opts<'a>(
+        map: &'a IndexMap<String, String>,
+        status: MissingStatus,
+        mtime: Option<NaiveDate>,
+    ) -> CompleteOptions<'a> {
+        CompleteOptions {
+            rel_path: "Notes/My Pump.md",
+            type_map: map,
+            strip_prefix: "legacy-kb",
+            mtime,
+            now: now(),
+            missing_status: status,
+        }
+    }
+
+    fn t(source: &str) -> Completed {
+        complete_engram(
+            source,
+            &opts(&default_type_map(), MissingStatus::Stable, None),
+        )
+        .unwrap()
+    }
+
+    fn t_legacy(source: &str) -> Completed {
+        complete_engram(
+            source,
+            &opts(&default_type_map(), MissingStatus::Legacy, None),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -689,15 +953,40 @@ mod tests {
     }
 
     #[test]
-    fn missing_status_backfills_legacy_and_inferred() {
+    fn missing_status_becomes_stable_and_keeps_temporal_confidence() {
+        let r = t(
+            "---\ntype: engram\ntitle: X\ntags:\n  - t\ntemporal_confidence: explicit\nrecorded_at: 2026-01-01\n---\n\nbody\n",
+        );
+        assert_eq!(r.engram.frontmatter.status.as_deref(), Some("stable"));
+        assert_eq!(
+            r.engram.frontmatter.temporal_confidence.as_deref(),
+            Some("explicit")
+        );
+        assert_eq!(r.temporal_backfilled, 1);
+    }
+
+    #[test]
+    fn missing_status_and_confidence_give_stable_and_inferred() {
         let r =
             t("---\ntype: engram\ntitle: X\ntags:\n  - t\nrecorded_at: 2026-01-01\n---\n\nbody\n");
-        assert_eq!(r.engram.frontmatter.status.as_deref(), Some("legacy"));
+        assert_eq!(r.engram.frontmatter.status.as_deref(), Some("stable"));
         assert_eq!(
             r.engram.frontmatter.temporal_confidence.as_deref(),
             Some("inferred")
         );
         assert_eq!(r.temporal_backfilled, 1);
+    }
+
+    #[test]
+    fn legacy_on_request_keeps_the_old_rule() {
+        let r = t_legacy(
+            "---\ntype: engram\ntitle: X\ntags:\n  - t\ntemporal_confidence: explicit\nrecorded_at: 2026-01-01\n---\n\nbody\n",
+        );
+        assert_eq!(r.engram.frontmatter.status.as_deref(), Some("legacy"));
+        assert_eq!(
+            r.engram.frontmatter.temporal_confidence.as_deref(),
+            Some("inferred")
+        );
     }
 
     #[test]
@@ -712,12 +1001,9 @@ mod tests {
     #[test]
     fn missing_recorded_at_backfills_from_mtime() {
         let date = NaiveDate::from_ymd_opt(2026, 3, 4).unwrap();
-        let r = transform_engram(
+        let r = complete_engram(
             "---\ntype: engram\ntitle: X\ntags:\n  - t\nstatus: current\n---\n\nbody\n",
-            &default_type_map(),
-            "legacy-kb",
-            Some(date),
-            now(),
+            &opts(&default_type_map(), MissingStatus::Stable, Some(date)),
         )
         .unwrap();
         assert_eq!(r.engram.frontmatter.recorded_at, Some(date));
@@ -779,11 +1065,64 @@ mod tests {
     }
 
     #[test]
-    fn missing_permalink_stays_missing() {
+    fn missing_permalink_is_backfilled_as_sync_derives_it() {
         let r = t(
             "---\ntype: engram\ntitle: X\ntags:\n  - t\nstatus: current\nrecorded_at: 2026-01-01\n---\n\nbody\n",
         );
-        assert_eq!(r.engram.frontmatter.permalink, None);
+        // Sync derives `slugify(path)` from the domain-relative path.
+        assert_eq!(
+            r.engram.frontmatter.permalink.as_deref(),
+            Some(crate::slugify("Notes/My Pump.md").as_str())
+        );
+        assert_eq!(
+            r.engram.frontmatter.permalink.as_deref(),
+            Some("notes/my-pump")
+        );
+        assert!(r.permalink_backfilled);
+        assert!(
+            r.changes
+                .iter()
+                .any(|c| c.starts_with("permalink: missing"))
+        );
+    }
+
+    #[test]
+    fn a_file_without_tags_gets_the_imported_tag() {
+        let r = t(
+            "---\ntype: engram\ntitle: X\nstatus: current\nrecorded_at: 2026-01-01\n---\n\nbody\n",
+        );
+        assert_eq!(r.engram.frontmatter.tags, vec![IMPORTED_TAG.to_string()]);
+        assert!(r.tagged_imported);
+        assert!(r.changes.iter().any(|c| c.starts_with("tags:")));
+    }
+
+    #[test]
+    fn existing_tags_are_never_changed() {
+        let r = t(
+            "---\ntype: engram\ntitle: X\ntags:\n  - a\n  - b\nstatus: current\nrecorded_at: 2026-01-01\n---\n\nbody\n",
+        );
+        assert_eq!(
+            r.engram.frontmatter.tags,
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert!(!r.tagged_imported);
+    }
+
+    #[test]
+    fn a_completed_file_passes_verify() {
+        let date = NaiveDate::from_ymd_opt(2026, 3, 4);
+        let r = complete_engram(
+            "---\ntype: document\ntitle: Pump\n---\n\nbody text\n",
+            &opts(&default_type_map(), MissingStatus::Stable, date),
+        )
+        .unwrap();
+        let out = emit_engram(&r.engram);
+        let issues = crate::verify::check_document("d", Path::new("Notes/My Pump.md"), &out);
+        let errors: Vec<_> = issues
+            .iter()
+            .filter(|i| i.severity == crate::verify::Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}");
     }
 
     #[test]
@@ -866,6 +1205,7 @@ mod tests {
             type_map: default_type_map(),
             strip_prefix: None,
             dry_run: true,
+            missing_status: MissingStatus::Stable,
         };
         let report = import_tree(&options).unwrap();
         assert_eq!(report.files_converted, 1);
@@ -896,6 +1236,7 @@ mod tests {
             type_map: default_type_map(),
             strip_prefix: None,
             dry_run: false,
+            missing_status: MissingStatus::Stable,
         };
         let first = import_tree(&options).unwrap();
         assert_eq!(first.files_converted, 1);
@@ -946,6 +1287,7 @@ mod tests {
             type_map: default_type_map(),
             strip_prefix: None,
             dry_run: false,
+            missing_status: MissingStatus::Stable,
         };
         let report = import_tree(&options).unwrap();
         assert_eq!(report.collisions, 1);
@@ -968,5 +1310,252 @@ mod tests {
         );
         // Untouched defaults survive the merge.
         assert_eq!(merged.get("howto").map(String::as_str), Some("guide"));
+    }
+
+    fn copy_dir_all(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for e in std::fs::read_dir(from).unwrap() {
+            let e = e.unwrap();
+            let target = to.join(e.file_name());
+            if e.path().is_dir() {
+                copy_dir_all(&e.path(), &target);
+            } else {
+                std::fs::copy(e.path(), target).unwrap();
+            }
+        }
+    }
+
+    fn linked_options(src: &Path, domain: &Path, dry_run: bool) -> ImportOptions {
+        ImportOptions {
+            src_dir: src.to_path_buf(),
+            domain_dir: domain.to_path_buf(),
+            type_map: default_type_map(),
+            strip_prefix: None,
+            dry_run,
+            missing_status: MissingStatus::Stable,
+        }
+    }
+
+    fn all_files(dir: &Path) -> Vec<(String, Vec<u8>)> {
+        fn walk(base: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    walk(base, &p, out);
+                } else {
+                    let rel = p
+                        .strip_prefix(base)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    out.push((rel, std::fs::read(&p).unwrap()));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(dir, dir, &mut out);
+        out.sort();
+        out
+    }
+
+    /// Distinct files the fixture's notes link that can be taken.
+    const FIXTURE_LINKED: usize = 8;
+
+    fn linked_fixture() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/linked")
+    }
+
+    #[test]
+    fn import_tree_takes_linked_files_and_rewrites_links() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let domain = tmp.path().join("domain");
+        copy_dir_all(&linked_fixture(), &src);
+        std::fs::create_dir_all(&domain).unwrap();
+
+        let report = import_tree(&linked_options(&src, &domain, false)).unwrap();
+
+        let bytes = std::fs::read(src.join("report.pdf.assets/page-3.png")).unwrap();
+        assert_eq!(
+            std::fs::read(domain.join("assets/report.pdf/page-3.png")).unwrap(),
+            bytes
+        );
+        assert!(
+            !domain.join("report.pdf.assets/page-3.png").exists(),
+            "a taken file is not also copied to its old path"
+        );
+        let note = std::fs::read_to_string(domain.join("report.pdf.md")).unwrap();
+        assert!(
+            note.contains("](assets/report.pdf/page-3.png)"),
+            "link not rewritten: {note}"
+        );
+        assert_eq!(report.files_linked, FIXTURE_LINKED);
+    }
+
+    #[test]
+    fn files_no_note_links_are_still_copied_verbatim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let domain = tmp.path().join("domain");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&domain).unwrap();
+        std::fs::write(
+            src.join("a.md"),
+            "---\ntype: engram\n---\n\n![p](pic.png)\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("pic.png"), b"png").unwrap();
+        std::fs::write(src.join("extra.txt"), b"extra").unwrap();
+
+        let report = import_tree(&linked_options(&src, &domain, false)).unwrap();
+
+        assert_eq!(std::fs::read(domain.join("extra.txt")).unwrap(), b"extra");
+        assert_eq!(report.not_linked, 1);
+        assert_eq!(report.files_linked, 1);
+        assert_eq!(report.files_copied, 1);
+        assert!(!domain.join("pic.png").exists());
+    }
+
+    #[test]
+    fn a_second_import_reuses_the_assets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let domain = tmp.path().join("domain");
+        copy_dir_all(&linked_fixture(), &src);
+        std::fs::create_dir_all(&domain).unwrap();
+
+        let first = import_tree(&linked_options(&src, &domain, false)).unwrap();
+        let before = all_files(&domain);
+        let stamp = |p: &str| {
+            std::fs::metadata(domain.join(p))
+                .unwrap()
+                .modified()
+                .unwrap()
+        };
+        let page = "assets/report.pdf/page-3.png";
+        let modified = stamp(page);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let second = import_tree(&linked_options(&src, &domain, false)).unwrap();
+        let after = all_files(&domain);
+
+        assert_eq!(first.files_linked, second.files_linked);
+        assert_eq!(second.files_linked, FIXTURE_LINKED);
+        assert!(
+            after.iter().all(|(rel, _)| !rel.contains("-2.")),
+            "a duplicate was stored: {after:?}"
+        );
+        // No new files and no changed asset bytes (a note's `generated.at`
+        // moves with the clock, so the notes are compared by name only).
+        let names = |f: &[(String, Vec<u8>)]| f.iter().map(|(r, _)| r.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&before), names(&after));
+        let assets = |f: Vec<(String, Vec<u8>)>| {
+            f.into_iter()
+                .filter(|(r, _)| r.starts_with("assets/"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(assets(before), assets(after));
+        assert_eq!(stamp(page), modified, "a reused asset was rewritten");
+    }
+
+    #[test]
+    fn dry_run_writes_nothing_and_reports_the_plan() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let domain = tmp.path().join("domain");
+        copy_dir_all(&linked_fixture(), &src);
+        std::fs::create_dir_all(&domain).unwrap();
+
+        let report = import_tree(&linked_options(&src, &domain, true)).unwrap();
+
+        assert!(all_files(&domain).is_empty(), "dry run wrote files");
+        assert_eq!(report.files_linked, FIXTURE_LINKED);
+        assert!(!report.not_taken.is_empty());
+    }
+
+    #[test]
+    fn a_missing_mtime_falls_back_to_the_import_date() {
+        let r = complete_engram(
+            "---\ntype: engram\nstatus: current\ntags:\n- t\n---\n\nbody\n",
+            &opts(&default_type_map(), MissingStatus::Stable, None),
+        )
+        .unwrap();
+        assert_eq!(
+            r.engram.frontmatter.recorded_at,
+            Some(NaiveDate::from_ymd_opt(2026, 7, 2).unwrap())
+        );
+        assert!(r.changes.iter().any(|c| c.contains("import date")));
+    }
+
+    #[test]
+    fn a_name_that_slugifies_to_nothing_leaves_the_permalink_missing() {
+        let map = default_type_map();
+        let mut o = opts(&map, MissingStatus::Stable, None);
+        o.rel_path = "日本語.md";
+        let r = complete_engram("---\ntype: engram\ntags:\n- t\n---\n\nbody\n", &o).unwrap();
+        assert_eq!(r.engram.frontmatter.permalink, None);
+        assert!(!r.permalink_backfilled);
+        assert!(r.changes.iter().any(|c| c.starts_with("warning:")));
+    }
+
+    #[test]
+    fn a_file_that_needs_nothing_is_kept_as_it_is() {
+        // No `generated`, which completion would add, and keys in an order
+        // the emitter would not write: neither is a reason to rewrite it.
+        let source = "---\ntitle: Alpha\ntype: engram\npermalink: alpha\ntags:\n  - eng\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# Alpha\n";
+        let now = Utc::now().fixed_offset();
+        assert_eq!(complete_for_import(source, "alpha.md", now).unwrap(), None);
+    }
+
+    #[test]
+    fn a_legacy_type_is_never_remapped_for_import() {
+        let source = "---\ntype: note\ntitle: Alpha\npermalink: alpha\ntags:\n  - eng\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# Alpha\n";
+        let now = Utc::now().fixed_offset();
+        assert_eq!(complete_for_import(source, "alpha.md", now).unwrap(), None);
+        // A file that needs completing keeps its type too.
+        let text = complete_for_import("---\ntype: howto\ntitle: H\n---\n\nbody\n", "h.md", now)
+            .unwrap()
+            .expect("the file needs completing");
+        assert_eq!(
+            parse_engram(&text).unwrap().frontmatter.engram_type,
+            "howto"
+        );
+    }
+
+    #[test]
+    fn a_converted_file_is_completed_for_import() {
+        let source = "---\ntype: document\ntitle: Report\n---\n\n# Report\n";
+        let now = Utc::now().fixed_offset();
+        let text = complete_for_import(source, "report.pdf.md", now)
+            .unwrap()
+            .expect("the file needs completing");
+        let engram = parse_engram(&text).unwrap();
+        let fm = &engram.frontmatter;
+        assert_eq!(fm.status.as_deref(), Some("stable"));
+        assert_eq!(fm.tags, vec![IMPORTED_TAG.to_string()]);
+        assert_eq!(fm.permalink.as_deref(), Some("report-pdf"));
+        assert_eq!(fm.recorded_at, Some(now.date_naive()));
+        assert!(fm.generated.is_some());
+    }
+
+    #[test]
+    fn a_failed_copy_leaves_no_note_that_links_the_missing_asset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let domain = tmp.path().join("domain");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&domain).unwrap();
+        std::fs::write(
+            src.join("a.md"),
+            "---\ntype: engram\n---\n\n![p](pic.png)\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("pic.png"), b"png").unwrap();
+        // A file where the `assets` folder must go.
+        std::fs::write(domain.join("assets"), b"in the way").unwrap();
+
+        let result = import_tree(&linked_options(&src, &domain, false));
+
+        assert!(result.is_err());
+        assert!(!domain.join("a.md").exists(), "the note was written");
     }
 }

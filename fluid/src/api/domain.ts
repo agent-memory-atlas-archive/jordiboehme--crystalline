@@ -456,18 +456,27 @@ export async function fetchManifestDetail(
   };
 }
 
-/** Save a MANIFEST verbatim, guarded by the checksum it is based on. */
+/**
+ * Save a MANIFEST verbatim, guarded by the checksum it is based on.
+ *
+ * `keepName` answers the question a changed `domain_name` raises: the text is
+ * saved as typed, the old name stays as an alias and no rename question is
+ * left behind.
+ */
 export async function saveManifest(
   domain: string,
   markdown: string,
   checksum: string,
+  opts: { keepName?: boolean } = {},
 ): Promise<ManifestDetail> {
   const payload = await api<unknown>(
     `/domains/${encodeSegment(domain)}/manifest`,
     {
       method: "PUT",
       headers: { "If-Match": `"${checksum}"` },
-      body: JSON.stringify({ markdown }),
+      body: JSON.stringify(
+        opts.keepName === true ? { markdown, rename: "keep" } : { markdown },
+      ),
     },
   );
   const record = asObject(payload);

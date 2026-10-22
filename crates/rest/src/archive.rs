@@ -20,11 +20,11 @@
 //!   per-entry cap, a total past the archive cap, an entry name that is not
 //!   UTF-8, any path that could escape the domain root. A hostile archive
 //!   gets no partial import.
-//! - A *per-entry* demotion - a non-`.md` file, a MANIFEST, an OKF reserved
-//!   name, bytes that are not UTF-8 text, a hard verify error, and anything
-//!   under `reflections/` when the archive's own MANIFEST keeps a Reflection
-//!   there - stays in the report as that entry's status and never reaches
-//!   the engine.
+//! - A *per-entry* demotion - a non-`.md` file no note links, a MANIFEST, an
+//!   OKF reserved name, bytes that are not UTF-8 text, a hard verify error,
+//!   and anything under `reflections/` when the archive's own MANIFEST keeps
+//!   a Reflection there - stays in the report as that entry's status and
+//!   never reaches the engine.
 //!
 //! Attachments travel in both directions. The download carries every
 //! attachment the domain holds under its `assets/` path, whichever storage
@@ -117,13 +117,19 @@ const MAX_ENTRY_BYTES: u64 = 1024 * 1024;
 /// a 4 MiB screenshot is not.
 const MAX_ASSET_ENTRY_BYTES: u64 = crystalline_core::MAX_ATTACHMENT_BYTES;
 
-/// Why an `assets/` entry was refused, in the words this surface reports.
-/// Named constants because the same strings are asserted by the tests and read
-/// by a user in the preview dialog.
-const ASSET_PATH_REASON: &str = "path is not a valid assets path";
-const ASSET_EXTENSION_REASON: &str = "extension is not an allowed attachment type";
-const ASSET_SIZE_REASON: &str = "attachment exceeds the size limit";
-const ASSET_MARKDOWN_REASON: &str = "assets entries must be attachments, not markdown";
+// Why an `assets/` entry was refused, in the words every import route
+// reports: named constants in core, because the same strings are asserted by
+// the tests and read by a user in the preview dialog.
+use crystalline_core::attachment::{
+    ASSET_EXTENSION_REASON, ASSET_MARKDOWN_REASON, ASSET_PATH_REASON, ASSET_SIZE_REASON,
+};
+/// Why a linked file is not written: the domain holds the same bytes at the
+/// attachment path it would take.
+const SAME_FILE_REASON: &str = "the same file is already there";
+/// Why a linked file of the archive is not stored on its own: another file
+/// of the archive has the same bytes, and the attachment path that follows
+/// holds them.
+const SAME_BYTES_REASON: &str = "the same bytes are stored at";
 
 /// The largest a whole archive may be once decompressed, in bytes.
 ///
@@ -328,8 +334,107 @@ pub struct ArchiveReport {
     pub invalid: usize,
     /// Entries an archive may carry but a domain never imports: a MANIFEST, a
     /// generated OKF index or log, anything that is neither markdown nor an
-    /// attachment of an allowed type.
+    /// attachment of an allowed type that a note links.
     pub ignored: usize,
+    /// How many distinct files the notes link to were taken in as
+    /// attachments. Each is listed in `entries` at its `assets/` path.
+    pub files_linked: usize,
+    /// Every link to a local file that was not taken, once per note and
+    /// target. The link is left as it was written.
+    pub not_taken: Vec<ArchiveNotTaken>,
+}
+
+/// One link a note makes to a file the import did not take in.
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+#[schema(description = "A link from an archived note to a local file that \
+                        was not taken in as an attachment, and why.")]
+pub struct ArchiveNotTaken {
+    /// The path of the note that links the file.
+    #[schema(example = "report.pdf.md")]
+    pub note: String,
+    /// The link target as the note names it, decoded, without a fragment.
+    #[schema(example = "missing.png")]
+    pub target: String,
+    /// Why the file was not taken.
+    pub reason: ArchiveNotTakenReason,
+}
+
+/// Why a linked file was not taken: `missing` (no such entry in the
+/// archive), `outside` (the link leaves the archive), `not_allowed` (not an
+/// attachment type), `too_large` (past the attachment size limit) or
+/// `bad_name` (no usable attachment name could be made from it).
+#[derive(Debug, Clone, Copy, serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchiveNotTakenReason {
+    /// No such entry in the archive.
+    Missing,
+    /// The link leaves the archive.
+    Outside,
+    /// Not an attachment type.
+    NotAllowed,
+    /// Past the attachment size limit.
+    TooLarge,
+    /// No usable attachment name could be made from it.
+    BadName,
+}
+
+impl From<crystalline_core::linked::NotTaken> for ArchiveNotTaken {
+    fn from(item: crystalline_core::linked::NotTaken) -> Self {
+        use crystalline_core::linked::NotTakenReason as Reason;
+        Self {
+            note: item.note,
+            target: item.target,
+            reason: match item.reason {
+                Reason::Missing => ArchiveNotTakenReason::Missing,
+                Reason::Outside => ArchiveNotTakenReason::Outside,
+                Reason::NotAllowed => ArchiveNotTakenReason::NotAllowed,
+                Reason::TooLarge => ArchiveNotTakenReason::TooLarge,
+                Reason::BadName => ArchiveNotTakenReason::BadName,
+            },
+        }
+    }
+}
+
+/// The archive's entries that are neither markdown nor under `assets/`, kept
+/// for the notes that link them.
+///
+/// An entry that could become an attachment (an allowed type within the
+/// attachment ceiling) is held with its bytes; any other is held by its size
+/// alone, so the linked-file planner can say it is not allowed or too large
+/// without its bytes being decompressed or kept.
+#[derive(Debug, Default)]
+struct LooseFiles {
+    /// The entries read, by path.
+    read: crystalline_core::linked::MemSource,
+    /// The entries left unread, by path, with their size.
+    unread: std::collections::BTreeMap<String, u64>,
+}
+
+impl LooseFiles {
+    fn contains(&self, path: &str) -> bool {
+        self.read.files.contains_key(path) || self.unread.contains_key(path)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.read.files.is_empty() && self.unread.is_empty()
+    }
+}
+
+impl crystalline_core::linked::LinkedSource for LooseFiles {
+    fn lookup(&self, rel: &str) -> crystalline_core::linked::Lookup {
+        use crystalline_core::linked::Lookup;
+        match self.read.lookup(rel) {
+            Lookup::Missing => self
+                .unread
+                .get(rel)
+                .map_or(Lookup::Missing, |&len| Lookup::File { len }),
+            found => found,
+        }
+    }
+
+    fn sha256(&self, rel: &str) -> std::io::Result<String> {
+        self.read.sha256(rel)
+    }
 }
 
 /// The query `POST .../archive/import` takes.
@@ -470,10 +575,16 @@ fn archive_keeps_a_reflection(
 /// sees the batch, so this screen applies it (R33), and the engine applies
 /// the receiving domain's own switch.
 ///
+/// A non-`.md` entry outside `assets/` is also kept in the returned
+/// [`LooseFiles`], for the notes that may link it: such an entry is only
+/// reported as ignored when no note takes it in. It is read under the
+/// attachment ceiling and counted toward the total like an `assets/` entry,
+/// and one whose type or size rules it out is known by its size alone.
+///
 /// Size limits are enforced on the bytes actually decompressed, never on the
 /// header's claim alone. Synchronous and metering up to
 /// [`MAX_TOTAL_BYTES`] of inflation, so callers run it on the blocking pool.
-fn read_archive(bytes: &[u8]) -> Result<Vec<Screened>, ApiError> {
+fn read_archive(bytes: &[u8]) -> Result<(Vec<Screened>, LooseFiles), ApiError> {
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
         .map_err(|e| ApiError::unprocessable(format!("not a readable zip archive: {e}")))?;
     if archive.len() > MAX_ARCHIVE_ENTRIES {
@@ -488,6 +599,7 @@ fn read_archive(bytes: &[u8]) -> Result<Vec<Screened>, ApiError> {
     let layout = crystalline_core::DomainLayout::bare(crystalline_core::ReflectionMode::Effective);
     let mut total: u64 = 0;
     let mut out = Vec::new();
+    let mut loose = LooseFiles::default();
     for index in 0..archive.len() {
         let mut entry = archive
             .by_index(index)
@@ -596,9 +708,38 @@ fn read_archive(bytes: &[u8]) -> Result<Vec<Screened>, ApiError> {
             });
             continue;
         }
-        // Entries this endpoint will never decompress are classified before
-        // any size handling: no read, no allocation.
+        // Anything else that is not markdown is not imported as it is, but a
+        // note may link it, so it is kept for the planner: read when it could
+        // become an attachment, metered like an `assets/` entry, and known by
+        // its size alone otherwise. It stays reported as ignored unless a
+        // note takes it in.
         if !raw.to_lowercase().ends_with(".md") {
+            let name = raw.rsplit('/').next().unwrap_or(&raw);
+            if crystalline_core::attachment_mime(name).is_none()
+                || entry.size() > MAX_ASSET_ENTRY_BYTES
+            {
+                loose.unread.insert(raw.clone(), entry.size());
+            } else {
+                let mut buf = Vec::new();
+                {
+                    use std::io::Read;
+                    let mut limited = (&mut entry).take(MAX_ASSET_ENTRY_BYTES + 1);
+                    limited.read_to_end(&mut buf).map_err(|e| {
+                        ApiError::unprocessable(format!("unreadable archive entry '{raw}': {e}"))
+                    })?;
+                }
+                total += buf.len() as u64;
+                if total > MAX_TOTAL_BYTES {
+                    return Err(ApiError::unprocessable(format!(
+                        "the archive unpacks past the {MAX_TOTAL_BYTES}-byte total limit"
+                    )));
+                }
+                if buf.len() as u64 > MAX_ASSET_ENTRY_BYTES {
+                    loose.unread.insert(raw.clone(), buf.len() as u64);
+                } else {
+                    loose.read.files.insert(raw.clone(), buf);
+                }
+            }
             out.push(Screened::Ignored {
                 path: raw,
                 reason: "only .md entries are imported".to_string(),
@@ -673,7 +814,24 @@ fn read_archive(bytes: &[u8]) -> Result<Vec<Screened>, ApiError> {
             }),
         }
     }
-    Ok(out)
+    Ok((out, loose))
+}
+
+/// An entry after it was completed and verified, before anything is
+/// written.
+enum Pending {
+    /// Already decided.
+    Decided(ArchiveEntryReport),
+    /// An `assets/` entry for the attachment seam.
+    Asset { path: String, bytes: Vec<u8> },
+    /// A file outside `assets/` that is not markdown: stored at its
+    /// attachment path when a note links it, ignored for `reason` otherwise.
+    Loose { path: String, reason: String },
+    /// A note that passed verify, waiting for its links to be settled.
+    Note {
+        path: String,
+        findings: Vec<ValidateFinding>,
+    },
 }
 
 /// A report line, either already decided by the screen or waiting for the
@@ -767,18 +925,20 @@ async fn run_archive(
     // it inline would park a runtime worker for the whole of it. `Bytes` is
     // cheap to move here - it hands the shared buffer over rather than copying
     // the body.
-    let screened = tokio::task::spawn_blocking(move || read_archive(&bytes))
+    let (screened, mut loose) = tokio::task::spawn_blocking(move || read_archive(&bytes))
         .await
         .map_err(|e| ApiError::internal(format!("archive screening task failed: {e}")))??;
-    // What the domain already holds under `assets/`, so an attachment entry
-    // gets the same same-path treatment a markdown entry does: reported as a
-    // collision by a preview, left alone by a skip-policy import, replaced
-    // only under overwrite. Fetched once, and only when the archive actually
-    // carries an attachment.
-    let mut held: std::collections::HashSet<String> = std::collections::HashSet::new();
-    if screened
-        .iter()
-        .any(|item| matches!(item, Screened::Asset { .. }))
+    // What the domain already holds under `assets/`, by path and sha256, so
+    // an attachment entry gets the same same-path treatment a markdown entry
+    // does (reported as a collision by a preview, left alone by a skip-policy
+    // import, replaced only under overwrite) and a linked file is stored
+    // once. Fetched once, and only when the archive carries a file that could
+    // become an attachment.
+    let mut held: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    if !loose.is_empty()
+        || screened
+            .iter()
+            .any(|item| matches!(item, Screened::Asset { .. }))
     {
         // The importer's own view: a preview compares what the archive carries
         // against what the person running the import already sees, so a file
@@ -790,40 +950,161 @@ async fn run_archive(
             .attachments()
             .await?
             .into_iter()
-            .map(|row| row.path)
+            .map(|row| (row.path, row.sha256))
             .collect();
     }
-    let mut slots: Vec<Slot> = Vec::new();
-    let mut clean: Vec<(String, String)> = Vec::new();
+
+    // Pass 1: complete every markdown entry, the way `crystalline import`
+    // completes a file, and only then verify it, so a note that lacks only
+    // what completion adds is not refused for it. The notes that pass are
+    // what the linked-file step reads.
+    let now = chrono::Utc::now().fixed_offset();
+    let mut pending: Vec<Pending> = Vec::new();
+    let mut candidates: Vec<(String, String)> = Vec::new();
+    let mut notes: Vec<crystalline_core::linked::LinkedNote> = Vec::new();
     for item in screened {
         match item {
-            Screened::Ignored { path, reason } => slots.push(Slot::Decided(ArchiveEntryReport {
-                path,
-                status: "ignored".to_string(),
-                permalink: None,
-                reason: Some(reason),
-                bytes: None,
-                findings: Vec::new(),
-            })),
-            Screened::Invalid { path, reason } => slots.push(Slot::Decided(ArchiveEntryReport {
-                path,
-                status: "invalid".to_string(),
-                permalink: None,
-                reason: Some(reason),
-                bytes: None,
-                findings: Vec::new(),
-            })),
+            Screened::Ignored { path, reason } if loose.contains(&path) => {
+                pending.push(Pending::Loose { path, reason });
+            }
+            Screened::Ignored { path, reason } => {
+                pending.push(Pending::Decided(ArchiveEntryReport {
+                    path,
+                    status: "ignored".to_string(),
+                    permalink: None,
+                    reason: Some(reason),
+                    bytes: None,
+                    findings: Vec::new(),
+                }))
+            }
+            Screened::Invalid { path, reason } => {
+                pending.push(Pending::Decided(ArchiveEntryReport {
+                    path,
+                    status: "invalid".to_string(),
+                    permalink: None,
+                    reason: Some(reason),
+                    bytes: None,
+                    findings: Vec::new(),
+                }))
+            }
+            Screened::Asset { path, bytes } => pending.push(Pending::Asset { path, bytes }),
+            Screened::Entry { path, content } => {
+                // A note that does not parse is verified as it is, so the
+                // findings name the reason.
+                let content =
+                    match crystalline_core::import::complete_for_import(&content, &path, now) {
+                        Ok(Some(completed)) => completed,
+                        _ => content,
+                    };
+                // The exact call `/validate` makes, on the path the entry
+                // would land at, so the findings an editor sees before a save
+                // and the findings a preview shows are the same findings.
+                let findings =
+                    super::engrams::findings_of(crystalline_core::verify::check_document(
+                        domain,
+                        std::path::Path::new(&path),
+                        &content,
+                    ));
+                if let Some(reason) = findings
+                    .iter()
+                    .find(|f| f.is_error())
+                    .map(ValidateFinding::summary)
+                {
+                    pending.push(Pending::Decided(ArchiveEntryReport {
+                        path,
+                        status: "invalid".to_string(),
+                        permalink: None,
+                        reason: Some(reason),
+                        bytes: None,
+                        findings,
+                    }));
+                } else {
+                    candidates.push((path.clone(), content));
+                    pending.push(Pending::Note { path, findings });
+                }
+            }
+        }
+    }
+
+    // A note the import will skip (its path is taken under the skip policy,
+    // or its permalink is held at another path) links nothing into the
+    // domain: its files are not taken, so no attachment lands that nothing
+    // links. Asked of the engine's own classification in a preview, which
+    // decides by path and permalink alone, so it answers what the import
+    // below will do.
+    let mut held_back: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    if !candidates.is_empty() {
+        let preview = state
+            .engine
+            .import_domain_files(domain, &candidates, overwrite, true)
+            .await?;
+        let skipped: std::collections::HashSet<String> = preview["files"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|row| row["action"] == "skip")
+            .filter_map(|row| row["path"].as_str().map(str::to_string))
+            .collect();
+        for (path, text) in candidates {
+            if skipped.contains(&path) {
+                held_back.insert(path, text);
+            } else {
+                notes.push(crystalline_core::linked::LinkedNote { rel: path, text });
+            }
+        }
+    }
+
+    // Pass 2: take the files the notes link to. The archive's own `assets/`
+    // entries are written in the pass below too, so a dest one of them
+    // claims will hold its bytes, unless a skip-policy import leaves the
+    // attachment already there in place.
+    let archive_assets: std::collections::HashMap<String, String> = pending
+        .iter()
+        .filter_map(|item| match item {
+            Pending::Asset { path, bytes } => Some((
+                path.clone(),
+                crystalline_index::hex_lower(&<sha2::Sha256 as sha2::Digest>::digest(bytes)),
+            )),
+            _ => None,
+        })
+        .collect();
+    let linked = crystalline_core::linked::take_linked_files(&mut notes, &loose, &|dest| match (
+        held.get(dest),
+        archive_assets.get(dest),
+    ) {
+        (Some(kept), _) if !overwrite => Some(kept.clone()),
+        (kept, incoming) => incoming.or(kept).cloned(),
+    });
+    let taken: std::collections::HashMap<&str, &crystalline_core::linked::TakenFile> = linked
+        .taken
+        .iter()
+        .map(|file| (file.source_rel.as_str(), file))
+        .collect();
+    let mut rewritten = notes.into_iter();
+
+    // Pass 3: write every attachment, the archive's own and the linked ones,
+    // before any note that links one is handed to the engine.
+    let mut slots: Vec<Slot> = Vec::new();
+    let mut clean: Vec<(String, String)> = Vec::new();
+    // The linked files whose write failed, with why: a note that links one
+    // is not imported, so no note lands with a link to a file that is not
+    // there.
+    let mut unstored: Vec<(String, String)> = Vec::new();
+    for item in pending {
+        match item {
+            Pending::Decided(report) => slots.push(Slot::Decided(report)),
             // Attachments go through the engine's own seam - the same one the
             // upload route uses - so the path rules, the allowlist, the size
             // ceiling and the metadata row are decided in exactly one place.
             // They are written here rather than handed to the engine's import
             // verb because that verb is about engrams: a permalink, a parse and
             // a verify pass, none of which a PNG has.
-            Screened::Asset { path, bytes } => {
+            Pending::Asset { path, bytes } => {
                 let size = bytes.len() as u64;
-                let taken = held.contains(&path);
+                let sha = archive_assets.get(&path).cloned().unwrap_or_default();
+                let taken = held.contains_key(&path);
                 let (status, reason) = if dry_run {
-                    held.insert(path.clone());
+                    held.insert(path.clone(), sha);
                     (if taken { "collides" } else { "new" }.to_string(), None)
                 } else if taken && !overwrite {
                     (
@@ -837,7 +1118,7 @@ async fn run_archive(
                 } else {
                     match state.engine.attachment_write(domain, &path, bytes).await {
                         Ok(_) => {
-                            held.insert(path.clone());
+                            held.insert(path.clone(), sha);
                             (
                                 if taken { "overwritten" } else { "created" }.to_string(),
                                 None,
@@ -859,36 +1140,122 @@ async fn run_archive(
                     findings: Vec::new(),
                 }));
             }
-            Screened::Entry { path, content } => {
-                // The exact call `/validate` makes, on the path the entry
-                // would land at, so the findings an editor sees before a save
-                // and the findings a preview shows are the same findings.
-                let findings =
-                    super::engrams::findings_of(crystalline_core::verify::check_document(
-                        domain,
-                        std::path::Path::new(&path),
-                        &content,
-                    ));
-                if let Some(reason) = findings
-                    .iter()
-                    .find(|f| f.is_error())
-                    .map(ValidateFinding::summary)
-                {
+            // A file a note links is listed at the attachment path it is
+            // stored at, the way an `assets/` entry is. Bytes the domain
+            // already holds there are not written again.
+            Pending::Loose { path, reason } => {
+                let Some(file) = taken.get(path.as_str()) else {
+                    // The same bytes as a file already taken: every link to
+                    // it points at that file's attachment, which is listed
+                    // on its own row; this one says which.
+                    if linked.linked_sources.contains(&path) {
+                        let bytes = loose.read.files.remove(&path).unwrap_or_default();
+                        let sha = crystalline_index::hex_lower(
+                            &<sha2::Sha256 as sha2::Digest>::digest(&bytes),
+                        );
+                        let shared = linked
+                            .taken
+                            .iter()
+                            .find(|file| file.sha256 == sha)
+                            .map_or_else(String::new, |file| file.dest.clone());
+                        slots.push(Slot::Decided(ArchiveEntryReport {
+                            path,
+                            status: "skipped".to_string(),
+                            permalink: None,
+                            reason: Some(format!("{SAME_BYTES_REASON} {shared}")),
+                            bytes: Some(bytes.len() as u64),
+                            findings: Vec::new(),
+                        }));
+                        continue;
+                    }
                     slots.push(Slot::Decided(ArchiveEntryReport {
                         path,
-                        status: "invalid".to_string(),
+                        status: "ignored".to_string(),
                         permalink: None,
                         reason: Some(reason),
                         bytes: None,
-                        findings,
+                        findings: Vec::new(),
                     }));
+                    continue;
+                };
+                let bytes = loose.read.files.remove(&path).unwrap_or_default();
+                let size = bytes.len() as u64;
+                let (status, reason) = if file.reused {
+                    (
+                        if dry_run { "collides" } else { "skipped" }.to_string(),
+                        Some(SAME_FILE_REASON.to_string()),
+                    )
+                } else if dry_run {
+                    ("new".to_string(), None)
                 } else {
-                    slots.push(Slot::Sent {
-                        path: path.clone(),
-                        findings,
-                    });
-                    clean.push((path, content));
-                }
+                    match state
+                        .engine
+                        .attachment_write(domain, &file.dest, bytes)
+                        .await
+                    {
+                        Ok(_) => ("created".to_string(), None),
+                        Err(e) => {
+                            unstored.push((file.dest.clone(), e.to_string()));
+                            ("invalid".to_string(), Some(e.to_string()))
+                        }
+                    }
+                };
+                slots.push(Slot::Decided(ArchiveEntryReport {
+                    path: file.dest.clone(),
+                    status,
+                    permalink: None,
+                    reason,
+                    bytes: Some(size),
+                    findings: Vec::new(),
+                }));
+            }
+            Pending::Note { path, findings } => {
+                let text = match held_back.remove(&path) {
+                    Some(text) => text,
+                    None => {
+                        rewritten
+                            .next()
+                            .ok_or_else(|| {
+                                ApiError::internal(format!("no linked-file outcome for '{path}'"))
+                            })?
+                            .text
+                    }
+                };
+                slots.push(Slot::Sent {
+                    path: path.clone(),
+                    findings,
+                });
+                clean.push((path, text));
+            }
+        }
+    }
+
+    // A note that links a file whose write failed is reported invalid and
+    // not handed over, as `crystalline import` stops on that error.
+    if !unstored.is_empty() {
+        let failed_for = |text: &str| {
+            unstored
+                .iter()
+                .find(|(dest, _)| crystalline_core::find_asset_refs(text).contains(dest))
+                .map(|(dest, e)| format!("the file it links could not be stored at {dest}: {e}"))
+        };
+        let reasons: std::collections::HashMap<String, String> = clean
+            .iter()
+            .filter_map(|(path, text)| failed_for(text).map(|reason| (path.clone(), reason)))
+            .collect();
+        clean.retain(|(path, _)| !reasons.contains_key(path));
+        for slot in &mut slots {
+            if let Slot::Sent { path, findings } = slot
+                && let Some(reason) = reasons.get(path.as_str())
+            {
+                *slot = Slot::Decided(ArchiveEntryReport {
+                    path: path.clone(),
+                    status: "invalid".to_string(),
+                    permalink: None,
+                    reason: Some(reason.clone()),
+                    bytes: None,
+                    findings: std::mem::take(findings),
+                });
             }
         }
     }
@@ -939,6 +1306,12 @@ async fn run_archive(
         skipped: count("skipped"),
         invalid: count("invalid"),
         ignored: count("ignored"),
+        files_linked: linked.taken.len(),
+        not_taken: linked
+            .not_taken
+            .into_iter()
+            .map(ArchiveNotTaken::from)
+            .collect(),
         entries,
     })
 }
@@ -967,7 +1340,13 @@ async fn run_archive(
                    allowlist and the size ceiling, each refusal naming which \
                    of the three answered; an attachment past the 10 MiB \
                    ceiling is refused on its own rather than refusing the \
-                   archive.\n\nNothing is written. A hostile archive is \
+                   archive.\n\nEach markdown entry is completed the \
+                   way `crystalline import` completes a file before it is \
+                   verified. A file of the archive outside `assets/` that a \
+                   note links is listed at the `assets/` path it would be \
+                   stored at, the link is rewritten to it, and every link \
+                   that cannot be taken is listed in `not_taken`; a file no \
+                   note links stays `ignored`.\n\nNothing is written. A hostile archive is \
                    refused whole with 422 rather than partially imported: \
                    more than 1000 entries, a markdown entry over 1 MiB or a \
                    whole archive over 200 MiB once decompressed, an entry \
@@ -1070,7 +1449,10 @@ pub async fn preview(
                    route passes, and follow the same same-path policy; a \
                    restored attachment marks the domain as owing a \
                    consolidation sweep, since it is a file the agent has not \
-                   read yet.\n\nThe same hygiene the preview enforces applies \
+                   read yet.\n\nMarkdown entries are completed and the \
+                   files they link are stored as attachments, as the preview \
+                   describes; a linked file whose bytes the domain already \
+                   holds at its path is not written again.\n\nThe same hygiene the preview enforces applies \
                    here: a hostile archive is refused whole rather than \
                    partially imported.",
     params(
@@ -1237,7 +1619,7 @@ mod tests {
             (long.as_str(), PNG),
             ("readme.txt", b"not markdown"),
         ]);
-        let screened = read_archive(&bytes).unwrap();
+        let (screened, _) = read_archive(&bytes).unwrap();
         let by_path = |path: &str| -> (&'static str, Option<String>) {
             let found = screened
                 .iter()
@@ -1294,12 +1676,51 @@ mod tests {
     fn an_oversized_asset_entry_is_refused_on_its_own() {
         let big = vec![b'a'; crystalline_core::MAX_ATTACHMENT_BYTES as usize + 1];
         let bytes = zip_of(&[("assets/huge.png", big.as_slice())]);
-        let screened = read_archive(&bytes).unwrap();
+        let (screened, _) = read_archive(&bytes).unwrap();
         assert_eq!(
             verdict(&screened[0]),
             ("invalid", Some(ASSET_SIZE_REASON)),
             "the size gate answers per entry"
         );
+    }
+
+    /// A non-markdown entry outside `assets/` is still reported as ignored,
+    /// and is kept for the notes that may link it: its bytes when they could
+    /// become an attachment, its size alone when its type or its size rules
+    /// that out, so the planner can say why without the bytes being held.
+    #[test]
+    fn loose_entries_are_kept_for_the_notes_that_link_them() {
+        use crystalline_core::linked::{LinkedSource, Lookup};
+        let big = vec![b'a'; crystalline_core::MAX_ATTACHMENT_BYTES as usize + 1];
+        let bytes = zip_of(&[
+            ("pic.png", PNG),
+            ("tool.exe", b"MZ"),
+            ("huge.png", big.as_slice()),
+        ]);
+        let (screened, loose) = read_archive(&bytes).unwrap();
+        for item in &screened {
+            assert_eq!(
+                verdict(item),
+                ("ignored", Some("only .md entries are imported"))
+            );
+        }
+        assert_eq!(
+            loose.lookup("pic.png"),
+            Lookup::File {
+                len: PNG.len() as u64
+            }
+        );
+        assert!(loose.sha256("pic.png").is_ok());
+        assert_eq!(loose.lookup("tool.exe"), Lookup::File { len: 2 });
+        assert!(loose.sha256("tool.exe").is_err(), "its bytes are not held");
+        assert_eq!(
+            loose.lookup("huge.png"),
+            Lookup::File {
+                len: big.len() as u64
+            }
+        );
+        assert!(loose.sha256("huge.png").is_err(), "its bytes are not held");
+        assert_eq!(loose.lookup("absent.png"), Lookup::Missing);
     }
 
     /// A markdown entry keeps the 1 MiB per-entry cap it always had: the wider

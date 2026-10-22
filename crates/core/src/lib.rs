@@ -17,6 +17,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod address;
 pub mod attachment;
+pub mod automation;
 pub mod base;
 pub mod config;
 pub mod conventional;
@@ -33,6 +34,7 @@ pub mod kept;
 pub mod kind;
 pub mod layout;
 pub mod line_endings;
+pub mod linked;
 pub mod manifest;
 pub mod manifest_view;
 pub mod markdown;
@@ -66,7 +68,7 @@ pub use attachment::{
 };
 pub use emit::emit_engram;
 pub use engram::{
-    EVOLVE_ACK_KEY, Engram, EvolveAck, Frontmatter, Generated, Heading, LinkTarget,
+    EVOLVE_ACK_KEY, Engram, EvolveAck, Frontmatter, Generated, Heading, LinkForm, LinkTarget,
     META_KEY_MAX_BYTES, META_VALUE_MAX_BYTES, Observation, RECOMMENDED_STATUSES, RECOMMENDED_TYPES,
     Relation, SchemaDef, Verification, Verified, WikiLink, meta_value_text,
 };
@@ -85,21 +87,23 @@ pub use layout::{
 };
 pub use line_endings::{NotUtf8, to_lf, utf8_to_lf};
 pub use manifest::{
-    ArtifactType, DOMAIN_NAME_KEY, GENERATED_INDEXES_KEY, GeneratedIndexes, Manifest, PolicyKey,
-    PolicyKind, PolicyRole, ProblemKind, ProvisioningDecl, ProvisioningProblem,
-    ProvisioningSection, READ_ONLY_KEY, REFLECTION_HOME_KEY, REFLECTION_KEY, ReadOnly,
-    ReflectionSwitch, SHARING_KEY, Sharing, StarterStanza, TagAliasDecl, TagAliasProblem,
-    TagAliasProblemKind, TagAliasSection, append_tag_alias, domain_name_at, domain_name_of_source,
-    generated_indexes_at, in_root_artifact_dirs, manifest_template, policy_registry, read_only_at,
-    read_only_of_source, reflection_at, reflection_home_at, sharing_at, starter_stanzas,
-    tag_alias_pairs, validate_reflection_home,
+    ArtifactType, DOMAIN_NAME_KEY, EVOLVE_TRIGGER_KEY, GENERATED_INDEXES_KEY, GeneratedIndexes,
+    Manifest, PolicyKey, PolicyKind, PolicyRole, ProblemKind, ProvisioningDecl,
+    ProvisioningProblem, ProvisioningSection, READ_ONLY_KEY, REFLECT_TRIGGER_KEY,
+    REFLECTION_HOME_KEY, REFLECTION_KEY, ReadOnly, ReflectionSwitch, SHARING_KEY, Sharing,
+    StarterStanza, TagAliasDecl, TagAliasProblem, TagAliasProblemKind, TagAliasSection, Trigger,
+    append_tag_alias, domain_name_at, domain_name_of_source, generated_indexes_at,
+    in_root_artifact_dirs, manifest_template, policy_registry, read_only_at, read_only_of_source,
+    reflection_at, reflection_home_at, sharing_at, starter_stanzas, tag_alias_pairs,
+    validate_reflection_home,
 };
 pub use markdown::{
     CALLOUT_KINDS, MarkdownFinding, STATUS_COLOURS, lint_engram_source, lint_markdown,
 };
 pub use names::{NameInput, NameTable};
 pub use parse::{
-    FenceTracker, LosslessEngram, PARSE_GENERATION, ParseError, parse_engram, parse_engram_lossless,
+    FenceTracker, LosslessEngram, PARSE_GENERATION, ParseError, parse_engram,
+    parse_engram_lossless, wikilinks_by_line,
 };
 pub use path::fold_path_case;
 pub use prompt::{

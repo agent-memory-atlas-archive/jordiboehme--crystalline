@@ -229,7 +229,9 @@ async fn every_revision_we_serve_is_handshaken_as_legacy_and_gets_a_session() {
 /// message, expect initialize request` (`tower.rs:1833`/`:1851`) for the rest
 /// of its life. Observed on this endpoint before the refusal existed: a 200
 /// handshake carrying `"protocolVersion":"2026-07-28"` and no session header,
-/// then `HTTP/1.1 422 Unprocessable Entity` on a plain `tools/list`.
+/// then `HTTP/1.1 422 Unprocessable Entity` on a plain `tools/list`. (Since rmcp
+/// 3.6.0, #1377, that follow-up is answered `400 Bad Request: Session ID is
+/// required` instead; the wedge would be the same.)
 ///
 /// **The trigger class shrank when the era was adopted, and the branch stayed.**
 /// 2026-07-28 is served now, so a client naming it is answered it and routes
@@ -277,8 +279,8 @@ async fn a_version_we_do_not_serve_is_refused_at_the_http_handshake() {
     }
 
     // The refusal does not poison the endpoint: a fresh initialize at a version
-    // we serve still gets a session. (A bare follow-up would get the 422 above,
-    // which has nothing to do with poisoning.)
+    // we serve still gets a session. (A bare follow-up would get the 400
+    // "Session ID is required", which has nothing to do with poisoning.)
     let response = post(addr, &init_body("2025-06-18"), None).await;
     assert!(
         !extract_session_id(&response).is_empty(),
@@ -715,9 +717,11 @@ async fn the_wire_format_baseline_the_conformance_tasks_measure_against() {
     // --- the bare discover probe, which HTTP does NOT answer natively ---
     // A `server/discover` sent as the first message with no `_meta` and no
     // session is treated as a legacy request, takes the session branch and is
-    // answered `422 Unexpected message, expect initialize request`
-    // (`server_side_http.rs:196-203`). Task 8 owns the stdio interception and
-    // should not assume the HTTP side already works: it does not.
+    // answered `400 Bad Request: Session ID is required`: since rmcp 3.6.0
+    // (#1377) a non-initialize POST without a session is refused that way,
+    // where 3.5.0 answered `422 Unexpected message, expect initialize
+    // request`. Either way the HTTP side does not answer it with a
+    // DiscoverResult.
     let bare_probe = post(
         addr,
         r#"{"jsonrpc":"2.0","id":10,"method":"server/discover"}"#,
@@ -725,11 +729,11 @@ async fn the_wire_format_baseline_the_conformance_tasks_measure_against() {
     )
     .await;
     assert!(
-        bare_probe.starts_with("HTTP/1.1 422 Unprocessable Entity"),
+        bare_probe.starts_with("HTTP/1.1 400 Bad Request"),
         "a bare discover probe over HTTP is not answered with a DiscoverResult:\n{}",
         head_of(&bare_probe)
     );
-    assert!(bare_probe.contains("Unexpected message, expect initialize request"));
+    assert!(bare_probe.contains("Session ID is required"));
 
     // --- the body limit, the one boundary this task introduced ---
     // Kept in the baseline too so the number is visible beside the shapes it

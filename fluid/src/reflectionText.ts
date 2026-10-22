@@ -262,14 +262,17 @@ export function stripProvenance(markdown: string): string {
   const lines = front[0].split("\n");
   const kept: string[] = [];
   let inBlock = false;
-  lines.forEach((line, index) => {
+  lines.forEach((raw, index) => {
+    // A CRLF page splits into lines that end in `\r`; the line is judged
+    // without it and kept with it.
+    const line = raw.replace(/\r$/, "");
     const topLevel =
-      index === 0 || line === "---" || /^[^\s#-][^:]*:/.test(line);
+      index === 0 || /^---[ \t]*$/.test(line) || /^[^\s#-][^:]*:/.test(line);
     if (topLevel) {
       inBlock = /^reflection:/.test(line);
     }
     if (!inBlock) {
-      kept.push(line);
+      kept.push(raw);
     }
   });
   // Nothing left between the fences: the fences go too and the body loses

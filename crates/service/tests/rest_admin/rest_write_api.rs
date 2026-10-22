@@ -1696,6 +1696,132 @@ async fn a_domain_is_renamed_and_a_taken_name_is_a_conflict() {
     assert_eq!(dup.status(), 409, "{}", dup.text().await.unwrap());
 }
 
+/// `eng` explicit and seen as `eng`, then its MANIFEST declaring `to`, synced
+/// and adopted, so the instance holds a rename question for it. A note
+/// links to `eng` by that name, so the question stays open.
+async fn ask_rename(fx: &Fixture, to: &str) {
+    std::fs::write(
+        fx._tmp.path().join("eng/linker.md"),
+        ALPHA
+            .replace("permalink: alpha", "permalink: linker")
+            .replace("A rule about alpha.", "See [[eng:alpha]]."),
+    )
+    .unwrap();
+    let config_path = fx._tmp.path().join("config.yaml");
+    let mut cfg: GlobalConfig = crystalline_core::config::load_yaml(&config_path).unwrap();
+    let entry: &mut DomainEntry = cfg.domains.get_mut("eng").unwrap();
+    entry.name_origin = Some(crystalline_core::config::NameOrigin::Explicit);
+    if entry.canonical_seen.is_none() {
+        entry.canonical_seen = Some("eng".to_string());
+    }
+    crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
+    let manifest = fx._tmp.path().join("eng/MANIFEST.md");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let text = crystalline_core::manifest::set_declared_name(&text, to);
+    std::fs::write(&manifest, text).unwrap();
+    fx.engine.sync(None).await.unwrap();
+    fx.engine.adopt_domain_names().await.unwrap();
+    assert!(fx.engine.rename_question("eng").is_some(), "asked");
+}
+
+/// A MANIFEST rename is kept or finished through its two routes, by the
+/// callers who may rename the domain only; a question already answered is
+/// a 409.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_manifest_rename_is_kept_or_finished_over_rest() {
+    let fx = serve(Options::default()).await;
+    let admin = login(fx.addr, "root", "rootpw").await;
+    let editor = login(fx.addr, "eddy", "eddypw").await;
+    ask_rename(&fx, "platform").await;
+
+    let post = |path: &'static str, who: &(String, String)| {
+        as_session(fx.addr, reqwest::Method::POST, path, who).send()
+    };
+    let refused = post("/api/v1/domains/eng/rename/keep", &editor)
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 403, "{}", refused.text().await.unwrap());
+
+    let kept = post("/api/v1/domains/eng/rename/keep", &admin)
+        .await
+        .unwrap();
+    assert_eq!(kept.status(), 200, "{}", kept.text().await.unwrap());
+    let kept: serde_json::Value = kept.json().await.unwrap();
+    assert_eq!(kept["answered"], "keep", "{kept}");
+    assert_eq!(fx.engine.rename_question("eng"), None);
+    let again = post("/api/v1/domains/eng/rename/keep", &admin)
+        .await
+        .unwrap();
+    assert_eq!(again.status(), 409, "{}", again.text().await.unwrap());
+
+    ask_rename(&fx, "core").await;
+    let finished = post("/api/v1/domains/eng/rename/finish", &admin)
+        .await
+        .unwrap();
+    assert_eq!(finished.status(), 200, "{}", finished.text().await.unwrap());
+    let finished: serde_json::Value = finished.json().await.unwrap();
+    assert_eq!(finished["domain"], "eng", "{finished}");
+    assert_eq!(finished["to"], "core", "{finished}");
+    assert_eq!(fx.engine.rename_question("eng"), None);
+}
+
+/// A MANIFEST save that changes `domain_name` with `rename: "keep"` records
+/// the question as answered, so the adoption asks nothing; any other value
+/// is a 422 and nothing is written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_manifest_save_can_keep_the_links() {
+    let fx = serve(Options::default()).await;
+    let admin = login(fx.addr, "root", "rootpw").await;
+    let config_path = fx._tmp.path().join("config.yaml");
+    let mut cfg: GlobalConfig = crystalline_core::config::load_yaml(&config_path).unwrap();
+    let entry: &mut DomainEntry = cfg.domains.get_mut("eng").unwrap();
+    entry.name_origin = Some(crystalline_core::config::NameOrigin::Explicit);
+    entry.canonical_seen = Some("eng".to_string());
+    crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
+    let path = fx._tmp.path().join("eng/MANIFEST.md");
+    let before = std::fs::read_to_string(&path).unwrap();
+    let checksum = crystalline_core::provision::receipt::sha256_hex(before.as_bytes());
+    let edited = crystalline_core::manifest::set_declared_name(&before, "platform");
+
+    let wrong = as_session(
+        fx.addr,
+        reqwest::Method::PUT,
+        "/api/v1/domains/eng/manifest",
+        &admin,
+    )
+    .header("if-match", format!("\"{checksum}\""))
+    .json(&serde_json::json!({"markdown": edited, "rename": "finish"}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(wrong.status(), 422, "{}", wrong.text().await.unwrap());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+
+    let saved = as_session(
+        fx.addr,
+        reqwest::Method::PUT,
+        "/api/v1/domains/eng/manifest",
+        &admin,
+    )
+    .header("if-match", format!("\"{checksum}\""))
+    .json(&serde_json::json!({"markdown": edited, "rename": "keep"}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(saved.status(), 200, "{}", saved.text().await.unwrap());
+    fx.engine.sync(None).await.unwrap();
+    fx.engine.adopt_domain_names().await.unwrap();
+    assert_eq!(fx.engine.rename_question("eng"), None);
+    let cfg: GlobalConfig = crystalline_core::config::load_yaml(&config_path).unwrap();
+    assert_eq!(
+        cfg.domains["eng"]
+            .rename_question
+            .as_ref()
+            .and_then(|q| q.answered),
+        Some(crystalline_core::config::RenameAnswer::Keep)
+    );
+}
+
 /// An invalid new name is a 422, an unregistered domain is a 404, and a
 /// caller who may write the shared domain but does not own it - not an
 /// instance admin, and `eng` is shared, so nobody but an admin holds
@@ -3502,6 +3628,23 @@ fn write_ops() -> Vec<WriteOp> {
             body: Some(serde_json::json!({"key": "nobody is holding this"})),
             min_role: Role::Viewer,
             read_only_exempt: true,
+        },
+        // The two answers to a rename a MANIFEST made, gated as the rename
+        // below. `eng` has no question, so the admin leg answers 409, past
+        // authorization.
+        WriteOp {
+            method: Method::POST,
+            path: "/api/v1/domains/eng/rename/finish",
+            body: None,
+            min_role: Role::Admin,
+            read_only_exempt: false,
+        },
+        WriteOp {
+            method: Method::POST,
+            path: "/api/v1/domains/eng/rename/keep",
+            body: None,
+            min_role: Role::Admin,
+            read_only_exempt: false,
         },
         // Last of every row, and for the reason no other row is allowed to
         // be: the admin leg really renames `eng`, so no row after this one

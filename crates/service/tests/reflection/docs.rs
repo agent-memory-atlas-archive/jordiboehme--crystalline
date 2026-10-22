@@ -1500,7 +1500,17 @@ async fn an_id_line_no_heading_can_carry_is_replaced_and_said() {
         .await
         .unwrap();
     assert_eq!(again["ids_assigned"], serde_json::json!([]), "{again}");
-    assert!(again.get("guidance").is_none(), "{again}");
+    // Nothing is said about ids; the one section it changed names no source.
+    assert_eq!(
+        again["guidance"],
+        "These sections name no source engrams: pass sources for each section you built from engrams, so the queue can follow them.",
+        "{again}"
+    );
+    assert_eq!(
+        again["unsourced_sections"],
+        serde_json::json!(["Elsewhere"]),
+        "{again}"
+    );
 }
 
 /// The page sent back as it was read, block and ids included, is told
@@ -1700,9 +1710,11 @@ async fn a_local_rename_keeps_the_sources_of_the_renamed_domain_current() {
     );
 }
 
-/// A canonical name changed by editing the MANIFEST, outside a rename,
-/// leaves the stored name resolving nowhere: its sources read unavailable,
-/// never missing, and stay on the page.
+/// A canonical name changed by editing the MANIFEST on disk, outside a
+/// rename and before any adoption lines it up, leaves the stored name
+/// resolving nowhere: its sources read unavailable, never missing, and stay
+/// on the page. (A MANIFEST write through Crystalline lines the name up in
+/// that write, keeping the old canonical name as an alias.)
 #[tokio::test]
 async fn a_canonical_name_edited_in_the_manifest_leaves_sources_unavailable() {
     let fx = with_ops(
@@ -1739,10 +1751,13 @@ async fn a_canonical_name_edited_in_the_manifest_leaves_sources_unavailable() {
         "the canonical name: {}",
         file(&fx, "a.md")
     );
-    fx.engine
-        .edit_engram(&rename_in_manifest("ops-team", "ops-crew"))
-        .await
-        .unwrap();
+    let manifest_path = fx.tmp.path().join("ops/MANIFEST.md");
+    let on_disk = std::fs::read_to_string(&manifest_path).unwrap();
+    std::fs::write(
+        &manifest_path,
+        on_disk.replacen("domain_name: ops-team\n", "domain_name: ops-crew\n", 1),
+    )
+    .unwrap();
     fx.engine.sync(None).await.unwrap();
     let doc = fx
         .engine
@@ -1772,6 +1787,68 @@ async fn a_canonical_name_edited_in_the_manifest_leaves_sources_unavailable() {
         .collect();
     assert!(whats.contains(&"source_unavailable"), "{queue}");
     assert!(!whats.contains(&"source_missing"), "{queue}");
+    assert!(file(&fx, "a.md").contains("domain: ops-team"), "kept");
+}
+
+/// A canonical name changed through Crystalline (an edit of the MANIFEST)
+/// is lined up in that write: the old canonical name stays an alias at once,
+/// so a source stored under it still resolves and reads current, with no
+/// sync or adoption in between.
+#[tokio::test]
+async fn a_canonical_name_edited_through_crystalline_keeps_sources_current() {
+    let fx = with_ops(
+        "",
+        "",
+        &[(
+            "runbook.md",
+            &engram("Runbook", "runbook", "- [fact] page the on-call"),
+        )],
+    )
+    .await;
+    let rename_in_manifest = |from: &str, to: &str| crystalline_service::params::EditParams {
+        identifier: "manifest".to_string(),
+        domain: "ops".to_string(),
+        operation: "find_replace".to_string(),
+        find_text: Some(format!("domain_name: {from}\n")),
+        content: Some(format!("domain_name: {to}\n")),
+        expected_replacements: Some(1),
+        ..Default::default()
+    };
+    fx.engine
+        .edit_engram(&rename_in_manifest("ops", "ops-team"))
+        .await
+        .unwrap();
+    fx.engine.sync(None).await.unwrap();
+    let mut p = write("a.md", "# A\n\nFor people.\n\n## On call\n\nPage them.\n");
+    p.sources = BTreeMap::from([(
+        "On call".to_string(),
+        vec!["crystalline://ops/runbook".to_string()],
+    )]);
+    fx.engine.write_reflection(&p, &agent()).await.unwrap();
+    assert!(
+        file(&fx, "a.md").contains("domain: ops-team"),
+        "the canonical name: {}",
+        file(&fx, "a.md")
+    );
+
+    fx.engine
+        .edit_engram(&rename_in_manifest("ops-team", "ops-crew"))
+        .await
+        .unwrap();
+    assert_eq!(
+        fx.engine.local_domain_name("ops-team").await.as_deref(),
+        Some("ops"),
+        "the old canonical name is an alias at once"
+    );
+    let doc = fx
+        .engine
+        .read_reflection("eng", "a.md", &agent())
+        .await
+        .unwrap();
+    assert_eq!(
+        doc["sections"][0]["sources"][0]["state"], "current",
+        "{doc}"
+    );
     assert!(file(&fx, "a.md").contains("domain: ops-team"), "kept");
 }
 

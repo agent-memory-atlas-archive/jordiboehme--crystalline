@@ -31,7 +31,7 @@ permissions:
   contents: read
 
 # A newer push to a pull request cancels the run it supersedes. A push to main
-# keeps one group per commit and never cancels, so dev.yml sees every main run.
+# keeps one group per commit and never cancels.
 # A dispatched stress run has a group of its own, so it never queues behind or
 # replaces a main push at the same commit.
 concurrency:
@@ -76,7 +76,7 @@ jobs:
   # tested=true the test legs only compile (so main still saves the caches
   # pull requests restore) and the other heavy jobs are skipped; style,
   # cargo-deny, fluid-audit and verify-action still run, and the run still ends
-  # green, so dev.yml still fires. That check fails open as well: an API error,
+  # green. That check fails open as well: an API error,
   # an empty answer or anything unclear leaves tested=false, and the gates read
   # `!= 'true'`, so a missing output runs everything as before.
   changes:
@@ -281,11 +281,11 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show
 
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
-          tool: nextest@0.9.146
+          tool: nextest@0.9.149
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Named, so fluid-smoke reads this very entry (same job key as before).
           shared-key: test
@@ -421,12 +421,12 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show
 
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
-          tool: nextest@0.9.146
+          tool: nextest@0.9.149
 
       # Restores what the test legs saved on main and saves nothing.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: test
           save-if: false
@@ -464,7 +464,7 @@ jobs:
       # CI, the image and a laptop are one fact. vitest 5 needs Node 22.12 or
       # newer; corepack is installed through npm just below, which needs Node
       # already present, so this step comes first.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26'
 
@@ -479,7 +479,7 @@ jobs:
       # build.yml fluid-dist, release.yml sbom).
       - name: Enable corepack
         run: | # zizmor: ignore[adhoc-packages]
-          npm install --global corepack@0.35.0
+          npm install --global corepack@0.36.0
           corepack enable pnpm
           pnpm --version
 
@@ -555,7 +555,7 @@ jobs:
           persist-credentials: false
 
       # The same pin and major as the fluid job.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26'
 
@@ -600,7 +600,7 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # The ubuntu test leg's entry (same profile, same target dir). Read only.
           shared-key: test
@@ -610,14 +610,14 @@ jobs:
       # CI, the image and a laptop are one fact. vitest 5 needs Node 22.12 or
       # newer; corepack is installed through npm just below, which needs Node
       # already present, so this step comes first.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26'
 
       # Pinned corepack; the fluid job explains the zizmor ignore.
       - name: Enable corepack
         run: | # zizmor: ignore[adhoc-packages]
-          npm install --global corepack@0.35.0
+          npm install --global corepack@0.36.0
           corepack enable pnpm
         working-directory: fluid
 
@@ -665,7 +665,7 @@ jobs:
 
       - name: Upload the failure traces
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fluid-smoke-traces
           path: fluid/test-results
@@ -831,9 +831,9 @@ jobs:
         uses: devops-actions/actionlint@ec02b36684b2f574f1d219ad0a43b082e46bf3e4 # v0.1.13
 
       - name: zizmor
-        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
         with:
-          version: 1.30.1
+          version: 1.31.1
           advanced-security: false
           annotations: true
 
@@ -855,7 +855,7 @@ jobs:
           # The workspace pin, so the action's container does not resolve a
           # different toolchain than the build. Move it together with
           # rust-toolchain.toml.
-          rust-version: '1.99.0'
+          rust-version: '1.99.1'
           arguments: --all-features --locked
           command: check
 
@@ -876,14 +876,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26'
 
       # Pinned corepack; the fluid job explains the zizmor ignore.
       - name: Enable corepack
         run: | # zizmor: ignore[adhoc-packages]
-          npm install --global corepack@0.35.0
+          npm install --global corepack@0.36.0
           corepack enable pnpm
           pnpm --version
 
@@ -936,13 +936,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          # The release musl entry the dev channel writes from main (build.yml key
-          # release-<target>, job id build). Read only.
-          shared-key: release-x86_64-unknown-linux-musl-build
-          save-if: false
 
       - name: Build crystalline for musl
         run: cargo build --release --locked --target x86_64-unknown-linux-musl -p crystalline
@@ -1016,7 +1009,7 @@ jobs:
 
       # A re-run of this job uploads the same name again, hence overwrite.
       - name: Upload the proof
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tested-tree-${{ steps.tree.outputs.tree }}
           path: ${{ runner.temp }}/tested-tree/tested-tree.txt

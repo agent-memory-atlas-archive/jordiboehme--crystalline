@@ -292,6 +292,9 @@ fn reflection_allow_list() -> &'static [(&'static str, &'static [&'static str])]
                 "engine/src/collab/session.rs",
                 "engine/src/engine/reflection.rs",
                 "engine/src/engine/move_.rs",
+                // The automation status asks whether a person has a page
+                // open, so its update is not due while they type.
+                "engine/src/engine/reflect.rs",
             ],
         ),
         (

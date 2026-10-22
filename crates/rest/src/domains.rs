@@ -59,10 +59,14 @@ use crystalline_core::{manifest_template, policy_registry, starter_stanzas};
                            a legacy entry nothing has inferred yet), \
                            `shadowed` (whether another domain's local name \
                            already holds this one's canonical name - a bool, \
-                           never naming the other domain) and `renaming` \
+                           never naming the other domain), `renaming` \
                            (whether a rename has this domain paused right \
                            now; always present, so every row keeps the same \
-                           columns).\n\n\
+                           columns) and `rename_pending` (`{from, to, \
+                           seen_at}` when a sync saw this domain's MANIFEST \
+                           `domain_name` change and nobody has finished the \
+                           rename or kept the links yet, `null` \
+                           otherwise).\n\n\
                            For an instance admin, `mounted` lists the \
                            domains this machine offers from connected \
                            servers (`crystalline connect`): each one's \
@@ -91,6 +95,7 @@ use crystalline_core::{manifest_template, policy_registry, starter_stanzas};
                     "name_origin": "derived",
                     "shadowed": false,
                     "renaming": false,
+                    "rename_pending": null,
                     "when_to_use": ["Route here for eng questions."]
                 }]
             }),
@@ -744,6 +749,13 @@ pub struct SaveManifestBody {
         example = "---\ntitle: eng\n---\n\n## Scope\n\n- Everything about eng\n\n## When to Use\n\n- Route here for eng questions.\n"
     )]
     markdown: String,
+    /// `"keep"` when the text changes `domain_name` and the links should
+    /// keep their spelling ("Save without renaming"): the rename question
+    /// is recorded as already answered, so no banner follows. Left out, a
+    /// changed name is asked about after the next sync.
+    #[serde(default)]
+    #[schema(example = "keep")]
+    rename: Option<String>,
 }
 
 /// `PUT /domains/{domain}/manifest` - save a domain's MANIFEST markdown
@@ -913,9 +925,25 @@ pub async fn save_manifest(
         ));
     }
     let token = if_match(&headers)?;
+    let keep_name = match body.rename.as_deref() {
+        None => false,
+        Some("keep") => true,
+        Some(other) => {
+            return Err(ApiError::unprocessable(format!(
+                "rename must be \"keep\" or left out, not \"{other}\"; finish a rename with \
+                 POST /domains/{{domain}}/rename/finish once the MANIFEST is saved"
+            )));
+        }
+    };
     match state
         .engine
-        .save_manifest(&domain, &body.markdown, &token, &identity.scope())
+        .save_manifest(
+            &domain,
+            &body.markdown,
+            &token,
+            &identity.scope(),
+            keep_name,
+        )
         .await
     {
         // What landed is the LF form of what was sent, so that is what the

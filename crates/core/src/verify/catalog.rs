@@ -67,7 +67,11 @@ pub const VERIFY_RULES: &[VerifyRule] = &[
         "warning",
         "A frontmatter key and each of its values are small enough for the metadata index.",
     ),
-    rule("L001", "warning", "Every wikilink resolves."),
+    rule(
+        "L001",
+        "warning",
+        "Every wikilink and relative note link resolves.",
+    ),
     rule("L002", "error", "No two engrams share a permalink."),
     rule("L003", "warning", "No two engrams share a title."),
     rule("L004", "warning", "An engram does not link to itself."),

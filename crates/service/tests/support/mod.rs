@@ -14,8 +14,13 @@
 //! `update_branch` and a protected branch, so a direct share can be driven
 //! through the engine. Production code never depends on this; it exists only
 //! under `tests/`.
+//!
+//! [`mcp_session`] beside it holds the server half of the in-memory MCP
+//! connections the stdio tests drive.
 
 #![allow(dead_code)]
+
+pub mod mcp_session;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
@@ -119,6 +124,8 @@ pub const MOUNTED_OPERATIONS: &[&str] = &[
     "POST /api/v1/domains",
     "DELETE /api/v1/domains/{domain}",
     "POST /api/v1/domains/{domain}/rename",
+    "POST /api/v1/domains/{domain}/rename/finish",
+    "POST /api/v1/domains/{domain}/rename/keep",
     "PUT /api/v1/domains/{domain}/review",
     "GET /api/v1/domains/{domain}/drafts",
     "PUT /api/v1/domains/{domain}/visibility",
@@ -168,6 +175,7 @@ pub const MOUNTED_OPERATIONS: &[&str] = &[
     "GET /api/v1/context",
     "GET /api/v1/activity",
     "GET /api/v1/graph",
+    "GET /api/v1/domains/{domain}/automation",
     "GET /api/v1/evolve",
     "POST /api/v1/domains/{domain}/evolve/ack",
     "DELETE /api/v1/domains/{domain}/evolve/ack",

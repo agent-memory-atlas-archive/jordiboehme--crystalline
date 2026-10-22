@@ -24,7 +24,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 
+import { renameDomain } from "../api/admin";
 import { problemDetail } from "../api/client";
+import { conflictOf } from "../api/writes";
 import type { ManifestDetail, ManifestSections } from "../api/domain";
 import {
   fetchManifestDetail,
@@ -34,6 +36,8 @@ import {
 } from "../api/domain";
 import { useAuth } from "../auth/AuthContext";
 import { Breadcrumbs, crumbsOf } from "../components/Breadcrumbs";
+import { followRename, landOnRenamed } from "../components/followRename";
+import { ManifestRenameDialog } from "../components/ManifestRenameDialog";
 import { BUTTON, Tooltip } from "../components/primitives";
 import { Loading } from "../components/Loading";
 import CmEditor from "../editor/CmEditor";
@@ -46,12 +50,14 @@ import {
   baseExtensions,
   docText,
   lineSeparatorFor,
+  replaceBuffer,
 } from "../editor/setup";
 import { tableContextListener } from "../editor/tableVerbs";
 import { formattingKeymap } from "../editor/toolbar";
 import { useCloseFlow, useExitRequest } from "../editor/useCloseFlow";
 import { saveKeymap, useEditorSession } from "../editor/useEditorSession";
 import { useFullWidth } from "../layoutWidth";
+import { domainNameOf, withDomainName } from "../manifest/domainName";
 import { WHOLE_MANIFEST, engramsRoute } from "../paths";
 import { useTheme } from "../theme/context";
 import NotFound from "./NotFound";
@@ -259,6 +265,25 @@ function EditorSurface({
     void navigate(engramsRoute(domain));
   };
 
+  /**
+   * The name the saved text declares, which a changed one is compared with. A
+   * MANIFEST with no `domain_name` line stands under the name it is
+   * registered by. Moved forward by every save that lands.
+   */
+  const savedName = useRef(domainNameOf(manifest.markdown) ?? domain);
+  /** The open question about a changed name: both names, nothing written yet. */
+  const [asked, setAsked] = useState<{ from: string; to: string } | null>(null);
+  /**
+   * The answer the save that follows it carries. It stays until that save
+   * lands or fails for good, so a 412 whose overwrite retries the PUT carries
+   * the same choice; every other way out of a save clears it.
+   */
+  const answer = useRef<"keep" | "rename" | null>(null);
+  /** Set when `holdSave` is reached, i.e. when a save really starts. */
+  const saveStarted = useRef(false);
+  /** Why a rename that followed a landed save did not go through. */
+  const [renameProblem, setRenameProblem] = useState<string | null>(null);
+
   // The shared shell: buffer, checksum, dirty state, the dry-run gate,
   // drafts, the Mod-S save and the 412 flow. What this screen adds is the
   // transport below and the layout under it.
@@ -270,34 +295,123 @@ function EditorSurface({
     draftSlot: MANIFEST_DRAFT_SLOT,
     validateDomain: domain,
     validatePath: MANIFEST_PATH,
+    // A text that declares another name than the saved one is a question
+    // before it is a save: nothing is written until it is answered.
+    holdSave: (content) => {
+      saveStarted.current = true;
+      if (answer.current !== null) {
+        return false;
+      }
+      // Only a name that is written and differs asks. Removing the line asks
+      // nothing: the server's own rename question catches a name that falls
+      // back to a derived one.
+      const to = domainNameOf(content);
+      if (to === null || to === savedName.current) {
+        return false;
+      }
+      setRenameProblem(null);
+      setAsked({ from: savedName.current, to });
+      return true;
+    },
     save: async (content, token) => {
+      const picked = answer.current;
+      const newName = domainNameOf(content);
+      const renaming = picked === "rename" && newName !== null;
       let saved;
       try {
-        saved = await saveManifest(domain, content, token);
+        saved = await saveManifest(
+          domain,
+          // A rename goes through the rename route, which writes the new name
+          // itself; what is saved first is every other edit under the old one.
+          renaming ? withDomainName(content, savedName.current) : content,
+          token,
+          { keepName: picked === "keep" },
+        );
       } catch (error) {
         // A refused save is not an exit: the author stays on the buffer that
         // caused it, and the standing request dies with the save rather than
         // being left armed for whatever lands next.
         exit.disarm();
+        // A stale save keeps the answer for the overwrite that retries it.
+        if (conflictOf(error) === null) {
+          answer.current = null;
+        }
         throw error;
       }
+      answer.current = null;
+      setRenameProblem(null);
       // The plain read and the detail read are two cache entries over one
       // file: both are stale the moment this lands.
       void queryClient.invalidateQueries({ queryKey: manifestKey(domain) });
       void queryClient.invalidateQueries({
         queryKey: manifestDetailKey(domain),
       });
+      savedName.current = domainNameOf(saved.markdown) ?? domain;
+      const receipt = {
+        content: saved.markdown,
+        checksum: saved.checksum ?? "",
+      };
+      if (renaming) {
+        try {
+          const report = await renameDomain(domain, newName, false);
+          followRename(queryClient, domain, report);
+          exit.disarm();
+          landOnRenamed(queryClient, navigate, report);
+        } catch (error) {
+          // The text is saved under the old name; the person stays here with
+          // it and is told why the name did not follow.
+          exit.disarm();
+          setRenameProblem(
+            problemDetail(
+              error instanceof Error ? error : new Error(String(error)),
+            ),
+          );
+        }
+        return receipt;
+      }
       // Whether this is the save Save and leave asked for, and whether it still
       // carries what is on screen - the same rule the engram editor applies,
       // spelled once in `useCloseFlow`.
       if (exit.consume(view === null || docText(view.state) === content)) {
         leave();
       }
-      return { content: saved.markdown, checksum: saved.checksum ?? "" };
+      return receipt;
     },
     extensionsFor: (content) => extensionsFor(content, dark, setTableActive),
     ariaLabel: ARIA_LABEL,
   });
+
+  /** Close the question: whatever was riding on the save dies with it. */
+  const dismissAsk = () => {
+    exit.disarm();
+    setAsked(null);
+  };
+  /** Answer it, and ask for the save again with the answer riding on it. */
+  const answerAsk = (choice: "keep" | "rename") => {
+    answer.current = choice;
+    saveStarted.current = false;
+    setAsked(null);
+    session.requestSave();
+    // A save that did not start (hard errors, one already running) must not
+    // leave the answer armed to skip the next question.
+    if (!saveStarted.current) {
+      answer.current = null;
+    }
+  };
+  /** Put the old name back into the buffer; nothing is saved. */
+  const undoNameChange = () => {
+    const view = session.viewRef.current;
+    if (view !== null && asked !== null) {
+      replaceBuffer(
+        view,
+        withDomainName(docText(view.state), asked.from),
+        (content) => extensionsFor(content, dark, setTableActive),
+        ARIA_LABEL,
+        session.setBuffer,
+      );
+    }
+    dismissAsk();
+  };
 
   /**
    * The way out, and the question it asks of a buffer with unsaved text in it -
@@ -412,6 +526,15 @@ function EditorSurface({
           Findings.
         </p>
       )}
+      {renameProblem && (
+        <p
+          role="alert"
+          className="rounded bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-950 dark:text-red-200"
+        >
+          The MANIFEST is saved with the old name, but the domain was not
+          renamed. {renameProblem}
+        </p>
+      )}
       {session.offeredDraft && (
         <aside
           role="note"
@@ -479,13 +602,33 @@ function EditorSurface({
           onKeepEditing={closing.keepEditing}
         />
       )}
+      {asked && (
+        <ManifestRenameDialog
+          from={asked.from}
+          to={asked.to}
+          onUndo={undoNameChange}
+          onKeep={() => {
+            answerAsk("keep");
+          }}
+          onRename={() => {
+            answerAsk("rename");
+          }}
+          onDismiss={dismissAsk}
+        />
+      )}
       {session.conflict && (
         <ConflictDialog
           conflict={session.conflict}
           mine={session.buffer}
-          onClose={session.onConflictClose}
+          onClose={() => {
+            answer.current = null;
+            session.onConflictClose();
+          }}
           onOverwrite={session.onConflictOverwrite}
-          onTakeServer={session.onConflictTakeServer}
+          onTakeServer={() => {
+            answer.current = null;
+            session.onConflictTakeServer();
+          }}
         />
       )}
     </div>

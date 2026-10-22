@@ -10,7 +10,7 @@
  * `CUT_MARK` on the last row (0.22 R10, R11).
  */
 
-import { parseWikiTarget } from "../wikilinks";
+import { WIKILINK, wikilinkWords } from "../wikilinks";
 
 /** An inline markdown image: its alt text and its source. */
 export const IMAGE = /!\[([^\]]*)\]\(\s*([^)\s]*)[^)]*\)/g;
@@ -28,14 +28,7 @@ export function imageNote(alt: string, src: string): string {
 export function plainInline(text: string): string {
   return text
     .replace(IMAGE, (_m, alt: string, src: string) => imageNote(alt, src))
-    .replace(/\[\[([^[\]]+)\]\]/g, (_m, inner: string) => {
-      const bar = inner.indexOf("|");
-      if (bar >= 0) {
-        const label = inner.slice(bar + 1).trim();
-        if (label !== "") return label;
-      }
-      return parseWikiTarget(bar >= 0 ? inner.slice(0, bar) : inner).target;
-    })
+    .replace(WIKILINK, (m, inner: string) => wikilinkWords(inner) ?? m)
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/`/g, "")
     .replace(/\*\*(?=\S)(.+?)(?<=\S)\*\*/g, "$1")

@@ -144,7 +144,7 @@ pub struct Shared {
 impl Shared {
     /// A daemon's shared state over `engine` with nothing else running, for a
     /// test that drives the control socket's handler directly.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn for_test(engine: Arc<Engine>) -> Shared {
         let (shutdown_tx, _) = watch::channel(false);
         let (sessions_tx, _) = watch::channel(0usize);
@@ -803,6 +803,18 @@ pub async fn run_serve(
         let rx = shared.watch();
         tokio::spawn(async move {
             run_reflect_count_tick(e, REFLECT_COUNT_HEARTBEAT, rx).await;
+        });
+    }
+
+    // The loop triggers: a signed webhook to `automation.webhook.url` when
+    // loop work waits on a domain whose MANIFEST turns its trigger on. Idle
+    // without a URL; it does no work before its first window, so the start
+    // never waits on it.
+    {
+        let e = engine.clone();
+        let rx = shared.watch();
+        tokio::spawn(async move {
+            crate::automation_trigger::run_automation_triggers(e, rx).await;
         });
     }
 
@@ -2572,7 +2584,7 @@ fn ui_startup_line(config: &GlobalConfig, addr: &str) -> String {
         return format!("crystalline web UI at {}", web_ui_address(config, addr));
     }
     // Either built without the `fluid-ui` feature, so there is no bundle at
-    // all, or a dev build whose `fluid/dist` was never built (or was built
+    // all, or a local build whose `fluid/dist` was never built (or was built
     // after the last compile of this crate: see the note in `build.rs`).
     "web UI not built into this binary".to_string()
 }

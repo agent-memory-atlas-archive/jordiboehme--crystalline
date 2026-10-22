@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};
+use crystalline_core::attachment::suffixed_asset_path;
 use crystalline_core::config::registration::{
     Registration, RegistrationRequest, case_twin, case_twin_refusal, choose_domain_name,
     decide_registration, infer_name_origin, needs_manifest_write_back, validate_domain_name,
@@ -37,12 +38,12 @@ use crystalline_core::relink::Relink;
 use crystalline_core::schema::{self, Schema};
 use crystalline_core::{
     CrystallineUrl, DomainLayout, EVOLVE_ACK_KEY, Engram, EvolveAck, Frontmatter, HarnessKind,
-    LinkTarget, Manifest, PathClass, ReflectionMode, YamlValue, domain_name_at,
+    LinkForm, LinkTarget, Manifest, PathClass, ReflectionMode, YamlValue, domain_name_at,
     domain_name_of_source, is_lower_hyphen, parse_engram, parse_engram_lossless, slash_rel,
     slugify,
 };
 use crystalline_index::{
-    AckCounts, AckEntry, AttachmentRow, ChunkParams, DEFAULT_RETIRED_WEIGHT,
+    AckCounts, AckEntry, AttachmentRow, ChunkParams, Class, DEFAULT_RETIRED_WEIGHT,
     DEFAULT_SALIENCE_WEIGHT, DomainHost, DomainId, DomainKind, DomainLookup, DomainStats,
     EMBED_PAGE_SIZE, EdgeKind, EmbeddingProvider, EngramDescriptor, EngramFacts, EngramId,
     EngramRecord, EngramSummary, FactObservation, Family, FileStamp, Finding, GraphNode,
@@ -997,6 +998,10 @@ pub struct Engine {
     detection_walks: std::sync::atomic::AtomicU64,
     #[cfg(any(test, feature = "testing"))]
     fail_next_source_edit: std::sync::atomic::AtomicBool,
+    // When armed, the next rename-question scan fails once. See
+    // `Engine::fail_next_rename_scan`.
+    #[cfg(any(test, feature = "testing"))]
+    fail_next_rename_scan: std::sync::atomic::AtomicBool,
     // Beside it: when armed, the next swap a move's rewrite of a virtual
     // linker makes loses as if another writer had won, once, and is retried.
     // See `Engine::lose_next_relink_swap`.
@@ -1008,6 +1013,17 @@ pub struct Engine {
     // `Engine::hold_next_draft_edit`, and the same compile-out applies.
     #[cfg(any(test, feature = "testing"))]
     hold_next_draft_edit: std::sync::atomic::AtomicU64,
+    // A clock rather than a gate: when set, the automation verbs read this
+    // time as now, so a test moves a lease past its stale time or a status
+    // read to the next day. See `Engine::set_automation_now`.
+    #[cfg(any(test, feature = "testing"))]
+    automation_now: std::sync::Mutex<Option<DateTime<FixedOffset>>>,
+    // What each loop's trigger webhook last did on each domain, as the
+    // daemon's trigger task records it. Kept in memory: a restart forgets
+    // it, and the next send writes it again. See `Engine::record_delivery`.
+    automation_deliveries: std::sync::Mutex<
+        HashMap<(String, crystalline_core::automation::Loop), automation::DeliveryRecord>,
+    >,
     // A seam that is a gate rather than a stopwatch: when armed, the next move
     // or delete of a Reflection signals `entered` after its live-room screen,
     // then waits for `release` before it takes the page lock. See
@@ -1297,9 +1313,9 @@ pub struct Engine {
     // [`crate::rename::RenamePause`] and `Engine::rename_domain_local`.
     rename_pause: crate::rename::RenamePause,
     // The one rename this engine runs at a time, as the local name it
-    // renames and the name it gets; a second one is refused while it is
-    // taken.
-    rename_slot: std::sync::Mutex<Option<(String, String, bool)>>,
+    // renames, the name it gets and how it is finished if it stops; a second
+    // one is refused while it is taken.
+    rename_slot: std::sync::Mutex<Option<(String, String, String)>>,
     // Why the last adoption of a declared name failed, by the local name that
     // keeps waiting: set when the rename after a sync fails, cleared when it
     // lands or waits for a known reason. `crystalline doctor` reads it.
@@ -1307,6 +1323,10 @@ pub struct Engine {
     // Held by `Engine::adopt_domain_names` from its plan to the end of its
     // renames, so two adoptions never plan the same rename.
     adoption_lock: tokio::sync::Mutex<()>,
+    // The sessions already told about a domain's pending rename question, as
+    // (session key, local domain name): the guidance line goes out once per
+    // session and domain. In memory only, so a restart tells everyone again.
+    rename_nudged: std::sync::Mutex<HashSet<(String, String)>>,
     // Set while a rename is between its index row step and its config step:
     // a spelling push then would drop the alias the index row step left for
     // the old name, since the configuration does not list it yet. A refresh
@@ -2337,9 +2357,14 @@ impl Engine {
             #[cfg(any(test, feature = "testing"))]
             fail_next_source_edit: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "testing"))]
+            fail_next_rename_scan: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(any(test, feature = "testing"))]
             lose_next_relink_swap: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "testing"))]
             hold_next_draft_edit: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(any(test, feature = "testing"))]
+            automation_now: std::sync::Mutex::new(None),
+            automation_deliveries: std::sync::Mutex::new(HashMap::new()),
             #[cfg(any(test, feature = "testing"))]
             hold_next_room_screen: std::sync::Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
@@ -2404,6 +2429,7 @@ impl Engine {
             rename_slot: std::sync::Mutex::new(None),
             adoption_failures: std::sync::Mutex::new(HashMap::new()),
             adoption_lock: tokio::sync::Mutex::new(()),
+            rename_nudged: std::sync::Mutex::new(HashSet::new()),
             names_frozen: std::sync::atomic::AtomicBool::new(false),
             holds_state_dir: std::sync::atomic::AtomicBool::new(true),
             machine_owner: None,
@@ -2454,6 +2480,15 @@ impl Engine {
     #[cfg(any(test, feature = "testing"))]
     pub fn fail_next_source_edit(&self) {
         self.fail_next_source_edit
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Make the next scan for a rename question's old spellings fail, once,
+    /// as a store error would. Nothing in the daemon, the CLI or the MCP
+    /// surface calls this.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn fail_next_rename_scan(&self) {
+        self.fail_next_rename_scan
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -4106,22 +4141,29 @@ impl Engine {
     }
 
     /// Whether this instance backs up `domain`'s Reflection: it is its home
-    /// (`On { home: Here }`), the domain is connected to a repository, the
-    /// domain is not read-only, and on a shared database this instance still
-    /// holds the domain's host lock and no host move of the domain is
-    /// unresolved. A Reflection never goes to a repository its domain is not
-    /// connected to.
+    /// here ([`Engine::reflection_home_here`]) and the domain is connected to
+    /// a repository. A Reflection never goes to a repository its domain is
+    /// not connected to. With an origin the home is always `Here`, never
+    /// `Local`.
     async fn backs_up_reflection_here(&self, domain: &str) -> bool {
-        let home = matches!(
+        self.domain_entry(domain)
+            .is_ok_and(|entry| entry.origin.is_some())
+            && self.reflection_home_here(domain).await
+    }
+
+    /// Whether this instance is `domain`'s Reflection home: the Reflection
+    /// is in effect here (`On`, at home `Here` or `Local`), the domain is not
+    /// read-only, and on a shared database this instance still holds the
+    /// domain's host lock and no host move of the domain is unresolved. The
+    /// instance that may run the reflect loop and send its triggers.
+    pub(crate) async fn reflection_home_here(&self, domain: &str) -> bool {
+        matches!(
             self.reflection_state(domain).await,
             Ok(crystalline_core::reflection::ReflectionState::On {
                 home: crystalline_core::reflection::ReflectionHome::Here
+                    | crystalline_core::reflection::ReflectionHome::Local
             })
-        );
-        home && self
-            .domain_entry(domain)
-            .is_ok_and(|entry| entry.origin.is_some())
-            && !self.domain_is_read_only(domain).await
+        ) && !self.domain_is_read_only(domain).await
             // A takeover stops the old host's backup at once, not at its
             // next heartbeat.
             && matches!(self.confirm_reflection_host(domain).await, Ok(None))
@@ -7105,8 +7147,10 @@ mod domain_lookup_tests {
 // lists them in the order they stood in the single engine.rs.
 mod adopt_names;
 mod asset_home;
+mod automation;
 pub use asset_home::{ASSET_EXISTS, MOVE_ONTO_A_FILE};
 pub(crate) use asset_home::{AssetHome, ReplaceRule, WrittenAsset};
+pub use automation::{Delivery, WEBHOOK_NO_SECRET, WebhookTarget};
 mod attachments;
 mod close_folders;
 pub use close_folders::FolderProbe;
@@ -7135,7 +7179,7 @@ mod names;
 mod origins;
 mod read;
 mod reflect;
-pub use reflect::REFLECT_GUIDANCE;
+pub use reflect::{REFLECT_GUIDANCE, STRUCTURE_HINT};
 mod reflection;
 mod reflection_assets;
 pub use fence::KEPT_HERE;
@@ -7147,6 +7191,7 @@ pub use reflection::{
     SectionAuthors, TARGET_TAKEN,
 };
 pub use reflection_assets::WrittenReflectionAsset;
+mod manifest_rename;
 mod rename_domain;
 mod review_mode;
 mod schemas;
@@ -7899,6 +7944,19 @@ fn parse_families(requested: &[String]) -> Result<Vec<Family>> {
     Ok(out)
 }
 
+/// Parse the requested finding class, erroring on an unknown value with both
+/// valid ones named. `None` and a blank value mean both classes.
+fn parse_class(requested: Option<&str>) -> Result<Option<Class>> {
+    match requested.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(raw) if raw.eq_ignore_ascii_case("mechanical") => Ok(Some(Class::Mechanical)),
+        Some(raw) if raw.eq_ignore_ascii_case("judgment") => Ok(Some(Class::Judgment)),
+        Some(raw) => Err(EngineError::Invalid(format!(
+            "unknown class '{raw}'; valid classes: mechanical, judgment"
+        ))),
+    }
+}
+
 /// Parse the requested rule ids into their catalog spellings, erroring on an
 /// unknown id with the whole catalog named. An id outside the catalog errors
 /// here rather than returning silence.
@@ -8171,8 +8229,19 @@ struct SplitPlan {
 
 fn section_err(e: crystalline_core::emit::EditError) -> EngineError {
     match e {
-        crystalline_core::emit::EditError::SectionNotFound { path } => {
-            EngineError::NotFound(format!("no section found for heading path: {path}"))
+        crystalline_core::emit::EditError::SectionNotFound { path, headings } => {
+            let mut message = format!("no section found for heading path: {path}");
+            if !headings.is_empty() {
+                let shown: Vec<&str> = headings.iter().take(30).map(String::as_str).collect();
+                message.push_str(&format!(
+                    ". Headings in the document: {}",
+                    shown.join(" | ")
+                ));
+                if headings.len() > shown.len() {
+                    message.push_str(&format!(" (and {} more)", headings.len() - shown.len()));
+                }
+            }
+            EngineError::NotFound(message)
         }
     }
 }
@@ -9078,48 +9147,6 @@ fn ack_entries(fm: &Frontmatter) -> Vec<AckEntry> {
         .collect()
 }
 
-/// `assets/deck.pptx` as `assets/deck-2.pptx`: the name an attachment takes
-/// when the destination already holds a different file under its own.
-///
-/// The counter goes before the extension rather than after it, so the file
-/// keeps the extension its mime and its allowlist decision rest on, and the
-/// stem is shortened as far as it has to be for the result to pass
-/// [`crystalline_core::validate_asset_path`]. A path already at the length
-/// ceiling would otherwise grow past it, and since this name is what the
-/// moving engram's references are rewritten to, an invalid one would be a
-/// reference rewritten to a path no write can ever accept. `None` when no
-/// valid name can be built even with the stem gone, which leaves the
-/// attachment uncarried rather than renamed into nowhere.
-fn suffixed_asset_path(path: &str, attempt: usize) -> Option<String> {
-    let (dir, name) = match path.rsplit_once('/') {
-        Some((dir, name)) => (format!("{dir}/"), name),
-        None => (String::new(), path),
-    };
-    let (stem, extension) = match name.rsplit_once('.') {
-        Some((stem, extension)) => (stem, Some(extension)),
-        None => (name, None),
-    };
-    let mut keep = stem.len();
-    loop {
-        let candidate = match extension {
-            Some(extension) => format!("{dir}{}-{attempt}.{extension}", &stem[..keep]),
-            None => format!("{dir}{}-{attempt}", &stem[..keep]),
-        };
-        if crystalline_core::validate_asset_path(&candidate).is_ok() {
-            return Some(candidate);
-        }
-        if keep == 0 {
-            return None;
-        }
-        // One character at a time, never one byte: a stem cut through a
-        // multi-byte character would not be a string at all.
-        keep -= 1;
-        while keep > 0 && !stem.is_char_boundary(keep) {
-            keep -= 1;
-        }
-    }
-}
-
 /// The moving engram's text with every renamed attachment reference - in the
 /// body and in the `analyzes` claim - pointing at the name the file took at
 /// the destination.
@@ -9343,9 +9370,17 @@ pub(crate) fn note_domain_names_normalized(receipt: &mut Value, normalized: usiz
     }
 }
 
+/// The sentence an edit receipt carries when `insert_after_section` put a
+/// block that opens with a heading after the target's whole section.
+pub const PLACED_AFTER_SECTION_GUIDANCE: &str = "The content opens with a heading of the section's own level or higher, so it was placed after the whole section instead of under its heading. To put content right under the heading, send it without a heading.";
+
 /// The sentence an edit receipt carries when a section edit dropped a repeat
 /// of the section's own heading from its content.
 pub const HEADING_STRIPPED_GUIDANCE: &str = "Content repeated the section's own heading; it was dropped, since the heading stays. Send only the body next time.";
+
+/// The line an agent gets, once per session, on a tool answer about a domain
+/// with a pending rename question. `{from}` and `{to}` are the two names.
+pub(crate) const RENAME_PENDING_GUIDANCE: &str = "This domain was renamed from {from} to {to} in its MANIFEST. Tell the person they can finish the rename in Fluid (the banner on the domain) or with `crystalline doctor --fix`; if nobody is there to ask, leave it.";
 
 /// The sentence an edit or write receipt carries when the MANIFEST it just
 /// changed draws an error from the MANIFEST rules.
@@ -9376,6 +9411,13 @@ pub(crate) fn add_guidance(receipt: &mut Value, sentence: &str) {
 /// The repeat is dropped rather than refused because nobody means it, and
 /// said out loud because an agent that is only ever corrected in silence
 /// learns nothing and keeps sending it.
+fn note_placed_after_section(receipt: &mut Value, placed: bool) {
+    if placed {
+        receipt["placed_after_section"] = json!(true);
+        add_guidance(receipt, PLACED_AFTER_SECTION_GUIDANCE);
+    }
+}
+
 fn note_heading_stripped(receipt: &mut Value, stripped: Option<String>) {
     if let Some(heading) = stripped {
         receipt["heading_stripped"] = json!(heading);
@@ -11092,43 +11134,6 @@ mod attachment_carry_tests {
         // what both spellings share, which is why the screen tests that.
         assert!("analyzes: Assets/shot.png".contains(asset_tail("assets/shot.png")));
         assert!("![x](./assets/shot.png#right)".contains(asset_tail("assets/shot.png")));
-    }
-
-    #[test]
-    fn a_suffixed_name_stays_a_valid_attachment_path() {
-        assert_eq!(
-            suffixed_asset_path("assets/shot.png", 2).unwrap(),
-            "assets/shot-2.png"
-        );
-        assert_eq!(
-            suffixed_asset_path("assets/notes/deck.pptx", 3).unwrap(),
-            "assets/notes/deck-3.pptx"
-        );
-
-        // At the 256 byte ceiling the stem gives way, never the extension:
-        // the name has to stay one a write will accept, because the engram's
-        // references are rewritten to it.
-        let at_cap = format!("assets/{}.png", "a".repeat(245));
-        assert_eq!(at_cap.len(), 256);
-        let suffixed = suffixed_asset_path(&at_cap, 2).unwrap();
-        assert_eq!(suffixed, format!("assets/{}-2.png", "a".repeat(243)));
-        assert!(crystalline_core::validate_asset_path(&suffixed).is_ok());
-        let long_suffix = suffixed_asset_path(&at_cap, 100).unwrap();
-        assert!(crystalline_core::validate_asset_path(&long_suffix).is_ok());
-
-        // A multi-byte stem is cut on character boundaries, not byte ones:
-        // 255 bytes of path with a two-byte stem character, where `-2` no
-        // longer fits and exactly one character has to go.
-        let wide = format!("assets/{}.png", "é".repeat(122));
-        assert_eq!(wide.len(), 255);
-        let cut = suffixed_asset_path(&wide, 2).unwrap();
-        assert!(crystalline_core::validate_asset_path(&cut).is_ok());
-        assert_eq!(cut, format!("assets/{}-2.png", "é".repeat(121)));
-
-        // And a path with no room left at all is refused rather than
-        // rewritten into something no write would take.
-        let hopeless = format!("assets/{}/x.png", "d".repeat(246));
-        assert!(suffixed_asset_path(&hopeless, 2).is_none());
     }
 }
 

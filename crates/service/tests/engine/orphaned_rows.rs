@@ -139,6 +139,7 @@ fn read(identifier: &str, domain: Option<&str>) -> ReadParams {
         identifier: identifier.to_string(),
         domain: domain.map(str::to_string),
         share_link: None,
+        include_images: false,
     }
 }
 

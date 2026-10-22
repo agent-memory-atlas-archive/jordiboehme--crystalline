@@ -1102,7 +1102,7 @@
         "operationId": "list_domains",
         "responses": {
           "200": {
-            "description": "The engine's own domain listing, unchanged.\n\nA domain that reviews changes before they land carries `review: \"overlay\"` and, for a caller with an account, `my_drafts`: how many draft changes of theirs are waiting to be shared. Both are absent on a domain that takes changes directly, and `my_drafts` is absent rather than zero when there is no account to count for - a client reads presence, since null and 0 are different facts.\n\nEvery domain also carries `canonical_name` (the name its content carries), `aliases` (its former local names, still accepted as input), `name_origin` (`explicit` or `derived`, `null` for a legacy entry nothing has inferred yet), `shadowed` (whether another domain's local name already holds this one's canonical name - a bool, never naming the other domain) and `renaming` (whether a rename has this domain paused right now; always present, so every row keeps the same columns).\n\nFor an instance admin, `mounted` lists the domains this machine offers from connected servers (`crystalline connect`): each one's local `name`, its `source`, the server's `source_url`, its `remote_name` there and the `web_url` of its page on that server (`null` unless the address is http or https). They are not served here.",
+            "description": "The engine's own domain listing, unchanged.\n\nA domain that reviews changes before they land carries `review: \"overlay\"` and, for a caller with an account, `my_drafts`: how many draft changes of theirs are waiting to be shared. Both are absent on a domain that takes changes directly, and `my_drafts` is absent rather than zero when there is no account to count for - a client reads presence, since null and 0 are different facts.\n\nEvery domain also carries `canonical_name` (the name its content carries), `aliases` (its former local names, still accepted as input), `name_origin` (`explicit` or `derived`, `null` for a legacy entry nothing has inferred yet), `shadowed` (whether another domain's local name already holds this one's canonical name - a bool, never naming the other domain), `renaming` (whether a rename has this domain paused right now; always present, so every row keeps the same columns) and `rename_pending` (`{from, to, seen_at}` when a sync saw this domain's MANIFEST `domain_name` change and nobody has finished the rename or kept the links yet, `null` otherwise).\n\nFor an instance admin, `mounted` lists the domains this machine offers from connected servers (`crystalline connect`): each one's local `name`, its `source`, the server's `source_url`, its `remote_name` there and the `web_url` of its page on that server (`null` unless the address is http or https). They are not served here.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1126,6 +1126,7 @@
                       "path": "/Users/ada/Documents/Crystalline/eng",
                       "private": false,
                       "relations": 3,
+                      "rename_pending": null,
                       "renaming": false,
                       "shadowed": false,
                       "when_to_use": [
@@ -1416,7 +1417,7 @@
           "domains"
         ],
         "summary": "Import an uploaded archive into a domain.",
-        "description": "Admin only. Runs the engine verb the preview dry-ran, so the outcome matches the report that was approved: entries land as `created` or `overwritten`, and `skipped`, `invalid` and `ignored` name everything that did not.\n\n`policy=skip` (the default) leaves an existing path alone; `policy=overwrite` replaces it. Overwrite is a same-path decision only - an entry whose permalink is held at another path is refused under either policy, since writing it would leave two files claiming one permalink.\n\nEntries under `assets/` are stored as attachments, through the same gates an upload to the file route passes, and follow the same same-path policy; a restored attachment marks the domain as owing a consolidation sweep, since it is a file the agent has not read yet.\n\nThe same hygiene the preview enforces applies here: a hostile archive is refused whole rather than partially imported.",
+        "description": "Admin only. Runs the engine verb the preview dry-ran, so the outcome matches the report that was approved: entries land as `created` or `overwritten`, and `skipped`, `invalid` and `ignored` name everything that did not.\n\n`policy=skip` (the default) leaves an existing path alone; `policy=overwrite` replaces it. Overwrite is a same-path decision only - an entry whose permalink is held at another path is refused under either policy, since writing it would leave two files claiming one permalink.\n\nEntries under `assets/` are stored as attachments, through the same gates an upload to the file route passes, and follow the same same-path policy; a restored attachment marks the domain as owing a consolidation sweep, since it is a file the agent has not read yet.\n\nMarkdown entries are completed and the files they link are stored as attachments, as the preview describes; a linked file whose bytes the domain already holds at its path is not written again.\n\nThe same hygiene the preview enforces applies here: a hostile archive is refused whole rather than partially imported.",
         "operationId": "import_domain_archive",
         "parameters": [
           {
@@ -1520,7 +1521,7 @@
           "domains"
         ],
         "summary": "Dry-run an archive upload: what each entry would become.",
-        "description": "Admin only. Takes the raw bytes of a zip and reports, per entry, what an import would do with it - `new`, `collides`, `invalid` or `ignored` - with the verify findings `POST /validate` would raise over that entry's markdown.\n\nEntries under `assets/` are attachments rather than engrams: they are reported with their byte count and screened by the attachment path rules, the extension allowlist and the size ceiling, each refusal naming which of the three answered; an attachment past the 10 MiB ceiling is refused on its own rather than refusing the archive.\n\nNothing is written. A hostile archive is refused whole with 422 rather than partially imported: more than 1000 entries, a markdown entry over 1 MiB or a whole archive over 200 MiB once decompressed, an entry name that is not UTF-8, or any path that could escape the domain root.",
+        "description": "Admin only. Takes the raw bytes of a zip and reports, per entry, what an import would do with it - `new`, `collides`, `invalid` or `ignored` - with the verify findings `POST /validate` would raise over that entry's markdown.\n\nEntries under `assets/` are attachments rather than engrams: they are reported with their byte count and screened by the attachment path rules, the extension allowlist and the size ceiling, each refusal naming which of the three answered; an attachment past the 10 MiB ceiling is refused on its own rather than refusing the archive.\n\nEach markdown entry is completed the way `crystalline import` completes a file before it is verified. A file of the archive outside `assets/` that a note links is listed at the `assets/` path it would be stored at, the link is rewritten to it, and every link that cannot be taken is listed in `not_taken`; a file no note links stays `ignored`.\n\nNothing is written. A hostile archive is refused whole with 422 rather than partially imported: more than 1000 entries, a markdown entry over 1 MiB or a whole archive over 200 MiB once decompressed, an entry name that is not UTF-8, or any path that could escape the domain root.",
         "operationId": "preview_domain_archive_import",
         "parameters": [
           {
@@ -1660,6 +1661,79 @@
           },
           "404": {
             "description": "No such domain.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/domains/{domain}/automation": {
+      "get": {
+        "tags": [
+          "domains"
+        ],
+        "summary": "When the reflect and evolve loops last ran on this domain.",
+        "description": "Reading needs the right to read the domain, and each caller sees its own share. Every reader gets the last run (when, which runner, the outcome and the counts) and the runner working now. A caller who may run the loop also gets the run's summary, pull request and account, and, with `counts` on, how many items wait for a person. Only a domain manager or an instance admin gets `delivery`, the state of the loop's webhook trigger where the MANIFEST turns it on. Never the items a run left.",
+        "operationId": "read_automation",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "loop",
+            "in": "query",
+            "description": "Only this loop: `reflect` or `evolve`. Defaults to both.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "reflect"
+          },
+          {
+            "name": "counts",
+            "in": "query",
+            "description": "Whether to work out what waits for a person, which sweeps the\ndomain. Defaults to true; a page that shows only the last run or the\ndelivery sends false.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "example": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The loops asked for on this domain.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`loop` is neither reflect nor evolve.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain, or none this caller may see.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4667,6 +4741,7 @@
                   "rewritten": [
                     {
                       "domain": "eng",
+                      "path": "alpha.md",
                       "permalink": "alpha"
                     }
                   ],
@@ -5508,7 +5583,7 @@
         ],
         "responses": {
           "200": {
-            "description": "ReflectQueue. `kind` is `feedback` (`what`: `new`, `changed`, `removed`), `update` (`source_changed`, `source_retired`, `source_missing`, `unreflected`, `off_structure`, `pact_changed`) or `review` (`thread`, with `thread`, the thread's id, and, when its opening comment is a conventional comment, `label` and `blocking`; a blocking thread comes first among the threads of its section). `sources`, an `unreflected` item's `folder` and `engrams`, and an `engram_attachment` item's `targets` are absent for a caller who cannot read engrams. The MCP `reflect` tool answers the same shape with `scope: { domains, kinds }` in place of `domain` and a `domain` member on each row; its `scope` may carry `unreadable`, the names of the domains whose queue could not be read, and `pending`, the names of the domains whose Reflection waits for engrams to leave `reflections/`. An update item's `what` may also be `asset_missing` (per section, with `assets`), `engram_attachment` (per section, with `targets`), `asset_unreferenced` (`path` empty, with `asset`) or `host_moved` (`path` empty, one per domain, after the domain moved to this instance on a shared database and this disk lacks files the previous host wrote: `only_elsewhere` is `{ previous_host, engrams, attachments, pages, files }`, counts only, `previous_host` null when unknown) or `source_unavailable` (one per page and domain that cannot be checked here, `section` null, with `source_domain`, `count`, `sections` and `note`). A source in `sources` may carry `domain`, the local name of another domain than the page's. Sources in a domain the caller may not open are never named. A feedback item and an update item then carry `hidden_sources`, their count, and `note`, one plain sentence whatever their state. A feedback item keeps its own `what`; for update items such sources are always on the section's `source_changed` item, aged by its page.",
+            "description": "ReflectQueue. `kind` is `feedback` (`what`: `new`, `changed`, `removed`), `update` (`source_changed`, `source_retired`, `source_missing`, `unreflected`, `off_structure`, `pact_changed`) or `review` (`thread`, with `thread`, the thread's id, and, when its opening comment is a conventional comment, `label` and `blocking`; a blocking thread comes first among the threads of its section). `sources`, an `unreflected` item's `folder` and `engrams`, and an `engram_attachment` item's `targets` are absent for a caller who cannot read engrams. The MCP `reflect` tool answers the same shape with `scope: { domains, kinds }` in place of `domain` and a `domain` member on each row; its `scope` may carry `unreadable`, the names of the domains whose queue could not be read, and `pending`, the names of the domains whose Reflection waits for engrams to leave `reflections/`. An update item's `what` may also be `asset_missing` (per section, with `assets`), `engram_attachment` (per section, with `targets`), `asset_unreferenced` (`path` empty, with `asset`) or `host_moved` (`path` empty, one per domain, after the domain moved to this instance on a shared database and this disk lacks files the previous host wrote: `only_elsewhere` is `{ previous_host, engrams, attachments, pages, files }`, counts only, `previous_host` null when unknown) or `source_unavailable` (one per page and domain that cannot be checked here, `section` null, with `source_domain`, `count`, `sections` and `note`). A source in `sources` may carry `domain`, the local name of another domain than the page's. Sources in a domain the caller may not open are never named. A feedback item and an update item then carry `hidden_sources`, their count, and `note`, one plain sentence whatever their state. A feedback item keeps its own `what`; for update items such sources are always on the section's `source_changed` item, aged by its page. An `off_structure` item carries `structure`, the pact's globs, and `hint` when none of them fits any page; a `pact_changed` item carries `diff` and `sections`, the ids of the changed parts of the pact.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6676,6 +6751,171 @@
           },
           "422": {
             "description": "The new name is invalid, or (a full rename only) the MANIFEST cannot be written here - the detail says \"This machine only\" runs the rename instead.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/domains/{domain}/rename/finish": {
+      "post": {
+        "tags": [
+          "domains"
+        ],
+        "summary": "Finish a rename the domain's MANIFEST made.",
+        "description": "Respells every link to the domain that still uses the name its MANIFEST declared before, in each domain the caller can write, Reflection pages included, and answers the rename question. Team domains take the rewrites as local changes. Gated as a rename: an instance admin, or a private domain's owner.",
+        "operationId": "finish_manifest_rename",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain's current name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What was respelled, and what was left as it is.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "domain": "eng",
+                  "from": "eng",
+                  "left_behind": [],
+                  "rewritten": [
+                    {
+                      "domain": "ops",
+                      "engrams": 1,
+                      "references": 2
+                    }
+                  ],
+                  "to": "platform"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No identity, or an anonymous one.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not rename the domain, the request did not echo its CSRF token, or this instance is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain, or none this caller may see.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The domain has no rename waiting for an answer, another rename is running, or the new name reaches another domain here.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/domains/{domain}/rename/keep": {
+      "post": {
+        "tags": [
+          "domains"
+        ],
+        "summary": "Keep the links of a rename the domain's MANIFEST made.",
+        "description": "Closes the rename question and changes nothing else: links keep the old name, which stays an alias here. Gated as a rename: an instance admin, or a private domain's owner.",
+        "operationId": "keep_manifest_rename",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain's current name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The question, answered.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "answered": "keep",
+                  "domain": "eng",
+                  "from": "eng",
+                  "to": "platform"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No identity, or an anonymous one.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not rename the domain, the request did not echo its CSRF token, or this instance is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain, or none this caller may see.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The domain has no rename waiting for an answer.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8269,6 +8509,16 @@
             "example": 50
           },
           {
+            "name": "class",
+            "in": "query",
+            "description": "Keep one class of finding: `mechanical` or `judgment`. Defaults to both.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "judgment"
+          },
+          {
             "name": "limit",
             "in": "query",
             "description": "Page size. Defaults to 10, clamped by the engine to 100.",
@@ -8409,7 +8659,7 @@
             }
           },
           "422": {
-            "description": "`families` or `rules` names something the catalog does not have.",
+            "description": "`families`, `rules` or `class` names something the catalog does not have.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -11239,6 +11489,42 @@
           }
         }
       },
+      "ArchiveNotTaken": {
+        "type": "object",
+        "description": "A link from an archived note to a local file that was not taken in as an attachment, and why.",
+        "required": [
+          "note",
+          "target",
+          "reason"
+        ],
+        "properties": {
+          "note": {
+            "type": "string",
+            "description": "The path of the note that links the file.",
+            "example": "report.pdf.md"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/ArchiveNotTakenReason",
+            "description": "Why the file was not taken."
+          },
+          "target": {
+            "type": "string",
+            "description": "The link target as the note names it, decoded, without a fragment.",
+            "example": "missing.png"
+          }
+        }
+      },
+      "ArchiveNotTakenReason": {
+        "type": "string",
+        "description": "Why a linked file was not taken: `missing` (no such entry in the\narchive), `outside` (the link leaves the archive), `not_allowed` (not an\nattachment type), `too_large` (past the attachment size limit) or\n`bad_name` (no usable attachment name could be made from it).",
+        "enum": [
+          "missing",
+          "outside",
+          "not_allowed",
+          "too_large",
+          "bad_name"
+        ]
+      },
       "ArchiveReport": {
         "type": "object",
         "description": "The per-entry report of a preview or an import, with the counters a confirmation dialog summarizes. The counters are tallied from the entries above them, so the two can never disagree.",
@@ -11251,7 +11537,9 @@
           "written",
           "skipped",
           "invalid",
-          "ignored"
+          "ignored",
+          "files_linked",
+          "not_taken"
         ],
         "properties": {
           "collides": {
@@ -11275,9 +11563,14 @@
             },
             "description": "Every entry of the archive, in the order the archive holds them."
           },
+          "files_linked": {
+            "type": "integer",
+            "description": "How many distinct files the notes link to were taken in as\nattachments. Each is listed in `entries` at its `assets/` path.",
+            "minimum": 0
+          },
           "ignored": {
             "type": "integer",
-            "description": "Entries an archive may carry but a domain never imports: a MANIFEST, a\ngenerated OKF index or log, anything that is neither markdown nor an\nattachment of an allowed type.",
+            "description": "Entries an archive may carry but a domain never imports: a MANIFEST, a\ngenerated OKF index or log, anything that is neither markdown nor an\nattachment of an allowed type that a note links.",
             "minimum": 0
           },
           "invalid": {
@@ -11289,6 +11582,13 @@
             "type": "integer",
             "description": "Preview only: entries that would be created.",
             "minimum": 0
+          },
+          "not_taken": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ArchiveNotTaken"
+            },
+            "description": "Every link to a local file that was not taken, once per note and\ntarget. The link is left as it was written."
           },
           "skipped": {
             "type": "integer",
@@ -11402,6 +11702,34 @@
             "type": "string",
             "description": "The host (and port, when it names one) the browser will be sent to.\nThe one fact that says where an authorization actually goes.",
             "example": "claude.ai"
+          }
+        }
+      },
+      "AutomationResponse": {
+        "type": "object",
+        "description": "What `GET /domains/{domain}/automation` answers. A loop the request did\nnot ask for is `null`.",
+        "properties": {
+          "evolve": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LoopState",
+                "description": "The evolve loop."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reflect": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LoopState",
+                "description": "The reflect loop."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -12209,6 +12537,188 @@
           "ok": {
             "type": "boolean",
             "description": "Always true."
+          }
+        }
+      },
+      "LoopDelivery": {
+        "type": "object",
+        "description": "What a loop's trigger webhook last did on a domain.",
+        "required": [
+          "configured"
+        ],
+        "properties": {
+          "configured": {
+            "type": "boolean",
+            "description": "Whether this instance has a webhook URL and a secret to sign with."
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last delivery failed; cleared by the next one that works."
+          },
+          "last_sent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the receiver last took a webhook, RFC 3339."
+          }
+        }
+      },
+      "LoopRun": {
+        "type": "object",
+        "description": "One recorded run of a loop.",
+        "required": [
+          "started_at",
+          "ended_at",
+          "runner",
+          "outcome",
+          "done",
+          "left",
+          "judgment_waiting"
+        ],
+        "properties": {
+          "account": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The account the run worked as; only for a caller who may run the loop.",
+            "example": "robot"
+          },
+          "done": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Items done.",
+            "example": 4,
+            "minimum": 0
+          },
+          "ended_at": {
+            "type": "string",
+            "description": "When the run ended, RFC 3339.",
+            "example": "2026-10-21T09:04:00+00:00"
+          },
+          "judgment_waiting": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Judgment findings waiting when the run ended (evolve).",
+            "example": 2,
+            "minimum": 0
+          },
+          "left": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Items the run left for a person.",
+            "example": 3,
+            "minimum": 0
+          },
+          "outcome": {
+            "type": "string",
+            "description": "`done`, `stopped_at_cap`, `failed`, `nothing_due` or `expired`.",
+            "example": "done"
+          },
+          "pr_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The pull request the run shared its changes in, when it shared; only\nfor a caller who may run the loop."
+          },
+          "runner": {
+            "type": "string",
+            "description": "The runner's label.",
+            "example": "n8n"
+          },
+          "started_at": {
+            "type": "string",
+            "description": "When the run started, RFC 3339.",
+            "example": "2026-10-21T09:00:00+00:00"
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A short summary the runner wrote; only for a caller who may run the\nloop."
+          }
+        }
+      },
+      "LoopRunning": {
+        "type": "object",
+        "description": "A runner holding the loop's lease right now.",
+        "required": [
+          "runner",
+          "taken_at"
+        ],
+        "properties": {
+          "runner": {
+            "type": "string",
+            "description": "The runner's label."
+          },
+          "taken_at": {
+            "type": "string",
+            "description": "When the run took the lease, RFC 3339."
+          }
+        }
+      },
+      "LoopState": {
+        "type": "object",
+        "description": "One loop on one domain.",
+        "properties": {
+          "delivery": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LoopDelivery",
+                "description": "The trigger webhook; `null` unless the MANIFEST turns the loop's\ntrigger on and the caller manages the domain or administers the\ninstance."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "judgment_waiting": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Judgment findings waiting for a person (evolve only). `null` unless\nthe caller may run the loop and asked for counts.",
+            "example": 2,
+            "minimum": 0
+          },
+          "last_run": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LoopRun",
+                "description": "The last recorded run; `null` when the loop never ran here."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "left_for_person": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Items a finished run left for a person that have not changed since.\n`null` unless the caller may run the loop and asked for counts.",
+            "example": 3,
+            "minimum": 0
+          },
+          "running": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LoopRunning",
+                "description": "The runner working now; `null` when none is."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -13447,6 +13957,14 @@
             "type": "string",
             "description": "The full MANIFEST markdown as the editor holds it.",
             "example": "---\ntitle: eng\n---\n\n## Scope\n\n- Everything about eng\n\n## When to Use\n\n- Route here for eng questions.\n"
+          },
+          "rename": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`\"keep\"` when the text changes `domain_name` and the links should\nkeep their spelling (\"Save without renaming\"): the rename question\nis recorded as already answered, so no banner follows. Left out, a\nchanged name is asked about after the next sync.",
+            "example": "keep"
           }
         }
       },

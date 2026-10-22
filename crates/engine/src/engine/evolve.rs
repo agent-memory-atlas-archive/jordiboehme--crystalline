@@ -1,8 +1,38 @@
 use super::*;
 
+/// The domain names a sweep reads, built once per sweep by
+/// [`Engine::sweep_domain_names`].
+struct SweepNames {
+    /// Every spelling of every domain the caller may see (`V102`).
+    known: Vec<String>,
+    /// The `(spelling, canonical name)` pairs `V110` reads.
+    respell: Vec<(String, String)>,
+    /// The spellings among `respell` whose domain's MANIFEST rename waits
+    /// for a person's answer.
+    asked: Vec<String>,
+}
+
 /// The close-folder rule, whose acknowledgment answers a pair of folders and
 /// so can sit on any engram of the two.
 pub(super) const FOLDER_PAIR_RULE: &str = "V112";
+
+/// What [`Engine::evolve_findings`] swept, before the queue is shaped.
+pub(super) struct SweptFindings {
+    pub(super) today: NaiveDate,
+    pub(super) families: Vec<Family>,
+    pub(super) rules: Vec<&'static str>,
+    pub(super) class: Option<Class>,
+    pub(super) swept_scope: Vec<String>,
+    pub(super) read_only_left_out: Vec<String>,
+    /// Filtered and ranked.
+    pub(super) findings: Vec<Finding>,
+    pub(super) truncations: Vec<String>,
+    pub(super) engrams_scanned: usize,
+    pub(super) unparsed: usize,
+    pub(super) acknowledged: AckCounts,
+    /// The parameters with their domain names localized.
+    pub(super) p: EvolveParams,
+}
 
 /// Why a take-back left a holder alone that another account shared with the
 /// caller to read.
@@ -126,6 +156,148 @@ impl Engine {
         Ok(value)
     }
 
+    /// The sweep half of [`Engine::evolve_detect`]: the scope resolved, every
+    /// domain in it swept, the findings filtered and ranked, nothing shaped.
+    /// The automation status reads the findings themselves from it, since a
+    /// due item's version is the scope an acknowledgment records.
+    pub(super) async fn evolve_findings(
+        &self,
+        p: &EvolveParams,
+        scope: &crate::scope::Scope,
+    ) -> Result<SweptFindings> {
+        let hidden = self.hidden_for(scope).await?;
+        let p = &self.localized(p, &hidden).await;
+        let today = match p.today.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(s) => NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
+                EngineError::Invalid(format!("today '{s}' is not an ISO date (YYYY-MM-DD)"))
+            })?,
+            None => Utc::now().date_naive(),
+        };
+        let families = parse_families(&p.families)?;
+        let rules = parse_rules(&p.rules)?;
+        let class = parse_class(p.class.as_deref())?;
+
+        // Every LOCAL domain name this caller may see: the default sweep
+        // scope, one domain swept once whatever it also answers to.
+        let mut local_domains = self.known_domain_names();
+        local_domains.retain(|name| !hidden.contains(name));
+        local_domains.sort();
+        local_domains.dedup();
+
+        // Every spelling of every domain this caller may see - `V102`'s idea
+        // of which `[[domain:Target]]` prefixes name a real domain, so it no
+        // longer calls a target spelled by a canonical name or a
+        // machine-local alias unregistered - and, among those, the pairs
+        // `V110` reads: a spelling the name table would rewrite on write to
+        // its domain's canonical name. Both are filtered by `hidden` the way
+        // a write's own normalization is, so a finding never names a domain
+        // this caller may not see (see [`Engine::sweep_domain_names`]).
+        let names = self.sweep_domain_names(&hidden).await;
+
+        let named: Vec<String> = if p.domains.is_empty() {
+            local_domains.clone()
+        } else {
+            let mut named = Vec::new();
+            for name in &p.domains {
+                // The same resolution every other tool uses, so an unknown name
+                // errors identically and a domain registered after startup is
+                // still found - and a domain this caller may not see is one of
+                // the names that errors.
+                self.domain_entry_scoped(name, &hidden)?;
+                if !named.contains(name) {
+                    named.push(name.clone());
+                }
+            }
+            named
+        };
+
+        // A read-only domain's findings are findings nobody could act on, so
+        // the sweep leaves it out, a named one included, and says which. They
+        // come back the moment the flag is switched off.
+        let mut read_only_left_out: Vec<String> = Vec::new();
+        let mut swept_scope = Vec::with_capacity(named.len());
+        for name in named {
+            if self.domain_is_read_only(&name).await {
+                read_only_left_out.push(name);
+            } else {
+                swept_scope.push(name);
+            }
+        }
+
+        let mut findings: Vec<Finding> = Vec::new();
+        let mut truncations: Vec<String> = Vec::new();
+        let mut engrams_scanned = 0usize;
+        let mut unparsed = 0usize;
+        let mut acknowledged = AckCounts::default();
+
+        // One domain at a time: `SweepInput` is domain-scoped (two rules are
+        // domain-relative) and processing them in turn bounds the memory an
+        // unscoped sweep needs to whatever the largest domain costs.
+        for name in &swept_scope {
+            let Some(swept) = self
+                .sweep_domain(
+                    name,
+                    today,
+                    &names,
+                    p.include_acknowledged,
+                    true,
+                    scope,
+                    &hidden,
+                )
+                .await?
+            else {
+                continue;
+            };
+            engrams_scanned += swept.report.engrams_scanned;
+            unparsed += swept.unparsed;
+            // A cap that fired is domain-local, so the merged list names the
+            // domain it fired in. A line belongs to the rule it opens with and
+            // follows the same family and rule filters as the findings.
+            truncations.extend(
+                swept
+                    .report
+                    .truncations
+                    .iter()
+                    .filter(|t| truncation_in_scope(t, &families, &rules))
+                    .map(|t| format!("{name} - {t}")),
+            );
+            // Counted before the family and rule filters below, because what an
+            // acknowledgment suppressed is a fact about the domain rather than
+            // about the slice of it this call asked for.
+            acknowledged.total += swept.report.acknowledged.total;
+            acknowledged.temporal += swept.report.acknowledged.temporal;
+            acknowledged.structure += swept.report.acknowledged.structure;
+            acknowledged.redundancy += swept.report.acknowledged.redundancy;
+            acknowledged.meaning += swept.report.acknowledged.meaning;
+            findings.extend(swept.report.findings);
+        }
+
+        findings.retain(|f| {
+            (families.is_empty() || families.contains(&f.family))
+                && (rules.is_empty() || rules.contains(&f.rule))
+                && p.min_priority.is_none_or(|min| f.priority >= min)
+                && class.is_none_or(|c| f.class == c)
+        });
+        // Re-ranked after the merge: each domain's report is ranked on its own,
+        // and the sort is total and deterministic, so consecutive pages of an
+        // unscoped sweep stay coherent.
+        rank(&mut findings);
+        Ok(SweptFindings {
+            today,
+            families,
+            rules,
+            class,
+            swept_scope,
+            read_only_left_out,
+            findings,
+            truncations,
+            engrams_scanned,
+            unparsed,
+            acknowledged,
+            p: p.clone(),
+        })
+    }
+
     /// The detection half of the consolidation sweep: one page of the ranked
     /// queue over a scope, with no side effect of any kind.
     ///
@@ -174,122 +346,21 @@ impl Engine {
         p: &EvolveParams,
         scope: &crate::scope::Scope,
     ) -> Result<Value> {
-        let hidden = self.hidden_for(scope).await?;
-        let p = &self.localized(p, &hidden).await;
-        let today = match p.today.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            Some(s) => NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
-                EngineError::Invalid(format!("today '{s}' is not an ISO date (YYYY-MM-DD)"))
-            })?,
-            None => Utc::now().date_naive(),
-        };
-        let families = parse_families(&p.families)?;
-        let rules = parse_rules(&p.rules)?;
-
-        // Every LOCAL domain name this caller may see: the default sweep
-        // scope, one domain swept once whatever it also answers to.
-        let mut local_domains = self.known_domain_names();
-        local_domains.retain(|name| !hidden.contains(name));
-        local_domains.sort();
-        local_domains.dedup();
-
-        // Every spelling of every domain this caller may see - `V102`'s idea
-        // of which `[[domain:Target]]` prefixes name a real domain, so it no
-        // longer calls a target spelled by a canonical name or a
-        // machine-local alias unregistered - and, among those, the pairs
-        // `V110` reads: a spelling the name table would rewrite on write to
-        // its domain's canonical name. Both are filtered by `hidden` the way
-        // a write's own normalization is, so a finding never names a domain
-        // this caller may not see (see [`Engine::sweep_domain_names`]).
-        let (known_domains, respell) = self.sweep_domain_names(&hidden).await;
-
-        let named: Vec<String> = if p.domains.is_empty() {
-            local_domains.clone()
-        } else {
-            let mut named = Vec::new();
-            for name in &p.domains {
-                // The same resolution every other tool uses, so an unknown name
-                // errors identically and a domain registered after startup is
-                // still found - and a domain this caller may not see is one of
-                // the names that errors.
-                self.domain_entry_scoped(name, &hidden)?;
-                if !named.contains(name) {
-                    named.push(name.clone());
-                }
-            }
-            named
-        };
-
-        // A read-only domain's findings are findings nobody could act on, so
-        // the sweep leaves it out, a named one included, and says which. They
-        // come back the moment the flag is switched off.
-        let mut read_only_left_out: Vec<String> = Vec::new();
-        let mut swept_scope = Vec::with_capacity(named.len());
-        for name in named {
-            if self.domain_is_read_only(&name).await {
-                read_only_left_out.push(name);
-            } else {
-                swept_scope.push(name);
-            }
-        }
-
-        let mut findings: Vec<Finding> = Vec::new();
-        let mut truncations: Vec<String> = Vec::new();
-        let mut engrams_scanned = 0usize;
-        let mut unparsed = 0usize;
-        let mut acknowledged = AckCounts::default();
-
-        // One domain at a time: `SweepInput` is domain-scoped (two rules are
-        // domain-relative) and processing them in turn bounds the memory an
-        // unscoped sweep needs to whatever the largest domain costs.
-        for name in &swept_scope {
-            let Some(swept) = self
-                .sweep_domain(
-                    name,
-                    today,
-                    &known_domains,
-                    &respell,
-                    p.include_acknowledged,
-                    true,
-                    scope,
-                    &hidden,
-                )
-                .await?
-            else {
-                continue;
-            };
-            engrams_scanned += swept.report.engrams_scanned;
-            unparsed += swept.unparsed;
-            // A cap that fired is domain-local, so the merged list names the
-            // domain it fired in. A line belongs to the rule it opens with and
-            // follows the same family and rule filters as the findings.
-            truncations.extend(
-                swept
-                    .report
-                    .truncations
-                    .iter()
-                    .filter(|t| truncation_in_scope(t, &families, &rules))
-                    .map(|t| format!("{name} - {t}")),
-            );
-            // Counted before the family and rule filters below, because what an
-            // acknowledgment suppressed is a fact about the domain rather than
-            // about the slice of it this call asked for.
-            acknowledged.total += swept.report.acknowledged.total;
-            acknowledged.temporal += swept.report.acknowledged.temporal;
-            acknowledged.structure += swept.report.acknowledged.structure;
-            acknowledged.redundancy += swept.report.acknowledged.redundancy;
-            acknowledged.meaning += swept.report.acknowledged.meaning;
-            findings.extend(swept.report.findings);
-        }
-
-        findings.retain(|f| {
-            (families.is_empty() || families.contains(&f.family))
-                && (rules.is_empty() || rules.contains(&f.rule))
-                && p.min_priority.is_none_or(|min| f.priority >= min)
-        });
-        // Re-ranked after the merge: each domain's report is ranked on its own,
-        // and the sort is total and deterministic, so consecutive pages of an
-        // unscoped sweep stay coherent.
-        rank(&mut findings);
+        let SweptFindings {
+            today,
+            families,
+            rules,
+            class,
+            swept_scope,
+            read_only_left_out,
+            findings,
+            truncations,
+            engrams_scanned,
+            unparsed,
+            acknowledged,
+            p,
+        } = self.evolve_findings(p, scope).await?;
+        let p = &p;
 
         let total = findings.len();
         let limit = p
@@ -412,6 +483,7 @@ impl Engine {
                 "families": families.iter().map(|f| f.as_str()).collect::<Vec<_>>(),
                 "rules": rules,
                 "min_priority": p.min_priority,
+                "class": class.map(|c| c.as_str()),
                 "today": today.to_string(),
             },
             "engrams_scanned": engrams_scanned,
@@ -688,19 +760,10 @@ impl Engine {
         scope: &crate::scope::Scope,
     ) -> Result<Vec<Finding>> {
         let hidden = self.hidden_for(scope).await?;
-        let (known_domains, respell) = self.sweep_domain_names(&hidden).await;
+        let names = self.sweep_domain_names(&hidden).await;
         let today = Utc::now().date_naive();
         let Some(swept) = self
-            .sweep_domain(
-                domain,
-                today,
-                &known_domains,
-                &respell,
-                true,
-                false,
-                scope,
-                &hidden,
-            )
+            .sweep_domain(domain, today, &names, true, false, scope, &hidden)
             .await?
         else {
             return Ok(Vec::new());
@@ -728,25 +791,39 @@ impl Engine {
     /// [`Engine::known_domain_names`] - which is the whole of what makes
     /// `V102` stop calling a target spelled by a canonical name or a
     /// machine-local alias unregistered.
-    async fn sweep_domain_names(
-        &self,
-        hidden: &HashSet<String>,
-    ) -> (Vec<String>, Vec<(String, String)>) {
+    ///
+    /// A domain whose MANIFEST rename waits for a person's answer here
+    /// (Part B) is that person's to finish: its old spellings stay in
+    /// `respell` but are named in `asked` too, so `V110` speaks about them as
+    /// judgment and an agent never answers the question by respelling the
+    /// links itself. Once the person chose to keep the links as they are,
+    /// the old names are labels on purpose and leave `respell` altogether.
+    async fn sweep_domain_names(&self, hidden: &HashSet<String>) -> SweepNames {
         let table = self.name_table_now().await;
-        let mut known_domains: Vec<String> = Vec::new();
+        let (mut asked, kept) = self.rename_spellings_by_answer(&table);
+        let mut known: Vec<String> = Vec::new();
         let mut respell: Vec<(String, String)> = Vec::new();
         for (spelling, local) in table.spellings() {
             if hidden.contains(&local) {
                 continue;
             }
-            known_domains.push(spelling.clone());
-            if let Some(canonical) = table.normalize(&spelling) {
+            known.push(spelling.clone());
+            if let Some(canonical) = table.normalize(&spelling)
+                && !kept.contains(&spelling)
+            {
                 respell.push((spelling, canonical.to_string()));
             }
         }
-        known_domains.sort();
-        known_domains.dedup();
-        (known_domains, respell)
+        known.sort();
+        known.dedup();
+        asked.retain(|spelling| respell.iter().any(|(s, _)| s == spelling));
+        asked.sort();
+        asked.dedup();
+        SweepNames {
+            known,
+            respell,
+            asked,
+        }
     }
 
     /// Acknowledge a finding: record on the engram that this rule's finding was
@@ -1163,8 +1240,7 @@ impl Engine {
         &self,
         name: &str,
         today: NaiveDate,
-        known_domains: &[String],
-        respell: &[(String, String)],
+        names: &SweepNames,
         include_acknowledged: bool,
         count_pending: bool,
         scope: &crate::scope::Scope,
@@ -1292,7 +1368,8 @@ impl Engine {
         // written prefix is one of `respell`'s spellings. Base rows only,
         // like the store call it reuses; empty when `respell` is empty,
         // which costs no read at all.
-        let spellings: Vec<String> = respell
+        let spellings: Vec<String> = names
+            .respell
             .iter()
             .map(|(spelling, _)| spelling.clone())
             .collect();
@@ -1421,8 +1498,9 @@ impl Engine {
             unresolved,
             tags: vocab.tags,
             tag_aliases: vocab.aliases,
-            known_domains: known_domains.to_vec(),
-            respell: respell.to_vec(),
+            known_domains: names.known.clone(),
+            respell: names.respell.clone(),
+            renames_asked: names.asked.clone(),
             spelled_refs,
             attachments,
             shadowed_asset_refs,

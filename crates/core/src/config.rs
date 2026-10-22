@@ -113,6 +113,12 @@ pub struct GlobalConfig {
     /// config keeps working untouched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthConfig>,
+    /// Settings for the headless reflect and evolve loops: where the signed
+    /// webhook goes and when maintenance work counts as waiting. Absent means
+    /// no webhook is configured and the default threshold, so every existing
+    /// config keeps working untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automation: Option<AutomationConfig>,
 }
 
 impl GlobalConfig {
@@ -445,6 +451,16 @@ impl GlobalConfig {
             .unwrap_or(DEFAULT_LOGIN_FREE_ATTEMPTS)
     }
 
+    /// `automation.evolve_threshold`: how many mechanical maintenance
+    /// findings make the evolve trigger send its webhook. Absent means
+    /// [`DEFAULT_EVOLVE_THRESHOLD`].
+    pub fn automation_evolve_threshold(&self) -> u64 {
+        self.automation
+            .as_ref()
+            .and_then(|a| a.evolve_threshold)
+            .unwrap_or(DEFAULT_EVOLVE_THRESHOLD)
+    }
+
     /// `auth.login.max_delay`. Absent config or an absent key means the
     /// default; zero means the throttle is off.
     pub fn auth_login_max_delay(&self) -> std::time::Duration {
@@ -532,6 +548,37 @@ pub struct DomainEntry {
     /// is detected: the previous value in this field becomes a new alias.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canonical_seen: Option<String>,
+    /// The rename a sync saw and a person has not settled yet: an explicit
+    /// domain's MANIFEST `domain_name` changed, the local name was kept and
+    /// the old canonical name became an alias. Machine-local like
+    /// `aliases`: every instance asks its own question once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rename_question: Option<RenameQuestion>,
+}
+
+/// A rename a sync adopted for an explicit domain, waiting for a person to
+/// finish it (respell the links) or keep the links as they are.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenameQuestion {
+    /// The canonical name this machine had seen before the change.
+    pub from: String,
+    /// The canonical name the MANIFEST declares now.
+    pub to: String,
+    /// When the change was seen, as RFC 3339 text.
+    pub seen_at: String,
+    /// How a person answered, absent while the question is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered: Option<RenameAnswer>,
+}
+
+/// How a person settled a [`RenameQuestion`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RenameAnswer {
+    /// The links keep the old spelling; the alias stays.
+    Keep,
+    /// The links were respelled to the new name.
+    Finished,
 }
 
 /// How a domain came to have the name it is registered under: named on
@@ -575,6 +622,7 @@ impl DomainEntry {
             name_origin: None,
             aliases: Vec::new(),
             canonical_seen: None,
+            rename_question: None,
         }
     }
 
@@ -589,6 +637,7 @@ impl DomainEntry {
             name_origin: None,
             aliases: Vec::new(),
             canonical_seen: None,
+            rename_question: None,
         }
     }
 
@@ -1127,6 +1176,49 @@ impl std::fmt::Debug for OidcConfig {
             .field("scopes", &self.scopes)
             .field("default_role", &self.default_role)
             .field("redirect_uri", &self.redirect_uri)
+            .finish()
+    }
+}
+
+/// `automation.evolve_threshold`'s default: the number of open maintenance
+/// findings at which the evolve loop counts as due.
+pub const DEFAULT_EVOLVE_THRESHOLD: u64 = 20;
+
+/// Settings for the headless reflect and evolve loops.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AutomationConfig {
+    /// Where and how the instance sends a signed webhook when loop work is
+    /// waiting. Absent means it sends none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook: Option<WebhookConfig>,
+    /// How many mechanical maintenance findings make the evolve trigger send
+    /// its webhook; a run is due from the first one. Absent means
+    /// [`DEFAULT_EVOLVE_THRESHOLD`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evolve_threshold: Option<u64>,
+}
+
+/// The webhook an instance sends when loop work is waiting.
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct WebhookConfig {
+    /// The address the webhook is posted to. Absent means none is sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// The secret the body is signed with. A credential: stored here but
+    /// never rendered back, and `CRYSTALLINE_AUTOMATION_WEBHOOK_SECRET`
+    /// (or its `_FILE` form) supplies it where a deployment keeps secrets out
+    /// of the config file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+}
+
+/// Hand-written so the signing secret cannot reach a log line or a panic
+/// message through a careless `{:?}`, like [`OidcConfig`].
+impl std::fmt::Debug for WebhookConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebhookConfig")
+            .field("url", &self.url)
+            .field("secret", &self.secret.as_ref().map(|_| SECRET_DISPLAY))
             .finish()
     }
 }
@@ -1720,6 +1812,25 @@ pub fn models_dir_is_user_provided() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_webhook_debug_render_masks_the_secret_and_keeps_the_url() {
+        let cfg = GlobalConfig {
+            automation: Some(AutomationConfig {
+                webhook: Some(WebhookConfig {
+                    url: Some("https://hooks.example.com/a".into()),
+                    secret: Some("hunter2".into()),
+                }),
+                evolve_threshold: None,
+            }),
+            ..GlobalConfig::default()
+        };
+        let rendered = format!("{cfg:?}");
+        assert!(!rendered.contains("hunter2"), "{rendered}");
+        assert!(rendered.contains(SECRET_DISPLAY), "{rendered}");
+        assert!(rendered.contains("hooks.example.com"), "{rendered}");
+        assert_eq!(cfg.automation_evolve_threshold(), DEFAULT_EVOLVE_THRESHOLD);
+    }
 
     /// The one place a config's own `Debug` is load bearing: the client
     /// secret is masked, the rest of the block is not, and the whole config
@@ -2358,6 +2469,29 @@ mod tests {
             Some("platform")
         );
         assert_eq!(back, cfg);
+    }
+
+    #[test]
+    fn a_rename_question_round_trips_and_is_left_out_when_absent() {
+        let mut entry = DomainEntry::file("/tmp/eng");
+        let plain = serde_yaml_ng::to_string(&entry).unwrap();
+        assert!(!plain.contains("rename_question"), "{plain}");
+        entry.rename_question = Some(RenameQuestion {
+            from: "eng".to_string(),
+            to: "platform".to_string(),
+            seen_at: "2026-10-21T08:00:00+00:00".to_string(),
+            answered: Some(RenameAnswer::Keep),
+        });
+        let mut cfg = GlobalConfig::default();
+        cfg.domains.insert("eng".to_string(), entry);
+        let yaml = serde_yaml_ng::to_string(&cfg).unwrap();
+        assert!(yaml.contains("answered: keep"), "{yaml}");
+        let back: GlobalConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(back, cfg);
+
+        let open = "from: eng\nto: platform\nseen_at: 2026-10-21T08:00:00+00:00\n";
+        let question: RenameQuestion = serde_yaml_ng::from_str(open).unwrap();
+        assert_eq!(question.answered, None);
     }
 
     #[test]

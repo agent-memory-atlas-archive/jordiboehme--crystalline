@@ -989,7 +989,7 @@ pub fn strictly_newer(candidate: &str, baseline: &str) -> bool {
 /// `major.minor.patch` triple first, then the pre-release identifiers, with
 /// build metadata ignored.
 ///
-/// The pre-release part matters for the dev channel: two dev builds share a
+/// The pre-release part matters for any pre-release: two builds share a
 /// triple (`0.21.0-dev.4817` and `0.21.0-dev.4820`), and comparing the triple
 /// alone would read them as equal, so the newer one would attach to the older
 /// daemon instead of taking over after an upgrade. A release outranks every
@@ -3831,7 +3831,7 @@ mod tests {
         assert_eq!(
             attach_policy("0.21.0-dev.4817", "0.21.0-dev.4820"),
             AttachPolicy::Displace,
-            "a brew upgrade of the dev channel must take the daemon over"
+            "an upgrade between pre-releases must take the daemon over"
         );
         assert_eq!(
             attach_policy("0.21.0-dev.9", "0.21.0-dev.10"),
@@ -3854,7 +3854,7 @@ mod tests {
         assert_eq!(
             attach_policy("0.20.0", "0.21.0-dev.1"),
             AttachPolicy::Displace,
-            "a dev build of the next minor displaces the last release"
+            "a pre-release of the next minor displaces the last release"
         );
         assert_eq!(
             attach_policy("0.21.0-dev.4817", "0.21.0"),

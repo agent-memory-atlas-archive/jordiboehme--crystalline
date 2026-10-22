@@ -59,6 +59,7 @@ async fn read(engine: &Engine, domain: &str, identifier: &str) -> serde_json::Va
                 identifier: identifier.to_string(),
                 domain: Some(domain.to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -345,6 +346,7 @@ async fn a_read_of_a_file_that_is_not_utf8_is_refused_not_answered_from_the_row(
                 identifier: "windows".to_string(),
                 domain: Some("eng".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )

@@ -322,6 +322,8 @@ pub struct LookupTable {
     titles: HashMap<(String, String), ResolvedRef>,
     // Every domain the caller registered, including one holding nothing.
     domains: HashSet<String>,
+    // (domain, domain-relative file path) of every file a path can bind to.
+    paths: HashSet<(String, String)>,
 }
 
 impl LookupTable {
@@ -350,6 +352,19 @@ impl LookupTable {
         );
         self.titles
             .insert((domain.to_string(), title.to_lowercase()), reference);
+    }
+
+    /// Register a file at the domain-relative `path` in `domain`, which a
+    /// link spelled as that path (`[[ops:pumps/p.md]]`) binds to.
+    pub fn insert_path(&mut self, domain: &str, path: &str) {
+        self.domains.insert(domain.to_string());
+        self.paths.insert((domain.to_string(), path.to_string()));
+    }
+
+    /// Whether `domain` holds a file at the domain-relative `path`, compared
+    /// exactly, as the index compares it.
+    pub fn has_path(&self, domain: &str, path: &str) -> bool {
+        self.paths.contains(&(domain.to_string(), path.to_string()))
     }
 }
 

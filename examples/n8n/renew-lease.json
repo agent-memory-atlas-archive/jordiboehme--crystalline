@@ -1,0 +1,213 @@
+{
+  "name": "Crystalline renew lease",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Keep a Crystalline lease fresh\n\nThe reflect and evolve loop workflows start this one, without waiting for it, right after they take the lease. It renews the lease every 60 seconds and stops when a renew is refused: the run was recorded (which releases the lease), or another run took the lease over. It stops after 120 renews (2 hours) in any case.\n\nPick the Bearer Auth credential **Crystalline runner token** on **Renew**. A failed call is tried 3 times, 5 seconds apart; after that the renewing stops and the lease goes stale 5 minutes after the last renew.",
+        "height": 300,
+        "width": 560
+      },
+      "id": "3c33dd37-b21e-5a64-aece-888c8b79e846",
+      "name": "About this workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -120,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "e0882482-6158-5e57-9a9f-c3b3300f9627",
+      "name": "Start",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": 60,
+        "unit": "seconds"
+      },
+      "id": "67004b47-e1e5-5f25-bbc9-e709b08dfb45",
+      "name": "Wait 60 seconds",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        220,
+        300
+      ],
+      "webhookId": "fe0376a3-c22b-5916-a113-20a35eccd689"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "7400a72b-825e-5269-b544-352628ef4a6f",
+              "leftValue": "={{ $('Start').first().json.token !== undefined && $runIndex < 120 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": false,
+        "options": {}
+      },
+      "id": "d0fb9cae-97dc-5a0e-be91-7b7dbd95a2a7",
+      "name": "Lease still running?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Start').first().json.url }}/api/v1/ctl",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ v: 1, cmd: 'automation_lease_renew', loop: $('Start').first().json.loop, domain: $('Start').first().json.domain, token: $('Start').first().json.token }) }}",
+        "options": {}
+      },
+      "id": "b2b1167d-d229-50d1-bd38-1ceb302ff135",
+      "name": "Renew",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        660,
+        300
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Crystalline runner token"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "9e53b022-a1e1-566f-bc26-712e62cc8d09",
+              "leftValue": "={{ $json.ok === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": false,
+        "options": {}
+      },
+      "id": "d6a332f9-6438-51ca-af94-f0d885574e38",
+      "name": "Renewed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "Wait 60 seconds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 60 seconds": {
+      "main": [
+        [
+          {
+            "node": "Lease still running?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lease still running?": {
+      "main": [
+        [
+          {
+            "node": "Renew",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Renew": {
+      "main": [
+        [
+          {
+            "node": "Renewed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Renewed?": {
+      "main": [
+        [
+          {
+            "node": "Wait 60 seconds",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "active": false
+}

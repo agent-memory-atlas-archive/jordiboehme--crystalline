@@ -99,22 +99,40 @@ export function referenceState(
 export const WIKILINK = /\[\[([^[\]]+)\]\]/g;
 
 /**
- * Split the inside of a `[[...]]` into a domain and a target, the way the
- * server's own parser does: one leading colon group is a cross-domain prefix
- * when both sides are non-empty and the domain side has no whitespace, and
- * every further colon stays in the target text.
+ * Split the inside of a `[[...]]` at its first `|` into the target part and
+ * the display text, both trimmed. An empty display text is no display text.
+ * The server splits the same way (`split_alias` in `core/src/engram.rs`).
+ */
+function splitAlias(inner: string): { target: string; alias?: string } {
+  const bar = inner.indexOf("|");
+  if (bar < 0) {
+    return { target: inner.trim() };
+  }
+  const alias = inner.slice(bar + 1).trim();
+  const target = inner.slice(0, bar).trim();
+  return alias === "" ? { target } : { target, alias };
+}
+
+/**
+ * Split the inside of a `[[...]]` into a domain, a target and a display text,
+ * the way the server's own parser does. The display text is what follows the
+ * first `|`; the rest reads the part before it. One leading colon group is a
+ * cross-domain prefix when both sides are non-empty and the domain side has no
+ * whitespace, and every further colon stays in the target text. `[[|b]]` names
+ * no target and is no link: its target comes back empty.
  */
 export function parseWikiTarget(inner: string): LinkTarget {
-  const text = inner.trim();
+  const { target: text, alias } = splitAlias(inner);
+  const withAlias = alias === undefined ? {} : { alias };
   const colon = text.indexOf(":");
   if (colon > 0) {
     const domain = text.slice(0, colon).trim();
     const rest = text.slice(colon + 1).trim();
     if (domain !== "" && rest !== "" && !/\s/.test(domain)) {
-      return { domain, target: rest };
+      return { domain, target: rest, ...withAlias };
     }
   }
-  return { domain: null, target: text };
+  return { domain: null, target: text, ...withAlias };
 }
 
 /**
@@ -123,9 +141,24 @@ export function parseWikiTarget(inner: string): LinkTarget {
  * same question.
  */
 export function innerOf(target: LinkTarget): string {
-  return target.domain === null
-    ? target.target
-    : `${target.domain}:${target.target}`;
+  const written =
+    target.domain === null
+      ? target.target
+      : `${target.domain}:${target.target}`;
+  return target.alias === undefined ? written : `${written}|${target.alias}`;
+}
+
+/**
+ * The words a reader sees for one bracket text when there is nothing to
+ * resolve it against: the display text, or the target without one. `null`
+ * when there is no target, so the bracket text stays as it was written.
+ */
+export function wikilinkWords(inner: string): string | null {
+  const parsed = parseWikiTarget(inner);
+  if (parsed.target === "") {
+    return null;
+  }
+  return parsed.alias ?? parsed.target;
 }
 
 /**
@@ -168,7 +201,7 @@ function readings(
   ) {
     return [parsed];
   }
-  return [parsed, { domain: null, target: inner.trim() }];
+  return [parsed, { domain: null, target: splitAlias(inner).target }];
 }
 
 /**
@@ -230,8 +263,29 @@ export function buildWikilinkResolver(
     }
   }
 
+  // A resolved relative note link carries its address in the detail payload,
+  // since its path is neither a title nor a permalink the graph could place.
+  // It is labelled with the title the graph gives that address, when it has
+  // one yet.
+  for (const reference of [...detail.links, ...detail.relations]) {
+    const permalink = reference.permalink;
+    const key = keyOf(reference.target, home, known);
+    if (permalink === undefined || located.has(key)) {
+      continue;
+    }
+    const node = graph?.nodes.find(
+      (n) => n.domain === home && n.permalink === permalink,
+    );
+    located.set(key, { domain: home, permalink, title: node?.title ?? "" });
+  }
+
   return (inner: string) => {
     const candidates = readings(inner, known);
+    const alias = candidates[0]?.alias;
+    if (candidates[0]?.target === "") {
+      // `[[|b]]` names no target, so it is no link.
+      return null;
+    }
 
     // What the index made of it, taken from the first reading it has anything
     // to say about. A verdict of false is the verdict: a second reading is a
@@ -263,7 +317,8 @@ export function buildWikilinkResolver(
           // title in its canonical spelling; a link written by permalink is
           // labelled with the title too, which is the whole reason the engine
           // may write the address without costing a reader the name.
-          label: where.title === "" ? target.target : where.title,
+          // The author's display text wins over both: `[[a|b]]` reads "b".
+          label: alias ?? (where.title === "" ? target.target : where.title),
         };
       }
     }

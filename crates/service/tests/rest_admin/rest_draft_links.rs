@@ -1261,6 +1261,7 @@ fn read_as(identifier: &str) -> crystalline_service::params::ReadParams {
         identifier: identifier.to_string(),
         domain: Some("team".to_string()),
         share_link: None,
+        include_images: false,
     }
 }
 
@@ -3821,4 +3822,61 @@ async fn a_withdrawal_that_leaves_an_entry_behind_answers_409() {
         !bobs["content"].as_str().unwrap().contains("evolve_ack"),
         "the entry that could go went: {bobs}"
     );
+}
+
+/// A draft that moves to another folder takes its own relative links along:
+/// they were written from its old folder, so they are rebased onto the new
+/// one and still land on the team's file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_moved_draft_rebases_its_own_relative_links() {
+    let _serialized = crate::support::maintenance_guard().await;
+    let f = serve().await;
+    std::fs::write(
+        f.root.join("team/guide.md"),
+        "---\ntype: engram\ntitle: Guide\npermalink: guide\ntags:\n  - team\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# Guide\n\nThe team's guide.\n",
+    )
+    .unwrap();
+    f.engine.sync(None).await.unwrap();
+    let path = draft_in(
+        &f,
+        "alice",
+        "notes",
+        "Deploy",
+        "See [the guide](../guide.md).",
+    )
+    .await;
+    let receipt = f
+        .engine
+        .move_engram(
+            &crystalline_service::params::MoveParams {
+                identifier: path.trim_end_matches(".md").to_string(),
+                domain: "team".to_string(),
+                destination: "ops/deep/deploy.md".to_string(),
+                destination_domain: None,
+                permalink: None,
+                update_links: None,
+            },
+            &as_account("alice"),
+        )
+        .await
+        .expect("the draft moves");
+    assert_eq!(receipt["draft"], true, "{receipt}");
+    let permalink = receipt["to"]["permalink"].as_str().unwrap().to_string();
+
+    let read = f
+        .engine
+        .read_engram(&read_as(&permalink), &as_account("alice"))
+        .await
+        .unwrap();
+    assert!(
+        read["content"]
+            .as_str()
+            .unwrap()
+            .contains("See [the guide](../../guide.md)."),
+        "{read}"
+    );
+    let links = read["links"].as_array().unwrap();
+    assert_eq!(links.len(), 1, "{read}");
+    assert_eq!(links[0]["resolved"], true, "{read}");
+    assert_eq!(links[0]["permalink"], "guide", "{read}");
 }

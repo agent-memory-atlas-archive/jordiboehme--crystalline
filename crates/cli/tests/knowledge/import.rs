@@ -383,3 +383,51 @@ fn import_never_reads_a_reflection_as_engrams() {
     );
     std::fs::write(&manifest_path, &manifest).unwrap();
 }
+
+#[test]
+fn the_plain_report_groups_links_that_were_not_taken_by_reason() {
+    let work = tempfile::tempdir().unwrap();
+    let config = work.path().join("config.yaml");
+    let domain_dir = setup_domain(work.path(), "widgets", &config);
+    let src = work.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("a.md"),
+        "---\ntype: engram\n---\n\n![x](gone.png) ![y](pic.png)\n",
+    )
+    .unwrap();
+    std::fs::write(src.join("pic.png"), b"png").unwrap();
+
+    bin()
+        .args(["import"])
+        .arg(&src)
+        .args(["--domain", "widgets", "--config"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Not taken:"))
+        .stdout(predicate::str::contains("no such file:"))
+        .stdout(predicate::str::contains("a.md -> gone.png"))
+        .stdout(predicate::str::contains("1 linked files taken"));
+    assert!(domain_dir.join("assets/a/pic.png").exists());
+}
+
+#[test]
+fn status_legacy_restores_the_old_missing_status_rule() {
+    let work = tempfile::tempdir().unwrap();
+    let config = work.path().join("config.yaml");
+    let domain_dir = setup_domain(work.path(), "widgets", &config);
+    let src = work.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("a.md"), "---\ntype: engram\n---\n\nbody\n").unwrap();
+
+    bin()
+        .args(["import"])
+        .arg(&src)
+        .args(["--domain", "widgets", "--status", "legacy", "--config"])
+        .arg(&config)
+        .assert()
+        .success();
+    let out = std::fs::read_to_string(domain_dir.join("a.md")).unwrap();
+    assert!(out.contains("status: legacy"), "{out}");
+}

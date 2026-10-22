@@ -421,6 +421,7 @@ pub async fn detail(
                 // same reason its checksum is an ETag: see
                 // `Engine::read_engram_stored`.
                 share_link: None,
+                include_images: false,
             },
             &identity.scope(),
         )
@@ -617,6 +618,7 @@ pub async fn inbound(
                 // same reason its checksum is an ETag: see
                 // `Engine::read_engram_stored`.
                 share_link: None,
+                include_images: false,
             },
             query.q.as_deref(),
             query.rel.as_deref(),
@@ -1279,6 +1281,7 @@ pub async fn save(
                         // checksum is an ETag: see
                         // `Engine::read_engram_stored`.
                         share_link: None,
+                        include_images: false,
                     },
                     &scope,
                 )
@@ -1482,7 +1485,7 @@ pub async fn retire(
                 "cross_domain": false,
                 "links_rewritten": 1,
                 "references_rewritten": 2,
-                "rewritten": [{ "domain": "eng", "permalink": "alpha" }],
+                "rewritten": [{ "domain": "eng", "permalink": "alpha", "path": "alpha.md" }],
                 "attachment_warnings": []
             }),
         ),
@@ -1938,6 +1941,7 @@ pub async fn remove(
                         // checksum is an ETag: see
                         // `Engine::read_engram_stored`.
                         share_link: None,
+                        include_images: false,
                     },
                     &identity.scope(),
                 )
@@ -1993,6 +1997,7 @@ async fn detail_response(
                 // same reason its checksum is an ETag: see
                 // `Engine::read_engram_stored`.
                 share_link: None,
+                include_images: false,
             },
             scope,
         )

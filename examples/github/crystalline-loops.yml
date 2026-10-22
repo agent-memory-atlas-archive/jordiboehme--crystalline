@@ -1,0 +1,85 @@
+# The reflect and evolve loops on a schedule, for a team without a cluster.
+# Copy this file to .github/workflows/ in any repository. Each job runs the
+# runner image from examples/kubernetes/Dockerfile once, in remote mode
+# against the team server, and ends at once when nothing is due. See
+# docs/automation.md.
+#
+# Set in the repository settings:
+# - variable CRYSTALLINE_REMOTE_URL: the team server's address, for example
+#   https://crystalline.example.com
+# - variable CRYSTALLINE_DOMAIN: the domain to work, for example eng
+# - variable CRYSTALLINE_RUNNER_IMAGE: where you pushed the runner image
+# - secret CRYSTALLINE_REFLECT_TOKEN: the cmt_ token of an agent account
+#   that may curate the domain's Reflection
+# - secret CRYSTALLINE_EVOLVE_TOKEN: the cmt_ token of another agent
+#   account that may write the domain
+# - secret ANTHROPIC_API_KEY (or CLAUDE_CODE_OAUTH_TOKEN for a Claude
+#   subscription)
+#
+# GitHub may start a scheduled job some minutes late. For answers within
+# minutes, use the Kubernetes examples instead.
+#
+# A runner image in a private registry (for example a private GHCR package)
+# needs a docker login step before docker run, and `packages: read` in the
+# job's permissions for GITHUB_TOKEN.
+#
+# A cancelled job is killed about 10 seconds after GitHub stops it, before
+# the run could record itself (it needs about 25 seconds). Its lease then goes
+# stale by itself within 5 minutes, and the next run takes it over.
+name: crystalline loops
+
+on:
+  schedule:
+    # Reflect every 15 minutes, evolve on Sunday at 03:00 (UTC).
+    - cron: "*/15 * * * *"
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  reflect:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '*/15 * * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: crystalline-reflect
+      cancel-in-progress: false
+    steps:
+      - name: Run the reflect loop
+        env:
+          IMAGE: ${{ vars.CRYSTALLINE_RUNNER_IMAGE }}
+          DOMAIN: ${{ vars.CRYSTALLINE_DOMAIN }}
+          CRYSTALLINE_REMOTE_URL: ${{ vars.CRYSTALLINE_REMOTE_URL }}
+          CRYSTALLINE_REMOTE_TOKEN: ${{ secrets.CRYSTALLINE_REFLECT_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          docker run --rm --init \
+            -e CRYSTALLINE_REMOTE_URL -e CRYSTALLINE_REMOTE_TOKEN \
+            -e ANTHROPIC_API_KEY -e CLAUDE_CODE_OAUTH_TOKEN \
+            "$IMAGE" \
+            crystalline-loop reflect --domain "$DOMAIN" --runner github
+
+  evolve:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 3 * * 0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: crystalline-evolve
+      cancel-in-progress: false
+    steps:
+      - name: Run the evolve loop
+        env:
+          IMAGE: ${{ vars.CRYSTALLINE_RUNNER_IMAGE }}
+          DOMAIN: ${{ vars.CRYSTALLINE_DOMAIN }}
+          CRYSTALLINE_REMOTE_URL: ${{ vars.CRYSTALLINE_REMOTE_URL }}
+          CRYSTALLINE_REMOTE_TOKEN: ${{ secrets.CRYSTALLINE_EVOLVE_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          docker run --rm --init \
+            -e CRYSTALLINE_REMOTE_URL -e CRYSTALLINE_REMOTE_TOKEN \
+            -e ANTHROPIC_API_KEY -e CLAUDE_CODE_OAUTH_TOKEN \
+            "$IMAGE" \
+            crystalline-loop evolve --domain "$DOMAIN" --runner github

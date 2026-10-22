@@ -26,7 +26,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import { REVEAL_EVENT } from "../markdown/callouts";
 import { ThemeProvider } from "../theme/ThemeProvider";
+import { readEngramDetail } from "../api/engram";
+import { readGraph } from "../api/graph";
 import type { WikilinkResolver } from "../wikilinks";
+import { buildWikilinkResolver } from "../wikilinks";
 import { Markdown } from "./Markdown";
 
 // Mermaid draws nothing under jsdom - it measures text through layout this
@@ -529,6 +532,88 @@ describe("the markdown renderer", () => {
     // The brackets are the source's punctuation for a reference; once it is a
     // link the link itself says so.
     expect(screen.queryByText(/\[\[Alpha\]\]/)).toBeNull();
+  });
+
+  it("shows the display text of a wikilink as the link", async () => {
+    // The real resolver, so the label the page shows is the one it builds.
+    const resolve = buildWikilinkResolver(
+      readEngramDetail(
+        {
+          domain: "eng",
+          permalink: "home",
+          title: "Home",
+          content: "",
+          links: [
+            {
+              line: 1,
+              resolved: true,
+              target: { domain: null, target: "Alpha" },
+            },
+          ],
+          relations: [],
+        },
+        "eng",
+        "home",
+      ),
+      readGraph({
+        nodes: [
+          {
+            id: 1,
+            domain: "eng",
+            permalink: "alpha",
+            title: "Alpha",
+            status: "stable",
+            type: "engram",
+          },
+        ],
+        edges: [],
+        truncated: false,
+      }),
+    );
+    await renderMarkdown("See [[Alpha|the first one]] for the rest.", resolve);
+
+    const link = screen.getByRole("link", { name: "the first one" });
+    expect(link).toHaveAttribute("href", "/d/eng/e/alpha");
+    expect(screen.queryByText(/\[\[Alpha/)).toBeNull();
+  });
+
+  it("leaves an unresolved wikilink with display text as written", async () => {
+    await renderMarkdown("See [[Ghost|the ghost]] for the rest.", () => ({
+      kind: "unresolved",
+    }));
+
+    expect(screen.getByTitle("not resolved")).toHaveTextContent(
+      "[[Ghost|the ghost]]",
+    );
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
+  it("opens the engram a relative note link lands on", async () => {
+    // The resolver is asked with the path the server parsed: decoded and
+    // without the fragment, which the route keeps.
+    await renderMarkdown(
+      "See [the pump](../pumps/p%2012.md#start) and [a file](notes.txt).",
+      (inner) =>
+        inner === "../pumps/p 12.md"
+          ? { kind: "resolved", href: "/d/plant/e/kit/pump", label: "P-12" }
+          : null,
+    );
+
+    expect(screen.getByRole("link", { name: "the pump" })).toHaveAttribute(
+      "href",
+      "/d/plant/e/kit/pump#start",
+    );
+    expect(screen.getByRole("link", { name: "a file" })).not.toHaveAttribute(
+      "href",
+      expect.stringContaining("/d/plant/e/"),
+    );
+  });
+
+  it("leaves a relative note link as written when nothing resolves it", async () => {
+    await renderMarkdown("See [the pump](../pumps/p-12.md).");
+    expect(
+      screen.getByRole("link", { name: "the pump" }).getAttribute("href"),
+    ).toMatch(/pumps\/p-12\.md$/);
   });
 
   it("marks a wikilink the index could not resolve without linking it", async () => {
@@ -1592,12 +1677,14 @@ describe("task boxes", () => {
   });
 
   it("names a box by the words a reader sees, without wikilink brackets", async () => {
-    await renderTasks("- [ ] read [[Deploy Guide]] and [[ops:Rollback]]\n", {
-      onTick: vi.fn(),
-      canTick: true,
-    });
+    await renderTasks(
+      "- [ ] read [[Deploy Guide]] and [[ops:Rollback|the rollback]]\n",
+      { onTick: vi.fn(), canTick: true },
+    );
     expect(
-      screen.getByRole("checkbox", { name: "read Deploy Guide and Rollback" }),
+      screen.getByRole("checkbox", {
+        name: "read Deploy Guide and the rollback",
+      }),
     ).toBeVisible();
   });
 

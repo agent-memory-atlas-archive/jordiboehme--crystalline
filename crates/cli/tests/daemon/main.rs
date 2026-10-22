@@ -8,6 +8,12 @@
 
 #[path = "../common/mod.rs"]
 mod common;
+#[cfg(unix)]
+#[path = "../common/daemon_env.rs"]
+mod daemon_env;
+
+#[cfg(unix)]
+mod automation;
 
 mod bridge;
 #[cfg(unix)]

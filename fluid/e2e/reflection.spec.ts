@@ -785,6 +785,14 @@ test.describe.serial("the Reflection journeys", () => {
     ).toBeVisible();
     await expect(tree(page).getByRole("link", { name: "Tmp" })).toBeVisible();
 
+    // Download as Markdown hands over the page under its own file name.
+    await page.getByRole("button", { name: "More actions" }).click();
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByRole("menuitem", { name: "Download as Markdown" }).click(),
+    ]);
+    expect(download.suggestedFilename()).toBe("tmp.md");
+
     await page.getByRole("button", { name: "More actions" }).click();
     await page.getByRole("menuitem", { name: "Move", exact: true }).click();
     const move = page.getByRole("dialog", { name: "Move Tmp" });

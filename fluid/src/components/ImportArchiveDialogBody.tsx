@@ -28,7 +28,11 @@ import type { ReactElement } from "react";
 import { useId, useRef, useState } from "react";
 
 import { importArchive, previewArchive } from "../api/admin";
-import type { ArchiveEntry, ArchiveReport } from "../api/admin";
+import type {
+  ArchiveEntry,
+  ArchiveNotTaken,
+  ArchiveReport,
+} from "../api/admin";
 import { problemDetail } from "../api/client";
 import { domainTreeKey } from "../api/domain";
 import { DOMAINS_QUERY_KEY } from "../api/domains";
@@ -250,6 +254,10 @@ export default function ImportArchiveDialogBody({
               <EntryTable entries={report.entries} imported={result !== null} />
             )}
 
+            {report !== null && report.notTaken.length > 0 && (
+              <NotTakenTable items={report.notTaken} />
+            )}
+
             {/*
               The size of the decision, under the rows that spell it out: how
               many engrams would be created and how many addresses are already
@@ -384,6 +392,67 @@ function EntryTable({
                     ))}
                   </ul>
                 )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Why a linked file was not taken, in words. */
+function notTakenReason(reason: string): string {
+  switch (reason) {
+    case "missing":
+      return "missing";
+    case "outside":
+      return "outside the archive";
+    case "not_allowed":
+      return "type not allowed";
+    case "too_large":
+      return "too large";
+    case "bad_name":
+      return "name cannot be used";
+    default:
+      return reason;
+  }
+}
+
+/**
+ * The links the notes make to files that were not taken in. The links stay
+ * as they were written, so this is the list of what to fix by hand.
+ */
+function NotTakenTable({ items }: { items: ArchiveNotTaken[] }): ReactElement {
+  return (
+    <div className="overflow-x-auto">
+      <table aria-label="Not taken" className="w-full text-left text-sm">
+        <caption className="text-caption py-1 text-left text-slate-500 dark:text-slate-400">
+          Not taken
+        </caption>
+        <thead className="text-caption text-slate-500 dark:text-slate-400">
+          <tr>
+            <th scope="col" className="py-1 pr-3 font-normal">
+              Note
+            </th>
+            <th scope="col" className="py-1 pr-3 font-normal">
+              Link
+            </th>
+            <th scope="col" className="py-1 font-normal">
+              Reason
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((item, rowIndex) => (
+            <tr
+              key={`${String(rowIndex)}-${item.note}-${item.target}`}
+              className="border-t border-slate-200 align-top dark:border-slate-800"
+            >
+              <td className="py-1 pr-3 font-mono break-all">{item.note}</td>
+              <td className="py-1 pr-3 font-mono break-all">{item.target}</td>
+              <td className="py-1 text-slate-600 dark:text-slate-400">
+                {notTakenReason(item.reason)}
               </td>
             </tr>
           ))}

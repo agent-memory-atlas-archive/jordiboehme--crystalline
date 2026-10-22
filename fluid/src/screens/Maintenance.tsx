@@ -59,10 +59,11 @@
  * is exactly the domain somebody needs to be able to ask about.
  */
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { Link } from "react-router";
 
+import { automationQuery, lastRunSentence } from "../api/automation";
 import { problemDetail } from "../api/client";
 import { DOMAINS_QUERY_KEY, fetchDomains } from "../api/domains";
 import type {
@@ -94,7 +95,7 @@ import {
   TOGGLE,
 } from "../components/primitives";
 import type { ChipVariant } from "../components/primitives";
-import { plural } from "../format";
+import { plural, relativeTime } from "../format";
 import { engramRoute } from "../paths";
 
 /** Every domain, as the filter writes it. */
@@ -280,6 +281,14 @@ export default function Maintenance() {
         </div>
       )}
 
+      {queue && (
+        <LastRuns
+          domains={domain === EVERY_DOMAIN ? domains : [domain]}
+          findings={findings}
+          partial={findings.length < queue.total}
+        />
+      )}
+
       {guidance !== null && (
         <p className="text-caption text-slate-500 dark:text-slate-400">
           {/*
@@ -360,6 +369,70 @@ export default function Maintenance() {
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * When the maintenance loop last ran on each domain, and the judgment
+ * findings it leaves for a person. A domain it never ran on, or one this
+ * caller gets no answer for, is left out, and so is the whole list when no
+ * domain has a run. Counts only: the server never sends the items a run left.
+ */
+function LastRuns({
+  domains,
+  findings,
+  partial,
+}: {
+  domains: string[];
+  findings: EvolveFinding[];
+  /** Whether the page holds only part of the queue, as the tally says. */
+  partial: boolean;
+}) {
+  const answers = useQueries({
+    // The last run only: what waits for judgment is counted from the queue
+    // this page already loaded, so no request sweeps a domain again.
+    queries: domains.map((name) =>
+      automationQuery(name, { loop: "evolve", counts: false }),
+    ),
+  });
+  const rows = domains.flatMap((name, index) => {
+    const run = answers[index]?.data?.evolve?.last_run ?? null;
+    if (run === null) {
+      return [];
+    }
+    const sentence = lastRunSentence(
+      "maintained",
+      run,
+      relativeTime(run.ended_at, new Date()),
+    );
+    const judgment = findings.filter(
+      (f) => f.domain === name && f.class === "judgment",
+    ).length;
+    // A partial page may hold only some of a domain's findings: its count is
+    // a lower bound, and a zero says nothing.
+    const waiting =
+      judgment === 0
+        ? ""
+        : partial
+          ? ` At least ${plural(judgment, "finding waits", "findings wait")} for a person.`
+          : ` ${plural(judgment, "finding waits", "findings wait")} for a person.`;
+    return [{ name, text: `${sentence}${waiting}` }];
+  });
+  if (rows.length === 0) {
+    return null;
+  }
+  return (
+    <ul
+      aria-label="Last maintenance runs"
+      className="text-caption flex flex-col gap-1 text-slate-500 dark:text-slate-400"
+    >
+      {rows.map((row) => (
+        <li key={row.name}>
+          <span className="font-mono">{row.name}</span>
+          {`: ${row.text}`}
+        </li>
+      ))}
+    </ul>
   );
 }
 

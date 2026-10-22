@@ -11,10 +11,10 @@ use std::path::PathBuf;
 
 use crystalline_core::base::{BasePath, PathProblem, PublicBase};
 use crystalline_core::config::{
-    AuthConfig, CaptureConfig, DatabaseBackend, DatabaseConfig, EvolveConfig, GitHubConfig,
-    GlobalConfig, HttpSetting, IdentityConfig, IndexConfig, LoginConfig, OidcConfig, RecallConfig,
-    RemoteConfig, ResponseFormat, SearchConfig, ServiceConfig, ShareIdentityMode, SkillsConfig,
-    SkillsServe,
+    AuthConfig, AutomationConfig, CaptureConfig, DatabaseBackend, DatabaseConfig, EvolveConfig,
+    GitHubConfig, GlobalConfig, HttpSetting, IdentityConfig, IndexConfig, LoginConfig, OidcConfig,
+    RecallConfig, RemoteConfig, ResponseFormat, SearchConfig, ServiceConfig, ShareIdentityMode,
+    SkillsConfig, SkillsServe, WebhookConfig,
 };
 use crystalline_index::{DEFAULT_RETIRED_WEIGHT, DEFAULT_SALIENCE_WEIGHT};
 use crystalline_remote::{MAX_IDENTITY_NAME_BYTES, valid_identity_name};
@@ -636,6 +636,39 @@ pub fn registry() -> &'static [SettingSpec] {
             apply: set_login_max_delay,
             clear: clear_login_max_delay,
             effective: login_max_delay_effective,
+        },
+        SettingSpec {
+            key: "automation.webhook.url",
+            doc: "Where this instance posts a signed webhook when reflect or evolve work is waiting, so a runner can start; an http:// or https:// url. Unset means no webhook is sent, whatever a domain's reflect_trigger and evolve_trigger say",
+            kind: SettingKind::String,
+            startup_effective: false,
+            secret: false,
+            operator_only: true,
+            apply: set_webhook_url,
+            clear: clear_webhook_url,
+            effective: webhook_url_effective,
+        },
+        SettingSpec {
+            key: "automation.webhook.secret",
+            doc: "The secret the webhook body is signed with, so the receiver can check it came from this instance; a credential, so it is only ever shown as (set) and never echoed back - prefer supplying it through CRYSTALLINE_AUTOMATION_WEBHOOK_SECRET or CRYSTALLINE_AUTOMATION_WEBHOOK_SECRET_FILE, which keep it out of the config file",
+            kind: SettingKind::String,
+            startup_effective: false,
+            secret: true,
+            operator_only: true,
+            apply: set_webhook_secret,
+            clear: clear_webhook_secret,
+            effective: webhook_secret_effective,
+        },
+        SettingSpec {
+            key: "automation.evolve_threshold",
+            doc: "How many mechanical maintenance findings make the evolve trigger send its webhook (default 20, minimum 1). A run is due from the first one.",
+            kind: SettingKind::U64,
+            startup_effective: false,
+            secret: false,
+            operator_only: true,
+            apply: set_evolve_threshold,
+            clear: clear_evolve_threshold,
+            effective: evolve_threshold_effective,
         },
     ]
 }
@@ -2310,6 +2343,133 @@ fn oidc_client_id_effective(config: &GlobalConfig) -> (String, bool) {
     oidc_effective(config, |o| o.client_id.as_ref())
 }
 
+// --- automation.* --------------------------------------------------------------
+
+fn automation_mut(config: &mut GlobalConfig) -> &mut AutomationConfig {
+    config
+        .automation
+        .get_or_insert_with(AutomationConfig::default)
+}
+
+fn webhook_mut(config: &mut GlobalConfig) -> &mut WebhookConfig {
+    automation_mut(config)
+        .webhook
+        .get_or_insert_with(WebhookConfig::default)
+}
+
+/// Drop an emptied `automation.webhook` block, then an `automation` block
+/// emptied by that, so unsetting the last key leaves the file as it was.
+fn drop_automation_if_empty(config: &mut GlobalConfig) {
+    if let Some(a) = config.automation.as_mut()
+        && a.webhook.as_ref() == Some(&WebhookConfig::default())
+    {
+        a.webhook = None;
+    }
+    if config.automation.as_ref() == Some(&AutomationConfig::default()) {
+        config.automation = None;
+    }
+}
+
+fn clear_webhook(config: &mut GlobalConfig, field: fn(&mut WebhookConfig) -> &mut Option<String>) {
+    if let Some(w) = config.automation.as_mut().and_then(|a| a.webhook.as_mut()) {
+        *field(w) = None;
+    }
+    drop_automation_if_empty(config);
+}
+
+fn webhook_effective(
+    config: &GlobalConfig,
+    field: fn(&WebhookConfig) -> Option<&String>,
+) -> (String, bool) {
+    match config
+        .automation
+        .as_ref()
+        .and_then(|a| a.webhook.as_ref())
+        .and_then(field)
+    {
+        Some(v) => (v.clone(), false),
+        None => (String::new(), true),
+    }
+}
+
+fn set_webhook_url(config: &mut GlobalConfig, value: &str) -> Result<(), SettingsError> {
+    let trimmed = value.trim();
+    let rest = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"));
+    match rest {
+        Some(host_and_path)
+            if !host_and_path.is_empty() && !host_and_path.contains(char::is_whitespace) =>
+        {
+            webhook_mut(config).url = Some(trimmed.to_string());
+            Ok(())
+        }
+        _ => Err(SettingsError(format!(
+            "automation.webhook.url must be a http:// or https:// url, got '{value}'"
+        ))),
+    }
+}
+
+fn clear_webhook_url(config: &mut GlobalConfig) {
+    clear_webhook(config, |w| &mut w.url);
+}
+
+fn webhook_url_effective(config: &GlobalConfig) -> (String, bool) {
+    webhook_effective(config, |w| w.url.as_ref())
+}
+
+fn set_webhook_secret(config: &mut GlobalConfig, value: &str) -> Result<(), SettingsError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(SettingsError(
+            "automation.webhook.secret must not be empty - unset it instead to turn it off"
+                .to_string(),
+        ));
+    }
+    webhook_mut(config).secret = Some(trimmed.to_string());
+    Ok(())
+}
+
+fn clear_webhook_secret(config: &mut GlobalConfig) {
+    clear_webhook(config, |w| &mut w.secret);
+}
+
+/// Raw like every secret sibling: the registry entry is `secret: true`, and
+/// [`SettingSpec::display`] turns this into [`SECRET_DISPLAY`].
+fn webhook_secret_effective(config: &GlobalConfig) -> (String, bool) {
+    webhook_effective(config, |w| w.secret.as_ref())
+}
+
+fn set_evolve_threshold(config: &mut GlobalConfig, value: &str) -> Result<(), SettingsError> {
+    let parsed: u64 = value.trim().parse().map_err(|_| {
+        SettingsError(format!(
+            "automation.evolve_threshold must be a whole number of findings, got '{value}'"
+        ))
+    })?;
+    if parsed == 0 {
+        return Err(SettingsError(
+            "automation.evolve_threshold must be at least 1".to_string(),
+        ));
+    }
+    automation_mut(config).evolve_threshold = Some(parsed);
+    Ok(())
+}
+
+fn clear_evolve_threshold(config: &mut GlobalConfig) {
+    if let Some(a) = config.automation.as_mut() {
+        a.evolve_threshold = None;
+    }
+    drop_automation_if_empty(config);
+}
+
+fn evolve_threshold_effective(config: &GlobalConfig) -> (String, bool) {
+    let stored = config.automation.as_ref().and_then(|a| a.evolve_threshold);
+    (
+        config.automation_evolve_threshold().to_string(),
+        stored.is_none(),
+    )
+}
+
 fn set_oidc_client_secret(config: &mut GlobalConfig, value: &str) -> Result<(), SettingsError> {
     let secret = oidc_value("auth.oidc.client_secret", value)?;
     oidc_mut(config).client_secret = Some(secret);
@@ -2615,7 +2775,7 @@ mod tests {
     }
 
     #[test]
-    fn registry_lists_exactly_the_forty_three_keys_in_order() {
+    fn registry_lists_exactly_the_forty_six_keys_in_order() {
         assert_eq!(
             known_keys(),
             vec![
@@ -2662,6 +2822,9 @@ mod tests {
                 "auth.oidc.redirect_uri",
                 "auth.login.free_attempts",
                 "auth.login.max_delay",
+                "automation.webhook.url",
+                "automation.webhook.secret",
+                "automation.evolve_threshold",
             ]
         );
     }
@@ -2705,6 +2868,9 @@ mod tests {
                 "auth.oidc.redirect_uri",
                 "auth.login.free_attempts",
                 "auth.login.max_delay",
+                "automation.webhook.url",
+                "automation.webhook.secret",
+                "automation.evolve_threshold",
             ]
         );
         // The rule, not only the list: a key added under one of the three
@@ -2714,7 +2880,8 @@ mod tests {
                 || spec.key.starts_with("database.")
                 || (spec.key.starts_with("service.") && spec.key != "service.response_format")
                 || spec.key == "github.api_url"
-                || spec.key == "github.oauth_client_id";
+                || spec.key == "github.oauth_client_id"
+                || spec.key.starts_with("automation.");
             assert_eq!(spec.operator_only, by_rule, "{}", spec.key);
             assert_eq!(is_operator_key(spec.key), by_rule, "{}", spec.key);
             assert!(is_known_key(spec.key), "{}", spec.key);
@@ -2865,6 +3032,18 @@ mod tests {
                 (
                     "auth.login.max_delay",
                     "CRYSTALLINE_AUTH_LOGIN_MAX_DELAY".to_string()
+                ),
+                (
+                    "automation.webhook.url",
+                    "CRYSTALLINE_AUTOMATION_WEBHOOK_URL".to_string()
+                ),
+                (
+                    "automation.webhook.secret",
+                    "CRYSTALLINE_AUTOMATION_WEBHOOK_SECRET".to_string()
+                ),
+                (
+                    "automation.evolve_threshold",
+                    "CRYSTALLINE_AUTOMATION_EVOLVE_THRESHOLD".to_string()
                 ),
             ]
         );
@@ -3360,7 +3539,7 @@ mod tests {
         apply(&mut cfg, "github.enabled", "true").unwrap();
 
         let views = snapshot(&cfg, &EnvOverlay::default());
-        assert_eq!(views.len(), 43);
+        assert_eq!(views.len(), 46);
         assert_eq!(
             views.iter().map(|v| v.key.as_str()).collect::<Vec<_>>(),
             vec![
@@ -3407,6 +3586,9 @@ mod tests {
                 "auth.oidc.redirect_uri",
                 "auth.login.free_attempts",
                 "auth.login.max_delay",
+                "automation.webhook.url",
+                "automation.webhook.secret",
+                "automation.evolve_threshold",
             ]
         );
 
@@ -4471,7 +4653,11 @@ mod tests {
         let secrets: Vec<&SettingSpec> = registry().iter().filter(|s| s.secret).collect();
         assert_eq!(
             secrets.iter().map(|s| s.key).collect::<Vec<_>>(),
-            vec!["database.url", "auth.oidc.client_secret"],
+            vec![
+                "database.url",
+                "auth.oidc.client_secret",
+                "automation.webhook.secret"
+            ],
         );
 
         for spec in secrets {
@@ -4696,6 +4882,56 @@ mod tests {
             "https://login.microsoftonline.com/9f1c-tenant/v2.0",
         )
         .unwrap();
+    }
+
+    #[test]
+    fn the_webhook_secret_is_shown_as_set() {
+        let mut config = GlobalConfig::default();
+        apply(&mut config, "automation.webhook.secret", "hunter2").unwrap();
+        let view = snapshot(&config, &EnvOverlay::default())
+            .into_iter()
+            .find(|v| v.key == "automation.webhook.secret")
+            .unwrap();
+        assert_eq!(view.value, SECRET_DISPLAY);
+        assert_eq!(view.source, SettingSource::Config);
+        assert!(is_secret_key("automation.webhook.secret"));
+        assert!(!format!("{config:?}").contains("hunter2"));
+        assert_eq!(
+            config
+                .automation
+                .as_ref()
+                .and_then(|a| a.webhook.as_ref())
+                .and_then(|w| w.secret.as_deref()),
+            Some("hunter2")
+        );
+        unset(&mut config, "automation.webhook.secret").unwrap();
+        assert!(config.automation.is_none(), "an emptied block is dropped");
+    }
+
+    #[test]
+    fn the_webhook_url_and_the_threshold_validate_and_default() {
+        let mut config = GlobalConfig::default();
+        assert!(apply(&mut config, "automation.webhook.url", "ftp://x").is_err());
+        assert!(
+            apply(
+                &mut config,
+                "automation.webhook.url",
+                "https://hooks.example.com/a"
+            )
+            .is_ok()
+        );
+        assert!(apply(&mut config, "automation.evolve_threshold", "many").is_err());
+        assert!(apply(&mut config, "automation.evolve_threshold", "0").is_err());
+        let default = snapshot(&GlobalConfig::default(), &EnvOverlay::default())
+            .into_iter()
+            .find(|v| v.key == "automation.evolve_threshold")
+            .unwrap();
+        assert_eq!(default.value, "20");
+        assert_eq!(default.source, SettingSource::Default);
+        apply(&mut config, "automation.evolve_threshold", "5").unwrap();
+        assert_eq!(config.automation_evolve_threshold(), 5);
+        unset(&mut config, "automation.evolve_threshold").unwrap();
+        assert_eq!(config.automation_evolve_threshold(), 20);
     }
 
     #[test]

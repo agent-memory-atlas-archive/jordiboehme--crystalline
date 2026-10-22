@@ -2390,7 +2390,26 @@ impl McpServer {
             self.engine.close_folders_for(folders.as_ref(), scope),
         );
         Engine::attach_close_folders(&mut receipt, &close);
+        self.note_run_writes(caller, &receipt).await;
         Ok(done_written(receipt, &caller.base))
+    }
+
+    /// Note the engram paths a write-shaped tool just wrote for a headless
+    /// run whose lease this caller's account holds (R4, ruling B): the run
+    /// shares only what its runner wrote over MCP. Every engram write tool
+    /// calls this once it succeeded (write, edit, move with both ends and
+    /// the linkers it rewrote, split, delete); a write over REST, Fluid or
+    /// the files never reaches it. A caller with no account notes nothing.
+    /// A failed note is logged and never fails the write.
+    async fn note_run_writes(&self, caller: &Caller, receipt: &Value) {
+        let Scope::User { account, .. } = &caller.scope else {
+            return;
+        };
+        for (domain, paths) in written_paths(receipt) {
+            if let Err(e) = self.engine.note_written(&domain, account, &paths).await {
+                tracing::warn!("noting a run's writes in '{domain}': {e}");
+            }
+        }
     }
 
     /// `read_engram` for one caller.
@@ -2501,6 +2520,7 @@ impl McpServer {
             Some(probe) => self.with_similar(receipt, probe, scope).await,
             None => receipt,
         };
+        self.note_run_writes(caller, &receipt).await;
         Ok(done_written(receipt, &caller.base))
     }
 
@@ -2539,6 +2559,7 @@ impl McpServer {
             Ok(receipt) => receipt,
             Err(e) => return overlay_refusal(e).map(Verdict::Refused),
         };
+        self.note_run_writes(caller, &receipt).await;
         // The page address lands on `to` and nowhere else: `from` is the
         // address the engram stopped answering to.
         if let Some(to) = receipt.get_mut("to") {
@@ -2564,6 +2585,7 @@ impl McpServer {
             Ok(receipt) => receipt,
             Err(e) => return overlay_refusal(e).map(Verdict::Refused),
         };
+        self.note_run_writes(caller, &receipt).await;
         Ok(Verdict::Done(receipt))
     }
 
@@ -2582,6 +2604,7 @@ impl McpServer {
             Ok(receipt) => receipt,
             Err(e) => return overlay_refusal(e).map(Verdict::Refused),
         };
+        self.note_run_writes(caller, &receipt).await;
         Ok(Verdict::Done(receipt))
     }
 
@@ -2734,6 +2757,49 @@ impl McpServer {
         Ok(v)
     }
 
+    /// A finished tool answer with the pending rename line appended, the
+    /// first time in this session that an answer names a domain whose
+    /// MANIFEST `domain_name` a sync saw change
+    /// ([`Engine::rename_guidance_once`]).
+    ///
+    /// The domain is the answer's top-level `domain`, read off the first
+    /// text block up to the trailer rule ([`ok`]), so a read and a write
+    /// verb are covered alike. The line goes after the receipt as a trailer
+    /// the way [`McpServer::nudged`] adds one: a rule and the sentence, which
+    /// leaves the JSON in front of the rule as it was. An error, an answer
+    /// that is not a JSON object (a TOON listing) or one with no top-level
+    /// `domain` is handed back unchanged, and so is the answer of a caller
+    /// (`scope`) who may not rename the domain: the line asks for a step only
+    /// such a caller can take.
+    async fn with_rename_guidance(
+        &self,
+        mut result: CallToolResult,
+        session: &str,
+        scope: &Scope,
+    ) -> CallToolResult {
+        if result.is_error == Some(true) {
+            return result;
+        }
+        let Some(ContentBlock::Text(text)) = result.content.first_mut() else {
+            return result;
+        };
+        let receipt = text.text.split("\n\n---\n").next().unwrap_or_default();
+        let Some(domain) = serde_json::from_str::<Value>(receipt)
+            .ok()
+            .and_then(|value| value.get("domain")?.as_str().map(str::to_string))
+        else {
+            return result;
+        };
+        if let Some(line) = self
+            .engine
+            .rename_guidance_once(session, &domain, scope)
+            .await
+        {
+            text.text.push_str(&format!("\n\n---\n{line}"));
+        }
+        result
+    }
+
     /// A write verb's [`Verdict`] as the MCP answer: the receipt rendered by
     /// `render` with the ride-along trailer after it, a refusal as a tool
     /// error.
@@ -2747,6 +2813,21 @@ impl McpServer {
             Verdict::Done(receipt) => Ok(self.nudged(render(receipt)?, caller).await),
             Verdict::Refused(text) => refuse(text),
         }
+    }
+}
+
+/// A stable key for the session a tool call belongs to, for what is said
+/// once per session: the call's [`crate::join::Holder`] (a stdio server, an
+/// MCP session, a sessionless token's account), else its account, else the
+/// instance itself.
+fn session_key(holder: Option<crate::join::Holder>, account: Option<String>) -> String {
+    use crate::join::Holder;
+    match (holder, account) {
+        (Some(Holder::Browser(csrf)), _) => format!("browser:{csrf}"),
+        (Some(Holder::McpSession(id)), _) => format!("mcp-session:{id}"),
+        (Some(Holder::Process(n)), _) => format!("process:{n}"),
+        (Some(Holder::Token(account)), _) | (None, Some(account)) => format!("account:{account}"),
+        (None, None) => "instance".to_string(),
     }
 }
 
@@ -3069,7 +3150,7 @@ impl McpServer {
     #[tool(
         name = "read_engram",
         title = "Read engram",
-        description = "Read an engram's full markdown and resolved frontmatter to learn what is already known before acting or writing. Identify it by bare permalink, title or a crystalline:// URL; pass domain to disambiguate. An identifier without crystalline:// is domain-relative: 'onboarding/setup', never 'mydomain/onboarding/setup'. A file path is not an identifier: a miss names the permalink it probably meant. The response flags whether each relation and prose link resolves, summarizes what links back and names a build_context anchor for exploring nearby knowledge. Attachments the engram references come back as resource links; fetch one with resources/read when the file itself matters. An engram from a domain served by another machine carries them too, and resources/read fetches them from that server (Crystalline 0.27 or newer there). Somebody may have the engram open in the web editor while you read it: the reply then carries live: true, present (who is in there) and their unsaved text, which is what the engram says right now - read it as work in progress and expect it to move. When their editor cannot save right now (its save is in conflict or was refused) the reply carries the saved version instead, which is where your edits go, with room: waiting, present and room_note: tell the person what room_note says. An engram open in a live editor is read through the live document whenever you are reading your own view of it, so you see what the person sees; a draft you reach with a share_link answers its author's last saved text instead, so an edit inside one is best sent without expected_checksum. Reading a live document is not a private act: you usually join that person's participant strip by name for a minute, so they can see an agent is reading along. If somebody handed you a draft share-link (dl_...), pass it as share_link to read their draft of the page instead of the page the domain holds; that also opens the draft for this connection, so a later edit_engram of it lands in their copy. A stdio server or an MCP session holds that open until the session ends; a sessionless HTTP connection holds it for 30 minutes after your last call about that draft, so present the link again whenever an edit is refused as unjoined. A link you may only read still opens the draft for reading. Where this instance serves the web UI the reply carries web_url, the address a person opens the engram at, to hand to somebody who wants to see it; add # and a heading's slug to open it at a section. The answer carries read_only: true when you cannot write in the engram's domain; propose the change to a person instead of editing.",
+        description = "Read an engram's full markdown and resolved frontmatter to learn what is already known before acting or writing. Identify it by bare permalink, title or a crystalline:// URL; pass domain to disambiguate. An identifier without crystalline:// is domain-relative: 'onboarding/setup', never 'mydomain/onboarding/setup'. A file path is not an identifier: a miss names the permalink it probably meant. The response flags whether each relation and prose link resolves, summarizes what links back and names a build_context anchor for exploring nearby knowledge. Attachments the engram references come back as resource links; fetch one with resources/read when the file itself matters. Pass include_images true to also get the pictures it links (png, jpeg, gif, webp; at most 8 and 5 MiB) as image content you can look at with vision, for a picture marked as needing vision. An engram from a domain served by another machine carries them too, and resources/read fetches them from that server (Crystalline 0.27 or newer there). Somebody may have the engram open in the web editor while you read it: the reply then carries live: true, present (who is in there) and their unsaved text, which is what the engram says right now - read it as work in progress and expect it to move. When their editor cannot save right now (its save is in conflict or was refused) the reply carries the saved version instead, which is where your edits go, with room: waiting, present and room_note: tell the person what room_note says. An engram open in a live editor is read through the live document whenever you are reading your own view of it, so you see what the person sees; a draft you reach with a share_link answers its author's last saved text instead, so an edit inside one is best sent without expected_checksum. Reading a live document is not a private act: you usually join that person's participant strip by name for a minute, so they can see an agent is reading along. If somebody handed you a draft share-link (dl_...), pass it as share_link to read their draft of the page instead of the page the domain holds; that also opens the draft for this connection, so a later edit_engram of it lands in their copy. A stdio server or an MCP session holds that open until the session ends; a sessionless HTTP connection holds it for 30 minutes after your last call about that draft, so present the link again whenever an edit is refused as unjoined. A link you may only read still opens the draft for reading. Where this instance serves the web UI the reply carries web_url, the address a person opens the engram at, to hand to somebody who wants to see it; add # and a heading's slug to open it at a section. The answer carries read_only: true when you cannot write in the engram's domain; propose the change to a person instead of editing.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn read_engram(
@@ -3081,6 +3162,7 @@ impl McpServer {
             return answer;
         }
         let caller = self.caller(&ctx);
+        let include_images = p.include_images;
         let mut value = self.read_core(p, &caller).await?;
         attach_configure_hint(
             &mut value,
@@ -3102,13 +3184,20 @@ impl McpServer {
             .await;
         let mut result = ok(value)?;
         result.content.extend(file_links(&domain, &files));
+        if include_images {
+            let rc = self.reflection_caller(&ctx);
+            let images = self
+                .inline_images(&domain, &files, &caller.scope, &rc)
+                .await;
+            result.content.extend(images);
+        }
         Ok(result)
     }
 
     #[tool(
         name = "edit_engram",
         title = "Edit engram",
-        description = "Refine an existing engram in place as understanding evolves. Sections are addressed by heading path such as '## API > ### Auth'. replace_section keeps the section's heading line and replaces the section body under it, keeping deeper subsections unless include_subsections is set; insert_after_section puts content right under that same heading line. For both, content is the section body only - send only the body, never the heading. Content that repeats the section's own heading has the repeat dropped (a duplicated heading would leave an empty section) and the receipt reports heading_stripped. An edit of a domain's MANIFEST that leaves it broken - an empty When to Use or Scope section, a duplicate heading, a wrong type - still lands, and the receipt lists manifest_findings (the validate M rules: code, severity, message, line) so you can fix the routing right away. operation is one of append, prepend, find_replace, replace_section, insert_before_section, insert_after_section, set_frontmatter. find_replace takes find_text and an optional expected_replacements guard that fails on a count mismatch. set_frontmatter assigns one frontmatter field by key instead of text-substituting a frontmatter line. A set_frontmatter that changes nothing - the same tags, sources, status or plain value the engram already holds - writes nothing (no file write, no new generated stamp, the checksum stays) and the receipt answers unchanged: true. tags takes values, the whole new list: to add a tag, remove a tag or set tags, read the engram, check vocabulary and pass every tag it should carry (each folded to lowercase-with-hyphens, a tag that cannot be folded refused by name; an empty list removes them). sources takes values too, the whole new list of locations the engram was distilled from: to add or drop one location, read the engram and pass every location it should keep (each trimmed and kept exactly as spelled, repeats kept once, an entry whose JSON is over 1024 bytes refused by its position because a $contains filter could not find it; an empty list removes the key). The other settable keys take one value: status, valid_from, valid_to, stale_after, source_date, resource, source_version, salience, verified and evolve_ack; identity, recorded_at and the generated block are refused. Use it to retag or retire an engram, record where knowledge came from (resource, source_version, sources), close or reopen a validity window, push a review date forward, mark knowledge salient or record that you re-checked something. Omit value to remove the field (that is how a valid_to that should never have been set is cleared); status cannot be removed. The four date keys take a plain ISO date (YYYY-MM-DD), resource and source_version take plain text and salience a number from 0 to 10. verified never removes: it stamps { by, at } with the current instant, taking value as the verifying actor or else your own identity. evolve_ack is never cleared by an omitted value either: it acknowledges an evolve finding the user ruled intentional, taking value as the rule id optionally followed by a note ('V101' or 'V101 lineage citation, keep'), and the server records what evidence the finding fired on so the acknowledgment holds while that evidence holds and comes back marked stale when it changes; acknowledging the same finding again replaces its entry, and V112, V301 and V302 are the three rules that keep more than one, an entry per pair (a pair of sibling folders for V112, a twin pair for V301, a pair of observation lines for V302), so acknowledging a second pair on the same engram records it beside the first and each pair is silenced on its own; a V112 acknowledgment holds on any engram in either folder of its pair, while both folder names hold, and given on an engram other than the one its queue row names it records the pair that engram's folder is in, refused when the engram sits in more than one pair (acknowledge on the row's engram then) or in none. Every other rule keeps exactly one entry however often it fires on that engram, so a second acknowledgment of it replaces what the first said and the finding it was not given for comes back marked stale. To unacknowledge a finding - to unack it, to take back an acknowledgment so the finding resurfaces on the next sweep - pass the value 'remove <rule-id>' ('remove V101') on the same key; it takes back every entry for that rule, which for V301 and V302 means every pair you acknowledged on that engram. 'remove V112' takes back every pair this engram holds or anchors, on this engram and on every other engram of the two folders, since a pair's acknowledgment can sit on any of them: the receipt names the engrams it cleared in evolve_ack_removed_from and the ones it could not (a draft shared with you to read and not joined, or a rewrite that reported an error, which says so when the file was written first and the entry may already be gone) with the reason in evolve_ack_not_removed_from, and in a domain in review mode each engram it clears gets a draft of your own. It errors when no entry for that rule is there to take back, and the receipt reports evolve_ack_removed. Take an acknowledgment back only when the user asks. Pass expected_checksum (from read_engram) to guard an edit against a change since your read: a conflict is refused if it changed, so re-read and retry; omit it for last-write-wins. An edit of an engram somebody has open in the web editor composes into their live document instead of the file - it arrives under their cursor, keeps what they have typed, and the receipt says landed: live with present naming who is in there; their session saves it. While their editor is not saving (its save is in conflict or was refused) the edit goes to the file instead, and the receipt says landed: file with room and room_note: tell the person what room_note says. You are usually named in their participant strip while you work there, for a minute after each call, so they can tell which agent a change came from. To edit somebody's shared draft rather than your own copy of the page, pass the draft share-link they handed you (dl_...) as share_link: it opens that draft for this connection and the edit lands in its author's copy, with the receipt saying whose. A draft reached that way is read from its author's last saved text rather than from their open document, so send an edit inside one without expected_checksum: the text composes correctly either way, and a checksum taken from a granted read is refused as stale for as long as its author keeps typing. That stays open until your session ends, or - on a sessionless HTTP connection - for 30 minutes after your last call about the draft, so present the link again whenever an edit is refused as unjoined. Without it, an edit at a path somebody shared with you is refused and told the two ways forward. The generated provenance block is refreshed with who edited it, with which model, and when: pass model with your own model id (for example claude-opus-5) on every edit, and a verification you record carries it too. A content edit's receipt may carry a similar list, the existing engrams closest in meaning to the text just added, with guidance to merge, supersede, link or leave them; set_frontmatter never probes. Status values to reflect a changed lifecycle (recommended values: see write_engram). Temporal frontmatter fields (recorded_at, valid_from, valid_to, source_date, stale_after, plus the legacy last_verified and review_after spellings) must stay plain ISO dates (YYYY-MM-DD): an edit that leaves one malformed is rejected and a sentinel far-future valid_to or an explicit null is dropped, except recorded_at which is required and cannot be nulled. In a domain in review mode (review: overlay) your write lands in your own private draft; share_changes proposes exactly your drafts for review, and a receipt marked draft means the tree did not move. The receipt carries markdown_findings (code, severity, message, line) when the text has a status colour or callout kind Crystalline does not know (or, in an engram, an observation inside a callout): fix them.",
+        description = "Refine an existing engram in place as understanding evolves. Sections are addressed by heading path such as '## API > ### Auth' (levels joined with a spaced ' > '); a heading that itself holds a '>' is named by its whole text, with or without its # marks. replace_section keeps the section's heading line and replaces the section body under it, keeping deeper subsections unless include_subsections is set; insert_after_section puts content right under that same heading line, unless the content opens with a heading of the section's own level or a higher one: then it goes after the whole section and the receipt says placed_after_section. For both, content is the section body only - send only the body, never the heading. Content that repeats the section's own heading has the repeat dropped (a duplicated heading would leave an empty section) and the receipt reports heading_stripped. An edit of a domain's MANIFEST that leaves it broken - an empty When to Use or Scope section, a duplicate heading, a wrong type - still lands, and the receipt lists manifest_findings (the validate M rules: code, severity, message, line) so you can fix the routing right away. operation is one of append, prepend, find_replace, replace_section, insert_before_section, insert_after_section, set_frontmatter. find_replace takes find_text and an optional expected_replacements guard that fails on a count mismatch. set_frontmatter assigns one frontmatter field by key instead of text-substituting a frontmatter line. A set_frontmatter that changes nothing - the same tags, sources, status or plain value the engram already holds - writes nothing (no file write, no new generated stamp, the checksum stays) and the receipt answers unchanged: true. tags takes values, the whole new list: to add a tag, remove a tag or set tags, read the engram, check vocabulary and pass every tag it should carry (each folded to lowercase-with-hyphens, a tag that cannot be folded refused by name; an empty list removes them). sources takes values too, the whole new list of locations the engram was distilled from: to add or drop one location, read the engram and pass every location it should keep (each trimmed and kept exactly as spelled, repeats kept once, an entry whose JSON is over 1024 bytes refused by its position because a $contains filter could not find it; an empty list removes the key). The other settable keys take one value: status, valid_from, valid_to, stale_after, source_date, resource, source_version, salience, verified and evolve_ack; identity, recorded_at and the generated block are refused. Use it to retag or retire an engram, record where knowledge came from (resource, source_version, sources), close or reopen a validity window, push a review date forward, mark knowledge salient or record that you re-checked something. Omit value to remove the field (that is how a valid_to that should never have been set is cleared); status cannot be removed. The four date keys take a plain ISO date (YYYY-MM-DD), resource and source_version take plain text and salience a number from 0 to 10. verified never removes: it stamps { by, at } with the current instant, taking value as the verifying actor or else your own identity. evolve_ack is never cleared by an omitted value either: it acknowledges an evolve finding the user ruled intentional, taking value as the rule id optionally followed by a note ('V101' or 'V101 lineage citation, keep'), and the server records what evidence the finding fired on so the acknowledgment holds while that evidence holds and comes back marked stale when it changes; acknowledging the same finding again replaces its entry, and V112, V301 and V302 are the three rules that keep more than one, an entry per pair (a pair of sibling folders for V112, a twin pair for V301, a pair of observation lines for V302), so acknowledging a second pair on the same engram records it beside the first and each pair is silenced on its own; a V112 acknowledgment holds on any engram in either folder of its pair, while both folder names hold, and given on an engram other than the one its queue row names it records the pair that engram's folder is in, refused when the engram sits in more than one pair (acknowledge on the row's engram then) or in none. Every other rule keeps exactly one entry however often it fires on that engram, so a second acknowledgment of it replaces what the first said and the finding it was not given for comes back marked stale. To unacknowledge a finding - to unack it, to take back an acknowledgment so the finding resurfaces on the next sweep - pass the value 'remove <rule-id>' ('remove V101') on the same key; it takes back every entry for that rule, which for V301 and V302 means every pair you acknowledged on that engram. 'remove V112' takes back every pair this engram holds or anchors, on this engram and on every other engram of the two folders, since a pair's acknowledgment can sit on any of them: the receipt names the engrams it cleared in evolve_ack_removed_from and the ones it could not (a draft shared with you to read and not joined, or a rewrite that reported an error, which says so when the file was written first and the entry may already be gone) with the reason in evolve_ack_not_removed_from, and in a domain in review mode each engram it clears gets a draft of your own. It errors when no entry for that rule is there to take back, and the receipt reports evolve_ack_removed. Take an acknowledgment back only when the user asks. Pass expected_checksum (from read_engram) to guard an edit against a change since your read: a conflict is refused if it changed, so re-read and retry; omit it for last-write-wins. An edit of an engram somebody has open in the web editor composes into their live document instead of the file - it arrives under their cursor, keeps what they have typed, and the receipt says landed: live with present naming who is in there; their session saves it. While their editor is not saving (its save is in conflict or was refused) the edit goes to the file instead, and the receipt says landed: file with room and room_note: tell the person what room_note says. You are usually named in their participant strip while you work there, for a minute after each call, so they can tell which agent a change came from. To edit somebody's shared draft rather than your own copy of the page, pass the draft share-link they handed you (dl_...) as share_link: it opens that draft for this connection and the edit lands in its author's copy, with the receipt saying whose. A draft reached that way is read from its author's last saved text rather than from their open document, so send an edit inside one without expected_checksum: the text composes correctly either way, and a checksum taken from a granted read is refused as stale for as long as its author keeps typing. That stays open until your session ends, or - on a sessionless HTTP connection - for 30 minutes after your last call about the draft, so present the link again whenever an edit is refused as unjoined. Without it, an edit at a path somebody shared with you is refused and told the two ways forward. The generated provenance block is refreshed with who edited it, with which model, and when: pass model with your own model id (for example claude-opus-5) on every edit, and a verification you record carries it too. A content edit's receipt may carry a similar list, the existing engrams closest in meaning to the text just added, with guidance to merge, supersede, link or leave them; set_frontmatter never probes. Status values to reflect a changed lifecycle (recommended values: see write_engram). Temporal frontmatter fields (recorded_at, valid_from, valid_to, source_date, stale_after, plus the legacy last_verified and review_after spellings) must stay plain ISO dates (YYYY-MM-DD): an edit that leaves one malformed is rejected and a sentinel far-future valid_to or an explicit null is dropped, except recorded_at which is required and cannot be nulled. In a domain in review mode (review: overlay) your write lands in your own private draft; share_changes proposes exactly your drafts for review, and a receipt marked draft means the tree did not move. The receipt carries markdown_findings (code, severity, message, line) when the text has a status colour or callout kind Crystalline does not know (or, in an engram, an observation inside a callout): fix them.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -3132,7 +3221,7 @@ impl McpServer {
     #[tool(
         name = "move_engram",
         title = "Move engram",
-        description = "Move, rename or re-home an engram: a new path, a new permalink, a new domain, or any mix, as the knowledge base is reorganized. A move is a refactoring, so use this tool, never write_engram plus delete_engram, which loses recorded_at and the generated provenance. The destination may stay inside the same domain: re-filing an engram into a topic subfolder as a cluster forms is a normal move. Every reference follows the engram to its new address: [[old]] and [[domain:old]] wikilinks, relation bullets and crystalline://domain/old URLs (a #fragment is kept) are rewritten in every domain you can see, and the receipt counts them (links_rewritten engrams, references_rewritten references, rewritten names them and marks one open in the editor landed live, links_failed names any engram whose references could not be rewritten); a link by title is left alone unless the domain changed. Set update_links to false to skip the rewrite. The permalink: omit it and it follows the move when it was in step with the old path, and stays when it was a deliberate custom one; permalink \"path\" derives it from the destination path, \"keep\" keeps it, any other value is the new permalink. Rename a permalink in place, for example to repair a permalink that drifted off its folder (evolve_engrams V109), by passing the engram's own current path as destination with permalink \"path\". A permalink another engram already holds is refused. A move that changes the address of an engram somebody has open in the editor saves their text first, then closes the editor and tells it the new address. A destination filename of index.md or log.md is refused: both names are reserved for the generated directory index and log. A domain's MANIFEST.md cannot be moved away (a file domain needs it): edit it with edit_engram instead, or remove the domain to drop it. In a domain in review mode (review: overlay) your write lands in your own private draft; share_changes proposes exactly your drafts for review, and a receipt marked draft means the tree did not move; a draft keeps its permalink unless you pass one, and references in other engrams follow when the team moves the engram.",
+        description = "Move, rename or re-home an engram: a new path, a new permalink, a new domain, or any mix, as the knowledge base is reorganized. A move is a refactoring, so use this tool, never write_engram plus delete_engram, which loses recorded_at and the generated provenance. The destination may stay inside the same domain: re-filing an engram into a topic subfolder as a cluster forms is a normal move. Every reference follows the engram to its new address: [[old]] and [[domain:old]] wikilinks, relation bullets and crystalline://domain/old URLs (a #fragment is kept) are rewritten in every domain you can see, and the receipt counts them (links_rewritten engrams, references_rewritten references, rewritten names them and marks one open in the editor landed live, links_failed names any engram whose references could not be rewritten); a link by title is left alone unless the domain changed. Relative Markdown links ([text](../p.md)) follow the file inside its domain; a move into another domain turns them, in the moved engram and in the engrams that link it, into wikilinks with the domain ([[domain:permalink|text]]), and links_failed names the moved engram when one of its links could not be turned. Set update_links to false to skip the rewrite. The permalink: omit it and it follows the move when it was in step with the old path, and stays when it was a deliberate custom one; permalink \"path\" derives it from the destination path, \"keep\" keeps it, any other value is the new permalink. Rename a permalink in place, for example to repair a permalink that drifted off its folder (evolve_engrams V109), by passing the engram's own current path as destination with permalink \"path\". A permalink another engram already holds is refused. A move that changes the address of an engram somebody has open in the editor saves their text first, then closes the editor and tells it the new address. A destination filename of index.md or log.md is refused: both names are reserved for the generated directory index and log. A domain's MANIFEST.md cannot be moved away (a file domain needs it): edit it with edit_engram instead, or remove the domain to drop it. In a domain in review mode (review: overlay) your write lands in your own private draft; share_changes proposes exactly your drafts for review, and a receipt marked draft means the tree did not move; a draft keeps its permalink unless you pass one, and references in other engrams follow when the team moves the engram.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -3362,7 +3451,7 @@ impl McpServer {
     #[tool(
         name = "evolve_engrams",
         title = "Evolve engrams",
-        description = "Sweep one domain or every domain for the maintenance the knowledge needs and return a ranked work queue: a to-do list that walks you through tidying, cleaning up, auditing, reviewing or health-checking what has been taught. Detects temporal and lifecycle debt (an elapsed valid_to still marked stable, stale_after past due, long-unverified knowledge, a superseded engram with no successor relation and the half-finished converse, a retired engram still cited as current by live ones, and a team domain holding substantive work nobody has shared for over a week), structural gaps (unresolved [[links]], one-sided supersedes or summarizes pairs, orphans, an engram over the split budget, near-empty stubs, V109 a permalink off its folder - one whose folder part differs from the folder its file sits in, which a build_context folder glob silently misses; repair it with move_engram, destination the engram's own path and permalink \"path\" - V110 a link that spells a domain by this machine's local name instead of its canonical name; rewrite it with edit_engram - V111 an engram an ingestion record fed that names no resource, so an answer from it cannot cite where it came from; set it with edit_engram set_frontmatter key resource - and V112 two sibling folders with close names (planview and planview-work, note and notes), one topic split over two folders; move the engrams of the smaller one into the other with move_engram or acknowledge with evolve_ack V112), redundancy (near-duplicate clusters, drifted tags) and meaning (V301 semantic twins, two current engrams that say the same thing in different words, and V302 possible contradiction, two observation lines a local NLI model read as contradicting each other, raised only when evolve.contradictions is on). It detects by dates, links, graph shape, embedding similarity and stored model scores, and it never confirms a contradiction: similarity is agreement about a topic, and a V302 row is the model's question, never proof - read both engrams and decide. It also surfaces engrams people captured directly (through the Fluid web UI) that nobody reviewed yet, so what a person taught gets verified, tagged against the vocabulary and woven into the graph - those findings are judgment class. Attachments are swept too: a file a human added that no engram references, and a reference that points at no stored file, both come back as findings naming the attachment path. Read-only: it changes nothing itself. In a review-mode domain the sweep covers your own drafts too. Each finding names the engram, the evidence and the exact next action with the tool that performs it, and a finding marked mechanical completes intent the archive already records while one marked judgment changes what the archive claims and needs a yes from the user first. Work the queue with the write tools and re-run the same scope to confirm it shrank. Call it when the user asks whether knowledge is still accurate, what needs attention or review, or to tidy, audit, consolidate or spring-clean a domain; after a large ingest lands many engrams at once; and when a search returns hits that disagree, since a half-finished retirement often explains the disagreement. Do not call it at session start, after routine captures or before ordinary recall - it is deliberate maintenance, on demand. When the user rules a finding intentional, acknowledge it (edit_engram set_frontmatter key evolve_ack, value like 'V101 lineage citation, keep') so it stops reappearing while its evidence holds; the sweep reports how many findings acknowledgments suppressed, and an acknowledgment whose evidence changed comes back marked stale. limit caps the queue (default 10), families narrows to detector families (temporal, structure, redundancy or meaning), domains narrows the sweep, include_acknowledged returns the suppressed findings too.",
+        description = "Sweep one domain or every domain for the maintenance the knowledge needs and return a ranked work queue: a to-do list that walks you through tidying, cleaning up, auditing, reviewing or health-checking what has been taught. Detects temporal and lifecycle debt (an elapsed valid_to still marked stable, stale_after past due, long-unverified knowledge, a superseded engram with no successor relation and the half-finished converse, a retired engram still cited as current by live ones, and a team domain holding substantive work nobody has shared for over a week), structural gaps (unresolved [[links]], one-sided supersedes or summarizes pairs, orphans, an engram over the split budget, near-empty stubs, V109 a permalink off its folder - one whose folder part differs from the folder its file sits in, which a build_context folder glob silently misses; repair it with move_engram, destination the engram's own path and permalink \"path\" - V110 a link that spells a domain by this machine's local name instead of its canonical name; rewrite it with edit_engram, unless a rename of that domain waits for a person (then it is judgment: leave it) - V111 an engram an ingestion record fed that names no resource, so an answer from it cannot cite where it came from; set it with edit_engram set_frontmatter key resource - and V112 two sibling folders with close names (planview and planview-work, note and notes), one topic split over two folders; move the engrams of the smaller one into the other with move_engram or acknowledge with evolve_ack V112), redundancy (near-duplicate clusters, drifted tags) and meaning (V301 semantic twins, two current engrams that say the same thing in different words, and V302 possible contradiction, two observation lines a local NLI model read as contradicting each other, raised only when evolve.contradictions is on). It detects by dates, links, graph shape, embedding similarity and stored model scores, and it never confirms a contradiction: similarity is agreement about a topic, and a V302 row is the model's question, never proof - read both engrams and decide. It also surfaces engrams people captured directly (through the Fluid web UI) that nobody reviewed yet, so what a person taught gets verified, tagged against the vocabulary and woven into the graph - those findings are judgment class. Attachments are swept too: a file a human added that no engram references, and a reference that points at no stored file, both come back as findings naming the attachment path. Read-only: it changes nothing itself. In a review-mode domain the sweep covers your own drafts too. Each finding names the engram, the evidence and the exact next action with the tool that performs it, and a finding marked mechanical completes intent the archive already records while one marked judgment changes what the archive claims and needs a yes from the user first. Work the queue with the write tools and re-run the same scope to confirm it shrank. Call it when the user asks whether knowledge is still accurate, what needs attention or review, or to tidy, audit, consolidate or spring-clean a domain; after a large ingest lands many engrams at once; and when a search returns hits that disagree, since a half-finished retirement often explains the disagreement. Do not call it at session start, after routine captures or before ordinary recall - it is deliberate maintenance, on demand. When the user rules a finding intentional, acknowledge it (edit_engram set_frontmatter key evolve_ack, value like 'V101 lineage citation, keep') so it stops reappearing while its evidence holds; the sweep reports how many findings acknowledgments suppressed, and an acknowledgment whose evidence changed comes back marked stale. limit caps the queue (default 10), families narrows to detector families (temporal, structure, redundancy or meaning), class narrows to mechanical or judgment findings (a headless or unattended run passes mechanical and leaves the judgment findings for a person), domains narrows the sweep, include_acknowledged returns the suppressed findings too.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn evolve_engrams(
@@ -3440,7 +3529,7 @@ impl McpServer {
     #[tool(
         name = "write_reflection",
         title = "Write reflection",
-        description = "Create, change, move or delete a reflection - a document for people under reflections/, where the domain's MANIFEST says reflection: on - or edit PACT.md, the domain's agreement on audience, level of detail, presentation and structure (PACT.md and every write with sources need curate access, which everyone who edits the engrams holds; anyone else proposes a PACT.md change with discuss). Write at the level PACT.md describes. action write (the default) takes the whole markdown: keep each ## heading's <!-- r:... --> id line as it is. Crystalline gives a new heading its id line; never write one yourself. The `reflection:` frontmatter key is Crystalline's bookkeeping; never write it (pass `sources` instead). To change one section instead, pass operation replace_section, insert_before_section or insert_after_section with section (the heading path, for example ## Night deploys) and content, exactly as edit_engram does; the section keeps its id line. Pass sources (a ## section's id or heading text to the engrams it was built from: a permalink for an engram in this domain, a crystalline://<domain>/<permalink> address for one in another domain you can read) for every section you built from engrams: that curates the section and records what it reflects, and the queue notices when those engrams change. Never write sources into the page as HTML comments or text. A heading this same write creates works as a key; the # title and ### headings are not sections, and a heading two sections share needs their ids from the receipt. Without sources a write is an ordinary edit, and a person's change stays a feedback item in reflect. Sources alone, with no markdown and no operation, curate those sections as the page stands and rewrite none of its text (a heading without an id line still gets one, and addresses are spelled with current domain names). action settle with sections and outcome kept (the person's text stands, sources stay) or taken_in (you changed the engrams to match) settles feedback items. action move carries the reflection's threads and baseline and rewrites relative links to it (a page open in a co-editing room is saved first, and the room is closed and told the new path), and its receipt carries links_failed when a page that links it could not be rewritten; delete takes both along. action move_asset (path and to) or delete_asset (path) moves or removes a file under reflections/assets/ and needs curate access; a move rewrites every link to the file, and its receipt carries links_failed (pages whose link could not be rewritten) or note (the file moved and its index row did not follow) when that happened. A page that embeds an engram attachment is refused (copy the file into reflections/assets/ first, which a person does). When a person has the page open in a co-editing room, the receipt says landed live (the room took your text in) or landed file with room (conflict or waiting) and room_note: tell the person what room_note says. Needs edit access; sources and settle need curate access. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server. The receipt carries markdown_findings (code, severity, message, line) when the text has a status colour or callout kind Crystalline does not know: fix them. Present the page with the crystalline-presentation skill (callouts, status labels, diagrams, tables, math) where they serve the reader; read it with the skills tool if it is not installed.",
+        description = "Create, change, move or delete a reflection - a document for people under reflections/, where the domain's MANIFEST says reflection: on - or edit PACT.md, the domain's agreement on audience, level of detail, presentation and structure (PACT.md and every write with sources need curate access, which everyone who edits the engrams holds; anyone else proposes a PACT.md change with discuss). Write at the level PACT.md describes. action write (the default) takes the whole markdown: keep each ## heading's <!-- r:... --> id line as it is. Crystalline gives a new heading its id line; never write one yourself. The `reflection:` frontmatter key is Crystalline's bookkeeping; never write it (pass `sources` instead). To change one section instead, pass operation replace_section, insert_before_section or insert_after_section with section (the heading path, for example ## Night deploys, or a section's id) and content, exactly as edit_engram does; the section keeps its id line, and a miss lists the headings the page has. insert_after_section puts content right under the section's heading line, unless the content opens with a heading of the section's own level or a higher one: then it goes after the whole section and the receipt says placed_after_section. Pass sources (a ## section's id or heading text to the engrams it was built from: a permalink for an engram in this domain, a crystalline://<domain>/<permalink> address for one in another domain you can read) for every section you built from engrams: that curates the section and records what it reflects, and the queue notices when those engrams change. Never write sources into the page as HTML comments or text. A heading this same write creates works as a key; the # title and ### headings are not sections, and a heading two sections share needs their ids from the receipt. Without sources a write records no engrams; a person's change it does not take in stays a feedback item in reflect. Sources alone, with no markdown and no operation, curate those sections as the page stands and rewrite none of its text (a heading without an id line still gets one, and addresses are spelled with current domain names). action settle with sections and outcome kept (the person's text stands, sources stay) or taken_in (you changed the engrams to match) settles feedback items; without sections it settles the whole page, so settle PACT.md this way once the pages follow a changed pact. A heading with no id line yet is left out: it gets one on the next write, then settle again. Your own writes never come back as feedback. PACT.md's ## Structure bullets are globs, one per top-level bullet (for example - guides/*.md), and a PACT.md receipt names structure_findings for bullets that are not read as globs or match no page. action move carries the reflection's threads and baseline and rewrites relative links to it (a page open in a co-editing room is saved first, and the room is closed and told the new path), and its receipt carries links_failed when a page that links it could not be rewritten; delete takes both along. action move_asset (path and to) or delete_asset (path) moves or removes a file under reflections/assets/ and needs curate access; a move rewrites every link to the file, and its receipt carries links_failed (pages whose link could not be rewritten) or note (the file moved and its index row did not follow) when that happened. A page that embeds an engram attachment is refused (copy the file into reflections/assets/ first, which a person does). When a person has the page open in a co-editing room, the receipt says landed live (the room took your text in) or landed file with room (conflict or waiting) and room_note: tell the person what room_note says. Needs edit access; sources and settle need curate access. Refuses on a domain without reflection: on, and names the home instance when the Reflection lives on another server. The receipt names unsourced_sections (headings written without sources) when there are any: pass sources for them. The receipt carries markdown_findings (code, severity, message, line) when the text has a status colour or callout kind Crystalline does not know: fix them. Present the page with the crystalline-presentation skill (callouts, status labels, diagrams, tables, math) where they serve the reader; read it with the skills tool if it is not installed.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -4503,6 +4592,39 @@ impl McpServer {
             .collect()
     }
 
+    /// The pictures among `files` as image blocks, in the order the engram
+    /// references them. Only png, jpeg, gif and webp go; both caps count the
+    /// decoded bytes, and once a picture would pass either the rest stay
+    /// resource links. A picture whose bytes cannot be read is skipped.
+    async fn inline_images(
+        &self,
+        domain: &str,
+        files: &[LinkedFile],
+        scope: &Scope,
+        rc: &ReflectionCaller,
+    ) -> Vec<ContentBlock> {
+        let mut images = Vec::new();
+        let mut total: u64 = 0;
+        for file in files.iter().filter(|f| inlinable_image(&f.mime)) {
+            if images.len() >= MAX_INLINE_IMAGES || total + file.size > MAX_INLINE_IMAGE_BYTES {
+                break;
+            }
+            let Ok((bytes, row)) = self
+                .file_bytes(ContentKind::Engram, domain, &file.path, scope, rc)
+                .await
+            else {
+                continue;
+            };
+            let len = bytes.len() as u64;
+            if total + len > MAX_INLINE_IMAGE_BYTES {
+                break;
+            }
+            total += len;
+            images.push(ContentBlock::image(BASE64.encode(&bytes), row.mime));
+        }
+        images
+    }
+
     /// One file's bytes and its row, for `resources/read` and a connected
     /// machine's `file` command alike. `path` is the path inside the kind's
     /// home as [`CrystallineUrl::asset_ref`] answers it (`assets/...` for
@@ -4727,6 +4849,34 @@ fn applied_failure(applied: &[String], failed_key: &str, e: EngineError) -> Erro
 
 #[tool_handler]
 impl ServerHandler for McpServer {
+    /// Every tool call, read and write verbs alike: the tool router's own
+    /// dispatch (what `#[tool_handler]` would generate), then the pending
+    /// rename line (`McpServer::with_rename_guidance`) on the answer.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, ErrorData> {
+        // Nothing to tell when no domain has an open question: the answer
+        // goes back as the router made it, unparsed.
+        if !self.engine.any_rename_question() {
+            let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+            return Self::tool_router().call(tcc).await;
+        }
+        let session = session_key(self.holder_of(&context), mcp_account(&context));
+        let scope = self.scope_of(&context);
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        let response = Self::tool_router().call(tcc).await?;
+        Ok(match response {
+            rmcp::model::CallToolResponse::Complete(result) => {
+                rmcp::model::CallToolResponse::Complete(
+                    self.with_rename_guidance(result, &session, &scope).await,
+                )
+            }
+            other => other,
+        })
+    }
+
     /// The revisions this server serves, narrowed from rmcp's crate-wide
     /// `KNOWN_VERSIONS` default to [`SERVED_PROTOCOL_VERSIONS`].
     ///
@@ -5435,6 +5585,21 @@ pub(crate) struct LinkedFile {
     pub size: u64,
 }
 
+/// The most pictures `read_engram` returns as image content in one reply.
+const MAX_INLINE_IMAGES: usize = 8;
+
+/// The most decoded picture bytes `read_engram` returns as image content in
+/// one reply.
+const MAX_INLINE_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+
+/// A picture a model can look at: the raster formats vision reads.
+fn inlinable_image(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    )
+}
+
 /// One resource link per file, under `domain`.
 fn file_links(domain: &str, files: &[LinkedFile]) -> Vec<ContentBlock> {
     files
@@ -6115,6 +6280,33 @@ fn overlay_refusal(e: EngineError) -> Result<String, ErrorData> {
         EngineError::DomainReadOnly(sentence) => Ok(sentence),
         other => Err(to_error(other)),
     }
+}
+
+/// The engram paths a write receipt names, by domain: its own `path`, the
+/// `from` and `to` of a move, the `source` and `new` of a split, and every
+/// linker a move rewrote. Each object's own `domain` wins over the
+/// receipt's.
+fn written_paths(receipt: &Value) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut out: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    let top = receipt["domain"].as_str();
+    let mut note = |obj: &Value| {
+        let (Some(domain), Some(path)) = (obj["domain"].as_str().or(top), obj["path"].as_str())
+        else {
+            return;
+        };
+        let paths = out.entry(domain.to_string()).or_default();
+        if !paths.iter().any(|p| p == path) {
+            paths.push(path.to_string());
+        }
+    };
+    note(receipt);
+    for key in ["from", "to", "source", "new"] {
+        note(&receipt[key]);
+    }
+    for linker in receipt["rewritten"].as_array().into_iter().flatten() {
+        note(linker);
+    }
+    out
 }
 
 /// A write receipt as a finished [`Verdict`], with the page this caller opens

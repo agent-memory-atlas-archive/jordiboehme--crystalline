@@ -124,6 +124,7 @@ use crate::store::{
     rename_onto_taken_row, reset_spelled_references_sql, resolve_references_to_sql,
     resolve_spelled_references_sql, spelled_references_sql, spelling_plan,
 };
+use crate::store::{AutomationLease, AutomationRun, LeaseClaim, LeaseHolder};
 use crate::sweep::{SpelledRef, UnresolvedRef};
 
 /// `$from` through `$(from + count - 1)`, comma separated: an `IN` list's
@@ -922,6 +923,52 @@ fn domain_host_of(r: &sqlx::postgres::PgRow) -> DomainHost {
     }
 }
 
+/// The read of one automation lease row, in [`automation_lease_of`]'s column
+/// order.
+const AUTOMATION_LEASE_SQL: &str = "SELECT instance_id, account, runner, token, taken_at, renewed_at, unshared_at_start, due_at_start, pr_url, written FROM automation_lease WHERE domain_id=$1 AND loop_kind=$2";
+
+/// The token-guarded release of one automation lease row, answering the row
+/// in [`automation_lease_of`]'s column order.
+const AUTOMATION_LEASE_RELEASE_SQL: &str = "DELETE FROM automation_lease WHERE domain_id=$1 AND loop_kind=$2 AND token=$3 RETURNING instance_id, account, runner, token, taken_at, renewed_at, unshared_at_start, due_at_start, pr_url, written";
+
+/// An [`AutomationLease`] from a row read by [`AUTOMATION_LEASE_SQL`]'s
+/// columns.
+fn automation_lease_of(r: &PgRow) -> Result<AutomationLease> {
+    Ok(AutomationLease {
+        holder: LeaseHolder {
+            instance_id: cell_text(r, 0).unwrap_or_default(),
+            account: cell_text(r, 1),
+            runner: cell_text(r, 2).unwrap_or_default(),
+            unshared_at_start: serde_json::from_str(&cell_text(r, 6).unwrap_or_default())?,
+            due_at_start: serde_json::from_str(&cell_text(r, 7).unwrap_or_default())?,
+        },
+        token: cell_text(r, 3).unwrap_or_default(),
+        taken_at: cell_text(r, 4).unwrap_or_default(),
+        renewed_at: cell_text(r, 5).unwrap_or_default(),
+        pr_url: cell_text(r, 8),
+        written: serde_json::from_str(&cell_text(r, 9).unwrap_or_else(|| "[]".to_string()))?,
+    })
+}
+
+/// An [`AutomationRun`] from a row of `automation_run`'s columns from
+/// `started_at` on.
+fn automation_run_of(r: &PgRow) -> Result<AutomationRun> {
+    let count = |i| cell_i64(r, i).unwrap_or(0).max(0) as u64;
+    Ok(AutomationRun {
+        started_at: cell_text(r, 0).unwrap_or_default(),
+        ended_at: cell_text(r, 1).unwrap_or_default(),
+        runner: cell_text(r, 2).unwrap_or_default(),
+        account: cell_text(r, 3),
+        outcome: cell_text(r, 4).unwrap_or_default(),
+        done: count(5),
+        left: count(6),
+        judgment_waiting: count(7),
+        summary: cell_text(r, 8).unwrap_or_default(),
+        pr_url: cell_text(r, 9),
+        left_items: serde_json::from_str(&cell_text(r, 10).unwrap_or_default())?,
+    })
+}
+
 pub(super) fn cell_real(row: &PgRow, idx: usize) -> Option<f64> {
     row.try_get::<Option<f64>, _>(idx).ok().flatten()
 }
@@ -1240,6 +1287,7 @@ fn unresolved_ref_from_row(r: &PgRow) -> UnresolvedRef {
         // A row written before `to_raw` existed reads as an empty string, which
         // the repair treats as "nothing extra to score" rather than as a match.
         raw: cell_text(r, 7).unwrap_or_default(),
+        alias: cell_text(r, 8),
         // The parser writes 0 when it has no line to report, which the sweep
         // reads as "no line" rather than as line zero.
         line: cell_i64(r, 5).filter(|l| *l > 0).map(|l| l as usize),
@@ -1714,15 +1762,16 @@ pub fn folder_level_sql(rel: &str, under: &str) -> String {
 #[doc(hidden)]
 pub fn unresolved_refs_sql(src_screen: &str, rel_pending: &str, link_pending: &str) -> String {
     format!(
-        "SELECT u.engram_id, u.kind, u.rel_type, u.to_domain, u.to_target, u.line, u.path, u.to_raw \
+        "SELECT u.engram_id, u.kind, u.rel_type, u.to_domain, u.to_target, u.line, u.path, u.to_raw, \
+                u.to_alias \
          FROM ( \
            SELECT r.engram_id, 0::int8 AS kind, r.rel_type, r.to_domain, r.to_target, \
-                  r.line, e.path, r.to_raw \
+                  r.line, e.path, r.to_raw, r.to_alias \
            FROM relation r JOIN engram e ON e.id=r.engram_id \
            WHERE {src_screen} AND {rel_pending} AND r.domain_id=$1 \
            UNION ALL \
            SELECT l.engram_id, 1::int8, 'links_to', l.to_domain, l.to_target, l.line, e.path, \
-                  l.to_raw \
+                  l.to_raw, l.to_alias \
            FROM link l JOIN engram e ON e.id=l.engram_id \
            WHERE {src_screen} AND {link_pending} AND l.domain_id=$1 \
          ) u \
@@ -2052,9 +2101,9 @@ impl Store for PostgresStore {
             let Some((id,)) = id else {
                 return Ok(false);
             };
-            // `domain_lock` and `tag_alias` name the row without a cascade,
-            // and `relation` and `link` carry its id with no key at all, so
-            // each is cleared before the row itself.
+            // `domain_lock`, the two automation tables and `tag_alias` name
+            // the row without a cascade, and `relation` and `link` carry its
+            // id with no key at all, so each is cleared before the row itself.
             for sql in [
                 "DELETE FROM domain_spelling WHERE domain_id=$1",
                 // A chunk is not content, so it does not keep the row; it
@@ -2062,6 +2111,8 @@ impl Store for PostgresStore {
                 "DELETE FROM reflection_chunk WHERE domain_id=$1",
                 "DELETE FROM tag_alias WHERE domain_id=$1",
                 "DELETE FROM domain_lock WHERE domain_id=$1",
+                "DELETE FROM automation_lease WHERE domain_id=$1",
+                "DELETE FROM automation_run WHERE domain_id=$1",
                 "DELETE FROM relation WHERE domain_id=$1",
                 "DELETE FROM link WHERE domain_id=$1",
                 "DELETE FROM domain WHERE id=$1",
@@ -2154,6 +2205,7 @@ impl Store for PostgresStore {
                         line: cell_i64(r, 1).unwrap_or(0).max(0) as usize,
                         spelling: cell_text(r, 2).unwrap_or_default(),
                         raw: cell_text(r, 3).unwrap_or_default(),
+                        alias: cell_text(r, 5),
                     },
                 )
             })
@@ -4656,6 +4708,264 @@ impl Store for PostgresStore {
         Ok(row.map(|r| domain_host_of(&r)))
     }
 
+    async fn take_automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        holder: &LeaseHolder,
+        now: &str,
+        stale_before: &str,
+    ) -> Result<LeaseClaim> {
+        // The host lock's claim, in one transaction: lock and read the stale
+        // row (`FOR UPDATE`), then one upsert that inserts when unheld or
+        // replaces a row whose last renewal is older than `stale_before`. A
+        // fresh row is left untouched, whoever asks; the re-read then tells
+        // whose token the row carries. A second take waiting on the lock
+        // re-reads the row the first one wrote, finds it fresh and locks
+        // nothing, so one stale lease is reported replaced once.
+        let token = crate::store::claim_token(now);
+        let mut conn = self.acquire().await?;
+        let c = conn.as_mut();
+        sqlx::query("BEGIN")
+            .execute(&mut *c)
+            .await
+            .map_err(IndexError::from)?;
+        let claimed: Result<LeaseClaim> = async {
+            let stale = sqlx::query(
+                "SELECT instance_id, account, runner, token, taken_at, renewed_at, \
+                 unshared_at_start, due_at_start, pr_url, written FROM automation_lease \
+                 WHERE domain_id=$1 AND loop_kind=$2 AND renewed_at < $3 FOR UPDATE",
+            )
+            .bind(domain.0)
+            .bind(loop_kind)
+            .bind(stale_before)
+            .fetch_optional(&mut *c)
+            .await
+            .map_err(IndexError::from)?
+            .map(|r| automation_lease_of(&r))
+            .transpose()?;
+            sqlx::query(
+                "INSERT INTO automation_lease(domain_id, loop_kind, instance_id, account, runner, \
+                 token, taken_at, renewed_at, unshared_at_start, due_at_start) \
+                 VALUES($1, $2, $3, $4, $5, $6, $7, $7, $8, $9) \
+                 ON CONFLICT(domain_id, loop_kind) DO UPDATE SET \
+                 instance_id=EXCLUDED.instance_id, account=EXCLUDED.account, runner=EXCLUDED.runner, \
+                 token=EXCLUDED.token, taken_at=EXCLUDED.taken_at, renewed_at=EXCLUDED.renewed_at, \
+                 unshared_at_start=EXCLUDED.unshared_at_start, due_at_start=EXCLUDED.due_at_start, \
+                 pr_url=NULL, written='[]' \
+                 WHERE automation_lease.renewed_at < $10",
+            )
+            .bind(domain.0)
+            .bind(loop_kind)
+            .bind(&holder.instance_id)
+            .bind(holder.account.as_deref())
+            .bind(&holder.runner)
+            .bind(&token)
+            .bind(now)
+            .bind(serde_json::to_string(&holder.unshared_at_start)?)
+            .bind(serde_json::to_string(&holder.due_at_start)?)
+            .bind(stale_before)
+            .execute(&mut *c)
+            .await
+            .map_err(IndexError::from)?;
+            let row = sqlx::query(AUTOMATION_LEASE_SQL)
+                .bind(domain.0)
+                .bind(loop_kind)
+                .fetch_optional(&mut *c)
+                .await
+                .map_err(IndexError::from)?;
+            Ok(match row.map(|r| automation_lease_of(&r)).transpose()? {
+                Some(lease) if lease.token != token => LeaseClaim::Held(lease),
+                _ => LeaseClaim::Acquired {
+                    token: token.clone(),
+                    replaced: stale,
+                },
+            })
+        }
+        .await;
+        match claimed {
+            Ok(claim) => {
+                sqlx::query("COMMIT")
+                    .execute(&mut *c)
+                    .await
+                    .map_err(IndexError::from)?;
+                Ok(claim)
+            }
+            Err(e) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *c).await;
+                Err(e)
+            }
+        }
+    }
+
+    async fn set_automation_pr_url(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        token: &str,
+        pr_url: &str,
+    ) -> Result<bool> {
+        let mut conn = self.acquire().await?;
+        let done = sqlx::query(
+            "UPDATE automation_lease SET pr_url=$4 \
+             WHERE domain_id=$1 AND loop_kind=$2 AND token=$3",
+        )
+        .bind(domain.0)
+        .bind(loop_kind)
+        .bind(token)
+        .bind(pr_url)
+        .execute(conn.as_mut())
+        .await
+        .map_err(IndexError::from)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn note_automation_written(
+        &self,
+        domain: DomainId,
+        account: &str,
+        paths: &[String],
+    ) -> Result<u64> {
+        // One statement: the union of what the row holds and `paths`, so two
+        // instances noting at once both land.
+        let mut conn = self.acquire().await?;
+        let done = sqlx::query(
+            "UPDATE automation_lease SET written = ( \
+             SELECT COALESCE(jsonb_agg(p ORDER BY p), '[]'::jsonb)::text FROM ( \
+             SELECT DISTINCT p FROM jsonb_array_elements_text(written::jsonb || $3::jsonb) AS p) AS u) \
+             WHERE domain_id=$1 AND account=$2",
+        )
+        .bind(domain.0)
+        .bind(account)
+        .bind(serde_json::to_string(paths)?)
+        .execute(conn.as_mut())
+        .await
+        .map_err(IndexError::from)?;
+        Ok(done.rows_affected())
+    }
+
+    async fn renew_automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        token: &str,
+        now: &str,
+    ) -> Result<bool> {
+        let mut conn = self.acquire().await?;
+        let done = sqlx::query(
+            "UPDATE automation_lease SET renewed_at=$4 \
+             WHERE domain_id=$1 AND loop_kind=$2 AND token=$3",
+        )
+        .bind(domain.0)
+        .bind(loop_kind)
+        .bind(token)
+        .bind(now)
+        .execute(conn.as_mut())
+        .await
+        .map_err(IndexError::from)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn release_automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        token: &str,
+    ) -> Result<Option<AutomationLease>> {
+        let mut conn = self.acquire().await?;
+        let row = sqlx::query(AUTOMATION_LEASE_RELEASE_SQL)
+            .bind(domain.0)
+            .bind(loop_kind)
+            .bind(token)
+            .fetch_optional(conn.as_mut())
+            .await
+            .map_err(IndexError::from)?;
+        row.map(|r| automation_lease_of(&r)).transpose()
+    }
+
+    async fn automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+    ) -> Result<Option<AutomationLease>> {
+        let mut conn = self.acquire().await?;
+        let row = sqlx::query(AUTOMATION_LEASE_SQL)
+            .bind(domain.0)
+            .bind(loop_kind)
+            .fetch_optional(conn.as_mut())
+            .await
+            .map_err(IndexError::from)?;
+        row.map(|r| automation_lease_of(&r)).transpose()
+    }
+
+    async fn record_automation_run(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        run: &AutomationRun,
+        keep: usize,
+    ) -> Result<()> {
+        let count = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
+        let mut conn = self.acquire().await?;
+        let c = conn.as_mut();
+        sqlx::query(
+            "INSERT INTO automation_run(domain_id, loop_kind, started_at, ended_at, runner, \
+             account, outcome, done, \"left\", judgment_waiting, summary, pr_url, left_items) \
+             VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+        )
+        .bind(domain.0)
+        .bind(loop_kind)
+        .bind(&run.started_at)
+        .bind(&run.ended_at)
+        .bind(&run.runner)
+        .bind(run.account.as_deref())
+        .bind(&run.outcome)
+        .bind(count(run.done))
+        .bind(count(run.left))
+        .bind(count(run.judgment_waiting))
+        .bind(&run.summary)
+        .bind(run.pr_url.as_deref())
+        .bind(serde_json::to_string(&run.left_items)?)
+        .execute(&mut *c)
+        .await
+        .map_err(IndexError::from)?;
+        // The newest `keep` by id stay; the id grows with every insert. Not
+        // one transaction: a prune that does not land is done by the next.
+        sqlx::query(
+            "DELETE FROM automation_run WHERE domain_id=$1 AND loop_kind=$2 AND id <= \
+             COALESCE((SELECT id FROM automation_run WHERE domain_id=$1 AND loop_kind=$2 \
+             ORDER BY id DESC LIMIT 1 OFFSET $3), -1)",
+        )
+        .bind(domain.0)
+        .bind(loop_kind)
+        .bind(i64::try_from(keep).unwrap_or(i64::MAX))
+        .execute(&mut *c)
+        .await
+        .map_err(IndexError::from)?;
+        Ok(())
+    }
+
+    async fn automation_runs(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        limit: usize,
+    ) -> Result<Vec<AutomationRun>> {
+        let mut conn = self.acquire().await?;
+        let rows = sqlx::query(
+            "SELECT started_at, ended_at, runner, account, outcome, done, \"left\", \
+             judgment_waiting, summary, pr_url, left_items FROM automation_run \
+             WHERE domain_id=$1 AND loop_kind=$2 ORDER BY id DESC LIMIT $3",
+        )
+        .bind(domain.0)
+        .bind(loop_kind)
+        .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+        .fetch_all(conn.as_mut())
+        .await
+        .map_err(IndexError::from)?;
+        rows.iter().map(automation_run_of).collect()
+    }
+
     async fn swap_host_move(
         &self,
         domain: DomainId,
@@ -5314,7 +5624,7 @@ impl PostgresStore {
         }
 
         for batch in record.relations.chunks(INSERT_CHUNK) {
-            let mut params: Vec<Param> = Vec::with_capacity(batch.len() * 7);
+            let mut params: Vec<Param> = Vec::with_capacity(batch.len() * 8);
             for rel in batch {
                 params.push(Param::Int(engram_id));
                 params.push(Param::Int(domain.0));
@@ -5323,16 +5633,17 @@ impl PostgresStore {
                 params.push(Param::Text(rel.to_target.clone()));
                 params.push(Param::TextOpt(rel.to_domain.clone()));
                 params.push(Param::Text(rel.to_raw.clone()));
+                params.push(Param::TextOpt(rel.to_alias.clone()));
             }
             let sql = format!(
-                "INSERT INTO relation(engram_id, domain_id, line, rel_type, to_target, to_domain, to_raw, to_id) VALUES {}",
-                value_rows(7, batch.len(), Some("NULL"))
+                "INSERT INTO relation(engram_id, domain_id, line, rel_type, to_target, to_domain, to_raw, to_alias, to_id) VALUES {}",
+                value_rows(8, batch.len(), Some("NULL"))
             );
             exec(&mut *c, &sql, params).await?;
         }
 
         for batch in record.links.chunks(INSERT_CHUNK) {
-            let mut params: Vec<Param> = Vec::with_capacity(batch.len() * 6);
+            let mut params: Vec<Param> = Vec::with_capacity(batch.len() * 7);
             for link in batch {
                 params.push(Param::Int(engram_id));
                 params.push(Param::Int(domain.0));
@@ -5340,10 +5651,11 @@ impl PostgresStore {
                 params.push(Param::Text(link.to_target.clone()));
                 params.push(Param::TextOpt(link.to_domain.clone()));
                 params.push(Param::Text(link.to_raw.clone()));
+                params.push(Param::TextOpt(link.to_alias.clone()));
             }
             let sql = format!(
-                "INSERT INTO link(engram_id, domain_id, line, to_target, to_domain, to_raw, to_id) VALUES {}",
-                value_rows(6, batch.len(), Some("NULL"))
+                "INSERT INTO link(engram_id, domain_id, line, to_target, to_domain, to_raw, to_alias, to_id) VALUES {}",
+                value_rows(7, batch.len(), Some("NULL"))
             );
             exec(&mut *c, &sql, params).await?;
         }
@@ -5644,9 +5956,9 @@ mod tests {
                 }
             }
             assert_eq!(
-                id_keys, 4,
+                id_keys, 5,
                 "reference_match({label}) should carry the id tie-break on every one of \
-                 its four COALESCE arms: {rendered}"
+                 its five COALESCE arms: {rendered}"
             );
         }
     }

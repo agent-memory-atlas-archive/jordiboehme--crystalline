@@ -1337,7 +1337,9 @@ async fn the_manifest_read_carries_the_policies_and_the_patch_writes_one() {
             { "key": "domain_name", "kind": "text", "declared": null, "effective": "kb", "values": [], "default": "", "meaning": "The name this domain is known by everywhere; links from other domains use it.", "changed_by": "owner" },
             { "key": "read_only", "kind": "choice", "declared": null, "effective": "off", "values": ["off", "on"], "default": "off", "meaning": "Whether every change to this domain through Crystalline is refused; pulls from the team still apply.", "changed_by": "owner" },
             { "key": "reflection", "kind": "choice", "declared": null, "effective": "off", "values": ["off", "on"], "default": "off", "meaning": "Whether this domain keeps a Reflection: documents for people under reflections/.", "changed_by": "owner" },
-            { "key": "reflection_home", "kind": "text", "declared": null, "effective": "", "values": [], "default": "", "meaning": "The address of the one server this domain's Reflection lives on; filled in when Reflection is switched on.", "changed_by": "owner" }
+            { "key": "reflection_home", "kind": "text", "declared": null, "effective": "", "values": [], "default": "", "meaning": "The address of the one server this domain's Reflection lives on; filled in when Reflection is switched on.", "changed_by": "owner" },
+            { "key": "reflect_trigger", "kind": "choice", "declared": null, "effective": "off", "values": ["off", "webhook"], "default": "off", "meaning": "Send a signed webhook when reflect work is waiting.", "changed_by": "owner" },
+            { "key": "evolve_trigger", "kind": "choice", "declared": null, "effective": "off", "values": ["off", "webhook"], "default": "off", "meaning": "Send a signed webhook when maintenance findings pile up.", "changed_by": "owner" }
         ]),
         "{body}"
     );
@@ -4366,6 +4368,299 @@ async fn the_archive_round_trip_reproduces_the_files() {
     assert_eq!(detail.status(), 200);
     let detail: serde_json::Value = detail.json().await.unwrap();
     assert_eq!(detail["content"].as_str().unwrap(), ALPHA);
+}
+
+/// An archive of converted documents, each note beside its `<name>.assets/`
+/// folder and carrying only a type and a title: the notes are completed
+/// before they are verified, so none is refused for a missing permalink, tags
+/// or status; the pictures they link are stored under `assets/` and listed
+/// there instead of as ignored entries; a link to a file the archive lacks is
+/// reported as not taken, by the preview and the import alike.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_archive_of_converted_documents_is_accepted() {
+    let fx = serve(Options::default()).await;
+    let admin = login(fx.addr, "root", "rootpw").await;
+    let report_md = "---\ntype: document\ntitle: Report\n---\n\n# Report\n\n![p3](report.pdf.assets/page-3.png)\n\n![gone](missing.png)\n";
+    let memo_md = "---\ntype: document\ntitle: Memo\n---\n\n# Memo\n\nSee [the scan](memo.docx.assets/scan%201.png) and ![again](memo.docx.assets/copy.png).\n";
+    let archive = zip_of_bytes(&[
+        ("report.pdf.md", report_md.as_bytes()),
+        ("report.pdf.assets/page-3.png", PNG),
+        ("memo.docx.md", memo_md.as_bytes()),
+        ("memo.docx.assets/scan 1.png", b"\x89PNG scan"),
+        // The same bytes as page-3.png, linked from the second note.
+        ("memo.docx.assets/copy.png", PNG),
+        ("readme.txt", b"no note links this"),
+    ]);
+
+    let entries_of = |report: &serde_json::Value| -> Vec<(String, String)> {
+        report["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e["path"].as_str().unwrap().to_string(),
+                    e["status"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+    let missing = serde_json::json!([{
+        "note": "report.pdf.md",
+        "target": "missing.png",
+        "reason": "missing",
+    }]);
+
+    let resp = post_zip(
+        fx.addr,
+        "/api/v1/domains/eng/archive/preview",
+        &admin,
+        archive.clone(),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let preview: serde_json::Value = resp.json().await.unwrap();
+    let mut listed = entries_of(&preview);
+    listed.sort();
+    assert_eq!(
+        listed,
+        vec![
+            ("assets/memo.docx/scan-1.png".to_string(), "new".to_string()),
+            (
+                "assets/report.pdf/page-3.png".to_string(),
+                "new".to_string()
+            ),
+            (
+                "memo.docx.assets/copy.png".to_string(),
+                "skipped".to_string()
+            ),
+            ("memo.docx.md".to_string(), "new".to_string()),
+            ("readme.txt".to_string(), "ignored".to_string()),
+            ("report.pdf.md".to_string(), "new".to_string()),
+        ],
+        "{preview}"
+    );
+    assert_eq!(preview["invalid"], 0, "{preview}");
+    assert_eq!(preview["files_linked"], 2, "{preview}");
+    assert_eq!(preview["not_taken"], missing, "{preview}");
+    let no_completion_error = |report: &serde_json::Value| {
+        report["entries"].as_array().unwrap().iter().all(|e| {
+            e["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|f| !matches!(f["rule"].as_str(), Some("E002" | "E004" | "T001")))
+        })
+    };
+    assert!(no_completion_error(&preview), "{preview}");
+
+    let resp = post_zip(
+        fx.addr,
+        "/api/v1/domains/eng/archive/import",
+        &admin,
+        archive,
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let done: serde_json::Value = resp.json().await.unwrap();
+    let mut listed = entries_of(&done);
+    listed.sort();
+    assert_eq!(
+        listed,
+        vec![
+            (
+                "assets/memo.docx/scan-1.png".to_string(),
+                "created".to_string()
+            ),
+            (
+                "assets/report.pdf/page-3.png".to_string(),
+                "created".to_string()
+            ),
+            (
+                "memo.docx.assets/copy.png".to_string(),
+                "skipped".to_string()
+            ),
+            ("memo.docx.md".to_string(), "created".to_string()),
+            ("readme.txt".to_string(), "ignored".to_string()),
+            ("report.pdf.md".to_string(), "created".to_string()),
+        ],
+        "{done}"
+    );
+    assert_eq!(done["written"], 4, "{done}");
+    let copy = done["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["path"] == "memo.docx.assets/copy.png")
+        .unwrap();
+    assert_eq!(
+        copy["reason"], "the same bytes are stored at assets/report.pdf/page-3.png",
+        "{done}"
+    );
+    assert_eq!(done["files_linked"], 2, "{done}");
+    assert_eq!(done["not_taken"], missing, "{done}");
+    assert!(no_completion_error(&done), "{done}");
+
+    assert_eq!(
+        get_attachment(fx.addr, "eng", "assets/report.pdf/page-3.png", &admin).await,
+        PNG
+    );
+    let detail = as_session(
+        fx.addr,
+        reqwest::Method::GET,
+        "/api/v1/domains/eng/engrams/report-pdf",
+        &admin,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(detail.status(), 200);
+    let detail: serde_json::Value = detail.json().await.unwrap();
+    let content = detail["content"].as_str().unwrap();
+    assert!(
+        content.contains("![p3](assets/report.pdf/page-3.png)"),
+        "{content}"
+    );
+    assert!(content.contains("status: stable"), "{content}");
+    assert!(content.contains("- imported"), "{content}");
+}
+
+/// A note the skip policy leaves out links nothing into the domain: its
+/// pictures are not stored, so no attachment lands that no note links.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_skipped_note_stores_none_of_its_pictures() {
+    let fx = serve(Options::default()).await;
+    let admin = login(fx.addr, "root", "rootpw").await;
+    let first = "---\ntype: document\ntitle: Report\n---\n\n# Report\n\nThe first text.\n";
+    let resp = post_zip(
+        fx.addr,
+        "/api/v1/domains/eng/archive/import",
+        &admin,
+        zip_of(&[("report.pdf.md", first)]),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+
+    let second = "---\ntype: document\ntitle: Report\n---\n\n# Report\n\n![p3](report.pdf.assets/page-3.png)\n";
+    let resp = post_zip(
+        fx.addr,
+        "/api/v1/domains/eng/archive/import",
+        &admin,
+        zip_of_bytes(&[
+            ("report.pdf.md", second.as_bytes()),
+            ("report.pdf.assets/page-3.png", PNG),
+        ]),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let done: serde_json::Value = resp.json().await.unwrap();
+    let status_of = |path: &str| {
+        done["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["path"] == path)
+            .map(|e| e["status"].as_str().unwrap().to_string())
+    };
+    assert_eq!(
+        status_of("report.pdf.md").as_deref(),
+        Some("skipped"),
+        "{done}"
+    );
+    assert_eq!(status_of("assets/report.pdf/page-3.png"), None, "{done}");
+    assert_eq!(
+        status_of("report.pdf.assets/page-3.png").as_deref(),
+        Some("ignored"),
+        "{done}"
+    );
+    assert!(
+        !fx._tmp
+            .path()
+            .join("eng/assets/report.pdf/page-3.png")
+            .exists(),
+        "no picture landed for the skipped note"
+    );
+}
+
+/// A linked file that cannot be stored keeps its note out: the note is
+/// reported invalid rather than landing with a link to a file that is not
+/// there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_note_whose_picture_cannot_be_stored_is_not_imported() {
+    let fx = serve(Options::default()).await;
+    let admin = login(fx.addr, "root", "rootpw").await;
+    // A file where the picture's folder would go, so the write fails.
+    let assets = fx._tmp.path().join("eng/assets");
+    std::fs::create_dir_all(&assets).unwrap();
+    std::fs::write(assets.join("report.pdf"), b"in the way").unwrap();
+    let note = "---\ntype: document\ntitle: Report\n---\n\n# Report\n\n![p3](report.pdf.assets/page-3.png)\n";
+    let resp = post_zip(
+        fx.addr,
+        "/api/v1/domains/eng/archive/import",
+        &admin,
+        zip_of_bytes(&[
+            ("report.pdf.md", note.as_bytes()),
+            ("report.pdf.assets/page-3.png", PNG),
+        ]),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let done: serde_json::Value = resp.json().await.unwrap();
+    let entry = |path: &str| {
+        done["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["path"] == path)
+            .cloned()
+            .unwrap_or_else(|| panic!("no entry for {path}: {done}"))
+    };
+    assert_eq!(
+        entry("assets/report.pdf/page-3.png")["status"],
+        "invalid",
+        "{done}"
+    );
+    let note = entry("report.pdf.md");
+    assert_eq!(note["status"], "invalid", "{done}");
+    assert!(
+        note["reason"]
+            .as_str()
+            .unwrap()
+            .contains("could not be stored at assets/report.pdf/page-3.png"),
+        "{done}"
+    );
+    assert!(!fx._tmp.path().join("eng/report.pdf.md").exists());
+}
+
+/// A restore of an export never rewrites an engram that is complete: a
+/// `type` is free form, so `note` is not mapped to another type on the way
+/// back in, and the engram lands byte for byte.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_archive_restore_keeps_a_note_typed_engram_as_it_is() {
+    let fx = serve(Options::default()).await;
+    let admin = login(fx.addr, "root", "rootpw").await;
+    let note = "---\ntype: note\ntitle: Tide\npermalink: tide\ntags:\n  - eng\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# Tide\n\nHigh water is at noon.\n";
+    let resp = post_zip(
+        fx.addr,
+        "/api/v1/domains/eng/archive/import",
+        &admin,
+        zip_of(&[("tide.md", note)]),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let done: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(done["written"], 1, "{done}");
+    let detail = as_session(
+        fx.addr,
+        reqwest::Method::GET,
+        "/api/v1/domains/eng/engrams/tide",
+        &admin,
+    )
+    .send()
+    .await
+    .unwrap();
+    let detail: serde_json::Value = detail.json().await.unwrap();
+    assert_eq!(detail["content"].as_str().unwrap(), note);
 }
 
 /// An archive whose own MANIFEST keeps a Reflection never hands that

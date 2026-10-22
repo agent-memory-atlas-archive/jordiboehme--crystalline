@@ -92,10 +92,20 @@ pub struct ObservationRecord {
 /// byte for byte what they were; the other two read one actor's view, with
 /// that actor's own row preferred at an address the base also answers.
 ///
-/// Three readings, in the order [`crystalline_core::address::resolve`] tries
-/// them: the target as a permalink in the target domain, the target as a title
-/// there, and - only when the row names a domain nobody registered - the whole
-/// bracket text as a permalink and then a title in the row's OWN domain.
+/// Four readings. The first two and the last are the order
+/// [`crystalline_core::address::resolve`] tries them: the target as a permalink
+/// in the target domain, the target as a title there, and - only when the row
+/// names a domain nobody registered - the whole bracket text as a permalink and
+/// then a title in the row's OWN domain. The third is the target as the path
+/// of an engram in the target domain: a relative Markdown link
+/// (`[p](../pumps/p-12.md)`) is stored as the domain-relative path it lands on
+/// ([`crystalline_core::LinkTarget::stored_target`]), and only the path can
+/// bind it, since its target's permalink may be anything. No row carries its
+/// form, so the arm is open to every row; a valid permalink never ends in
+/// `.md` (E005 holds it to a slug, and `slugify` drops the dot), so the first
+/// arm never answers a relative row, and a wikilink written with a file path,
+/// `[[pumps/p-12.md]]`, binds to that file the same way. The arm seeks
+/// `idx_engram_path_actor` on `(domain_id, path)`.
 ///
 /// The target domain of a bare reference is the row's own domain. The target
 /// domain of a prefixed one is the domain its prefix spells and nothing else:
@@ -170,6 +180,8 @@ pub(crate) fn reference_match(table: &str, candidates: ReferenceCandidates<'_>) 
           AND e.domain_id = {target_domain}{prefer} LIMIT 1), \
          (SELECT e.id FROM engram e WHERE {actor_screen} AND lower(e.title) = lower({table}.to_target) \
           AND e.domain_id = {target_domain}{prefer} LIMIT 1), \
+         (SELECT e.id FROM engram e WHERE {actor_screen} AND e.domain_id = {target_domain} \
+          AND e.path = {table}.to_target{prefer} LIMIT 1), \
          (SELECT e.id FROM engram e WHERE {actor_screen} AND {unregistered} AND e.permalink = {table}.to_raw \
           AND e.domain_id = {table}.domain_id{prefer} LIMIT 1), \
          (SELECT e.id FROM engram e WHERE {actor_screen} AND {unregistered} \
@@ -216,7 +228,7 @@ pub(crate) enum ReferenceCandidates<'a> {
 /// plan guards - `the_reference_resolve_pass_seeks_the_title_index` in
 /// `turso/mod.rs` and the registry in `tests/it/plans.rs` - explain the statement
 /// the stores actually issue. The pass runs on every sync of every domain and
-/// is O(dangling references), so each of its four arms has to be an index seek;
+/// is O(dangling references), so each of its five arms has to be an index seek;
 /// a hand-copied literal in a test is what let the title arm lose its index
 /// once already.
 #[doc(hidden)]
@@ -405,11 +417,11 @@ pub fn referencing_domains_sql(list: &str) -> String {
 #[doc(hidden)]
 pub fn spelled_references_sql(domain: &str, list: &str) -> String {
     format!(
-        "SELECT r.engram_id, r.line, r.to_domain, r.to_raw, e.path \
+        "SELECT r.engram_id, r.line, r.to_domain, r.to_raw, e.path, r.to_alias \
          FROM relation r JOIN engram e ON e.id=r.engram_id \
          WHERE r.to_domain IS NOT NULL AND r.to_domain IN ({list}) AND r.domain_id={domain} AND e.actor = '' \
          UNION ALL \
-         SELECT l.engram_id, l.line, l.to_domain, l.to_raw, e.path \
+         SELECT l.engram_id, l.line, l.to_domain, l.to_raw, e.path, l.to_alias \
          FROM link l JOIN engram e ON e.id=l.engram_id \
          WHERE l.to_domain IS NOT NULL AND l.to_domain IN ({list}) AND l.domain_id={domain} AND e.actor = ''"
     )
@@ -681,6 +693,9 @@ pub struct RelationRecord {
     /// that can - `to_domain` and `to_target` have by then lost the whitespace
     /// the colon was trimmed around.
     pub to_raw: String,
+    /// The display text of a `[[target|text]]` reference, `None` without one.
+    /// Only read to quote the bracket text as the file holds it.
+    pub to_alias: Option<String>,
 }
 
 /// One prose wikilink, treated as a direct link edge.
@@ -701,6 +716,9 @@ pub struct LinkRecord {
     /// that can - `to_domain` and `to_target` have by then lost the whitespace
     /// the colon was trimmed around.
     pub to_raw: String,
+    /// The display text of a `[[target|text]]` reference, `None` without one.
+    /// Only read to quote the bracket text as the file holds it.
+    pub to_alias: Option<String>,
 }
 
 /// A fully prepared engram row plus its child rows and file stamp. Built from a
@@ -797,9 +815,10 @@ impl EngramRecord {
             .map(|r| RelationRecord {
                 line: r.line,
                 rel_type: r.rel_type.clone(),
-                to_target: r.target.target.clone(),
+                to_target: r.target.stored_target(path),
                 to_domain: r.target.domain.clone(),
                 to_raw: r.target.raw.clone(),
+                to_alias: r.target.alias.clone(),
             })
             .collect();
         let links = engram
@@ -807,9 +826,10 @@ impl EngramRecord {
             .iter()
             .map(|l| LinkRecord {
                 line: l.line,
-                to_target: l.target.target.clone(),
+                to_target: l.target.stored_target(path),
                 to_domain: l.target.domain.clone(),
                 to_raw: l.target.raw.clone(),
+                to_alias: l.target.alias.clone(),
             })
             .collect();
 
@@ -2227,6 +2247,119 @@ impl HostClaim {
 /// instant (two processes of one machine) never share a token.
 pub(crate) fn claim_token(now: &str) -> String {
     format!("{now} {}", uuid::Uuid::new_v4().simple())
+}
+
+/// One unshared file of a domain when an automation lease was taken, with
+/// its checksum, so the run shares only the files that are new or changed
+/// since then.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct PathChecksum {
+    /// The domain-relative path.
+    pub path: String,
+    /// The file's checksum at take time.
+    pub checksum: String,
+}
+
+/// One item a loop had due: its kind, a stable key and a version that moves
+/// only when the item really changes. Stored at take time and, for a run that
+/// ended `done`, as the items left for a person.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct DueKey {
+    /// The item kind, for example a reflect queue kind or `finding`.
+    pub kind: String,
+    /// The item's key within its kind.
+    pub key: String,
+    /// The item's version.
+    pub version: String,
+}
+
+/// Who holds an automation lease, and what the domain looked like when it
+/// was taken.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct LeaseHolder {
+    /// The holding instance's stable id.
+    pub instance_id: String,
+    /// The account the runner works as, when it has one.
+    pub account: Option<String>,
+    /// The runner label: `cli`, `n8n`, or what `--runner` names.
+    pub runner: String,
+    /// The domain's unshared files with their checksums at take time. Never
+    /// serialized, like [`AutomationLease::token`]: page paths stay out of
+    /// any answer a lease reaches.
+    #[serde(skip)]
+    pub unshared_at_start: Vec<PathChecksum>,
+    /// The loop's due items at take time.
+    pub due_at_start: Vec<DueKey>,
+}
+
+/// The lease of one loop on one domain, as stored. A stale lease (not
+/// renewed in time) is still returned by [`Store::automation_lease`]; the
+/// caller decides what stale means.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct AutomationLease {
+    /// Who holds it.
+    pub holder: LeaseHolder,
+    /// The lease token, new on every take: renew and release name it. Never
+    /// serialized: it is the holder's to keep, so a refused take or a status
+    /// answer never hands it to someone else.
+    #[serde(skip)]
+    pub token: String,
+    /// When it was taken, RFC 3339.
+    pub taken_at: String,
+    /// When it was last renewed, RFC 3339.
+    pub renewed_at: String,
+    /// The pull request the run shared its changes in, once it shared.
+    pub pr_url: Option<String>,
+    /// The paths the holder's account wrote over MCP while it held the
+    /// lease, each once ([`Store::note_automation_written`]). Never
+    /// serialized, like `token`.
+    #[serde(skip)]
+    pub written: Vec<String>,
+}
+
+/// The outcome of a [`Store::take_automation_lease`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum LeaseClaim {
+    /// The lease is this caller's now, under `token`.
+    Acquired {
+        /// The take's token, which renew and release name. Serialized, unlike
+        /// [`AutomationLease::token`]: it goes back only to the caller whose
+        /// take landed, which may be a runner on the far side of a route.
+        token: String,
+        /// The stale lease this take replaced, as it was, `None` when the
+        /// lease was unheld. Read in the same claim, so two takes never
+        /// both report one stale lease.
+        replaced: Option<AutomationLease>,
+    },
+    /// Another runner holds a lease that is not stale.
+    Held(AutomationLease),
+}
+
+/// One recorded run of a loop on a domain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct AutomationRun {
+    /// When the run started, RFC 3339.
+    pub started_at: String,
+    /// When the run ended, RFC 3339.
+    pub ended_at: String,
+    /// The runner label.
+    pub runner: String,
+    /// The account the run worked as, when it had one.
+    pub account: Option<String>,
+    /// `done`, `stopped_at_cap`, `failed`, `nothing_due` or `expired`.
+    pub outcome: String,
+    /// Items done.
+    pub done: u64,
+    /// Items left for a person.
+    pub left: u64,
+    /// Judgment findings waiting (evolve).
+    pub judgment_waiting: u64,
+    /// A short summary text.
+    pub summary: String,
+    /// The pull request the run shared its changes in, when it shared.
+    pub pr_url: Option<String>,
+    /// The items left for a person, recorded only for a `done` run.
+    pub left_items: Vec<DueKey>,
 }
 
 /// The rows of a file domain that the last complete walk did not see on
@@ -3920,6 +4053,89 @@ pub trait Store: Send + Sync {
     /// apply to commit instead of landing in the middle of it. A Turso
     /// database belongs to one instance, so the plain read is the same.
     async fn domain_host_held(&self, domain: DomainId) -> Result<Option<DomainHost>>;
+
+    /// Take the lease of `loop_kind` (`reflect` or `evolve`) on `domain`: one
+    /// atomic claim that lands when the lease is unheld or its last renewal
+    /// is older than `stale_before`. Every take that lands writes a new token
+    /// ([`LeaseClaim::Acquired`]); a lease that is still fresh is refused,
+    /// the same instance's included, and named ([`LeaseClaim::Held`]). The
+    /// two loops' leases never block each other.
+    async fn take_automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        holder: &LeaseHolder,
+        now: &str,
+        stale_before: &str,
+    ) -> Result<LeaseClaim>;
+
+    /// Move the lease's renewal time to `now`. `true` when the row still
+    /// carries `token`, `false` when it is gone or another take replaced it.
+    async fn renew_automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        token: &str,
+        now: &str,
+    ) -> Result<bool>;
+
+    /// Release the lease: a compare-and-delete on `token`. Returns the lease
+    /// as it was when it was deleted, `None` when the row carries another
+    /// token or there is none.
+    async fn release_automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        token: &str,
+    ) -> Result<Option<AutomationLease>>;
+
+    /// Record the pull request the run holding `token` shared in. `false`
+    /// when the row is gone or carries another token.
+    async fn set_automation_pr_url(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        token: &str,
+        pr_url: &str,
+    ) -> Result<bool>;
+
+    /// Add `paths` to the written paths of every lease on `domain` (either
+    /// loop) that `account` holds, whatever its age: a lease that went stale
+    /// and that nobody took over is still its token's, so what its runner
+    /// wrote meanwhile is kept. A path already noted is kept once. One
+    /// statement per lease, so two writers on a shared database never lose
+    /// each other's paths. Answers how many leases noted them.
+    async fn note_automation_written(
+        &self,
+        domain: DomainId,
+        account: &str,
+        paths: &[String],
+    ) -> Result<u64>;
+
+    /// The lease of `loop_kind` on `domain` as stored, a stale one included.
+    async fn automation_lease(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+    ) -> Result<Option<AutomationLease>>;
+
+    /// Record one run of `loop_kind` on `domain`, then keep only the newest
+    /// `keep` runs of that domain and loop.
+    async fn record_automation_run(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        run: &AutomationRun,
+        keep: usize,
+    ) -> Result<()>;
+
+    /// The newest `limit` runs of `loop_kind` on `domain`, newest first.
+    async fn automation_runs(
+        &self,
+        domain: DomainId,
+        loop_kind: &str,
+        limit: usize,
+    ) -> Result<Vec<AutomationRun>>;
 
     /// Write the domain's host move only when its stored text still is
     /// `expected`, the text the caller read ([`Store::host_move_text`]):

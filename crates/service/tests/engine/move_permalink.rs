@@ -110,6 +110,7 @@ impl Fixture {
                     identifier: identifier.to_string(),
                     domain: Some(domain.to_string()),
                     share_link: None,
+                    include_images: false,
                 },
                 &Scope::Unrestricted,
             )
@@ -125,6 +126,7 @@ impl Fixture {
                     identifier: identifier.to_string(),
                     domain: Some(domain.to_string()),
                     share_link: None,
+                    include_images: false,
                 },
                 &Scope::Unrestricted,
             )
@@ -1166,4 +1168,371 @@ async fn crossing_moves_leave_no_dangling_link() {
             f.unresolved("notes").await
         );
     }
+}
+
+// --- relative Markdown links ---------------------------------------------------
+
+/// The read receipt of an engram, by address.
+async fn read_receipt(f: &Fixture, domain: &str, identifier: &str) -> Value {
+    f.engine
+        .read_engram(
+            &ReadParams {
+                identifier: identifier.to_string(),
+                domain: Some(domain.to_string()),
+                share_link: None,
+                include_images: false,
+            },
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{domain}:{identifier} should read: {e}"))
+}
+
+/// The `(target, resolved, permalink)` of every link and relation an engram
+/// reports, relations first.
+fn edges(receipt: &Value) -> Vec<(String, bool, Option<String>)> {
+    receipt["relations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(receipt["links"].as_array().unwrap())
+        .map(|e| {
+            (
+                e["target"]["target"].as_str().unwrap().to_string(),
+                e["resolved"].as_bool().unwrap(),
+                e["permalink"].as_str().map(str::to_string),
+            )
+        })
+        .collect()
+}
+
+/// A relative link names a file, not an address, so it has to follow the file
+/// even when the move leaves the permalink where it was: every engram that
+/// links the moved one by path is respelled to the new path, from its own
+/// folder, with the fragment and the title kept, and the link still resolves.
+/// A link inside code is an example and stays as written.
+#[tokio::test]
+async fn moving_an_engram_respells_relative_links_to_it() {
+    let f = Fixture::new().await;
+    seed(
+        f.notes(),
+        "pumps/b.md",
+        &engram("Bee", "kit/bee", "The pump."),
+    );
+    seed(
+        f.notes(),
+        "a.md",
+        &engram(
+            "Ay",
+            "ay",
+            "- part_of [the pump](pumps/b.md \"The pump\")\n\nRead [b](pumps/b.md#top) first, not `[b](pumps/b.md)`.",
+        ),
+    );
+    seed(
+        f.notes(),
+        "deep/c.md",
+        &engram("Cee", "cee", "Up and over: [b](../pumps/b.md)."),
+    );
+    // A wikilink spelled as the path binds by path too, from the domain root.
+    seed(
+        f.notes(),
+        "deep/w.md",
+        &engram("Dub", "dub", "By path: [[pumps/b.md]]."),
+    );
+    f.sync().await;
+
+    let receipt = f
+        .mv("kit/bee", "notes", "archive/b.md", None, None)
+        .await
+        .unwrap();
+    assert_eq!(receipt["to"]["permalink"], "kit/bee", "{receipt}");
+    assert_eq!(receipt["links_rewritten"], 3, "{receipt}");
+    assert_eq!(receipt["references_rewritten"], 4, "{receipt}");
+
+    let a = read(f.notes(), "a.md");
+    assert!(
+        a.contains(
+            "- part_of [the pump](archive/b.md \"The pump\")\n\nRead [b](archive/b.md#top) first, not `[b](pumps/b.md)`."
+        ),
+        "{a}"
+    );
+    let c = read(f.notes(), "deep/c.md");
+    assert!(c.contains("Up and over: [b](../archive/b.md)."), "{c}");
+    let w = read(f.notes(), "deep/w.md");
+    assert!(w.contains("By path: [[archive/b.md]]."), "{w}");
+
+    let a = read_receipt(&f, "notes", "ay").await;
+    assert_eq!(
+        edges(&a),
+        vec![
+            (
+                "archive/b.md".to_string(),
+                true,
+                Some("kit/bee".to_string())
+            ),
+            (
+                "archive/b.md".to_string(),
+                true,
+                Some("kit/bee".to_string())
+            ),
+        ],
+        "{a}"
+    );
+    let c = read_receipt(&f, "notes", "cee").await;
+    assert_eq!(
+        edges(&c),
+        vec![(
+            "../archive/b.md".to_string(),
+            true,
+            Some("kit/bee".to_string())
+        )],
+        "{c}"
+    );
+    let w = read_receipt(&f, "notes", "dub").await;
+    assert_eq!(
+        edges(&w)[0],
+        (
+            "archive/b.md".to_string(),
+            true,
+            Some("kit/bee".to_string())
+        ),
+        "{w}"
+    );
+    assert!(
+        f.unresolved("notes").await.is_empty(),
+        "{:?}",
+        f.unresolved("notes").await
+    );
+}
+
+/// The moved engram's own relative links were written from its old folder, so
+/// they are rebased onto the new one and land on the same files. A link to
+/// itself follows it, and what is not a link to another engram's file (an
+/// attachment, a web page, an image) is left as written.
+#[tokio::test]
+async fn moving_an_engram_rebases_its_own_relative_links() {
+    let f = Fixture::new().await;
+    seed(f.notes(), "a.md", &engram("Ay", "ay", "The root note."));
+    seed(
+        f.notes(),
+        "pumps/peer.md",
+        &engram("Peer", "peer", "The pump beside it."),
+    );
+    seed(
+        f.notes(),
+        "pumps/b.md",
+        &engram(
+            "Bee",
+            "pumps/b",
+            "- part_of [Ay](../a.md#intro)\n\nSee [peer](peer.md \"Peer\"), [me](b.md), \
+             ![pic](assets/pic.png), [web](https://x.test/y.md) and `[code](../a.md)`.\n\n\
+             Self [[pumps/b.md]] and root [[a.md]].",
+        ),
+    );
+    f.sync().await;
+
+    let receipt = f
+        .mv("pumps/b", "notes", "archive/old/b.md", None, None)
+        .await
+        .unwrap();
+    assert_eq!(receipt["to"]["permalink"], "archive/old/b", "{receipt}");
+
+    let b = read(f.notes(), "archive/old/b.md");
+    assert!(
+        b.contains(
+            "- part_of [Ay](../../a.md#intro)\n\nSee [peer](../../pumps/peer.md \"Peer\"), [me](b.md), \
+             ![pic](assets/pic.png), [web](https://x.test/y.md) and `[code](../a.md)`.\n\n\
+             Self [[archive/old/b.md]] and root [[a.md]]."
+        ),
+        "{b}"
+    );
+
+    let b = read_receipt(&f, "notes", "archive/old/b").await;
+    assert_eq!(
+        edges(&b),
+        vec![
+            ("../../a.md".to_string(), true, Some("ay".to_string())),
+            (
+                "../../pumps/peer.md".to_string(),
+                true,
+                Some("peer".to_string())
+            ),
+            ("b.md".to_string(), true, Some("archive/old/b".to_string())),
+            (
+                "archive/old/b.md".to_string(),
+                true,
+                Some("archive/old/b".to_string())
+            ),
+            ("a.md".to_string(), true, Some("ay".to_string())),
+        ],
+        "{b}"
+    );
+}
+
+/// A relative path never reaches into another domain, so a move into one
+/// must not leave the moved engram's relative links to be read there: a
+/// same-path file in the destination would take them over. Each link into
+/// the source domain becomes a prefixed wikilink with its text (by permalink
+/// where an engram stands there, by path where none does, so it stays
+/// unresolved as it was), and a link to the engram itself follows it. A link
+/// that climbs out of the source domain but would land on an engram in the
+/// destination is named in `links_failed`. The source domain's relative
+/// links to the moved engram name its new address the same way.
+#[tokio::test]
+async fn a_cross_domain_move_turns_relative_links_into_addresses() {
+    let f = Fixture::new().await;
+    seed(
+        f.notes(),
+        "guides/a.md",
+        &engram(
+            "Ay",
+            "guides/a",
+            "- part_of [Bee](b.md)\n\nSee [B](b.md), [me](a.md), [gone](c.md), \
+             [up](index.md) and [out](../../out.md).",
+        ),
+    );
+    seed(
+        f.notes(),
+        "guides/b.md",
+        &engram("Bee", "guides/b", "Back to [A](a.md) and [[guides/a.md]]."),
+    );
+    // The decoys: the same paths seen from the destination, other engrams.
+    seed(
+        f.ops(),
+        "x/y/b.md",
+        &engram("Other B", "x/y/other-b", "Not the one."),
+    );
+    seed(
+        f.ops(),
+        "x/y/c.md",
+        &engram("Other C", "x/y/other-c", "Not the one either."),
+    );
+    seed(f.ops(), "out.md", &engram("Out", "out", "Outside."));
+    f.sync().await;
+
+    let receipt = f
+        .mv("guides/a", "notes", "x/y/a.md", Some("ops"), None)
+        .await
+        .unwrap();
+    assert_eq!(receipt["links_rewritten"], 1, "{receipt}");
+    assert_eq!(receipt["references_rewritten"], 2, "{receipt}");
+    let failed = receipt["links_failed"].as_array().expect("links_failed");
+    assert_eq!(failed.len(), 1, "{receipt}");
+    assert_eq!(failed[0]["domain"], "ops", "{receipt}");
+    assert_eq!(failed[0]["path"], "x/y/a.md", "{receipt}");
+    assert!(
+        failed[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("../../out.md"),
+        "{receipt}"
+    );
+
+    let a = read(f.ops(), "x/y/a.md");
+    assert!(
+        a.contains(
+            "- part_of [[notes:guides/b|Bee]]\n\nSee [[notes:guides/b|B]], [me](a.md), \
+             [[notes:guides/c.md|gone]], [up](index.md) and [out](../../out.md)."
+        ),
+        "{a}"
+    );
+    let b = read(f.notes(), "guides/b.md");
+    assert!(
+        b.contains("Back to [[ops:x/y/a|A]] and [[ops:x/y/a]]."),
+        "{b}"
+    );
+
+    let a = read_receipt(&f, "ops", "x/y/a").await;
+    let bound = edges(&a);
+    assert!(bound.contains(&("guides/b".to_string(), true, None)), "{a}");
+    assert!(
+        bound.contains(&("guides/c.md".to_string(), false, None)),
+        "{a}"
+    );
+    assert!(
+        !bound
+            .iter()
+            .any(|(_, _, p)| matches!(p.as_deref(), Some("x/y/other-b" | "x/y/other-c"))),
+        "no link binds to a decoy: {a}"
+    );
+    let b = read_receipt(&f, "notes", "guides/b").await;
+    assert_eq!(
+        edges(&b),
+        vec![("x/y/a".to_string(), true, None)],
+        "one target, read once per line: {b}"
+    );
+}
+
+/// A bare wikilink spelled as a path the source domain has no file at is
+/// read from the domain root, so after a move into another domain it would
+/// bind to a same-path file there: it names the source domain instead and
+/// stays unresolved, as it was.
+#[tokio::test]
+async fn a_cross_domain_move_gives_a_missing_path_wikilink_its_domain() {
+    let f = Fixture::new().await;
+    seed(
+        f.notes(),
+        "guides/a.md",
+        &engram("Ay", "guides/a", "See [[guides/missing.md|M]]."),
+    );
+    seed(
+        f.ops(),
+        "guides/missing.md",
+        &engram("Decoy", "guides/decoy", "Not the one."),
+    );
+    f.sync().await;
+
+    let receipt = f
+        .mv("guides/a", "notes", "guides/a.md", Some("ops"), None)
+        .await
+        .unwrap();
+    assert!(receipt.get("links_failed").is_none(), "{receipt}");
+    let a = read(f.ops(), "guides/a.md");
+    assert!(a.contains("See [[notes:guides/missing.md|M]]."), "{a}");
+    let a = read_receipt(&f, "ops", "guides/a").await;
+    assert_eq!(
+        edges(&a),
+        vec![("guides/missing.md".to_string(), false, None)],
+        "{a}"
+    );
+}
+
+/// A wikilink from another domain spelled as the moved engram's path,
+/// `[[notes:guides/a.md]]`, binds by path and follows the file like every
+/// other form: to its new path inside its domain, and to its new address
+/// when it leaves for another domain.
+#[tokio::test]
+async fn a_prefixed_path_wikilink_follows_a_move() {
+    let f = Fixture::new().await;
+    seed(
+        f.notes(),
+        "guides/a.md",
+        &engram("Ay", "guides/a", "The engram."),
+    );
+    seed(
+        f.ops(),
+        "linker.md",
+        &engram("Linker", "linker", "See [[notes:guides/a.md|A]]."),
+    );
+    f.sync().await;
+
+    let receipt = f
+        .mv("guides/a", "notes", "archive/a.md", None, Some("keep"))
+        .await
+        .unwrap();
+    assert_eq!(receipt["links_rewritten"], 1, "{receipt}");
+    let linker = read(f.ops(), "linker.md");
+    assert!(linker.contains("See [[notes:archive/a.md|A]]."), "{linker}");
+    let l = read_receipt(&f, "ops", "linker").await;
+    assert!(edges(&l)[0].1, "{l}");
+
+    let receipt = f
+        .mv("guides/a", "notes", "x/a.md", Some("vault"), None)
+        .await
+        .unwrap();
+    assert_eq!(receipt["links_rewritten"], 1, "{receipt}");
+    let linker = read(f.ops(), "linker.md");
+    assert!(linker.contains("See [[vault:x/a.md|A]]."), "{linker}");
+    let l = read_receipt(&f, "ops", "linker").await;
+    assert!(edges(&l)[0].1, "{l}");
 }

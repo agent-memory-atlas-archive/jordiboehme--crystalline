@@ -44,6 +44,13 @@ pub(crate) fn resolve(from_file: &str, target: &str) -> Option<String> {
     Some(parts.join("/"))
 }
 
+/// The domain-relative path a relative link `target` in the engram at the
+/// domain-relative `from_file` lands on, or `None` when it climbs out of the
+/// domain or lands on its root.
+pub fn resolve_in_domain(from_file: &str, target: &str) -> Option<String> {
+    resolve(from_file, target).filter(|path| !path.is_empty())
+}
+
 /// The relative path from the reflection at `from_file` to `target`.
 pub fn relative_to(from_file: &str, target: &str) -> String {
     let from: Vec<&str> = folder_of(from_file)
@@ -57,7 +64,7 @@ pub fn relative_to(from_file: &str, target: &str) -> String {
     out.join("/")
 }
 
-fn is_relative(target: &str) -> bool {
+pub(crate) fn is_relative(target: &str) -> bool {
     !target.is_empty()
         && !target.starts_with('#')
         && !target.starts_with('/')
@@ -69,7 +76,7 @@ fn is_relative(target: &str) -> bool {
 /// matched the way `crate::parse::mask_inline_code` matches them. That
 /// function swaps characters for spaces, which shifts byte offsets when a
 /// span holds a multi-byte character, so this dialect keeps its own ranges.
-fn code_spans(line: &str) -> Vec<(usize, usize)> {
+pub(crate) fn code_spans(line: &str) -> Vec<(usize, usize)> {
     let bytes = line.as_bytes();
     let mut spans = Vec::new();
     let mut i = 0;
@@ -106,40 +113,61 @@ fn code_spans(line: &str) -> Vec<(usize, usize)> {
 }
 
 /// One link destination, read from just after a `](`.
-struct Destination<'a> {
-    /// The path, percent-decoded, without a `#fragment` or a title.
-    path: String,
+pub(crate) struct Destination<'a> {
+    /// The path, unescaped and percent-decoded, without a `#fragment` or a title.
+    pub(crate) path: String,
     /// The `#fragment` as written, without the `#`.
-    fragment: Option<&'a str>,
+    pub(crate) fragment: Option<&'a str>,
     /// What follows the target up to the closing parenthesis: a title.
-    rest: &'a str,
+    pub(crate) rest: &'a str,
     /// The byte offset of the closing parenthesis.
-    close: usize,
+    pub(crate) close: usize,
 }
 
-/// The byte offset of the depth-zero `)` at or after `from`, the rule the
-/// link target scan (`crate::attachment`'s `link_targets`) reads a
-/// destination by.
+/// The byte offset of the depth-zero `)` at or after `from`. Balanced
+/// parentheses inside a destination are read past, and a backslash-escaped
+/// `\(` or `\)` neither opens nor closes, so `[x](R\).png)` reads `R).png`.
 fn closing_paren(line: &str, from: usize) -> Option<usize> {
+    let bytes = line.as_bytes();
     let mut depth = 1usize;
-    for (offset, byte) in line.as_bytes()[from..].iter().enumerate() {
-        match byte {
+    let mut i = from;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if matches!(bytes.get(i + 1), Some(b'(' | b')' | b'\\')) => i += 1,
             b'(' => depth += 1,
             b')' => {
                 depth -= 1;
                 if depth == 0 {
-                    return Some(from + offset);
+                    return Some(i);
                 }
             }
             _ => {}
         }
+        i += 1;
     }
     None
 }
 
+/// `path` with every CommonMark backslash escape removed: a backslash before
+/// an ASCII punctuation character drops the backslash, any other backslash
+/// stays.
+fn unescape_backslashes(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    let mut chars = path.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && chars.peek().is_some_and(char::is_ascii_punctuation) {
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// The destination that starts at `open` (just after `](`), or `None` when
-/// none closes on this line.
-fn destination(line: &str, open: usize) -> Option<Destination<'_>> {
+/// none closes on this line. The `#` fragment is split off the raw target
+/// first, then backslash escapes are removed and the rest is percent-decoded,
+/// so `a%23b.png` keeps its `#` in the path and `R\&D.png` reads `R&D.png`.
+pub(crate) fn read_destination(line: &str, open: usize) -> Option<Destination<'_>> {
     let (target, rest, close) = if line[open..].starts_with('<') {
         // `[a](<my page.md> "Title")`: the target runs to the first `>`.
         let gt = open + 1 + line[open + 1..].find('>')?;
@@ -153,24 +181,44 @@ fn destination(line: &str, open: usize) -> Option<Destination<'_>> {
         let (target, rest) = inside.split_at(target_len);
         (target, rest, close)
     };
-    let (path, fragment) = match target.split_once('#') {
-        Some((p, f)) => (p, Some(f)),
-        None => (target, None),
-    };
+    let (path, fragment) = decode_target(target);
     Some(Destination {
-        path: percent_decode_target(path),
+        path,
         fragment,
         rest,
         close,
     })
 }
 
+/// One raw link target read into its path and `#fragment`: the fragment is
+/// split off on the raw `#` first, then backslash escapes are removed from the
+/// path and it is percent-decoded. The reading every destination takes, inline
+/// or in a reference definition.
+pub(crate) fn decode_target(target: &str) -> (String, Option<&str>) {
+    let (path, fragment) = match target.split_once('#') {
+        Some((p, f)) => (p, Some(f)),
+        None => (target, None),
+    };
+    (percent_decode_target(&unescape_backslashes(path)), fragment)
+}
+
+/// Which relative links a line rewrite hands to its map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Targets {
+    /// Every relative link target: a reflection's links to pages and files.
+    All,
+    /// Only the links the engram parser reads as links to another engram's
+    /// file (`crate::parse`'s `note_link_start`): a target ending in `.md`,
+    /// never an image.
+    Notes,
+}
+
 /// One line of the reflection dialect: every relative link target outside
-/// inline code goes through `map`, which is handed the path (decoded, no
-/// title, no `#fragment`) and answers the replacement or `None` to keep it.
-/// A `](` that opens no destination is read past, so a later link on the
-/// line is still found.
-fn map_line(line: &str, map: &dyn Fn(&str) -> Option<String>) -> (String, usize) {
+/// inline code (of the kind `targets` names) goes through `map`, which is
+/// handed the path (decoded, no title, no `#fragment`) and answers the
+/// replacement or `None` to keep it. A `](` that opens no destination is
+/// read past, so a later link on the line is still found.
+fn map_line(line: &str, targets: Targets, map: &dyn Fn(&str) -> Option<String>) -> (String, usize) {
     let spans = code_spans(line);
     let in_code = |at: usize| spans.iter().any(|(s, e)| (*s..*e).contains(&at));
     let mut out = String::with_capacity(line.len());
@@ -180,10 +228,14 @@ fn map_line(line: &str, map: &dyn Fn(&str) -> Option<String>) -> (String, usize)
         let open = cursor + found + 2;
         out.push_str(&line[cursor..open]);
         cursor = open;
-        let Some(dest) = destination(line, open) else {
+        let Some(dest) = read_destination(line, open) else {
             continue;
         };
-        let replacement = if in_code(open - 2) || !is_relative(&dest.path) {
+        let wanted = match targets {
+            Targets::All => is_relative(&dest.path),
+            Targets::Notes => crate::parse::note_link_start(line, open - 2, &dest.path).is_some(),
+        };
+        let replacement = if in_code(open - 2) || !wanted {
             None
         } else {
             map(&dest.path)
@@ -210,9 +262,148 @@ fn map_line(line: &str, map: &dyn Fn(&str) -> Option<String>) -> (String, usize)
 /// one walk every reflection link rewrite takes: the shared body walker with
 /// the reflection gate and dialect.
 pub(crate) fn map_links(source: &str, map: &dyn Fn(&str) -> Option<String>) -> (String, usize) {
-    rewrite_body_lines(source, BodyGate::Split, &|line| {
+    map_body(source, BodyGate::Split, Targets::All, map)
+}
+
+/// Rewrite the relative links of an engram that point at another engram's
+/// file through `map`: the body as the lossless engram parser cuts it, and
+/// only the links the parser reads as edges, so what changes is exactly what
+/// the index counted.
+pub(crate) fn map_note_links(
+    source: &str,
+    map: &dyn Fn(&str) -> Option<String>,
+) -> (String, usize) {
+    map_body(source, BodyGate::Lossless, Targets::Notes, map)
+}
+
+/// What [`map_note_links_whole`] puts in place of one link to another
+/// engram's file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoteLinkTo {
+    /// The destination only: the text, the `#fragment` and the title stay.
+    Target(String),
+    /// The whole link, as the wikilink `[[address|text]]`.
+    Wikilink(String),
+}
+
+/// What [`map_note_links_whole`] did.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct WholeLinks {
+    /// The rewritten source.
+    pub text: String,
+    /// How many links changed.
+    pub changed: usize,
+    /// Links written as a wikilink, as they were written before, whose
+    /// `#fragment` or title a wikilink cannot carry.
+    pub dropped: Vec<String>,
+    /// Links that should have become a wikilink, left as written because
+    /// their text cannot sit inside `[[...]]` (it holds `[[` or `]]`).
+    pub unwritable: Vec<String>,
+}
+
+/// `map_note_links` that may also replace a whole link: `map` is handed
+/// each decoded target and answers a new destination, a wikilink address, or
+/// `None` to keep the link. A wikilink keeps the link text as its display
+/// text; a `#fragment` and a title cannot follow it and are named in
+/// [`WholeLinks::dropped`].
+pub fn map_note_links_whole(source: &str, map: &dyn Fn(&str) -> Option<NoteLinkTo>) -> WholeLinks {
+    use std::cell::RefCell;
+    let dropped: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    let unwritable: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    let (text, changed) = rewrite_body_lines(source, BodyGate::Lossless, &|line| {
+        if !LinkDialect::Relative.may_hold(line) {
+            return (line.to_string(), 0);
+        }
+        whole_line(line, map, &dropped, &unwritable)
+    });
+    WholeLinks {
+        text,
+        changed,
+        dropped: dropped.into_inner(),
+        unwritable: unwritable.into_inner(),
+    }
+}
+
+/// One line of [`map_note_links_whole`].
+fn whole_line(
+    line: &str,
+    map: &dyn Fn(&str) -> Option<NoteLinkTo>,
+    dropped: &std::cell::RefCell<Vec<String>>,
+    unwritable: &std::cell::RefCell<Vec<String>>,
+) -> (String, usize) {
+    let spans = code_spans(line);
+    let in_code = |at: usize| spans.iter().any(|(s, e)| (*s..*e).contains(&at));
+    let mut out = String::with_capacity(line.len());
+    let mut changed = 0;
+    let mut cursor = 0;
+    while let Some(found) = line[cursor..].find("](") {
+        let close_text = cursor + found;
+        let open = close_text + 2;
+        let Some(dest) = read_destination(line, open) else {
+            out.push_str(&line[cursor..open]);
+            cursor = open;
+            continue;
+        };
+        let start = crate::parse::note_link_start(line, close_text, &dest.path)
+            .filter(|start| *start >= cursor && !in_code(close_text));
+        let replacement = start.and_then(|_| map(&dest.path));
+        match (replacement, start) {
+            (Some(NoteLinkTo::Target(mut target)), _) => {
+                out.push_str(&line[cursor..open]);
+                if let Some(f) = dest.fragment {
+                    target.push('#');
+                    target.push_str(f);
+                }
+                out.push_str(&escape_link_url(&target));
+                out.push_str(dest.rest);
+                changed += 1;
+            }
+            (Some(NoteLinkTo::Wikilink(address)), Some(start)) => {
+                let text = &line[start + 1..close_text];
+                let written = &line[start..=dest.close];
+                if text.contains("[[") || text.contains("]]") {
+                    unwritable.borrow_mut().push(written.to_string());
+                    out.push_str(&line[cursor..open]);
+                    out.push_str(&line[open..dest.close]);
+                } else {
+                    if dest.fragment.is_some() || !dest.rest.trim().is_empty() {
+                        dropped.borrow_mut().push(written.to_string());
+                    }
+                    out.push_str(&line[cursor..start]);
+                    out.push_str("[[");
+                    out.push_str(&address);
+                    if !text.trim().is_empty() {
+                        out.push('|');
+                        out.push_str(text);
+                    }
+                    out.push_str("]]");
+                    changed += 1;
+                    // Past the closing parenthesis, which the wikilink
+                    // replaced.
+                    cursor = dest.close + 1;
+                    continue;
+                }
+            }
+            _ => {
+                out.push_str(&line[cursor..open]);
+                out.push_str(&line[open..dest.close]);
+            }
+        }
+        cursor = dest.close;
+    }
+    out.push_str(&line[cursor..]);
+    (out, changed)
+}
+
+fn map_body(
+    source: &str,
+    gate: BodyGate,
+    targets: Targets,
+    map: &dyn Fn(&str) -> Option<String>,
+) -> (String, usize) {
+    rewrite_body_lines(source, gate, &|line| {
         if LinkDialect::Relative.may_hold(line) {
-            map_line(line, map)
+            map_line(line, targets, map)
         } else {
             (line.to_string(), 0)
         }
@@ -267,6 +458,36 @@ pub fn rebase_links(source: &str, from: &str, to: &str) -> (String, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn read(line: &str) -> (String, Option<String>) {
+        let open = line.find("](").unwrap() + 2;
+        let d = read_destination(line, open).unwrap();
+        (d.path, d.fragment.map(str::to_string))
+    }
+
+    #[test]
+    fn read_destination_decodes_unescapes_and_splits() {
+        assert_eq!(
+            read("](Q3%20report%20%28final%29.pdf.assets/page-1.png)").0,
+            "Q3 report (final).pdf.assets/page-1.png"
+        );
+        assert_eq!(read("](<a b.png>)").0, "a b.png");
+        assert_eq!(read("](R\\&D.png)").0, "R&D.png");
+        assert_eq!(
+            read("](a%23b.png#right)"),
+            ("a#b.png".to_string(), Some("right".to_string()))
+        );
+        // A backslash before a letter is not an escape.
+        assert_eq!(read("](a\\b.png)").0, "a\\b.png");
+    }
+
+    #[test]
+    fn an_escaped_parenthesis_neither_opens_nor_closes() {
+        assert_eq!(read("[x](R\\).png)").0, "R).png");
+        assert_eq!(read("[x](R\\(.png) after").0, "R(.png");
+        // An escaped backslash before `)` leaves the `)` to close.
+        assert_eq!(read("[x](a\\\\) b)").0, "a\\");
+    }
 
     #[test]
     fn relative_paths_between_reflections() {

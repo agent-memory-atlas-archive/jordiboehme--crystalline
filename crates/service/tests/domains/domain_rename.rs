@@ -13,7 +13,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crystalline_core::config::{DomainEntry, GlobalConfig, NameOrigin};
+use crystalline_core::config::{
+    DomainEntry, GlobalConfig, NameOrigin, RenameAnswer, RenameQuestion,
+};
 use crystalline_core::provision::receipt::{self, DomainSources, ProvisionReceipt};
 use crystalline_index::{Store, TursoStore};
 use crystalline_service::changes::{Change, DomainAudience, Envelope};
@@ -84,6 +86,7 @@ fn read_params(identifier: &str, domain: &str) -> ReadParams {
         identifier: identifier.to_string(),
         domain: Some(domain.to_string()),
         share_link: None,
+        include_images: false,
     }
 }
 
@@ -2919,4 +2922,957 @@ async fn a_finished_rename_keeps_its_kept_texts_under_the_new_name_body(
 both_backends!(
     a_finished_rename_keeps_its_kept_texts_under_the_new_name,
     a_finished_rename_keeps_its_kept_texts_under_the_new_name_body
+);
+
+// --- a MANIFEST rename: finish it or keep the links ------------------------------
+
+/// A reflection page of `ops` that links to `eng` under its old name.
+const OPS_PAGE: &str = "# B\n\n## Links\n<!-- r:bbbb2222 -->\n\nSee [[eng:alpha]].\n";
+
+/// [`machine`], with `eng` an explicit domain whose MANIFEST was edited from
+/// `eng` to `platform` and kept the alias `engineering`, the open question
+/// the adoption recorded for it, `ops`'s pager linking to `eng` under the
+/// old name, the alias and the new name, and a reflection page in `ops`
+/// that links to it under the old name.
+async fn question_machine(store: Arc<Mutex<dyn Store>>) -> Machine {
+    let m = machine(store).await;
+    std::fs::write(
+        m.root.join("eng/MANIFEST.md"),
+        manifest_named("Eng", "platform"),
+    )
+    .unwrap();
+    std::fs::write(
+        m.root.join("ops/MANIFEST.md"),
+        manifest("Ops").replacen("status: current\n", "status: current\nreflection: on\n", 1),
+    )
+    .unwrap();
+    std::fs::create_dir_all(m.root.join("ops/reflections")).unwrap();
+    std::fs::write(m.root.join("ops/reflections/b.md"), OPS_PAGE).unwrap();
+    std::fs::write(
+        m.root.join("ops/pager.md"),
+        engram(
+            "Pager",
+            "pager",
+            "See [[eng:alpha]], then crystalline://engineering/alpha, then [[platform:alpha]].",
+        ),
+    )
+    .unwrap();
+    let mut cfg = crystalline_service::overlay::load_file(&m.config_path()).unwrap();
+    let entry = cfg.domains.get_mut("eng").unwrap();
+    entry.name_origin = Some(NameOrigin::Explicit);
+    entry.canonical_seen = Some("platform".to_string());
+    entry.aliases = vec!["engineering".to_string()];
+    entry.rename_question = Some(RenameQuestion {
+        from: "eng".to_string(),
+        to: "platform".to_string(),
+        seen_at: "2026-10-21T08:00:00Z".to_string(),
+        answered: None,
+    });
+    crystalline_core::config::save_yaml(&m.config_path(), &cfg).unwrap();
+    m.engine(true).await.sync(None).await.unwrap();
+    m
+}
+
+fn saved_question(m: &Machine) -> Option<RenameQuestion> {
+    crystalline_service::overlay::load_file(&m.config_path())
+        .unwrap()
+        .domains
+        .get("eng")
+        .and_then(|entry| entry.rename_question.clone())
+}
+
+/// What a finished respell leaves behind in `ops`: every link to `eng` under
+/// an old name is spelled `platform`, and every one still reaches `eng`.
+async fn assert_respelled(m: &Machine, engine: &Engine) {
+    let pager = std::fs::read_to_string(m.root.join("ops/pager.md")).unwrap();
+    assert!(
+        pager.contains(
+            "See [[platform:alpha]], then crystalline://platform/alpha, then [[platform:alpha]]."
+        ),
+        "{pager}"
+    );
+    let page = std::fs::read_to_string(m.root.join("ops/reflections/b.md")).unwrap();
+    assert!(page.contains("See [[platform:alpha]]."), "{page}");
+    assert!(!page.contains("[[eng:"), "{page}");
+    let read = engine
+        .read_engram(&read_params("pager", "ops"), &Scope::Unrestricted)
+        .await
+        .unwrap();
+    let links = read["links"].as_array().unwrap();
+    assert!(!links.is_empty(), "{read}");
+    for link in links {
+        assert_eq!(link["target"]["domain"], "platform", "{read}");
+        assert_eq!(link["resolved"], true, "{read}");
+    }
+}
+
+/// Finishing respells the links in engrams and in Reflection pages to the
+/// new name, and nothing else: the MANIFEST, the configuration key and the
+/// index row stay as they are, and the question is answered.
+async fn finishing_respells_engram_and_reflection_links_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    let manifest_before = std::fs::read_to_string(m.root.join("eng/MANIFEST.md")).unwrap();
+    let eng_id = domain_id(&m.store, "eng").await.expect("eng indexed");
+
+    let report = engine
+        .finish_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert_eq!(report["domain"], "eng", "{report}");
+    assert_eq!(report["from"], "eng", "{report}");
+    assert_eq!(report["to"], "platform", "{report}");
+    assert_eq!(
+        report["rewritten"],
+        serde_json::json!([{ "domain": "ops", "engrams": 2, "references": 3 }]),
+        "the pager and the page: {report}"
+    );
+    assert_eq!(report["left_behind"], serde_json::json!([]), "{report}");
+
+    assert_respelled(&m, &engine).await;
+    assert_eq!(
+        std::fs::read_to_string(m.root.join("eng/MANIFEST.md")).unwrap(),
+        manifest_before,
+        "the MANIFEST is not written"
+    );
+    let cfg = crystalline_service::overlay::load_file(&m.config_path()).unwrap();
+    let entry = cfg.domains.get("eng").expect("the key stays");
+    assert_eq!(entry.aliases, vec!["engineering".to_string()]);
+    assert_eq!(domain_id(&m.store, "eng").await, Some(eng_id));
+    assert_eq!(
+        entry.rename_question.as_ref().and_then(|q| q.answered),
+        Some(RenameAnswer::Finished)
+    );
+    assert_eq!(engine.rename_question("eng"), None);
+    assert!(!m.journal().exists(), "the journal is gone");
+    assert!(!engine.is_renaming("eng"));
+
+    // Nothing is left to finish.
+    let again = engine
+        .finish_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .expect_err("no open question");
+    assert!(matches!(again, EngineError::Conflict(_)), "{again}");
+}
+both_backends!(
+    finishing_respells_engram_and_reflection_links,
+    finishing_respells_engram_and_reflection_links_body
+);
+
+/// A respell a crash stopped before its relink step was recorded is
+/// finished at the next start: the links are respelled, the question is
+/// answered and the journal goes.
+async fn a_crash_mid_respell_finishes_on_restart_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    let pager_before = std::fs::read_to_string(m.root.join("ops/pager.md")).unwrap();
+
+    engine.fail_rename_after(Some(RenameStep::Relink));
+    engine
+        .finish_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .expect_err("the failpoint stops the respell");
+    assert!(m.journal().is_file(), "the journal stays");
+    drop(engine);
+    // As if the crash came before the journal recorded the step, with one
+    // link not yet respelled.
+    let mut journal: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(m.journal()).unwrap()).unwrap();
+    assert_eq!(journal["respell_only"], true, "{journal}");
+    journal["done"] = serde_json::json!([]);
+    std::fs::write(m.journal(), serde_json::to_vec(&journal).unwrap()).unwrap();
+    std::fs::write(m.root.join("ops/pager.md"), &pager_before).unwrap();
+    std::fs::write(m.root.join("ops/reflections/b.md"), OPS_PAGE).unwrap();
+
+    let restarted = m.engine(false).await;
+    restarted.sync(None).await.unwrap_or_default();
+    let recovered = restarted
+        .recover_rename_journal()
+        .await
+        .unwrap()
+        .expect("a journal was left to finish");
+    assert_eq!(recovered["domain"], "eng", "{recovered}");
+    assert_eq!(recovered["to"], "platform", "{recovered}");
+    assert!(!m.journal().exists(), "the journal is gone");
+    restarted.sync(None).await.unwrap();
+    assert_respelled(&m, &restarted).await;
+    assert_eq!(
+        saved_question(&m).and_then(|q| q.answered),
+        Some(RenameAnswer::Finished)
+    );
+    assert!(
+        crystalline_service::overlay::load_file(&m.config_path())
+            .unwrap()
+            .domains
+            .contains_key("eng"),
+        "the key stays"
+    );
+}
+both_backends!(
+    a_crash_mid_respell_finishes_on_restart,
+    a_crash_mid_respell_finishes_on_restart_body
+);
+
+/// A respell journal left behind is never finished by a full rename that
+/// happens to name the same two names: that rename is refused, naming how
+/// the respell is finished.
+async fn a_rename_never_resumes_a_respell_journal_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    engine.fail_rename_after(Some(RenameStep::Relink));
+    engine
+        .finish_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .expect_err("the failpoint stops the respell");
+
+    let err = engine
+        .rename_domain_local(
+            "eng",
+            "platform",
+            NameOrigin::Explicit,
+            &Scope::Unrestricted,
+        )
+        .await
+        .expect_err("a respell is pending");
+    let text = conflict(err);
+    assert!(text.contains("crystalline doctor --fix"), "{text}");
+    let cfg = crystalline_service::overlay::load_file(&m.config_path()).unwrap();
+    assert!(cfg.domains.contains_key("eng"), "nothing was renamed");
+}
+both_backends!(
+    a_rename_never_resumes_a_respell_journal,
+    a_rename_never_resumes_a_respell_journal_body
+);
+
+/// Keeping the links closes the question and changes nothing else: the
+/// links keep their spelling and reach the domain through the alias.
+async fn keep_closes_the_question_and_keeps_the_alias_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    let pager_before = std::fs::read_to_string(m.root.join("ops/pager.md")).unwrap();
+
+    let answer = engine
+        .keep_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert_eq!(
+        answer,
+        serde_json::json!({ "domain": "eng", "from": "eng", "to": "platform", "answered": "keep" })
+    );
+    assert_eq!(
+        saved_question(&m).and_then(|q| q.answered),
+        Some(RenameAnswer::Keep)
+    );
+    assert_eq!(engine.rename_question("eng"), None);
+    assert_eq!(
+        std::fs::read_to_string(m.root.join("ops/pager.md")).unwrap(),
+        pager_before
+    );
+    for spelling in ["eng", "engineering", "platform"] {
+        assert_eq!(
+            engine.local_domain_name(spelling).await.as_deref(),
+            Some("eng"),
+            "{spelling}"
+        );
+    }
+    let err = engine
+        .keep_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .expect_err("no open question");
+    assert!(matches!(err, EngineError::Conflict(_)), "{err}");
+}
+both_backends!(
+    keep_closes_the_question_and_keeps_the_alias,
+    keep_closes_the_question_and_keeps_the_alias_body
+);
+
+/// A rename by hand settles the question too, under the domain's new name.
+async fn a_manual_rename_closes_the_question_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+
+    engine
+        .rename_domain_local("eng", "core", NameOrigin::Explicit, &Scope::Unrestricted)
+        .await
+        .unwrap();
+
+    let cfg = crystalline_service::overlay::load_file(&m.config_path()).unwrap();
+    assert_eq!(
+        cfg.domains["core"]
+            .rename_question
+            .as_ref()
+            .and_then(|q| q.answered),
+        Some(RenameAnswer::Finished)
+    );
+    assert_eq!(engine.rename_question("core"), None);
+}
+both_backends!(
+    a_manual_rename_closes_the_question,
+    a_manual_rename_closes_the_question_body
+);
+
+/// Only a caller who may rename the domain finishes or keeps it.
+async fn a_caller_who_may_not_rename_is_refused_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let auth = AuthStore::open(&m.state().join("web-auth.db"))
+        .await
+        .unwrap();
+    auth.add_user("bob", "Bob", None, Role::Editor, "pw12345678")
+        .await
+        .unwrap();
+    auth.upsert_domain_member("eng", "bob", MemberLevel::Editor, None, "ada")
+        .await
+        .unwrap();
+    drop(auth);
+    let engine = m.engine(true).await;
+    let bob = Scope::User {
+        account: "bob".to_string(),
+        admin: false,
+    };
+    for err in [
+        engine
+            .finish_manifest_rename("eng", &bob)
+            .await
+            .unwrap_err(),
+        engine.keep_manifest_rename("eng", &bob).await.unwrap_err(),
+    ] {
+        assert!(matches!(err, EngineError::Forbidden(_)), "{err}");
+    }
+    assert!(engine.rename_question("eng").is_some());
+
+    let ada = Scope::User {
+        account: "ada".to_string(),
+        admin: false,
+    };
+    engine.keep_manifest_rename("eng", &ada).await.unwrap();
+}
+both_backends!(
+    a_caller_who_may_not_rename_is_refused,
+    a_caller_who_may_not_rename_is_refused_body
+);
+
+/// The stored domain of a Reflection source follows the respell too, to the
+/// new name, and the source still reads current: it is checked through the
+/// name table, where the new name reaches the domain, and a read names it
+/// by its local name here.
+async fn finishing_respells_the_domain_of_reflection_sources_body(store: Arc<Mutex<dyn Store>>) {
+    let m = machine(store).await;
+    std::fs::write(
+        m.root.join("ops/MANIFEST.md"),
+        manifest("Ops").replacen("status: current\n", "status: current\nreflection: on\n", 1),
+    )
+    .unwrap();
+    let engine = m.engine(true).await;
+    engine.sync(None).await.unwrap();
+    let mut page = crystalline_service::params::WriteReflectionParams {
+        domain: "ops".into(),
+        path: "a.md".into(),
+        markdown: Some("# A\n\nFor people.\n\n## Alpha\n\nRead it first.\n".into()),
+        ..Default::default()
+    };
+    page.sources = std::collections::BTreeMap::from([(
+        "Alpha".to_string(),
+        vec!["crystalline://eng/alpha".to_string()],
+    )]);
+    let agent = crystalline_service::ReflectionCaller::agent(Scope::Unrestricted, "agent", false);
+    engine.write_reflection(&page, &agent).await.unwrap();
+    let text = std::fs::read_to_string(m.root.join("ops/reflections/a.md")).unwrap();
+    assert!(text.contains("domain: eng"), "{text}");
+    drop(engine);
+
+    std::fs::write(
+        m.root.join("eng/MANIFEST.md"),
+        manifest_named("Eng", "platform"),
+    )
+    .unwrap();
+    let mut cfg = crystalline_service::overlay::load_file(&m.config_path()).unwrap();
+    let entry = cfg.domains.get_mut("eng").unwrap();
+    entry.name_origin = Some(NameOrigin::Explicit);
+    entry.canonical_seen = Some("platform".to_string());
+    entry.rename_question = Some(RenameQuestion {
+        from: "eng".to_string(),
+        to: "platform".to_string(),
+        seen_at: "2026-10-21T08:00:00Z".to_string(),
+        answered: None,
+    });
+    crystalline_core::config::save_yaml(&m.config_path(), &cfg).unwrap();
+    let engine = m.engine(true).await;
+    engine.sync(None).await.unwrap();
+
+    engine
+        .finish_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .unwrap();
+
+    let text = std::fs::read_to_string(m.root.join("ops/reflections/a.md")).unwrap();
+    assert!(text.contains("domain: platform"), "{text}");
+    assert!(!text.contains("domain: eng"), "{text}");
+    let doc = engine.read_reflection("ops", "a.md", &agent).await.unwrap();
+    let source = &doc["sections"][0]["sources"][0];
+    assert_eq!(source["domain"], "eng", "{doc}");
+    assert_eq!(source["state"], "current", "{doc}");
+}
+both_backends!(
+    finishing_respells_the_domain_of_reflection_sources,
+    finishing_respells_the_domain_of_reflection_sources_body
+);
+
+/// The pager and the page as [`question_machine`] writes them, put back and
+/// reindexed after a respell that stopped.
+async fn restore_old_links(m: &Machine, engine: &Engine, pager: &str) {
+    std::fs::write(m.root.join("ops/pager.md"), pager).unwrap();
+    std::fs::write(m.root.join("ops/reflections/b.md"), OPS_PAGE).unwrap();
+    engine.sync(None).await.unwrap();
+}
+
+/// A respell that stopped is never run after the question was kept: the keep
+/// drops its journal, and a journal found at the next start for a question
+/// nobody asks any more is dropped too, with the links left as they are.
+async fn a_kept_question_drops_a_stopped_respell_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    let pager_before = std::fs::read_to_string(m.root.join("ops/pager.md")).unwrap();
+    engine.fail_rename_after(Some(RenameStep::Relink));
+    engine
+        .finish_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .expect_err("the failpoint stops the respell");
+    let journal = std::fs::read(m.journal()).unwrap();
+    restore_old_links(&m, &engine, &pager_before).await;
+
+    engine
+        .keep_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert!(!m.journal().exists(), "the keep drops the journal");
+    drop(engine);
+
+    // As if the keep had come from a process that could not drop it.
+    std::fs::write(m.journal(), &journal).unwrap();
+    let restarted = m.engine(false).await;
+    assert!(restarted.recover_rename_journal().await.unwrap().is_none());
+    assert!(!m.journal().exists(), "the start drops it");
+    assert_eq!(
+        std::fs::read_to_string(m.root.join("ops/pager.md")).unwrap(),
+        pager_before,
+        "the links keep their spelling"
+    );
+    assert_eq!(
+        std::fs::read_to_string(m.root.join("ops/reflections/b.md")).unwrap(),
+        OPS_PAGE
+    );
+    assert_eq!(
+        saved_question(&m).and_then(|q| q.answered),
+        Some(RenameAnswer::Keep)
+    );
+}
+both_backends!(
+    a_kept_question_drops_a_stopped_respell,
+    a_kept_question_drops_a_stopped_respell_body
+);
+
+/// A respell that stopped, then a newer MANIFEST edit: finishing respells to
+/// the name the question asks about now, not to the one the stopped respell
+/// was for.
+async fn a_newer_name_after_a_stopped_respell_is_the_one_finished_body(
+    store: Arc<Mutex<dyn Store>>,
+) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    let pager_before = std::fs::read_to_string(m.root.join("ops/pager.md")).unwrap();
+    engine.fail_rename_after(Some(RenameStep::Relink));
+    engine
+        .finish_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .expect_err("the failpoint stops the respell");
+    restore_old_links(&m, &engine, &pager_before).await;
+    drop(engine);
+
+    // The MANIFEST now declares `core`, and the question moved with it, as
+    // the adoption leaves it: `platform` is an alias.
+    std::fs::write(
+        m.root.join("eng/MANIFEST.md"),
+        manifest_named("Eng", "core"),
+    )
+    .unwrap();
+    let mut cfg = crystalline_service::overlay::load_file(&m.config_path()).unwrap();
+    let entry = cfg.domains.get_mut("eng").unwrap();
+    entry.canonical_seen = Some("core".to_string());
+    entry.aliases = vec!["engineering".to_string(), "platform".to_string()];
+    entry.rename_question.as_mut().unwrap().to = "core".to_string();
+    crystalline_core::config::save_yaml(&m.config_path(), &cfg).unwrap();
+    let engine = m.engine(true).await;
+    engine.sync(None).await.unwrap();
+
+    let report = engine
+        .finish_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .unwrap();
+    assert_eq!(report["to"], "core", "{report}");
+    let pager = std::fs::read_to_string(m.root.join("ops/pager.md")).unwrap();
+    assert!(
+        pager.contains("See [[core:alpha]], then crystalline://core/alpha, then [[core:alpha]]."),
+        "{pager}"
+    );
+    let page = std::fs::read_to_string(m.root.join("ops/reflections/b.md")).unwrap();
+    assert!(page.contains("See [[core:alpha]]."), "{page}");
+    assert_eq!(
+        saved_question(&m).and_then(|q| q.answered),
+        Some(RenameAnswer::Finished)
+    );
+    assert!(!m.journal().exists());
+}
+both_backends!(
+    a_newer_name_after_a_stopped_respell_is_the_one_finished,
+    a_newer_name_after_a_stopped_respell_is_the_one_finished_body
+);
+
+/// A question closes on its own once no link here uses an old name any
+/// more after a teammate's finished rename arrives with a pull: the pull
+/// answers it, and the listing shows no rename.
+async fn a_question_whose_links_already_match_closes_on_its_own_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    engine.adopt_domain_names().await.unwrap();
+    assert!(
+        engine.rename_question("eng").is_some(),
+        "old spellings are left: the question stays"
+    );
+    // Before the pull: old spellings are still here.
+    let before = engine.rename_questions_already_clean().await;
+    assert!(!before.contains("eng"), "{before:?}");
+
+    // The pull brings the teammate's respelled files.
+    std::fs::write(
+        m.root.join("ops/pager.md"),
+        engram(
+            "Pager",
+            "pager",
+            "See [[platform:alpha]], then crystalline://platform/alpha, then [[platform:alpha]].",
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        m.root.join("ops/reflections/b.md"),
+        OPS_PAGE.replace("[[eng:", "[[platform:"),
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+    engine.adopt_domain_names().await.unwrap();
+    engine.settle_rename_questions_after_pull(&before).await;
+
+    assert_eq!(engine.rename_question("eng"), None);
+    assert_eq!(
+        saved_question(&m).and_then(|q| q.answered),
+        Some(RenameAnswer::Finished)
+    );
+    let listed = engine
+        .list_domains(
+            &ListDomainsParams {
+                include_routing: false,
+            },
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    let row = listed["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["name"] == "eng")
+        .cloned()
+        .unwrap();
+    assert_eq!(row["rename_pending"], serde_json::Value::Null, "{row}");
+}
+both_backends!(
+    a_question_whose_links_already_match_closes_on_its_own,
+    a_question_whose_links_already_match_closes_on_its_own_body
+);
+
+/// A stopped respell, then the MANIFEST goes back to the old name: the
+/// adoption drops the question, and the journal with it.
+async fn changing_the_name_back_drops_a_stopped_respell_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    engine.fail_rename_after(Some(RenameStep::Relink));
+    engine
+        .finish_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .expect_err("the failpoint stops the respell");
+    assert!(m.journal().is_file());
+
+    std::fs::write(m.root.join("eng/MANIFEST.md"), manifest_named("Eng", "eng")).unwrap();
+    engine.sync(None).await.unwrap();
+    engine.adopt_domain_names().await.unwrap();
+
+    assert_eq!(saved_question(&m), None, "the question is dropped");
+    assert!(!m.journal().exists(), "and the journal with it");
+}
+both_backends!(
+    changing_the_name_back_drops_a_stopped_respell,
+    changing_the_name_back_drops_a_stopped_respell_body
+);
+
+/// A stopped respell recorded against another configuration than the one
+/// this engine opened is neither run nor dropped here, also once nobody
+/// asks for it: it belongs to that configuration.
+async fn another_configs_respell_journal_is_left_alone_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    engine.fail_rename_after(Some(RenameStep::Relink));
+    engine
+        .finish_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .expect_err("the failpoint stops the respell");
+    drop(engine);
+    let mut journal: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(m.journal()).unwrap()).unwrap();
+    journal["owner"]["config"] = serde_json::json!("/elsewhere/config.yaml");
+    std::fs::write(m.journal(), serde_json::to_vec(&journal).unwrap()).unwrap();
+
+    // Nobody asks for it any more: the MANIFEST went back to the old name.
+    std::fs::write(m.root.join("eng/MANIFEST.md"), manifest_named("Eng", "eng")).unwrap();
+    let other = m.engine(true).await;
+    assert!(other.recover_rename_journal().await.unwrap().is_none());
+    other.sync(None).await.unwrap();
+    other.adopt_domain_names().await.unwrap();
+    other.finish_rename_questions().await.unwrap();
+    assert!(
+        m.journal().is_file(),
+        "the journal stays for its own config"
+    );
+}
+both_backends!(
+    another_configs_respell_journal_is_left_alone,
+    another_configs_respell_journal_is_left_alone_body
+);
+
+/// An engram the index names but that cannot be read is no proof its links
+/// match: the question stays open.
+async fn an_unreadable_engram_keeps_the_question_open_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    let before = engine.rename_questions_already_clean().await;
+    std::fs::write(
+        m.root.join("ops/reflections/b.md"),
+        OPS_PAGE.replace("[[eng:", "[[platform:"),
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+    // Still in the index with its old links, and no longer UTF-8 on disk,
+    // which a read refuses rather than answer from the row.
+    std::fs::write(m.root.join("ops/pager.md"), [0xff, 0xfe, 0x00, 0x80]).unwrap();
+
+    engine.adopt_domain_names().await.unwrap();
+    engine.settle_rename_questions_after_pull(&before).await;
+    assert!(engine.rename_question("eng").is_some());
+}
+both_backends!(
+    an_unreadable_engram_keeps_the_question_open,
+    an_unreadable_engram_keeps_the_question_open_body
+);
+
+/// The `V110` findings in `ops` that speak about a link spelled `eng`.
+async fn v110_on_eng(engine: &Engine) -> Vec<serde_json::Value> {
+    let v = engine
+        .evolve_detect(
+            &EvolveParams {
+                domains: vec!["ops".to_string()],
+                ..EvolveParams::default()
+            },
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    v["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["rule"] == "V110" && r["evidence"].as_str().unwrap().contains("`eng`"))
+        .cloned()
+        .collect()
+}
+
+/// While the rename waits for a person, a link under the old name is that
+/// person's to respell: `V110` is judgment and its fix names the two ways
+/// they finish it, never an edit for an agent to apply.
+async fn an_open_rename_makes_v110_for_the_old_name_judgment_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    let found = v110_on_eng(&engine).await;
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0]["class"], "judgment", "{:?}", found[0]);
+    let fix = found[0]["fix"].as_str().unwrap();
+    assert!(fix.contains("crystalline doctor --fix"), "{fix}");
+    assert!(!fix.contains("find_replace"), "{fix}");
+}
+both_backends!(
+    an_open_rename_makes_v110_for_the_old_name_judgment,
+    an_open_rename_makes_v110_for_the_old_name_judgment_body
+);
+
+/// A person who kept the links as they are kept the old name as a label:
+/// `V110` no longer speaks about it at all.
+async fn a_kept_rename_raises_no_v110_for_the_old_name_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    engine
+        .keep_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .unwrap();
+    let found = v110_on_eng(&engine).await;
+    assert!(found.is_empty(), "{found:?}");
+}
+both_backends!(
+    a_kept_rename_raises_no_v110_for_the_old_name,
+    a_kept_rename_raises_no_v110_for_the_old_name_body
+);
+
+/// Only a person answers a rename question. Links respelled here by hand or
+/// by an agent's edit, then synced and lined up again, leave it open: the
+/// banner and the doctor entry stay until the person chooses.
+async fn links_respelled_here_leave_the_question_open_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    let pager = std::fs::read_to_string(m.root.join("ops/pager.md")).unwrap();
+    engine
+        .edit_engram(&EditParams {
+            identifier: "pager".to_string(),
+            domain: "ops".to_string(),
+            operation: "find_replace".to_string(),
+            content: Some("[[platform:alpha]], then crystalline://platform/alpha".to_string()),
+            find_text: Some("[[eng:alpha]], then crystalline://engineering/alpha".to_string()),
+            ..EditParams::default()
+        })
+        .await
+        .unwrap_or_else(|e| panic!("{e}: {pager}"));
+    std::fs::write(
+        m.root.join("ops/reflections/b.md"),
+        OPS_PAGE.replace("[[eng:", "[[platform:"),
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+    engine.adopt_domain_names().await.unwrap();
+
+    assert!(engine.rename_question("eng").is_some());
+    assert_eq!(saved_question(&m).and_then(|q| q.answered), None);
+
+    // A later pull that brought none of it does not close it either: the
+    // links already matched before the pull.
+    let before = engine.rename_questions_already_clean().await;
+    assert!(before.contains("eng"), "{before:?}");
+    engine.settle_rename_questions_after_pull(&before).await;
+    assert!(engine.rename_question("eng").is_some());
+    assert_eq!(saved_question(&m).and_then(|q| q.answered), None);
+}
+
+/// An unattended evolve run asks for mechanical findings only; while the
+/// rename waits for a person, none of them is a V110 that would respell the
+/// old name.
+async fn a_mechanical_sweep_holds_no_v110_for_an_open_rename_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    let v = engine
+        .evolve_detect(
+            &EvolveParams {
+                domains: vec!["ops".to_string()],
+                class: Some("mechanical".to_string()),
+                ..EvolveParams::default()
+            },
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    let v110: Vec<&serde_json::Value> = v["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["rule"] == "V110" && r["evidence"].as_str().unwrap().contains("`eng`"))
+        .collect();
+    assert!(v110.is_empty(), "{v110:?}");
+}
+both_backends!(
+    a_mechanical_sweep_holds_no_v110_for_an_open_rename,
+    a_mechanical_sweep_holds_no_v110_for_an_open_rename_body
+);
+both_backends!(
+    links_respelled_here_leave_the_question_open,
+    links_respelled_here_leave_the_question_open_body
+);
+
+/// The usual teammate case: one pull brings the MANIFEST rename and the
+/// respelled files together. The question the adoption after it records
+/// was never seen clean before the pull, so that pull settles it.
+async fn a_pull_with_the_rename_and_its_respelled_files_closes_its_question_body(
+    store: Arc<Mutex<dyn Store>>,
+) {
+    let m = machine(store).await;
+    let mut cfg = crystalline_service::overlay::load_file(&m.config_path()).unwrap();
+    cfg.domains.get_mut("eng").unwrap().name_origin = Some(NameOrigin::Explicit);
+    crystalline_core::config::save_yaml(&m.config_path(), &cfg).unwrap();
+    let engine = m.engine(true).await;
+    engine.sync(None).await.unwrap();
+    engine.adopt_domain_names().await.unwrap();
+    assert_eq!(engine.rename_question("eng"), None);
+
+    let before = engine.rename_questions_already_clean().await;
+    // The pull: the teammate's MANIFEST rename and their respelled link.
+    std::fs::write(
+        m.root.join("eng/MANIFEST.md"),
+        manifest_named("Eng", "platform"),
+    )
+    .unwrap();
+    std::fs::write(
+        m.root.join("ops/pager.md"),
+        engram("Pager", "pager", "See [[platform:alpha]] before paging."),
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+    engine.adopt_domain_names().await.unwrap();
+    assert!(
+        saved_question(&m).is_some(),
+        "the adoption records the question"
+    );
+    engine.settle_rename_questions_after_pull(&before).await;
+
+    assert_eq!(engine.rename_question("eng"), None);
+    assert_eq!(
+        saved_question(&m).and_then(|q| q.answered),
+        Some(RenameAnswer::Finished)
+    );
+}
+both_backends!(
+    a_pull_with_the_rename_and_its_respelled_files_closes_its_question,
+    a_pull_with_the_rename_and_its_respelled_files_closes_its_question_body
+);
+
+/// The text of `ops`'s engram `permalink` as stored.
+async fn ops_content(engine: &Engine, permalink: &str) -> String {
+    engine
+        .read_engram(&read_params(permalink, "ops"), &Scope::Unrestricted)
+        .await
+        .unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// While a rename question is open, and after "keep", a write keeps a link
+/// under the old name as written: respelling it is the person's answer, not
+/// the write's.
+async fn a_write_keeps_the_old_name_while_asked_and_after_keep_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    engine
+        .write_engram(&write_params("ops", "Asked", "See [[eng:alpha]]."))
+        .await
+        .unwrap();
+    let asked = ops_content(&engine, "asked").await;
+    assert!(asked.contains("See [[eng:alpha]]."), "{asked}");
+
+    engine
+        .keep_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .unwrap();
+    engine
+        .write_engram(&write_params("ops", "Kept", "See [[eng:alpha]]."))
+        .await
+        .unwrap();
+    let kept = ops_content(&engine, "kept").await;
+    assert!(kept.contains("See [[eng:alpha]]."), "{kept}");
+}
+both_backends!(
+    a_write_keeps_the_old_name_while_asked_and_after_keep,
+    a_write_keeps_the_old_name_while_asked_and_after_keep_body
+);
+
+/// Once the rename is finished, a write spells the domain by its new name
+/// again, as it does with no question at all.
+async fn a_write_respells_the_old_name_after_the_rename_is_finished_body(
+    store: Arc<Mutex<dyn Store>>,
+) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    engine
+        .finish_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .unwrap();
+    engine
+        .write_engram(&write_params("ops", "Later", "See [[eng:alpha]]."))
+        .await
+        .unwrap();
+    let later = ops_content(&engine, "later").await;
+    assert!(later.contains("See [[platform:alpha]]."), "{later}");
+}
+both_backends!(
+    a_write_respells_the_old_name_after_the_rename_is_finished,
+    a_write_respells_the_old_name_after_the_rename_is_finished_body
+);
+
+/// A scan that fails before the pull counts the question as one that may
+/// have been respelled here: it stays open, whatever the pull brings.
+async fn a_failed_scan_before_a_pull_keeps_the_question_open_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    engine.fail_next_rename_scan();
+    let before = engine.rename_questions_already_clean().await;
+    assert!(before.contains("eng"), "fail closed: {before:?}");
+
+    std::fs::write(
+        m.root.join("ops/pager.md"),
+        engram(
+            "Pager",
+            "pager",
+            "See [[platform:alpha]], then crystalline://platform/alpha, then [[platform:alpha]].",
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        m.root.join("ops/reflections/b.md"),
+        OPS_PAGE.replace("[[eng:", "[[platform:"),
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+    engine.adopt_domain_names().await.unwrap();
+    engine.settle_rename_questions_after_pull(&before).await;
+    assert!(engine.rename_question("eng").is_some());
+}
+both_backends!(
+    a_failed_scan_before_a_pull_keeps_the_question_open,
+    a_failed_scan_before_a_pull_keeps_the_question_open_body
+);
+
+/// `doctor --fix` respells local spellings, but never the old name of a
+/// domain whose rename question is open or answered "keep", and `doctor`
+/// does not list those as spellings to fix.
+async fn doctor_fix_leaves_a_held_old_name_alone_body(store: Arc<Mutex<dyn Store>>) {
+    let m = question_machine(store).await;
+    let engine = m.engine(true).await;
+    let held = |report: &serde_json::Value| {
+        report["local_spellings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row.to_string().contains("\"eng\""))
+    };
+
+    let report = engine.name_report().await.unwrap();
+    assert!(!held(&report), "open: {report}");
+    engine.fix_local_spellings().await.unwrap();
+    let pager = std::fs::read_to_string(m.root.join("ops/pager.md")).unwrap();
+    assert!(pager.contains("See [[eng:alpha]]"), "{pager}");
+
+    engine
+        .keep_manifest_rename("eng", &Scope::Unrestricted)
+        .await
+        .unwrap();
+    let report = engine.name_report().await.unwrap();
+    assert!(!held(&report), "kept: {report}");
+    engine.fix_local_spellings().await.unwrap();
+    let pager = std::fs::read_to_string(m.root.join("ops/pager.md")).unwrap();
+    assert!(pager.contains("See [[eng:alpha]]"), "{pager}");
+}
+both_backends!(
+    doctor_fix_leaves_a_held_old_name_alone,
+    doctor_fix_leaves_a_held_old_name_alone_body
 );

@@ -179,7 +179,12 @@ fn a_heading_of_another_level_or_other_text_is_content() {
 
     let edit = insert_after_section_reporting(ROUTED, "## Scope", "## Other\n\n- x").unwrap();
     assert_eq!(edit.heading_stripped, None);
-    assert!(edit.text.contains("## Scope\n\n## Other\n\n- x"));
+    // Same level and other text: the content goes after the Scope section.
+    assert!(edit.placed_after_section);
+    assert!(
+        edit.text
+            .contains("## Scope\n\n- old scope\n\n## Other\n\n- x\n\n## When to Use")
+    );
 }
 
 #[test]
@@ -796,5 +801,67 @@ fn insert_after_section_keeps_an_inserted_bullet_off_the_prose_below() {
     assert!(
         out.contains("## S\n\n- [fact] new one\n- [fact] old one\n"),
         "{out}"
+    );
+}
+
+const DEV_NOTES: &str = "# Notes\n\n## Crystalline dev: schemars Option<Map>/Option<Vec>\n\nOld body.\n\n## API\n\n### Auth\n\nTokens.\n\n### Data\n\nReadings.\n\n## Errors\n\nCodes.\n";
+
+#[test]
+fn a_heading_holding_a_greater_than_sign_is_found() {
+    let heading = "## Crystalline dev: schemars Option<Map>/Option<Vec>";
+    for path in [heading, "Crystalline dev: schemars Option<Map>/Option<Vec>"] {
+        let out = replace_section(DEV_NOTES, path, "New body.", false).unwrap();
+        assert!(out.contains(&format!("{heading}\n\nNew body.\n")), "{out}");
+        assert!(!out.contains("Old body."), "{out}");
+    }
+}
+
+#[test]
+fn a_path_still_splits_on_spaced_separators() {
+    let out = replace_section(DEV_NOTES, "## API > ### Auth", "Keys.", false).unwrap();
+    assert!(out.contains("### Auth\n\nKeys.\n"), "{out}");
+    assert!(out.contains("Readings."), "{out}");
+}
+
+#[test]
+fn insert_after_section_with_a_same_level_heading_goes_after_the_section() {
+    let edit = insert_after_section_reporting(DEV_NOTES, "## API", "## Limits\n\nTen per second.")
+        .unwrap();
+    assert!(edit.placed_after_section);
+    assert!(
+        edit.text.contains(
+            "## API\n\n### Auth\n\nTokens.\n\n### Data\n\nReadings.\n\n## Limits\n\nTen per second.\n\n## Errors\n\nCodes.\n"
+        ),
+        "{}",
+        edit.text
+    );
+    // A higher heading closes the section too, and the last section ends the file.
+    let edit =
+        insert_after_section_reporting(DEV_NOTES, "## Errors", "# Appendix\n\nMore.").unwrap();
+    assert!(edit.placed_after_section);
+    assert!(
+        edit.text
+            .ends_with("## Errors\n\nCodes.\n\n# Appendix\n\nMore.\n"),
+        "{}",
+        edit.text
+    );
+}
+
+#[test]
+fn insert_after_section_without_a_heading_keeps_todays_placement() {
+    let edit = insert_after_section_reporting(DEV_NOTES, "## API", "Intro line.").unwrap();
+    assert!(!edit.placed_after_section);
+    assert!(
+        edit.text.contains("## API\n\nIntro line.\n\n### Auth"),
+        "{}",
+        edit.text
+    );
+    // A deeper heading is a subsection of the target: today's placement.
+    let edit = insert_after_section_reporting(DEV_NOTES, "## API", "### First\n\nx").unwrap();
+    assert!(!edit.placed_after_section);
+    assert!(
+        edit.text.contains("## API\n\n### First\n\nx\n\n### Auth"),
+        "{}",
+        edit.text
     );
 }

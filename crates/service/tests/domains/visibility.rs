@@ -125,6 +125,7 @@ fn read(identifier: &str, domain: &str) -> ReadParams {
         identifier: identifier.to_string(),
         domain: Some(domain.to_string()),
         share_link: None,
+        include_images: false,
     }
 }
 
@@ -937,7 +938,7 @@ async fn an_editor_cannot_switch_read_only_on_by_any_path() {
     // The MANIFEST editor's own verb, now that it carries the scope.
     refused(
         engine
-            .save_manifest("lab", &switch_on(&before), &sha256(&before), &ed)
+            .save_manifest("lab", &switch_on(&before), &sha256(&before), &ed, false)
             .await
             .unwrap_err(),
     );
@@ -1194,7 +1195,7 @@ async fn the_owner_and_an_admin_switch_read_only_on_and_a_viewer_cannot() {
     let now = lab_manifest(&tmp);
     let switched = now.replace("read_only: off", "read_only: on");
     engine
-        .save_manifest("lab", &switched, &sha256(&now), &admin("boss"))
+        .save_manifest("lab", &switched, &sha256(&now), &admin("boss"), false)
         .await
         .unwrap();
     assert!(engine.domain_is_read_only("lab").await);

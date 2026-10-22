@@ -250,6 +250,18 @@ impl Engine {
                         .and_then(|canonical| table.resolve(canonical))
                         .is_some_and(|holder| !hidden.contains(holder)),
                 "renaming": self.is_renaming(name),
+                // The rename a sync saw this domain's MANIFEST make and a
+                // person has not settled yet; `null` when there is none, so
+                // every row keeps the same columns.
+                "rename_pending": entry
+                    .rename_question
+                    .as_ref()
+                    .filter(|question| question.answered.is_none())
+                    .map(|question| json!({
+                        "from": question.from,
+                        "to": question.to,
+                        "seen_at": question.seen_at,
+                    })),
             });
             // Present only when true: "you cannot write here", for whatever
             // reason; a writable row keeps the columns it always had. Not the
@@ -426,12 +438,18 @@ impl Engine {
     /// `scope` decides the read-only screen and the switch-on (decision D10):
     /// on a read-only domain the editor is refused like every other write,
     /// and an off-to-on MANIFEST is the owner's or an instance admin's.
+    ///
+    /// `keep_name` is the MANIFEST editor's "Save without renaming": when the
+    /// saved text declares a `domain_name` other than the one the MANIFEST
+    /// declared before, the rename question the adoption would ask is
+    /// recorded as already answered "keep" once the save has landed.
     pub async fn save_manifest(
         &self,
         domain: &str,
         markdown: &str,
         expected_checksum: &str,
         scope: &crate::scope::Scope,
+        keep_name: bool,
     ) -> Result<Value> {
         if self.read_only {
             return Err(EngineError::ReadOnly);
@@ -464,6 +482,18 @@ impl Engine {
         // domain policies meet.
         self.screen_manifest_write(domain, None, markdown).await?;
         let switch_before = self.reflection_switch(domain);
+        // The name the MANIFEST declares before the save, read only when the
+        // save keeps the links of a new one.
+        let kept_name = if keep_name {
+            let before = self
+                .domain_entry(domain)
+                .ok()
+                .and_then(|entry| self.declared_domain_name(domain, &entry));
+            crystalline_core::manifest::domain_name_of_source(markdown)
+                .filter(|after| before.as_deref() != Some(after.as_str()))
+        } else {
+            None
+        };
 
         let (rel, created) = match self.content_source(domain)? {
             ContentSource::File { root } => {
@@ -624,6 +654,17 @@ impl Engine {
             audience: None,
         }));
 
+        // The MANIFEST is written: a failure here costs the person a banner
+        // they then answer, never the save.
+        if let Some(name) = &kept_name
+            && let Err(e) = self.record_kept_rename(domain, name)
+        {
+            tracing::warn!(
+                domain,
+                "the MANIFEST is saved, but keeping the links of its new name '{name}' could \
+                 not be recorded ({e}); the rename is asked about after the next sync"
+            );
+        }
         self.refresh_routing_cache().await;
         // A switch written here moves the Reflection's mode for every file
         // in the folder; the index follows before the switch is announced,

@@ -96,20 +96,6 @@ The MSI also registers a Windows task that starts the Crystalline daemon when yo
 </details>
 
 <details>
-<summary>Dev channel</summary>
-
-A change on main that passes CI is built and published as a pre-release, installable with Homebrew, when it asks for a dev build: put `[dev-build]` in the commit message, or merge it through a pull request that has the `dev-build` label or `[dev-build]` in its title or description. A maintainer can also run the Dev channel workflow by hand on main. Other changes, including the merge of a release, build no dev release:
-
-```sh
-brew uninstall crystalline   # if you have the stable release
-brew install jordiboehme/tap/crystalline-dev
-```
-
-Both formulae install the same `crystalline` binary, so your MCP registrations and the daemon keep working after a switch; `brew upgrade` moves to the newest dev build. The dev channel only moves forward: a dev build may migrate your index, and going back to an older stable release is not supported. To return to stable, wait for a stable release newer than your dev build, then `brew uninstall crystalline-dev && brew install jordiboehme/tap/crystalline`; the newer release takes over the running daemon on its own.
-
-</details>
-
-<details>
 <summary>Other harnesses and clients</summary>
 
 | Client | Setup |
@@ -165,6 +151,7 @@ Crystalline runs the same way in every scenario: a daemon in the middle keeps on
 | [Shared database collaboration](docs/deployment.md#shared-database-collaboration) | Several instances share one PostgreSQL index, so every capture is visible to all of them that registered the domain |
 | [Team knowledge on GitHub](docs/deployment.md#team-knowledge-on-github) | A domain tracks a GitHub repository; sharing goes through reviewed proposals, or straight to the branch where the domain says so |
 | [Reflection on a team server](docs/deployment.md#reflection-on-a-team-server) | People and agents work on a domain's Reflection on one home instance, backed up to its own branch |
+| [Loop runners](docs/deployment.md#loop-runners) | A CronJob, a `watch` process or an n8n workflow runs the reflect and evolve loops when work is due, and shares the changes as a pull request |
 | [Authenticated agents](docs/deployment.md#authenticated-agents) | HTTP MCP requires a personal token per agent, issued in Fluid or from the CLI |
 | [MCP clients over OAuth](docs/deployment.md#mcp-clients-over-oauth) | A hosted client such as Claude.ai signs the person in and consents once; no token is pasted |
 | [A local Crystalline with domains from shared servers](docs/deployment.md#a-local-crystalline-with-domains-from-shared-servers) | `crystalline connect` adds a server as a source; your agent sees your local domains and every server's at once, through one registration |

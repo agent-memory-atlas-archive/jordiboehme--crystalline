@@ -370,8 +370,9 @@ pub struct LinkTarget {
     pub domain: Option<String>,
     /// The target title or permalink.
     pub target: String,
-    /// The bracket text exactly as it was written, trimmed at the ends and
-    /// nothing else.
+    /// The target part of the bracket text as it was written: everything
+    /// before the first `|` (the display text is [`LinkTarget::alias`]),
+    /// trimmed at the ends and nothing else.
     ///
     /// The parse below is domain-agnostic: it cannot know whether the segment
     /// before a colon names a real domain, so a title whose own first word ends
@@ -383,14 +384,76 @@ pub struct LinkTarget {
     /// second field a client should read.
     #[serde(skip)]
     pub raw: String,
+    /// How the reference was written: a `[[...]]` wikilink or a relative
+    /// Markdown link to another engram's file. Left out of the serialized
+    /// shape for a wikilink, so a wikilink reads as it always did.
+    #[serde(default, skip_serializing_if = "LinkForm::is_wiki")]
+    pub form: LinkForm,
+    /// The display text of a `[[target|alias]]` wikilink: what follows the
+    /// first `|`, trimmed. `None` when there is no `|` or nothing after it.
+    /// It only changes what a reader sees, never where the link points, so it
+    /// is not part of the serialized shape.
+    #[serde(skip)]
+    pub alias: Option<String>,
+}
+
+/// How a [`LinkTarget`] was written.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LinkForm {
+    /// `[[Target]]` or `[[domain:Target]]`: the target is a title or a
+    /// permalink.
+    #[default]
+    Wiki,
+    /// `[text](../folder/file.md)`: the target is a path relative to the
+    /// folder of the engram that holds the link, percent-decoded and without
+    /// its `#fragment`.
+    Relative,
+}
+
+impl LinkForm {
+    /// Whether this is the wikilink form, the one left out of the serialized
+    /// shape.
+    pub fn is_wiki(&self) -> bool {
+        *self == LinkForm::Wiki
+    }
 }
 
 impl LinkTarget {
-    /// Parse the inside of a `[[...]]` into a target. A single leading colon
-    /// group is treated as a cross-domain prefix; further colons stay in the
-    /// target text.
+    /// A relative Markdown link's target: `path` is the destination as
+    /// [`crate::parse`] read it, percent-decoded and without its `#fragment`.
+    pub fn relative(path: &str) -> LinkTarget {
+        LinkTarget {
+            domain: None,
+            target: path.to_string(),
+            raw: path.to_string(),
+            form: LinkForm::Relative,
+            alias: None,
+        }
+    }
+
+    /// The target an index row stores for this reference, written in the
+    /// engram at the domain-relative `from_path`. A wikilink stores its target
+    /// text as it is. A relative link stores the domain-relative path it lands
+    /// on (`pumps/p-12.md`), which is what binds it to the engram at that path;
+    /// one that climbs out of the domain keeps the target as written, which no
+    /// engram's path equals, so it stays unresolved.
+    pub fn stored_target(&self, from_path: &str) -> String {
+        match self.form {
+            LinkForm::Wiki => self.target.clone(),
+            LinkForm::Relative => crate::reflection::links::resolve(from_path, &self.target)
+                .filter(|p| !p.is_empty())
+                .unwrap_or_else(|| self.target.clone()),
+        }
+    }
+
+    /// Parse the inside of a `[[...]]` into a target. The text after the
+    /// first `|` is the display text ([`LinkTarget::alias`]); everything below
+    /// reads the part before it. A single leading colon group is treated as a
+    /// cross-domain prefix; further colons stay in the target text.
     pub fn parse(inner: &str) -> LinkTarget {
-        let inner = inner.trim();
+        let (inner, alias) = split_alias(inner);
+        let alias = alias.map(str::to_string);
         if let Some((domain, rest)) = inner.split_once(':') {
             let domain = domain.trim();
             let rest = rest.trim();
@@ -401,6 +464,8 @@ impl LinkTarget {
                     domain: Some(domain.to_string()),
                     target: rest.to_string(),
                     raw: inner.to_string(),
+                    form: LinkForm::Wiki,
+                    alias,
                 };
             }
         }
@@ -408,7 +473,42 @@ impl LinkTarget {
             domain: None,
             target: inner.to_string(),
             raw: inner.to_string(),
+            form: LinkForm::Wiki,
+            alias,
         }
+    }
+
+    /// Whether two targets point at the same place: equal in everything but
+    /// the display text, which only changes what a reader sees.
+    pub fn same_place(&self, other: &LinkTarget) -> bool {
+        self.domain == other.domain
+            && self.target == other.target
+            && self.raw == other.raw
+            && self.form == other.form
+    }
+
+    /// [`LinkTarget::parse`] for the inside of a `[[...]]` found in a body, or
+    /// `None` when it is not a link: a `|` with nothing before it (`[[|b]]`)
+    /// names no target, so it stays the text it was written as.
+    pub fn wikilink(inner: &str) -> Option<LinkTarget> {
+        if inner.contains('|') && split_alias(inner).0.is_empty() {
+            return None;
+        }
+        Some(LinkTarget::parse(inner))
+    }
+}
+
+/// Split the inside of a `[[...]]` at its first `|` into the target part and
+/// the display text, both trimmed. An empty display text is no display text.
+/// The one place the split is spelled, so the parser and every rewrite that
+/// keeps the display text agree on where the target ends.
+pub fn split_alias(inner: &str) -> (&str, Option<&str>) {
+    match inner.split_once('|') {
+        Some((target, alias)) => {
+            let alias = alias.trim();
+            (target.trim(), (!alias.is_empty()).then_some(alias))
+        }
+        None => (inner.trim(), None),
     }
 }
 
@@ -619,5 +719,40 @@ mod meta_value_tests {
             Some(META_VALUE_MAX_BYTES)
         );
         assert_eq!(meta_value_text(&json!(format!("{fits}x"))), None);
+    }
+}
+
+#[cfg(test)]
+mod link_target_tests {
+    use super::LinkTarget;
+
+    #[test]
+    fn an_alias_is_the_text_after_the_first_pipe() {
+        let link = LinkTarget::parse("pumps/p-12|the pump");
+        assert_eq!(link.domain, None);
+        assert_eq!(link.target, "pumps/p-12");
+        assert_eq!(link.alias.as_deref(), Some("the pump"));
+        assert_eq!(link.raw, "pumps/p-12", "raw is the target part only");
+
+        let link = LinkTarget::parse("ops:pumps/p-12|x");
+        assert_eq!(link.domain.as_deref(), Some("ops"));
+        assert_eq!(link.target, "pumps/p-12");
+        assert_eq!(link.alias.as_deref(), Some("x"));
+
+        // Split at the first pipe; the rest is display text, colons included.
+        let link = LinkTarget::parse(" a | b|c: d ");
+        assert_eq!(link.target, "a");
+        assert_eq!(link.alias.as_deref(), Some("b|c: d"));
+
+        // An empty alias is no alias.
+        let link = LinkTarget::parse("a| ");
+        assert_eq!(link.target, "a");
+        assert_eq!(link.alias, None);
+
+        // An empty target is not a link at all.
+        assert!(LinkTarget::wikilink("|b").is_none());
+        assert!(LinkTarget::wikilink(" | b").is_none());
+        assert!(LinkTarget::wikilink("a|b").is_some());
+        assert_eq!(LinkTarget::parse("plain").alias, None);
     }
 }

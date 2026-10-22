@@ -28,6 +28,14 @@
 //! unchanged - the index never read a reference out of it either. The walker
 //! itself (`rewrite_body_lines`) is shared with every other kind of document
 //! that rewrites links; a dialect decides which lines can hold its links.
+//!
+//! A relative Markdown link to another engram's file (`[p](../pumps/p.md)`)
+//! names a path, not an address, so it follows the file rather than the
+//! address: [`respell_relative_links`] rewrites the links to a file that
+//! moved inside its domain, and [`rebase_relative_links`] rebases the moved
+//! engram's own relative links onto its new folder. A wikilink spelled as the
+//! file's path (`[[pumps/p.md]]`) binds by path too, so
+//! [`respell_path_wikilinks`] makes it follow the file the same way.
 
 use crate::address::SCHEME;
 use crate::engram::LinkTarget;
@@ -232,10 +240,12 @@ fn relink_line(line: &str, read_in: &str, written_in: &str, spec: &Relink<'_>) -
             && masked.get(i + 1) == Some(&'[')
             && let Some(close) = find_close(&masked, i + 2)
         {
-            let inner: String = masked[i + 2..close].iter().collect();
+            let end = target_end(&masked, i + 2, close);
+            let inner: String = masked[i + 2..end].iter().collect();
             if let Some(new_inner) = relink_wikilink(&inner, read_in, written_in, spec) {
                 out.push_str("[[");
                 out.push_str(&new_inner);
+                out.extend(&original[end..close]);
                 out.push_str("]]");
                 count += 1;
             } else {
@@ -268,6 +278,14 @@ fn relink_line(line: &str, read_in: &str, written_in: &str, spec: &Relink<'_>) -
 /// The index of the first `]]` at or after `from`.
 fn find_close(chars: &[char], from: usize) -> Option<usize> {
     (from..chars.len().saturating_sub(1)).find(|&k| chars[k] == ']' && chars[k + 1] == ']')
+}
+
+/// Where the target part of the wikilink whose text runs from `from` to
+/// `close` ends: at its first `|`, the split [`crate::engram::split_alias`]
+/// makes, or at `close` when it has no display text. A rewrite replaces only
+/// the target part and keeps `|display text` exactly as it was written.
+fn target_end(chars: &[char], from: usize, close: usize) -> usize {
+    (from..close).find(|&k| chars[k] == '|').unwrap_or(close)
 }
 
 fn starts_with(chars: &[char], at: usize, needle: &[char]) -> bool {
@@ -350,11 +368,13 @@ fn respell_line(line: &str, respell: &dyn Fn(&str) -> Option<String>) -> (String
             && masked.get(i + 1) == Some(&'[')
             && let Some(close) = find_close(&masked, i + 2)
         {
-            let inner: String = masked[i + 2..close].iter().collect();
-            let raw_inner: String = original[i + 2..close].iter().collect();
+            let end = target_end(&masked, i + 2, close);
+            let inner: String = masked[i + 2..end].iter().collect();
+            let raw_inner: String = original[i + 2..end].iter().collect();
             if let Some(new_inner) = respell_wikilink(&inner, &raw_inner, respell) {
                 out.push_str("[[");
                 out.push_str(&new_inner);
+                out.extend(&original[end..close]);
                 out.push_str("]]");
                 count += 1;
             } else {
@@ -421,9 +441,339 @@ fn respell_wikilink(
     Some(format!("{leading}{new_domain}{trailing}{rest}"))
 }
 
+/// Rewrite the relative links in the engram at the domain-relative
+/// `source_path` that land on the file `from` so they land on `to`, both
+/// domain-relative paths in the same domain. Each new target is spelled from
+/// the folder of `source_path`; a `#fragment` and a title stay as written.
+/// Only the links the parser reads as links to another engram's file are
+/// touched (a target ending in `.md`, not an image, outside code), in the
+/// body as the lossless engram parser cuts it.
+pub fn respell_relative_links(
+    source: &str,
+    source_path: &str,
+    from: &str,
+    to: &str,
+) -> (String, usize) {
+    use crate::reflection::links::{map_note_links, relative_to, resolve};
+    map_note_links(source, &|target| {
+        (resolve(source_path, target).as_deref() == Some(from))
+            .then(|| relative_to(source_path, to))
+    })
+}
+
+/// Rebase the relative links of an engram that moved from the
+/// domain-relative path `from` to `to` inside its domain, so each lands on the
+/// file it landed on before. A link to the engram itself follows it to `to`.
+/// A link that climbs out of the domain, and an `assets/` path (domain-root
+/// relative, so a move inside the domain leaves it valid), stay as written,
+/// as does every link that is not a link to another engram's file.
+pub fn rebase_relative_links(source: &str, from: &str, to: &str) -> (String, usize) {
+    use crate::reflection::links::{map_note_links, relative_to, resolve};
+    map_note_links(source, &|target| {
+        if crate::is_under_assets(target) {
+            return None;
+        }
+        let landed = resolve(from, target).filter(|path| !path.is_empty())?;
+        let landed = if landed == from { to } else { landed.as_str() };
+        let rebased = relative_to(to, landed);
+        (rebased != target.trim_start_matches("./")).then_some(rebased)
+    })
+}
+
+pub use crate::reflection::links::{NoteLinkTo, WholeLinks};
+
+/// Rewrite the relative links to another engram's file in `source` through
+/// `map`, which is handed each decoded target as written (no `#fragment`, no
+/// title) and answers a new destination, a wikilink address that replaces
+/// the whole link, or `None` to keep it. A move into another domain needs
+/// the address: a relative path never reaches into another domain, so a link
+/// that crosses has to name the domain. The link text stays as the
+/// wikilink's display text. Same body walk as [`rebase_relative_links`].
+pub fn readdress_relative_links(
+    source: &str,
+    map: &dyn Fn(&str) -> Option<NoteLinkTo>,
+) -> WholeLinks {
+    crate::reflection::links::map_note_links_whole(source, map)
+}
+
+/// Rewrite every bare wikilink whose target text `map` answers, so it names
+/// the answer instead (`[[pumps/b.md]]` to `[[ops:pumps/b]]`); the display
+/// text after a `|` stays as written. A prefixed wikilink and one inside
+/// code are never handed to `map`.
+pub fn readdress_path_wikilinks(
+    source: &str,
+    map: &dyn Fn(&str) -> Option<String>,
+) -> (String, usize) {
+    rewrite_body_lines(source, BodyGate::Lossless, &|line| {
+        through(LinkDialect::Addressed, line, |l| {
+            path_wikilink_line(l, &|domain, target| {
+                domain.is_none().then(|| map(target)).flatten()
+            })
+        })
+    })
+}
+
+/// Rewrite every prefixed wikilink whose domain prefix and target `map`
+/// answers (`[[notes:guides/a.md]]` to `[[notes:archive/a.md]]`), so it names
+/// the answer instead; the display text after a `|` stays as written. A bare
+/// wikilink and one inside code are never handed to `map`.
+pub fn readdress_prefixed_path_wikilinks(
+    source: &str,
+    map: &dyn Fn(&str, &str) -> Option<String>,
+) -> (String, usize) {
+    rewrite_body_lines(source, BodyGate::Lossless, &|line| {
+        through(LinkDialect::Addressed, line, |l| {
+            path_wikilink_line(l, &|domain, target| domain.and_then(|d| map(d, target)))
+        })
+    })
+}
+
+/// Rewrite every bare wikilink spelled as the domain-relative file path `from`
+/// (`[[pumps/b.md]]`) so it names `to`. The index binds such a link by path,
+/// and the path is read from the domain root, so it needs no respelling from
+/// the folder of the engram that holds it. A prefixed wikilink, one inside
+/// code and one naming any other text stay as written.
+pub fn respell_path_wikilinks(source: &str, from: &str, to: &str) -> (String, usize) {
+    rewrite_body_lines(source, BodyGate::Lossless, &|line| {
+        through(LinkDialect::Addressed, line, |l| {
+            path_wikilink_line(l, &|domain, target| {
+                (domain.is_none() && target == from).then(|| to.to_string())
+            })
+        })
+    })
+}
+
+/// One body line under [`respell_path_wikilinks`] and
+/// [`readdress_path_wikilinks`]: the wikilinks found the way [`relink_line`]
+/// finds them, over the line with inline code masked, and every bare one
+/// whose domain prefix (none for a bare one) and target `map` answers
+/// renamed to the answer.
+fn path_wikilink_line(
+    line: &str,
+    map: &dyn Fn(Option<&str>, &str) -> Option<String>,
+) -> (String, usize) {
+    let original: Vec<char> = line.chars().collect();
+    let masked: Vec<char> = if line.contains('`') {
+        mask_inline_code(line).chars().collect()
+    } else {
+        original.clone()
+    };
+    let mut out = String::with_capacity(line.len());
+    let mut count = 0usize;
+    let mut i = 0usize;
+    while i < masked.len() {
+        if masked[i] == '['
+            && masked.get(i + 1) == Some(&'[')
+            && let Some(close) = find_close(&masked, i + 2)
+        {
+            let end = target_end(&masked, i + 2, close);
+            let inner: String = masked[i + 2..end].iter().collect();
+            let target = LinkTarget::parse(&inner);
+            if let Some(to) = map(target.domain.as_deref(), &target.target) {
+                out.push_str("[[");
+                out.push_str(&to);
+                out.extend(&original[end..close]);
+                out.push_str("]]");
+                count += 1;
+            } else {
+                out.extend(&original[i..close + 2]);
+            }
+            i = close + 2;
+            continue;
+        }
+        out.push(original[i]);
+        i += 1;
+    }
+    (out, count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wikilink_spelled_as_the_moved_path_follows_it() {
+        let source = format!(
+            "{ENGRAM_HEAD}- part_of [[pumps/b.md]]\n\nSee [[pumps/b.md]], [[ops:pumps/b.md]], \
+             [[Pumps/B.md]], [[pumps/b]] and `[[pumps/b.md]]`.\n\n```\n[[pumps/b.md]]\n```\n"
+        );
+        let (out, n) = respell_path_wikilinks(&source, "pumps/b.md", "archive/b.md");
+        assert_eq!(n, 2, "{out}");
+        assert!(out.contains("- part_of [[archive/b.md]]\n"), "{out}");
+        assert!(
+            out.contains(
+                "See [[archive/b.md]], [[ops:pumps/b.md]], [[Pumps/B.md]], [[pumps/b]] and `[[pumps/b.md]]`."
+            ),
+            "{out}"
+        );
+        assert!(out.contains("```\n[[pumps/b.md]]\n```"), "{out}");
+    }
+
+    #[test]
+    fn a_path_wikilink_with_a_display_text_follows_the_move_and_keeps_it() {
+        let source = format!("{ENGRAM_HEAD}See [[pumps/b.md|the pump]] and [[pumps/b.md|]].\n");
+        let (out, n) = respell_path_wikilinks(&source, "pumps/b.md", "archive/b.md");
+        assert_eq!(n, 2, "{out}");
+        assert!(
+            out.contains("See [[archive/b.md|the pump]] and [[archive/b.md|]]."),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn relink_keeps_the_alias() {
+        let moved = Relink {
+            from_domain: "eng",
+            from_permalink: "pumps/p-12",
+            title: "Pump Twelve",
+            to_domain: "eng",
+            to_permalink: "pumps/p-13",
+        };
+        let source = doc("See [[pumps/p-12|the pump]] and [[eng:pumps/p-12|it]].\n\
+             - part_of [[pumps/p-12|the pump]]\n\
+             By title [[Pump Twelve|twelve]] and code `[[pumps/p-12|x]]`.\n");
+        let (out, n) = relink(&source, "eng", "eng", &moved);
+        assert_eq!(n, 3, "{out}");
+        assert!(
+            out.contains("See [[pumps/p-13|the pump]] and [[eng:pumps/p-13|it]]."),
+            "{out}"
+        );
+        assert!(out.contains("- part_of [[pumps/p-13|the pump]]"), "{out}");
+        assert!(
+            out.contains("By title [[Pump Twelve|twelve]] and code `[[pumps/p-12|x]]`."),
+            "{out}"
+        );
+        // A move to another domain prefixes a title link and keeps its words.
+        let (out, n) = relink(&doc("[[Alpha Notes|the notes]]\n"), "eng", "eng", &CROSS);
+        assert_eq!(n, 1, "{out}");
+        assert!(out.contains("[[ops:Alpha Notes|the notes]]"), "{out}");
+    }
+
+    #[test]
+    fn a_domain_respell_keeps_the_alias() {
+        let (out, n) = respell_domains(
+            &spell_doc("See [[old:runbook|the runbook]] and [[runbook|old:x]].\n"),
+            &old_to_new,
+        );
+        assert_eq!(n, 1, "{out}");
+        assert!(
+            out.ends_with("See [[new:runbook|the runbook]] and [[runbook|old:x]].\n"),
+            "{out}"
+        );
+    }
+
+    const ENGRAM_HEAD: &str =
+        "---\ntype: engram\ntitle: B\npermalink: b\nstatus: stable\n---\n\n# B\n\n";
+
+    #[test]
+    fn relative_links_to_a_moved_file_are_respelled_from_the_linker() {
+        let source = format!(
+            "{ENGRAM_HEAD}- part_of [p](../pumps/p.md \"P\")\n\nSee [p](../pumps/p.md#top), \
+             ![p](../pumps/p.md), `[p](../pumps/p.md)` and [q](../pumps/q.md).\n\n\
+             ```\n[p](../pumps/p.md)\n```\n"
+        );
+        let (out, n) = respell_relative_links(&source, "deep/a.md", "pumps/p.md", "archive/p.md");
+        assert_eq!(n, 2, "{out}");
+        assert!(
+            out.contains("- part_of [p](../archive/p.md \"P\")\n"),
+            "{out}"
+        );
+        assert!(out.contains("See [p](../archive/p.md#top), ![p](../pumps/p.md), `[p](../pumps/p.md)` and [q](../pumps/q.md)."), "{out}");
+        assert!(out.contains("```\n[p](../pumps/p.md)\n```"), "{out}");
+        assert!(out.starts_with(ENGRAM_HEAD), "{out}");
+    }
+
+    #[test]
+    fn a_moved_engrams_own_relative_links_are_rebased() {
+        let source = format!(
+            "{ENGRAM_HEAD}[a](../a.md) [peer](./peer.md) [me](b.md) [out](../../x.md) \
+             [file](assets/n.md) [web](https://x.test/a.md) ![pic](../pic.md)\n"
+        );
+        let (out, n) = rebase_relative_links(&source, "pumps/b.md", "archive/old/b.md");
+        assert_eq!(n, 2, "{out}");
+        assert!(
+            out.ends_with(
+                "[a](../../a.md) [peer](../../pumps/peer.md) [me](b.md) [out](../../x.md) \
+                 [file](assets/n.md) [web](https://x.test/a.md) ![pic](../pic.md)\n"
+            ),
+            "{out}"
+        );
+        // Back to the root: the climb shortens, a same-folder link gains its folder.
+        let (out, n) = rebase_relative_links(&source, "pumps/b.md", "b.md");
+        assert_eq!(n, 2, "{out}");
+        assert!(
+            out.contains("[a](a.md) [peer](pumps/peer.md) [me](b.md)"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn relative_links_that_cross_into_another_domain_become_prefixed_wikilinks() {
+        let source = format!(
+            "{ENGRAM_HEAD}- part_of [Overview](../overview.md)\n\n\
+             See [B](b.md), [me](a.md#top), [frag](b.md#part), [titled](b.md \"T\"), \
+             [](b.md), ![pic](b.md), `[B](b.md)`, [odd [[x]]](b.md) and [left](c.md).\n"
+        );
+        let map = |target: &str| match target {
+            "b.md" => Some(NoteLinkTo::Wikilink("dom:guides/b".to_string())),
+            "../overview.md" => Some(NoteLinkTo::Wikilink("dom:overview".to_string())),
+            "a.md" => Some(NoteLinkTo::Target("x.md".to_string())),
+            _ => None,
+        };
+        let out = readdress_relative_links(&source, &map);
+        assert_eq!(out.changed, 6, "{}", out.text);
+        assert!(
+            out.text.contains("- part_of [[dom:overview|Overview]]\n"),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text.contains(
+                "See [[dom:guides/b|B]], [me](x.md#top), [[dom:guides/b|frag]], \
+                 [[dom:guides/b|titled]], [[dom:guides/b]], ![pic](b.md), `[B](b.md)`, \
+                 [odd [[x]]](b.md) and [left](c.md)."
+            ),
+            "{}",
+            out.text
+        );
+        assert_eq!(
+            out.dropped,
+            vec![
+                "[frag](b.md#part)".to_string(),
+                "[titled](b.md \"T\")".to_string()
+            ]
+        );
+        assert_eq!(out.unwritable, vec!["[odd [[x]]](b.md)".to_string()]);
+        assert!(out.text.starts_with(ENGRAM_HEAD));
+    }
+
+    #[test]
+    fn a_prefixed_path_wikilink_can_be_readdressed() {
+        let source =
+            format!("{ENGRAM_HEAD}[[notes:guides/a.md|A]] [[guides/a.md]] [[ops:guides/a.md]]\n");
+        let (out, n) = readdress_prefixed_path_wikilinks(&source, &|domain, target| {
+            (domain == "notes" && target == "guides/a.md").then(|| "notes:archive/a.md".to_string())
+        });
+        assert_eq!(n, 1, "{out}");
+        assert!(
+            out.ends_with("[[notes:archive/a.md|A]] [[guides/a.md]] [[ops:guides/a.md]]\n"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_bare_path_wikilink_can_be_given_a_domain() {
+        let source =
+            format!("{ENGRAM_HEAD}[[guides/b.md]] [[guides/b.md|B]] [[dom:guides/b.md]] [[B]]\n");
+        let (out, n) = readdress_path_wikilinks(&source, &|target| {
+            (target == "guides/b.md").then(|| "dom:guides/b".to_string())
+        });
+        assert_eq!(n, 2, "{out}");
+        assert!(
+            out.ends_with("[[dom:guides/b]] [[dom:guides/b|B]] [[dom:guides/b.md]] [[B]]\n"),
+            "{out}"
+        );
+    }
 
     const SAME: Relink<'static> = Relink {
         from_domain: "eng",

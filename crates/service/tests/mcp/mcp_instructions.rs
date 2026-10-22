@@ -19,6 +19,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::support::mcp_session::ServedSession;
 use crystalline_core::config::{DomainEntry, GlobalConfig};
 use crystalline_index::TursoStore;
 use crystalline_service::Engine;
@@ -924,10 +925,12 @@ async fn instructions_via_discover_gated(
     use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
 
     let (client_io, server_io) = tokio::io::duplex(1 << 16);
-    let engine = h.engine.clone();
-    let server_task = tokio::spawn(async move {
-        rmcp::serve_server(McpServer::new(engine).with_harness_gate(gate), server_io).await
-    });
+    // The discover chooses no lifecycle (rmcp 3.5.1), so the server half is
+    // never waited on here: it is kept alive until the text is read.
+    let server = ServedSession::spawn(
+        McpServer::new(h.engine.clone()).with_harness_gate(gate),
+        server_io,
+    );
     let client = ClientConfig::default()
         .serve_with_lifecycle(
             client_io,
@@ -937,7 +940,6 @@ async fn instructions_via_discover_gated(
         )
         .await
         .expect("the server answered server/discover");
-    let server = server_task.await.unwrap().unwrap();
     let text = instructions(&client);
     drop(client);
     drop(server);

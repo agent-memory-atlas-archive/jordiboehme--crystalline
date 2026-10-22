@@ -14,7 +14,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crystalline_core::config::{DomainEntry, GlobalConfig, NameOrigin};
+use crystalline_core::config::{
+    DomainEntry, GlobalConfig, NameOrigin, RenameAnswer, RenameQuestion,
+};
 use crystalline_index::{Store, TursoStore};
 use crystalline_service::Engine;
 use crystalline_service::Scope;
@@ -76,6 +78,7 @@ async fn read(engine: &Engine, domain: &str, identifier: &str) -> Value {
                 identifier: identifier.to_string(),
                 domain: Some(domain.to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -404,6 +407,7 @@ async fn every_verb_accepts_a_canonical_name_or_an_alias() {
                     identifier: identifier.to_string(),
                     domain: domain.map(str::to_string),
                     share_link: None,
+                    include_images: false,
                 },
                 &Scope::Unrestricted,
             )
@@ -477,6 +481,7 @@ async fn a_hidden_domain_keeps_the_spelling_the_caller_typed() {
         identifier: "crystalline://old-eng/runbook".to_string(),
         domain: Some("eng".to_string()),
         share_link: None,
+        include_images: false,
     };
     let seen = engine.localized(&p, &none).await;
     assert_eq!(seen.identifier, "crystalline://eng-knowledge/runbook");
@@ -614,6 +619,7 @@ async fn a_fresh_engine_resolves_a_virtual_name_on_its_first_verb() {
                 identifier: "manifest".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -678,6 +684,7 @@ async fn a_local_name_registered_by_another_process_wins_at_once() {
         identifier: "crystalline://eng/x".to_string(),
         domain: Some("eng".to_string()),
         share_link: None,
+        include_images: false,
     };
     let seen = engine.localized(&p, &none).await;
     assert_eq!(seen.domain.as_deref(), Some("eng"));
@@ -1275,6 +1282,185 @@ async fn an_explicit_name_is_kept_and_the_canonical_resolves_to_it() {
     assert_eq!(
         engine.local_domain_name("platform").await.as_deref(),
         Some("eng")
+    );
+    assert_eq!(
+        entry.rename_question, None,
+        "the first sight of a declared name is no rename"
+    );
+}
+
+// --- the rename question ----------------------------------------------
+
+/// An explicit domain `eng` whose MANIFEST declares `eng`, adopted once, so
+/// the machine has seen `eng` as its canonical name. A note links to it as
+/// `eng`, so a rename of its declared name leaves a link to respell and the
+/// question stays open.
+async fn adopted_explicit_eng(tmp: &Path) -> (Engine, PathBuf) {
+    let root = declared_folder(tmp, "eng", "eng");
+    std::fs::write(
+        root.join("note.md"),
+        "---\ntype: engram\ntitle: Note\npermalink: note\ntags:\n  - t\nstatus: current\nrecorded_at: 2026-01-01\n---\n\n# Note\n\nSee [[eng:note]].\n",
+    )
+    .unwrap();
+    let engine = adopting_engine(
+        memory_store().await,
+        tmp,
+        vec![(
+            "eng",
+            DomainEntry::file(root.clone()).with_name_origin(NameOrigin::Explicit),
+        )],
+    );
+    sync_and_adopt(&engine).await;
+    assert_eq!(
+        saved(tmp).domains["eng"].canonical_seen.as_deref(),
+        Some("eng")
+    );
+    (engine, root)
+}
+
+/// A hand edit of an explicit domain's `domain_name` keeps the local name
+/// and records a pending question: from the name seen before to the new one.
+#[tokio::test]
+async fn a_hand_edited_explicit_name_records_a_question() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (engine, root) = adopted_explicit_eng(tmp.path()).await;
+
+    declare(&root, "platform");
+    let report = sync_and_adopt(&engine).await;
+
+    let cfg = saved(tmp.path());
+    let question = cfg.domains["eng"]
+        .rename_question
+        .clone()
+        .unwrap_or_else(|| panic!("a question is recorded: {report}"));
+    assert_eq!(question.from, "eng");
+    assert_eq!(question.to, "platform");
+    assert_eq!(question.answered, None);
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(&question.seen_at).is_ok(),
+        "{}",
+        question.seen_at
+    );
+    assert_eq!(engine.rename_question("eng"), Some(question));
+    assert_eq!(
+        cfg.domains["eng"].canonical_seen.as_deref(),
+        Some("platform")
+    );
+}
+
+/// A derived name is renamed locally, as before, and nobody is asked.
+#[tokio::test]
+async fn a_derived_name_records_none() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = declared_folder(tmp.path(), "eng", "eng");
+    let engine = adopting_engine(
+        memory_store().await,
+        tmp.path(),
+        vec![(
+            "eng",
+            DomainEntry::file(root.clone()).with_name_origin(NameOrigin::Derived),
+        )],
+    );
+    sync_and_adopt(&engine).await;
+
+    declare(&root, "platform");
+    let report = sync_and_adopt(&engine).await;
+
+    let cfg = saved(tmp.path());
+    assert!(cfg.domains.contains_key("platform"), "{report}");
+    assert_eq!(cfg.domains["platform"].rename_question, None);
+    assert_eq!(engine.rename_question("platform"), None);
+}
+
+/// A name changed back to the one the question started from drops it.
+#[tokio::test]
+async fn changing_the_name_back_drops_the_question() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (engine, root) = adopted_explicit_eng(tmp.path()).await;
+    declare(&root, "platform");
+    sync_and_adopt(&engine).await;
+    assert!(engine.rename_question("eng").is_some());
+
+    declare(&root, "eng");
+    sync_and_adopt(&engine).await;
+
+    assert_eq!(saved(tmp.path()).domains["eng"].rename_question, None);
+    assert_eq!(engine.rename_question("eng"), None);
+}
+
+/// A question already answered "keep" for the same new name (the MANIFEST
+/// editor's "Save without renaming") is left as it is and asks nothing.
+#[tokio::test]
+async fn a_question_answered_keep_is_not_asked_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = declared_folder(tmp.path(), "eng", "platform");
+    let answered = RenameQuestion {
+        from: "eng".to_string(),
+        to: "platform".to_string(),
+        seen_at: "2026-01-01T00:00:00+00:00".to_string(),
+        answered: Some(RenameAnswer::Keep),
+    };
+    let mut entry = DomainEntry::file(root).with_name_origin(NameOrigin::Explicit);
+    entry.canonical_seen = Some("eng".to_string());
+    entry.rename_question = Some(answered.clone());
+    let engine = adopting_engine(memory_store().await, tmp.path(), vec![("eng", entry)]);
+
+    sync_and_adopt(&engine).await;
+    sync_and_adopt(&engine).await;
+
+    let cfg = saved(tmp.path());
+    assert_eq!(cfg.domains["eng"].rename_question, Some(answered));
+    assert_eq!(
+        cfg.domains["eng"].canonical_seen.as_deref(),
+        Some("platform")
+    );
+    assert_eq!(engine.rename_question("eng"), None);
+}
+
+/// A read-only instance writes no configuration, so it records no question.
+#[tokio::test]
+async fn a_read_only_instance_records_none() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = declared_folder(tmp.path(), "eng", "platform");
+    let mut entry = DomainEntry::file(root).with_name_origin(NameOrigin::Explicit);
+    entry.canonical_seen = Some("eng".to_string());
+    let engine = adopting_engine(memory_store().await, tmp.path(), vec![("eng", entry)])
+        .with_read_only(true);
+
+    sync_and_adopt(&engine).await;
+
+    assert_eq!(saved(tmp.path()).domains["eng"].rename_question, None);
+    assert_eq!(engine.rename_question("eng"), None);
+}
+
+/// The listing names an open question on its domain's row, and `null` on
+/// every other row.
+#[tokio::test]
+async fn list_domains_names_the_pending_rename() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (engine, root) = adopted_explicit_eng(tmp.path()).await;
+    declare(&root, "platform");
+    sync_and_adopt(&engine).await;
+    let question = engine.rename_question("eng").unwrap();
+
+    let listed = listed_domains(&engine).await;
+
+    assert_eq!(
+        domain_row(&listed, "eng")["rename_pending"],
+        serde_json::json!({
+            "from": "eng",
+            "to": "platform",
+            "seen_at": question.seen_at,
+        })
+    );
+
+    declare(&root, "eng");
+    sync_and_adopt(&engine).await;
+    let listed = listed_domains(&engine).await;
+    let row = domain_row(&listed, "eng");
+    assert!(
+        row.get("rename_pending").is_some_and(Value::is_null),
+        "{row}"
     );
 }
 
@@ -1951,4 +2137,178 @@ async fn the_startup_pass_binds_what_an_upgrade_left_pending() {
 
     engine.settle_after_initial_sync().await;
     assert_eq!(bound_to(&store, "scratch", "src").await, raw);
+}
+
+/// "Save without renaming" in the MANIFEST editor: a save that changes the
+/// declared name and asks to keep the links records the question as already
+/// answered, so the adoption after the next sync asks nothing.
+#[tokio::test]
+async fn a_save_with_rename_keep_records_no_open_question() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (engine, root) = adopted_explicit_eng(tmp.path()).await;
+    let before = std::fs::read_to_string(root.join("MANIFEST.md")).unwrap();
+    let checksum = crystalline_core::provision::receipt::sha256_hex(before.as_bytes());
+    let edited = crystalline_core::manifest_template("platform", TODAY);
+
+    engine
+        .save_manifest("eng", &edited, &checksum, &Scope::Unrestricted, true)
+        .await
+        .unwrap();
+    let question = saved(tmp.path()).domains["eng"]
+        .rename_question
+        .clone()
+        .expect("the answer is recorded with the save");
+    assert_eq!(question.from, "eng");
+    assert_eq!(question.to, "platform");
+    assert_eq!(question.answered, Some(RenameAnswer::Keep));
+
+    sync_and_adopt(&engine).await;
+    let cfg = saved(tmp.path());
+    assert_eq!(cfg.domains["eng"].rename_question, Some(question));
+    assert_eq!(engine.rename_question("eng"), None);
+    assert_eq!(
+        engine.local_domain_name("platform").await.as_deref(),
+        Some("eng")
+    );
+}
+
+/// A save without the keep records nothing itself: the adoption asks.
+#[tokio::test]
+async fn a_plain_save_of_a_new_name_leaves_the_question_to_the_adoption() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (engine, root) = adopted_explicit_eng(tmp.path()).await;
+    let before = std::fs::read_to_string(root.join("MANIFEST.md")).unwrap();
+    let checksum = crystalline_core::provision::receipt::sha256_hex(before.as_bytes());
+    let edited = crystalline_core::manifest_template("platform", TODAY);
+
+    engine
+        .save_manifest("eng", &edited, &checksum, &Scope::Unrestricted, false)
+        .await
+        .unwrap();
+    assert_eq!(saved(tmp.path()).domains["eng"].rename_question, None);
+    sync_and_adopt(&engine).await;
+    assert!(engine.rename_question("eng").is_some());
+}
+
+/// Answering a question forgets who was told about it: a session told about
+/// one question is told again about the next one on the same domain.
+#[tokio::test]
+async fn an_answered_question_is_told_again_when_a_new_one_comes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (engine, root) = adopted_explicit_eng(tmp.path()).await;
+    declare(&root, "platform");
+    sync_and_adopt(&engine).await;
+    let scope = Scope::Unrestricted;
+    assert!(
+        engine
+            .rename_guidance_once("s", "eng", &scope)
+            .await
+            .is_some()
+    );
+    assert!(
+        engine
+            .rename_guidance_once("s", "eng", &scope)
+            .await
+            .is_none()
+    );
+
+    engine.keep_manifest_rename("eng", &scope).await.unwrap();
+    assert!(
+        engine
+            .rename_guidance_once("s", "eng", &scope)
+            .await
+            .is_none()
+    );
+    declare(&root, "core");
+    sync_and_adopt(&engine).await;
+    let line = engine
+        .rename_guidance_once("s", "eng", &scope)
+        .await
+        .expect("the new question is told in the same session");
+    assert!(line.contains("to core"), "{line}");
+}
+
+/// What `domain`'s engram `permalink` holds as stored.
+async fn stored_content(engine: &Engine, domain: &str, permalink: &str) -> String {
+    read(engine, domain, permalink).await["content"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// A MANIFEST write that changes an explicit domain's `domain_name` asks the
+/// rename question in that same write, with no sync and no adoption after
+/// it, so no later write respells the old name before the question exists.
+#[tokio::test]
+async fn a_manifest_write_that_renames_asks_in_the_same_write() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (engine, _root) = adopted_explicit_eng(tmp.path()).await;
+
+    engine
+        .edit_engram(&replace_manifest_name("eng", "eng", "platform"))
+        .await
+        .unwrap();
+    let question = engine
+        .rename_question("eng")
+        .expect("the write asked the question");
+    assert_eq!(
+        (question.from.as_str(), question.to.as_str()),
+        ("eng", "platform")
+    );
+
+    engine
+        .write_engram(&write_params("eng", "Later", "See [[eng:note]]."))
+        .await
+        .unwrap();
+    let later = stored_content(&engine, "eng", "later").await;
+    assert!(later.contains("See [[eng:note]]."), "{later}");
+}
+
+/// The same for a virtual domain's MANIFEST engram.
+#[tokio::test]
+async fn a_virtual_manifest_write_that_renames_asks_in_the_same_write() {
+    let tmp = tempfile::tempdir().unwrap();
+    let engine = adopting_engine(
+        memory_store().await,
+        tmp.path(),
+        vec![(
+            "scratch",
+            DomainEntry::virtual_domain().with_name_origin(NameOrigin::Explicit),
+        )],
+    );
+    engine.domain_add_virtual("scratch").await.unwrap();
+    sync_and_adopt(&engine).await;
+    assert_eq!(
+        saved(tmp.path()).domains["scratch"]
+            .canonical_seen
+            .as_deref(),
+        Some("scratch")
+    );
+
+    engine
+        .edit_engram(&replace_manifest_name("scratch", "scratch", "notes"))
+        .await
+        .unwrap();
+    let question = engine
+        .rename_question("scratch")
+        .expect("the write asked the question");
+    assert_eq!(question.to, "notes");
+}
+
+/// A file domain whose MANIFEST changed on disk waits for the watch sync's
+/// adoption to ask. Until then a write keeps the old name as written too.
+#[tokio::test]
+async fn a_name_changed_on_disk_is_held_until_the_adoption_asks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (engine, root) = adopted_explicit_eng(tmp.path()).await;
+    declare(&root, "platform");
+    engine.sync(None).await.unwrap();
+    assert_eq!(engine.rename_question("eng"), None, "not adopted yet");
+
+    engine
+        .write_engram(&write_params("eng", "Meanwhile", "See [[eng:note]]."))
+        .await
+        .unwrap();
+    let meanwhile = stored_content(&engine, "eng", "meanwhile").await;
+    assert!(meanwhile.contains("See [[eng:note]]."), "{meanwhile}");
 }

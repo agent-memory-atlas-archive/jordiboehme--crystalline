@@ -513,7 +513,7 @@ pub const RULES: [RuleInfo; 27] = [
         family: Family::Structure,
         base: 40,
         summary: "domain spelled by a local-only name",
-        instruction: "The link's domain prefix is a name only this machine uses - a local config key or a machine-local alias - rather than the domain's canonical name. Rewrite it with edit_engram operation find_replace, find_text the link as written and content the same link with the prefix replaced by the domain's canonical name, so the reference reads the same on every machine that has this domain.",
+        instruction: "The link's domain prefix is a name only this machine uses - a local config key or a machine-local alias - rather than the domain's canonical name. Rewrite it with edit_engram operation find_replace, find_text the link as written and content the same link with the prefix replaced by the domain's canonical name, so the reference reads the same on every machine that has this domain. While a MANIFEST rename of that domain waits for a person, the finding is judgment: leave the link, because the person finishes the rename in Fluid or with crystalline doctor --fix, or keeps the links as they are.",
     },
     RuleInfo {
         id: "V111",
@@ -920,6 +920,8 @@ pub struct SpelledRef {
     pub spelling: String,
     /// The bracket text exactly as it was written, colon and all.
     pub raw: String,
+    /// The display text of a `[[target|text]]` reference, `None` without one.
+    pub alias: Option<String>,
 }
 
 /// A reference that names a target the index could not resolve: the `V102`
@@ -942,6 +944,10 @@ pub struct UnresolvedRef {
     /// resolver falls back to when the prefix names no registered domain, so
     /// V102's repair can be scored against the same string the resolver read.
     pub raw: String,
+    /// The display text of a `[[target|text]]` reference, `None` without one.
+    /// A repair quotes it on both sides, so its left side is the text the file
+    /// holds and following it keeps the author's words.
+    pub alias: Option<String>,
     /// The one-based line the reference sits on, when known.
     pub line: Option<usize>,
 }
@@ -1079,6 +1085,11 @@ pub struct SweepInput {
     /// never names a hidden domain's canonical name. Empty on a machine
     /// where every domain's local name already is its canonical one.
     pub respell: Vec<(String, String)>,
+    /// The spellings among [`SweepInput::respell`] whose domain's MANIFEST
+    /// rename still waits for a person's answer on this instance. A link
+    /// spelled with one is that person's to respell (they finish the rename
+    /// or keep the links), so `V110` speaks about it as judgment.
+    pub renames_asked: Vec<String>,
     /// This domain's own references whose written prefix is one of
     /// [`SweepInput::respell`]'s spellings, base rows only, from
     /// [`crate::Store::spelled_references`]. `V110`'s whole input: a
@@ -1170,6 +1181,7 @@ impl SweepInput {
             tag_aliases: Vec::new(),
             known_domains: Vec::new(),
             respell: Vec::new(),
+            renames_asked: Vec::new(),
             spelled_refs: Vec::new(),
             attachments: Vec::new(),
             shadowed_asset_refs: Vec::new(),
@@ -2467,9 +2479,12 @@ fn permalink_off_its_folder(fact: &EngramFacts) -> Option<Finding> {
 /// canonical one - answers with nothing to look at, whatever `spelled_refs`
 /// carries.
 ///
-/// Mechanical, always: the reference already resolves through the local
-/// name (local names always win), so rewriting the prefix to the canonical
-/// spelling changes nothing the archive claims.
+/// Mechanical: the reference already resolves through the local name (local
+/// names always win), so rewriting the prefix to the canonical spelling
+/// changes nothing the archive claims. Judgment while the spelling's domain
+/// has a MANIFEST rename waiting for a person ([`SweepInput::renames_asked`]):
+/// respelling the links is how that person finishes the rename, so an agent
+/// leaves it to them and the fix names the two ways they do it.
 ///
 /// Scoped by the spelling alone ([`scope_for`]'s one-path arm, shared with
 /// `V007`/`V008`): an engram naming two different local-only domains draws
@@ -2485,6 +2500,16 @@ fn detect_local_spellings(input: &SweepInput, graph: &Graph<'_>, report: &mut Sw
         .map(|(spelling, canonical)| (spelling.as_str(), canonical.as_str()))
         .collect();
 
+    let mut same: HashMap<(i64, &str, Option<&str>), Vec<usize>> = HashMap::new();
+    for reference in &input.spelled_refs {
+        same.entry((
+            reference.from.0,
+            reference.raw.as_str(),
+            reference.alias.as_deref(),
+        ))
+        .or_default()
+        .push(reference.line);
+    }
     for reference in &input.spelled_refs {
         let Some(canonical) = canonical_of.get(reference.spelling.as_str()) else {
             continue;
@@ -2501,24 +2526,40 @@ fn detect_local_spellings(input: &SweepInput, graph: &Graph<'_>, report: &mut Sw
             continue;
         };
         let new_raw = format!("{canonical}:{rest}");
+        let alias = reference.alias.as_deref();
+        let ordinal = same
+            .get(&(reference.from.0, reference.raw.as_str(), alias))
+            .map_or(0, |lines| ordinal_of(lines, reference.line));
+        let (written, respelled) = as_written(&fact.body, &reference.raw, alias, &new_raw, ordinal);
+        let spelling = &reference.spelling;
+        let finding = if input.renames_asked.contains(spelling) {
+            Finding::about("V110", fact).with(
+                Class::Judgment,
+                format!("link spells domain `{spelling}` by the name its MANIFEST renamed"),
+                format!(
+                    "`{written}` names domain `{spelling}`, which its MANIFEST now names \
+                     `{canonical}`; the rename waits for a person to finish it or to keep the \
+                     links as they are"
+                ),
+                "leave this link to a person: they finish the rename in Fluid or with \
+                 crystalline doctor --fix, or keep the links as they are"
+                    .to_string(),
+            )
+        } else {
+            Finding::about("V110", fact).with(
+                Class::Mechanical,
+                format!("link spells domain `{spelling}` by a name only this machine uses"),
+                format!(
+                    "`{written}` names domain `{spelling}`, a name only this machine uses; the \
+                     domain's name is `{canonical}`"
+                ),
+                format!(
+                    "edit_engram with operation find_replace, find_text \"{written}\" and content \"{respelled}\""
+                ),
+            )
+        };
         report.findings.push(
-            Finding::about("V110", fact)
-                .with(
-                    Class::Mechanical,
-                    format!(
-                        "link spells domain `{}` by a name only this machine uses",
-                        reference.spelling
-                    ),
-                    format!(
-                        "`[[{}]]` names domain `{}`, a name only this machine uses; the domain's \
-                         name is `{canonical}`",
-                        reference.raw, reference.spelling
-                    ),
-                    format!(
-                        "edit_engram with operation find_replace, find_text \"[[{}]]\" and content \"[[{new_raw}]]\"",
-                        reference.raw
-                    ),
-                )
+            finding
                 .at_line((reference.line > 0).then_some(reference.line))
                 .scoped([reference.spelling.clone()]),
         );
@@ -2718,17 +2759,34 @@ fn detect_close_folders(input: &SweepInput, report: &mut SweepReport) {
 /// than swallowed by an older entry.
 fn detect_unresolved(input: &SweepInput, graph: &Graph<'_>, report: &mut SweepReport) {
     let mut targets: HashMap<i64, Vec<String>> = HashMap::new();
+    // The lines of each engram's references by raw text and display text,
+    // so a repair quotes the occurrence on its own line.
+    let mut same: HashMap<(i64, &str, Option<&str>), Vec<usize>> = HashMap::new();
     for reference in &input.unresolved {
         targets
             .entry(reference.from.0)
             .or_default()
             .push(reference.target.clone());
+        same.entry((
+            reference.from.0,
+            reference.raw.as_str(),
+            reference.alias.as_deref(),
+        ))
+        .or_default()
+        .push(reference.line.unwrap_or(0));
     }
 
     for reference in &input.unresolved {
         let Some(fact) = graph.facts.get(&reference.from.0) else {
             continue;
         };
+        let ordinal = same
+            .get(&(
+                reference.from.0,
+                reference.raw.as_str(),
+                reference.alias.as_deref(),
+            ))
+            .map_or(0, |lines| ordinal_of(lines, reference.line.unwrap_or(0)));
         if fact.is_retired() {
             continue;
         }
@@ -2736,6 +2794,37 @@ fn detect_unresolved(input: &SweepInput, graph: &Graph<'_>, report: &mut SweepRe
             .target_domain
             .as_ref()
             .filter(|d| !input.known_domains.iter().any(|k| k == *d));
+
+        // A relative note link (`[p](../pumps/p-12.md)`) is stored as the path
+        // it lands on, and no row records its form; a path is what ends in
+        // `.md`, which a permalink never does. It names a file, not a title,
+        // so a title is no repair for it, and a wikilink swap would replace
+        // text the engram does not hold: which file was meant is a person's
+        // call.
+        if reference.target_domain.is_none()
+            && reference.target.to_ascii_lowercase().ends_with(".md")
+        {
+            let written = if reference.raw.is_empty() {
+                reference.target.as_str()
+            } else {
+                reference.raw.as_str()
+            };
+            report.findings.push(
+                Finding::about("V102", fact)
+                    .with(
+                        Class::Judgment,
+                        format!("unresolved reference `{written}`"),
+                        format!(
+                            "rel_type={}; no engram at `{}` in {}",
+                            reference.rel_type, reference.target, fact.domain
+                        ),
+                        format!("repoint or remove the link to `{written}`"),
+                    )
+                    .at_line(reference.line)
+                    .scoped(targets.get(&reference.from.0).cloned().unwrap_or_default()),
+            );
+            continue;
+        }
 
         let (evidence, class, fix) = match unregistered {
             // A prefix nobody registered is not a prefix: the resolver reads
@@ -2762,7 +2851,16 @@ fn detect_unresolved(input: &SweepInput, graph: &Graph<'_>, report: &mut SweepRe
                         reference.rel_type, fact.domain, reference.raw
                     ),
                     Class::Judgment,
-                    format!("[[{}]] -> [[{candidate}]]", reference.raw),
+                    {
+                        let (left, right) = as_written(
+                            &fact.body,
+                            &reference.raw,
+                            reference.alias.as_deref(),
+                            &candidate,
+                            ordinal,
+                        );
+                        format!("{left} -> {right}")
+                    },
                 ),
                 None => (
                     format!(
@@ -2814,10 +2912,19 @@ fn detect_unresolved(input: &SweepInput, graph: &Graph<'_>, report: &mut SweepRe
                         // occur in the engram, so a literal replace finds
                         // nothing; a right side without it silently repoints
                         // the reference at the writing engram's own domain.
-                        format!(
-                            "[[{written}]] -> [[{}]]",
-                            prefixed(reference.target_domain.as_deref(), &candidate)
-                        ),
+                        // A display text rides along on both sides for the
+                        // same reason: it is part of the text the file holds,
+                        // and the author's words for a reader.
+                        {
+                            let (left, right) = as_written(
+                                &fact.body,
+                                written,
+                                reference.alias.as_deref(),
+                                &prefixed(reference.target_domain.as_deref(), &candidate),
+                                ordinal,
+                            );
+                            format!("{left} -> {right}")
+                        },
                     ),
                     None => (
                         format!(
@@ -2856,6 +2963,67 @@ fn prefixed(domain: Option<&str>, target: &str) -> String {
         Some(domain) => format!("{domain}:{target}"),
         None => target.to_string(),
     }
+}
+
+/// A reference written back as the file holds it: `[[text]]`, or
+/// `[[text|alias]]` for a reference with display text. The stand-in for
+/// [`as_written`] when the body holds no wikilink that reads as the
+/// reference.
+fn bracketed(text: &str, alias: Option<&str>) -> String {
+    match alias {
+        Some(alias) => format!("[[{text}|{alias}]]"),
+        None => format!("[[{text}]]"),
+    }
+}
+
+/// A repair's two sides for the reference `raw` (with display text `alias`)
+/// in `body`, the left side quoted exactly as the file holds it, spaces and
+/// an empty display text included, and the right side the same text with
+/// `raw` replaced by `new_raw`. The index keeps a reference trimmed (`[[ a |
+/// b ]]` is `a` with `b`), so a quote rebuilt from it would name text a find
+/// and replace never finds, or a different `[[a]]` in the same file.
+///
+/// `ordinal` says which of the engram's references with this `raw` and
+/// `alias` this one is, in line order. The index keeps one per line, so it
+/// is quoted from the `ordinal`-th body line that holds such a wikilink, and
+/// two spellings of one reference in one file each get their own quote.
+/// Falls back to the first line that holds one, and to [`bracketed`] when
+/// no wikilink in the body reads as the reference.
+fn as_written(
+    body: &str,
+    raw: &str,
+    alias: Option<&str>,
+    new_raw: &str,
+    ordinal: usize,
+) -> (String, String) {
+    let matching: Vec<String> = crystalline_core::wikilinks_by_line(body)
+        .into_iter()
+        .filter_map(|inners| {
+            inners.into_iter().find(|inner| {
+                crystalline_core::LinkTarget::wikilink(inner)
+                    .is_some_and(|target| target.raw == raw && target.alias.as_deref() == alias)
+            })
+        })
+        .collect();
+    let Some(inner) = matching.get(ordinal).or_else(|| matching.first()) else {
+        return (bracketed(raw, alias), bracketed(new_raw, alias));
+    };
+    let (left, rest) = match inner.split_once('|') {
+        Some((left, rest)) => (left, Some(rest)),
+        None => (inner.as_str(), None),
+    };
+    let left = left.replacen(raw, new_raw, 1);
+    let new_inner = match rest {
+        Some(rest) => format!("{left}|{rest}"),
+        None => left,
+    };
+    (format!("[[{inner}]]"), format!("[[{new_inner}]]"))
+}
+
+/// Which of the references `same` (those of one engram with one raw text and
+/// display text, by line) the one at `line` is, in line order.
+fn ordinal_of(same: &[usize], line: usize) -> usize {
+    same.iter().filter(|other| **other < line).count()
 }
 
 /// The nearest existing title to an unresolved target inside `scope`, when it

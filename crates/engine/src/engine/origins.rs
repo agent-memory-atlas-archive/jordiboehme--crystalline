@@ -677,6 +677,9 @@ impl Engine {
         }
         let hidden = self.hidden_for(scope).await?;
         let targets = self.origin_targets(domain, &hidden)?;
+        // Which rename questions were already respelled here before the
+        // pull: the pull settles every other one its files settled.
+        let clean_before = self.rename_questions_already_clean().await;
 
         let mut domains = Vec::new();
         let mut errors = Vec::new();
@@ -689,6 +692,7 @@ impl Engine {
         // Once every pull has finished and let go of its origin lock, which a
         // rename takes: a pulled MANIFEST may declare a new name.
         self.adopt_domain_names_after("the update").await;
+        self.settle_rename_questions_after_pull(&clean_before).await;
         Ok(json!({ "domains": domains, "errors": errors }))
     }
 
@@ -1280,6 +1284,9 @@ impl Engine {
         // Whether any pull of this tick landed something, which is when a
         // MANIFEST may declare a new name.
         let mut moved = false;
+        // Which rename questions were already respelled here before this
+        // tick's pulls (see `origin_update`), asked before the first pull.
+        let mut clean_before: Option<HashSet<String>> = None;
         for (name, entry) in targets {
             if !self.origin_poller.is_due(&name, now) {
                 continue;
@@ -1298,6 +1305,9 @@ impl Engine {
             if !self.writes_domain_here(&name, false).await {
                 tracing::debug!("origin poll: '{name}' is hosted by another instance; skipped");
                 continue;
+            }
+            if clean_before.is_none() {
+                clean_before = Some(self.rename_questions_already_clean().await);
             }
             match self.origin_update_one(&name, &entry).await {
                 Ok(v) => {
@@ -1375,6 +1385,8 @@ impl Engine {
         // After the loop, when every pull has let go of its origin lock.
         if moved {
             self.adopt_domain_names_after("the origin poll").await;
+            self.settle_rename_questions_after_pull(&clean_before.unwrap_or_default())
+                .await;
         }
     }
 
@@ -2236,7 +2248,7 @@ impl Engine {
     /// where the folder holds the path, `added` where it does not. That is
     /// exactly the set a review-mode share stages
     /// ([`crate::share_staging`]), so the list and the share agree.
-    async fn overlay_local_changes(
+    pub(super) async fn overlay_local_changes(
         &self,
         domain: &str,
         root: &Path,

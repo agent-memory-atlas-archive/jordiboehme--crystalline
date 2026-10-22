@@ -54,6 +54,13 @@ pub const REMOTE_COMMANDS: &[&str] = &[
     "origin_status",
     "origin_changes",
     crystalline_remote::FILE_COMMAND,
+    "automation_status",
+    "automation_lease_take",
+    "automation_lease_renew",
+    "automation_lease_release",
+    "automation_run_record",
+    "automation_share",
+    "automation_runs",
 ];
 
 /// The commands whose answer carries an etag, because a client caches it.
@@ -196,6 +203,18 @@ pub(crate) async fn dispatch(
         }
         crystalline_remote::FILE_COMMAND => {
             return verb_envelope(remote_file(engine, request, identity, &scope, base).await);
+        }
+        // A runner's verbs: the token's account holds the lease and is the
+        // one whose MCP writes the share carries.
+        automation if crate::automation_ctl::AUTOMATION_COMMANDS.contains(&automation) => {
+            let mut request = request.clone();
+            if let Some(typed) = request.get("domain").and_then(Value::as_str) {
+                match localized(engine, typed, &scope).await {
+                    Ok(local) => request["domain"] = Value::String(local),
+                    Err(message) => return envelope_err(message),
+                }
+            }
+            return crate::automation_ctl::answer(engine, automation, &request, &scope).await;
         }
         other => Err(format!("'{other}' {NOT_REMOTE}")),
     };

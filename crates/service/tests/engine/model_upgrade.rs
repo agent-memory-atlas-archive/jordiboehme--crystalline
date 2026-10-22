@@ -209,6 +209,7 @@ async fn sweep(engine: &Engine) -> Value {
                 families: vec!["redundancy".to_string(), "meaning".to_string()],
                 rules: Vec::new(),
                 min_priority: None,
+                class: None,
                 limit: Some(50),
                 page: None,
                 today: Some("2026-09-14".to_string()),

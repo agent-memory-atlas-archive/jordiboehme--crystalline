@@ -38,12 +38,13 @@ pub enum SpellingPushFault {
 fn respell_canonical(
     table: &NameTable,
     hidden: &HashSet<String>,
+    held: &HashSet<String>,
     source: &str,
     gate: BodyGate,
 ) -> (String, usize) {
     crystalline_core::relink::respell_domains_with(source, gate, &|domain: &str| {
         let local = table.resolve(domain)?;
-        if hidden.contains(local) {
+        if hidden.contains(local) || held.contains(domain) {
             return None;
         }
         table.normalize(domain).map(str::to_string)
@@ -55,13 +56,14 @@ fn respell_canonical(
 pub(crate) struct SpellingFunnel {
     table: Arc<NameTable>,
     hidden: HashSet<String>,
+    held: HashSet<String>,
     gate: BodyGate,
 }
 
 impl SpellingFunnel {
     /// `source` with its spellings written canonically, and how many were.
     pub(crate) fn respell(&self, source: &str) -> (String, usize) {
-        respell_canonical(&self.table, &self.hidden, source, self.gate)
+        respell_canonical(&self.table, &self.hidden, &self.held, source, self.gate)
     }
 }
 
@@ -170,6 +172,11 @@ impl Engine {
     /// into `[[secret:x]]` would tell a caller who cannot see `secret` both
     /// that it exists and what its canonical name is, the exact oracle
     /// `hidden` exists everywhere else to close.
+    ///
+    /// A domain whose MANIFEST rename waits for a person's answer, or was
+    /// answered "keep", keeps its old spellings as written: respelling them
+    /// is how the person finishes the rename, never a write's side effect
+    /// (see [`Engine::rename_held_spellings`]).
     pub(super) async fn normalize_domain_spellings(
         &self,
         source: &str,
@@ -188,7 +195,8 @@ impl Engine {
         gate: BodyGate,
     ) -> (String, usize) {
         let table = self.name_table_now().await;
-        respell_canonical(&table, hidden, source, gate)
+        let held = self.rename_held_spellings(&table);
+        respell_canonical(&table, hidden, &held, source, gate)
     }
 
     /// The spelling funnel of [`Engine::normalize_domain_spellings_in`] as a
@@ -204,10 +212,11 @@ impl Engine {
         gate: BodyGate,
     ) -> Result<SpellingFunnel> {
         let table = self.name_table_now().await;
+        let held = self.rename_held_spellings(&table);
         let none = HashSet::new();
         let hidden = if sources
             .iter()
-            .any(|source| respell_canonical(&table, &none, source, gate).1 > 0)
+            .any(|source| respell_canonical(&table, &none, &held, source, gate).1 > 0)
         {
             self.hidden_for(scope).await?
         } else {
@@ -216,6 +225,7 @@ impl Engine {
         Ok(SpellingFunnel {
             table,
             hidden,
+            held,
             gate,
         })
     }
@@ -405,6 +415,10 @@ impl Engine {
                 }
                 self.heal_reflection_rows_after(domain, path).await;
             }
+        }
+        // A new `domain_name` asks its question in the write that made it.
+        if path == MANIFEST_PATH {
+            self.ask_rename_after_manifest_write(domain).await;
         }
     }
 

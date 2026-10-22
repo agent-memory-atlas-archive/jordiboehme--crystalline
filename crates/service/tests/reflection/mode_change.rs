@@ -413,12 +413,19 @@ async fn the_manifest_editor_makes_the_index_whole_both_ways() {
             &manifest("reflection: on\n"),
             &current(&fx),
             &Scope::Unrestricted,
+            false,
         )
         .await
         .unwrap();
     assert_whole(&fx).await;
     fx.engine
-        .save_manifest("eng", &manifest(""), &current(&fx), &Scope::Unrestricted)
+        .save_manifest(
+            "eng",
+            &manifest(""),
+            &current(&fx),
+            &Scope::Unrestricted,
+            false,
+        )
         .await
         .unwrap();
     assert_engrams(&fx).await;

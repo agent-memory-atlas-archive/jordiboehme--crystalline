@@ -1005,7 +1005,12 @@ pub struct QueueQuery {
                            `note`, one plain sentence whatever their state. \
                            A feedback item keeps its own `what`; for update \
                            items such sources are always on the section's \
-                           `source_changed` item, aged by its page.",
+                           `source_changed` item, aged by its page. An \
+                           `off_structure` item carries `structure`, the \
+                           pact's globs, and `hint` when none of them fits \
+                           any page; a `pact_changed` item carries `diff` and \
+                           `sections`, the ids of the changed parts of the \
+                           pact.",
             body = Object,
             example = json!({ "domain": "eng", "total": 1, "page": 1, "limit": 10,
                 "count": 1, "kinds": { "feedback": 0, "update": 1, "review": 0 },

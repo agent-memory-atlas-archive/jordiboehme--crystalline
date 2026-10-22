@@ -9,6 +9,8 @@
 //! the index) or in-process (a brief standalone open). The MCP tools, the ctl
 //! commands and the CLI data commands all funnel through that one engine.
 
+pub(crate) mod automation_ctl;
+pub mod automation_trigger;
 pub mod client;
 pub mod control;
 pub mod daemon;

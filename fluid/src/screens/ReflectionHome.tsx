@@ -14,9 +14,11 @@ import { BookOpen, ChevronDown, Inbox, Search } from "lucide-react";
 import { useId, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 
+import { lastRunSentence, useAutomation } from "../api/automation";
 import { ApiProblem, problemDetail } from "../api/client";
 import { DOMAINS_QUERY_KEY } from "../api/domains";
 import { removeMember } from "../api/members";
+import type { LoopState } from "../api/automation";
 import type {
   ReflectionHomeSummary,
   ReflectionSearchMode,
@@ -45,7 +47,7 @@ import { Avatar } from "../components/ReflectionThreads";
 import { BUTTON, Chip, FOCUS_RING, RAIL_LABEL } from "../components/primitives";
 import { WritePact } from "../components/WritePact";
 import { Loading } from "../components/Loading";
-import { plural } from "../format";
+import { plural, relativeTime } from "../format";
 import {
   reflectionPageRoute,
   reflectionReviewRoute,
@@ -127,6 +129,7 @@ function OnHome({
     queryFn: () => fetchReflectionTree(domain),
   });
   const summary = useReflectionHomeSummary(domain).data ?? null;
+  const reflect = useAutomation(domain, { loop: "reflect" }).data?.reflect;
   return (
     <>
       <SearchSection domain={domain} />
@@ -146,6 +149,7 @@ function OnHome({
             domain={domain}
             threads={openThreadCount(tree.data)}
             summary={summary}
+            reflect={reflect}
           />
         </div>
       )}
@@ -236,11 +240,14 @@ function ReviewCard({
   domain,
   threads,
   summary,
+  reflect,
 }: {
   domain: string;
   threads: number;
   summary: ReflectionHomeSummary | null;
+  reflect: LoopState | null | undefined;
 }): ReactElement {
+  const run = reflect?.last_run ?? null;
   return (
     <section className={CARD} aria-label="Review">
       <h2 className={CARD_TITLE}>
@@ -267,6 +274,23 @@ function ReviewCard({
           ? plural(threads, "open thread", "open threads")
           : reviewSentence(summary)}
       </p>
+      {run !== null && (
+        <p className={CARD_TEXT}>
+          {lastRunSentence(
+            "reflected",
+            run,
+            relativeTime(run.ended_at, new Date()),
+          )}
+          {reflect?.left_for_person != null && reflect.left_for_person > 0 && (
+            <>
+              {" "}
+              <Link to={reflectionReviewRoute(domain)} className={LINK}>
+                {`${String(reflect.left_for_person)} waiting for a person`}
+              </Link>
+            </>
+          )}
+        </p>
+      )}
     </section>
   );
 }

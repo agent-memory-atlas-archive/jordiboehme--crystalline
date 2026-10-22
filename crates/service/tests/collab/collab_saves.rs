@@ -1361,6 +1361,7 @@ async fn a_room_in_a_reviewing_domain_still_opens_on_the_reviewed_text() {
                 identifier: "alpha".to_string(),
                 domain: Some("team".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &crystalline_service::Scope::Unrestricted,
         )
@@ -3937,6 +3938,7 @@ async fn a_manifest_editor_save_that_switches_off_saves_and_closes_the_rooms_fir
             &off,
             &crate::support::sha256_hex(now.as_bytes()),
             &crystalline_service::Scope::Unrestricted,
+            false,
         )
         .await
         .unwrap();
@@ -3996,6 +3998,7 @@ async fn a_stale_manifest_editor_save_that_would_switch_off_closes_no_room() {
             &off,
             &"0".repeat(64),
             &crystalline_service::Scope::Unrestricted,
+            false,
         )
         .await;
     assert!(refused.is_err(), "{refused:?}");

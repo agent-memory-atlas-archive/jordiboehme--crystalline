@@ -1370,6 +1370,23 @@ impl<'a> DomainView<'a> {
             ),
             _ => (text, implied),
         };
+        // The draft's own relative links were written from its old folder, so
+        // they are rebased onto the new one, as a base move rebases them, and
+        // a wikilink spelled as its own path follows it. A pure text step:
+        // the links to the draft are the team's and are not rewritten here.
+        let text = if in_place {
+            text
+        } else {
+            let rebased =
+                crystalline_core::relink::rebase_relative_links(&text, &src.path, dest_rel).0;
+            let rebased =
+                crystalline_core::relink::respell_path_wikilinks(&rebased, &src.path, dest_rel).0;
+            if rebased == text {
+                text
+            } else {
+                touch_generated(&rebased, mover, None, chrono::Utc::now().fixed_offset())
+            }
+        };
         // Asked BEFORE either write, although the writer below asks it again:
         // a move is two writes, and a refusal that arrived at the second one
         // would already have tombstoned or dropped the source, leaving the

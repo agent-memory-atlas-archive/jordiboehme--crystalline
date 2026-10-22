@@ -1088,6 +1088,38 @@ fn cross_domain_links_resolve_against_the_manifest_domain_name() {
 }
 
 #[test]
+fn a_link_with_display_text_is_checked_by_its_target() {
+    let dir = tempdir().unwrap();
+    let manifest = "---\ntype: manifest\ntitle: MANIFEST\npermalink: manifest\ntags:\n- manifest\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n## Scope\n\n- Scope text here for the domain\n\n## When to Use\n\n- When testing\n";
+    let docs = dir.path().join("docs");
+    write(&docs, "MANIFEST.md", manifest);
+    write(
+        &docs,
+        "runbook.md",
+        "---\ntype: engram\ntitle: Incident Runbook\npermalink: runbook\ntags:\n- ops\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n# Incident Runbook\n\nSteps for the on-call engineer when the pager goes off at night.\n\nA second paragraph of prose, so the body clears the minimum line count.\n",
+    );
+    write(
+        &docs,
+        "linker.md",
+        "---\ntype: engram\ntitle: Linker\npermalink: linker\ntags:\n- ops\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n# Linker\n\nSee [[Incident Runbook|the runbook]] and [[Nowhere At All|boo]] for the details here.\n\nA second paragraph of prose, so the body clears the minimum line count.\n",
+    );
+
+    let report = verify::verify_paths([docs.as_path()], &VerifyOptions::default()).unwrap();
+    let l001: Vec<&str> = report
+        .issues
+        .iter()
+        .filter(|i| i.rule == "L001")
+        .map(|i| i.message.as_str())
+        .collect();
+    assert_eq!(
+        l001,
+        vec!["broken wikilink to `Nowhere At All`"],
+        "{:#?}",
+        report.issues
+    );
+}
+
+#[test]
 fn a_bare_link_to_another_domains_title_names_the_prefixed_link() {
     let dir = tempdir().unwrap();
     let manifest = "---\ntype: manifest\ntitle: MANIFEST\npermalink: manifest\ntags:\n- manifest\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n## Scope\n\n- Scope text here for the domain\n\n## When to Use\n\n- When testing\n";
@@ -1131,6 +1163,189 @@ fn a_bare_link_to_another_domains_title_names_the_prefixed_link() {
             .filter(|i| i.rule == "L001")
             .all(|i| i.severity == Severity::Warning)
     );
+}
+
+/// A relative link to another engram's file is judged by the path it lands
+/// on, not as a title: a link to a file that is there is sound whatever the
+/// target's permalink, a link to a file that is not there is broken, and a
+/// link to the file itself is a self-link.
+#[test]
+fn a_relative_link_is_checked_against_the_files_of_the_domain() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().join("plant");
+    let fm = |title: &str, permalink: &str| {
+        format!(
+            "---\ntype: engram\ntitle: {title}\npermalink: {permalink}\ntags:\n- plant\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n# {title}\n\n"
+        )
+    };
+    write(
+        &root,
+        "MANIFEST.md",
+        "---\ntype: manifest\ntitle: MANIFEST\npermalink: manifest\ntags:\n- manifest\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n## Scope\n\n- Scope text here for the domain\n\n## When to Use\n\n- When testing\n",
+    );
+    write(
+        &root,
+        "overview.md",
+        &format!(
+            "{}The plant at a glance, with pumps and valves in it.\n\nA second paragraph of prose, so the body clears the minimum line count.\n",
+            fm("Overview", "start-here")
+        ),
+    );
+    write(
+        &root,
+        "pumps/p-12.md",
+        &format!(
+            "{}- part_of [Overview](../overview.md)\n\nSee [gone](../gone.md) and [me](p-12.md) and [out](../../x.md).\n\nA second paragraph of prose, so the body clears the minimum line count.\n",
+            fm("P-12", "kit/pump-twelve")
+        ),
+    );
+    let report = verify::verify_paths([root.as_path()], &VerifyOptions::default()).unwrap();
+    let mut links: Vec<(&str, &str)> = report
+        .issues
+        .iter()
+        .filter(|i| i.rule.starts_with('L'))
+        .map(|i| (i.rule, i.message.as_str()))
+        .collect();
+    links.sort_unstable();
+    assert_eq!(
+        links,
+        vec![
+            ("L001", "broken link to `../../x.md`"),
+            ("L001", "broken link to `../gone.md`"),
+            ("L004", "self-link to `p-12.md`"),
+        ],
+        "{:#?}",
+        report.issues
+    );
+}
+
+/// A link back to a folder's `index.md` or `log.md`, the files Crystalline
+/// keeps in every folder, is sound: no L001, whether the file is there yet or
+/// not.
+#[test]
+fn a_relative_link_to_a_folders_index_or_log_is_not_broken() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().join("plant");
+    write(
+        &root,
+        "MANIFEST.md",
+        "---\ntype: manifest\ntitle: MANIFEST\npermalink: manifest\ntags:\n- manifest\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n## Scope\n\n- Scope text here for the domain\n\n## When to Use\n\n- When testing\n",
+    );
+    write(&root, "guides/index.md", "# guides\n");
+    write(
+        &root,
+        "guides/a.md",
+        "---\ntype: engram\ntitle: A\npermalink: guides/a\ntags:\n- plant\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n# A\n\nBack to [the folder](index.md), [the top](../index.md) and [the log](log.md).\n\nA second paragraph of prose, so the body clears the minimum line count.\n",
+    );
+    let report = verify::verify_paths([root.as_path()], &VerifyOptions::default()).unwrap();
+    let links: Vec<(&str, &str)> = report
+        .issues
+        .iter()
+        .filter(|i| i.rule.starts_with('L'))
+        .map(|i| (i.rule, i.message.as_str()))
+        .collect();
+    assert!(links.is_empty(), "{:#?}", report.issues);
+}
+
+/// A wikilink spelled as another domain's file path, `[[ops:pumps/p.md]]`,
+/// binds by that path in the named domain, as the index binds it: a path that
+/// is there is sound, one that is not is broken. A wikilink to a folder's
+/// `index.md` or `log.md` is never broken.
+#[test]
+fn a_prefixed_path_wikilink_is_checked_against_the_named_domains_files() {
+    let dir = tempdir().unwrap();
+    let fm = |title: &str, permalink: &str| {
+        format!(
+            "---\ntype: engram\ntitle: {title}\npermalink: {permalink}\ntags:\n- plant\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n# {title}\n\n"
+        )
+    };
+    let manifest = "---\ntype: manifest\ntitle: MANIFEST\npermalink: manifest\ntags:\n- manifest\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n## Scope\n\n- Scope text here for the domain\n\n## When to Use\n\n- When testing\n";
+    let ops = dir.path().join("ops");
+    let plant = dir.path().join("plant");
+    write(&ops, "MANIFEST.md", manifest);
+    write(&plant, "MANIFEST.md", manifest);
+    write(
+        &ops,
+        "pumps/p.md",
+        &format!(
+            "{}The pump, with a motor and a seal in it.\n\nA second paragraph of prose, so the body clears the minimum line count.\n",
+            fm("P", "kit/p")
+        ),
+    );
+    write(
+        &plant,
+        "a.md",
+        &format!(
+            "{}See [[ops:pumps/p.md|the pump]], [[ops:pumps/gone.md]], [[guides/index.md]] and [[log.md]].\n\nA second paragraph of prose, so the body clears the minimum line count.\n",
+            fm("A", "a")
+        ),
+    );
+    let report =
+        verify::verify_paths([ops.as_path(), plant.as_path()], &VerifyOptions::default()).unwrap();
+    let links: Vec<(&str, &str)> = report
+        .issues
+        .iter()
+        .filter(|i| i.rule.starts_with('L'))
+        .map(|i| (i.rule, i.message.as_str()))
+        .collect();
+    assert_eq!(links.len(), 1, "{:#?}", report.issues);
+    assert_eq!(links[0].0, "L001", "{:#?}", report.issues);
+    assert!(
+        links[0].1.contains("ops:pumps/gone.md"),
+        "{:#?}",
+        report.issues
+    );
+}
+
+/// A wikilink spelled as a file path, `[[pumps/p-12.md]]`, binds by that
+/// path in the index, so verify judges it by the files of the domain too: a
+/// path that is there is sound, a path that is not is broken.
+#[test]
+fn a_wikilink_spelled_as_a_path_is_checked_against_the_files_of_the_domain() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().join("plant");
+    let fm = |title: &str, permalink: &str| {
+        format!(
+            "---\ntype: engram\ntitle: {title}\npermalink: {permalink}\ntags:\n- plant\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n# {title}\n\n"
+        )
+    };
+    write(
+        &root,
+        "MANIFEST.md",
+        "---\ntype: manifest\ntitle: MANIFEST\npermalink: manifest\ntags:\n- manifest\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n## Scope\n\n- Scope text here for the domain\n\n## When to Use\n\n- When testing\n",
+    );
+    write(
+        &root,
+        "pumps/p-12.md",
+        &format!(
+            "{}The big pump, with a motor and a seal in it.\n\nA second paragraph of prose, so the body clears the minimum line count.\n",
+            fm("P-12", "kit/pump-twelve")
+        ),
+    );
+    write(
+        &root,
+        "overview.md",
+        &format!(
+            "{}- has_part [[pumps/p-12.md]]\n\nSee [[pumps/p-12.md]] and [[pumps/gone.md]] and [[Pumps/P-12.md]].\n\nA second paragraph of prose, so the body clears the minimum line count.\n",
+            fm("Overview", "start-here")
+        ),
+    );
+    let report = verify::verify_paths([root.as_path()], &VerifyOptions::default()).unwrap();
+    let links: Vec<(&str, &str)> = report
+        .issues
+        .iter()
+        .filter(|i| i.rule.starts_with('L'))
+        .map(|i| (i.rule, i.message.as_str()))
+        .collect();
+    // A path is compared exactly, case included, as the index compares it.
+    assert_eq!(links.len(), 2, "{:#?}", report.issues);
+    assert!(
+        links.iter().all(|(rule, _)| *rule == "L001"),
+        "{:#?}",
+        report.issues
+    );
+    assert!(links[0].1.contains("pumps/gone.md"), "{:#?}", report.issues);
+    assert!(links[1].1.contains("Pumps/P-12.md"), "{:#?}", report.issues);
 }
 
 /// A file that is not UTF-8 is reported under the encoding rule, `E006`, and

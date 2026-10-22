@@ -532,6 +532,50 @@ parity!(
     forward_reference_resolves
 );
 
+/// `[[target|display text]]` binds by its target part alone, as a relation
+/// and as a prose link, by permalink and by title.
+async fn an_aliased_link_resolves(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(
+        root,
+        "a.md",
+        &engram(
+            "A",
+            "a",
+            "engram",
+            "",
+            "- depends_on [[target-b|the target]]\n\nSee [[Target Beta|beta]] and [[Ghost|boo]].\n",
+        ),
+    );
+    write(
+        root,
+        "b.md",
+        &engram("Target Beta", "target-b", "engram", "", "body b\n"),
+    );
+    sync_domain(store, "d", root).await.unwrap();
+    let stats = &store.domain_stats().await.unwrap()[0];
+    assert_eq!(stats.unresolved_relations, 0);
+    assert_eq!(stats.unresolved_links, 1);
+    // What the sweep quotes for a dangling one is the target part alone.
+    let d = store
+        .upsert_domain("d", Some(&root.to_string_lossy()), DomainKind::File)
+        .await
+        .unwrap();
+    let refs = store.unresolved_refs(d, None).await.unwrap();
+    let dangling: Vec<(&str, &str, Option<&str>)> = refs
+        .iter()
+        .map(|r| (r.target.as_str(), r.raw.as_str(), r.alias.as_deref()))
+        .collect();
+    // The display text is stored beside it, so a repair can quote the
+    // bracket text exactly as the file holds it.
+    assert_eq!(dangling, vec![("Ghost", "Ghost", Some("boo"))]);
+}
+parity!(
+    an_aliased_link_resolves_by_its_target,
+    an_aliased_link_resolves
+);
+
 /// The twin of `forward_reference_resolves` for the title-match path: the
 /// reference names its target by title, not permalink, and must resolve on the
 /// later sync when the target appears. This exercises the `lower(e.title)`
@@ -2470,7 +2514,7 @@ async fn spelled_references_lists_one_domains_references(store: &dyn Store) {
             "a",
             "engram",
             "",
-            "See [[eng-knowledge:runbook]] and [[other:z]].\n\n- relates_to [[eng-knowledge:guide]]\n",
+            "See [[eng-knowledge:runbook]] and [[other:z]].\n\n- relates_to [[eng-knowledge:guide|the guide]]\n",
         ),
     );
     write(
@@ -2495,12 +2539,14 @@ async fn spelled_references_lists_one_domains_references(store: &dyn Store) {
                 line: 13,
                 spelling: "eng-knowledge".to_string(),
                 raw: "eng-knowledge:runbook".to_string(),
+                alias: None,
             },
             crystalline_index::SpelledRef {
                 from: a,
                 line: 15,
                 spelling: "eng-knowledge".to_string(),
                 raw: "eng-knowledge:guide".to_string(),
+                alias: Some("the guide".to_string()),
             },
         ]
     );
@@ -12472,7 +12518,7 @@ fn every_engram_reading_sql_carries_an_actor_predicate() {
         census.failures.join("\n")
     );
     assert_eq!(
-        census.sites, 188,
+        census.sites, 189,
         "the engram statement census moved; every new one needs a predicate or a waiver. \
          78 per backend in mod.rs (`BASE_PATH_SQL`, the folder counts' existence probe of one path, is the newest, on the base rows; before it `CITED_ENGRAM_SQL`, one cited engram by permalink, on the base rows; before it `ENGRAM_COVERAGE_SQL`, the coverage of one domain's engram chunks, waived below; before it the Reflection gate's two probes, \
          `ENGRAM_ROWS_UNDER_REFLECTIONS_SQL` and `HAS_ENGRAM_ROWS_SQL`, are the newest, \
@@ -12487,9 +12533,9 @@ fn every_engram_reading_sql_carries_an_actor_predicate() {
          pair write, waived by id; before them the emptiness probe of \
          `drop_empty_domain_row`, waived because a draft keeps the row too; before it the URL half \
          of `engrams_referencing_domains`, the move's `readdress_engram` and \
-         `engrams_mentioning`, all three on the base rows), 9 per backend in search.rs, 14 in the shared \
-         statement builders in store.rs: the reference-resolution expression's four \
-         arms, the three engram hops of each of the two graph frontiers, the two \
+         `engrams_mentioning`, all three on the base rows), 9 per backend in search.rs, 15 in the shared \
+         statement builders in store.rs: the reference-resolution expression's five \
+         arms (the path arm for a relative note link is the newest), the three engram hops of each of the two graph frontiers, the two \
          arms of the edge half of `engrams_referencing_domains` and the two arms of \
          `spelled_references`, all four on the base rows. Those \
          six used to be six per backend in search.rs: one copy of each frontier \

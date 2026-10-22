@@ -195,3 +195,11 @@ export type { KeptTextsResponse } from "./gen";
 
 /** One kept text with its text, as `GET /domains/{domain}/kept/{id}` answers. */
 export type { KeptTextResponse } from "./gen";
+
+/** When the reflect and evolve loops last ran on a domain, as `GET /domains/{domain}/automation` answers. */
+export type {
+  AutomationResponse,
+  LoopDelivery,
+  LoopRun,
+  LoopState,
+} from "./gen";

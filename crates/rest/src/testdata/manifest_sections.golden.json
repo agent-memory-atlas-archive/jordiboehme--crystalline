@@ -76,6 +76,32 @@
         "kind": "text",
         "meaning": "The address of the one server this domain's Reflection lives on; filled in when Reflection is switched on.",
         "values": []
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "off",
+        "effective": "off",
+        "key": "reflect_trigger",
+        "kind": "choice",
+        "meaning": "Send a signed webhook when reflect work is waiting.",
+        "values": [
+          "off",
+          "webhook"
+        ]
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "off",
+        "effective": "off",
+        "key": "evolve_trigger",
+        "kind": "choice",
+        "meaning": "Send a signed webhook when maintenance findings pile up.",
+        "values": [
+          "off",
+          "webhook"
+        ]
       }
     ],
     "provisioning": null,
@@ -183,6 +209,32 @@
         "kind": "text",
         "meaning": "The address of the one server this domain's Reflection lives on; filled in when Reflection is switched on.",
         "values": []
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "off",
+        "effective": "off",
+        "key": "reflect_trigger",
+        "kind": "choice",
+        "meaning": "Send a signed webhook when reflect work is waiting.",
+        "values": [
+          "off",
+          "webhook"
+        ]
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "off",
+        "effective": "off",
+        "key": "evolve_trigger",
+        "kind": "choice",
+        "meaning": "Send a signed webhook when maintenance findings pile up.",
+        "values": [
+          "off",
+          "webhook"
+        ]
       }
     ],
     "provisioning": {
@@ -347,6 +399,32 @@
         "kind": "text",
         "meaning": "The address of the one server this domain's Reflection lives on; filled in when Reflection is switched on.",
         "values": []
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "off",
+        "effective": "off",
+        "key": "reflect_trigger",
+        "kind": "choice",
+        "meaning": "Send a signed webhook when reflect work is waiting.",
+        "values": [
+          "off",
+          "webhook"
+        ]
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "off",
+        "effective": "off",
+        "key": "evolve_trigger",
+        "kind": "choice",
+        "meaning": "Send a signed webhook when maintenance findings pile up.",
+        "values": [
+          "off",
+          "webhook"
+        ]
       }
     ],
     "provisioning": {
@@ -491,6 +569,32 @@
         "kind": "text",
         "meaning": "The address of the one server this domain's Reflection lives on; filled in when Reflection is switched on.",
         "values": []
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "off",
+        "effective": "off",
+        "key": "reflect_trigger",
+        "kind": "choice",
+        "meaning": "Send a signed webhook when reflect work is waiting.",
+        "values": [
+          "off",
+          "webhook"
+        ]
+      },
+      {
+        "changed_by": "owner",
+        "declared": null,
+        "default": "off",
+        "effective": "off",
+        "key": "evolve_trigger",
+        "kind": "choice",
+        "meaning": "Send a signed webhook when maintenance findings pile up.",
+        "values": [
+          "off",
+          "webhook"
+        ]
       }
     ],
     "provisioning": null,

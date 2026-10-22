@@ -1192,7 +1192,7 @@ async fn configure_with_a_domain_answers_the_domain_view() {
         .await
         .unwrap();
     assert_eq!(out["domain"], "eng", "{out}");
-    assert_eq!(out["policies"].as_array().unwrap().len(), 6);
+    assert_eq!(out["policies"].as_array().unwrap().len(), 8);
     assert_eq!(out["sections"].as_array().unwrap().len(), 4);
     assert_eq!(out["rules"]["available"], true);
     assert_eq!(out["how"].as_array().unwrap().len(), 4);
@@ -8215,7 +8215,7 @@ async fn configure_lists_no_operator_setting() {
         .filter(|s| s.operator_only)
         .map(|s| s.key)
         .collect();
-    assert_eq!(operator.len(), 25);
+    assert_eq!(operator.len(), 28);
 
     let out = call(peer, "configure", json!({})).await.unwrap();
     let keys: Vec<&str> = out["settings"]
@@ -8264,6 +8264,8 @@ async fn configure_refuses_an_operator_setting_and_applies_nothing() {
         json!({ "unset": ["auth.mcp"] }),
         json!({ "set": { "search.salience_weight": "0.25", "auth.oidc.client_secret": "mk-secret-4c1d" } }),
         json!({ "set": { "database.url": "postgres://mk-user-4c1d@mk-host-4c1d/db" }, "unset": ["recall.limit"] }),
+        json!({ "set": { "automation.evolve_threshold": "1" } }),
+        json!({ "unset": ["automation.evolve_threshold"] }),
         json!({ "set": { "github.api_url": "https://mk-ghes-4c1d.invalid/api/v3" }, "connect": "github" }),
     ] {
         let result = call_result(peer, "configure", args.clone()).await;
@@ -9117,4 +9119,140 @@ fn queue_total(answer: &str) -> i64 {
         .find_map(|line| line.strip_prefix("total:"))
         .and_then(|n| n.trim().parse().ok())
         .unwrap_or_else(|| panic!("no total in {answer}"))
+}
+
+/// D3 and D4 over edit_engram: a heading holding `>` is found whole, a
+/// same-level block lands after the target's body with the receipt saying so,
+/// and a miss lists the headings.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn edit_engram_addresses_every_heading_and_keeps_a_body_with_its_heading() {
+    let h = Harness::new(&["eng"]).await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+    call(
+        peer,
+        "write_engram",
+        json!({
+            "domain": "eng",
+            "title": "Dev notes",
+            "content": "## Crystalline dev: schemars Option<Map>/Option<Vec>\n\nOld body.\n\n## Errors\n\nCodes.\n",
+        }),
+    )
+    .await
+    .unwrap();
+    let edited = call(
+        peer,
+        "edit_engram",
+        json!({
+            "identifier": "dev-notes",
+            "domain": "eng",
+            "operation": "insert_after_section",
+            "section": "## Crystalline dev: schemars Option<Map>/Option<Vec>",
+            "content": "## Limits\n\nTen per second.",
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(edited["placed_after_section"], true, "{edited}");
+    let text = std::fs::read_to_string(h.root.join("eng/dev-notes.md")).unwrap();
+    assert!(
+        text.contains("Old body.\n\n## Limits\n\nTen per second.\n\n## Errors"),
+        "{text}"
+    );
+    let plain = call(
+        peer,
+        "edit_engram",
+        json!({
+            "identifier": "dev-notes",
+            "domain": "eng",
+            "operation": "insert_after_section",
+            "section": "## Errors",
+            "content": "More codes.",
+        }),
+    )
+    .await
+    .unwrap();
+    assert!(plain.get("placed_after_section").is_none(), "{plain}");
+    let miss = call(
+        peer,
+        "edit_engram",
+        json!({
+            "identifier": "dev-notes",
+            "domain": "eng",
+            "operation": "replace_section",
+            "section": "## Nowhere",
+            "content": "x",
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        miss.contains("## Errors") && miss.contains("## Limits"),
+        "{miss}"
+    );
+}
+
+/// D3 and D4 over write_reflection: a section id names the section, and a
+/// same-level block lands after the target's body.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_reflection_finds_a_section_by_id_and_keeps_a_body_with_its_heading() {
+    let h = Harness::new(&["eng"]).await;
+    switch_reflection_on(&h, "eng").await;
+    let (client, _server) = h.connect().await;
+    let peer = client.peer();
+    call(
+        peer,
+        "write_reflection",
+        json!({ "domain": "eng", "path": "a.md", "markdown": "# A\n\n## One\n\nFirst.\n\n## Two\n\nSecond.\n" }),
+    )
+    .await
+    .unwrap();
+    let before = std::fs::read_to_string(h.root.join("eng/reflections/a.md")).unwrap();
+    let id = crystalline_core::reflection::split_sections(&before)[1]
+        .id
+        .clone()
+        .unwrap();
+    let edited = call(
+        peer,
+        "write_reflection",
+        json!({ "domain": "eng", "path": "a.md", "operation": "insert_after_section", "section": id, "content": "## Between\n\nNew." }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(edited["placed_after_section"], true, "{edited}");
+    let text = std::fs::read_to_string(h.root.join("eng/reflections/a.md")).unwrap();
+    assert!(
+        text.contains("First.\n\n## Between\n<!-- r:") && text.contains("\n\nNew.\n\n## Two\n"),
+        "{text}"
+    );
+    let miss = call(
+        peer,
+        "write_reflection",
+        json!({ "domain": "eng", "path": "a.md", "operation": "replace_section", "section": "## Nowhere", "content": "x" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(miss.contains("## One") && miss.contains("## Two"), "{miss}");
+}
+
+/// `write_reflection` says in one sentence what `insert_after_section` does
+/// with content that opens with a heading, as `edit_engram` does (spec D3).
+#[tokio::test]
+async fn the_write_reflection_description_names_placed_after_section() {
+    let h = Harness::new(&["eng"]).await;
+    let (client, _server) = h.connect().await;
+    let tools = client.peer().list_tools(Default::default()).await.unwrap();
+    let description = tools
+        .tools
+        .iter()
+        .find(|t| t.name == "write_reflection")
+        .and_then(|t| t.description.as_deref())
+        .unwrap_or("");
+    assert!(
+        description.contains(
+            "unless the content opens with a heading of the section's own level or a higher one: \
+             then it goes after the whole section and the receipt says placed_after_section"
+        ),
+        "{description}"
+    );
 }

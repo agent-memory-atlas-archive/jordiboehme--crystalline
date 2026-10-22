@@ -72,14 +72,26 @@ if (!("scrollIntoView" in Element.prototype)) {
   });
 }
 
-// jsdom performs no layout, so every element reports an `offsetHeight` of 0.
-// A virtualized list measures its scrolling box that way and, told it is zero
-// pixels tall, draws no rows at all. One nominal viewport for the whole suite
-// is what makes those lists renderable here; the tests that care about the
-// number set their own scroll offsets against it.
+// jsdom performs no layout, so every element reports an `offsetHeight` and a
+// `clientHeight` of 0. A virtualized list measures its scrolling box that way
+// (its rows by `offsetHeight`, and the box itself by `clientHeight` in the
+// virtual-core 3.19.6 that @tanstack/react-virtual 3.14.21 brings) and, told
+// it is zero pixels tall, draws no rows at all. One nominal viewport for the
+// whole suite is what makes those lists renderable here; the tests that care
+// about the number set their own scroll offsets against it. `clientHeight` is
+// a getter so a test can still spy on it.
+//
+// Every element answers 600 here, `document.documentElement` included. An
+// overflow test (one that compares `scrollHeight` against `clientHeight`)
+// must therefore set both on the element it measures: setting only
+// `scrollHeight` compares it against this 600, not against jsdom's 0.
 Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
   configurable: true,
   value: 600,
+});
+Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+  configurable: true,
+  get: () => 600,
 });
 
 // CodeMirror measures text through Ranges, which jsdom leaves layout-less.

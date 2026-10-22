@@ -316,6 +316,12 @@ mod tests {
             desktop.contains("`[[<domain>:<Title or permalink>]]`"),
             "consolidated skill lacks the relation form"
         );
+        for (name, content) in [("capture", capture), ("consolidated", desktop)] {
+            assert!(
+                content.contains("`[[target|text]]` links to target and shows text"),
+                "{name} skill lacks the display text form"
+            );
+        }
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! one line `{ "v": 1, "ok": true, "data": ... }` or
 //! `{ "v": 1, "ok": false, "error": ... }`. Commands: sync, status, reindex,
 //! file_stamps, collect_orphaned_domains, name_report, fix_local_spellings,
+//! finish_rename_questions,
 //! sessions, holder, tool, configure, domain_rename, origin_add,
 //! origin_update, origin_status,
 //! origin_share, origin_withdraw, origin_changes, origin_discard, origin_resolve,
@@ -62,6 +63,15 @@ pub async fn serve_ctl(stream: IpcStream, shared: Arc<Shared>) {
             break;
         }
     }
+}
+
+/// One ctl request answered as the daemon would on its control socket, over
+/// `engine` with nothing else running: the seam an integration test drives
+/// the socket's verbs through.
+#[cfg(feature = "testing")]
+#[doc(hidden)]
+pub async fn answer_for_test(engine: Arc<Engine>, req: &Value) -> Value {
+    handle(req, &Arc::new(Shared::for_test(engine))).await.0
 }
 
 /// Handle one ctl request, returning the response envelope and whether the
@@ -327,6 +337,13 @@ async fn handle(req: &Value, shared: &Arc<Shared>) -> (Value, bool) {
             Ok(fixed) => (envelope_ok(json!({ "fixed": fixed })), false),
             Err(e) => (envelope_err(e.to_string()), false),
         },
+        // The other fix `crystalline doctor --fix` runs for names: every
+        // rename a MANIFEST made that nobody has answered is finished, as
+        // the machine owner.
+        "finish_rename_questions" => match shared.engine.finish_rename_questions().await {
+            Ok(data) => (envelope_ok(data), false),
+            Err(e) => (envelope_err(e.to_string()), false),
+        },
         "reindex" => {
             let full = req.get("full").and_then(Value::as_bool).unwrap_or(false);
             let embed = req.get("embed").and_then(Value::as_bool).unwrap_or(false);
@@ -363,7 +380,8 @@ async fn handle(req: &Value, shared: &Arc<Shared>) -> (Value, bool) {
                 Err(e) => (envelope_err(e.to_string()), false),
             }
         }
-        // Load engram files into a virtual domain verbatim.
+        // Load engram files into a virtual domain, completing them unless
+        // `complete` is false (a move of Crystalline's own engrams).
         "domain_import" => {
             let domain = req.get("domain").and_then(Value::as_str).unwrap_or("");
             let path = req.get("path").and_then(Value::as_str).unwrap_or("");
@@ -372,9 +390,16 @@ async fn handle(req: &Value, shared: &Arc<Shared>) -> (Value, bool) {
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             let dry_run = req.get("dry_run").and_then(Value::as_bool).unwrap_or(false);
+            let complete = req.get("complete").and_then(Value::as_bool).unwrap_or(true);
             match shared
                 .engine
-                .import_domain(domain, std::path::Path::new(path), overwrite, dry_run)
+                .import_domain_with(
+                    domain,
+                    std::path::Path::new(path),
+                    overwrite,
+                    dry_run,
+                    complete,
+                )
                 .await
             {
                 Ok(data) => (envelope_ok(data), false),
@@ -678,6 +703,18 @@ async fn handle(req: &Value, shared: &Arc<Shared>) -> (Value, bool) {
                 Err(e) => (envelope_err(e.to_string()), false),
             }
         }
+        // The runner's verbs for the reflect and evolve loops, as the machine
+        // owner: no account, so a share falls back to the changed files.
+        automation if crate::automation_ctl::AUTOMATION_COMMANDS.contains(&automation) => (
+            crate::automation_ctl::answer(
+                &shared.engine,
+                automation,
+                req,
+                &crate::scope::Scope::Unrestricted,
+            )
+            .await,
+            false,
+        ),
         // The offline change list of one domain, optionally with both sides
         // of every entry inlined (the CLI's diff), optionally narrowed to one
         // path. Never pulls.
@@ -799,7 +836,8 @@ async fn handle(req: &Value, shared: &Arc<Shared>) -> (Value, bool) {
                 "unknown ctl command '{other}'; expected status, sessions, holder, tool, sync, reindex, \
                  routing_bullets, scaffold_manifest, domain_import, domain_export, \
                  domain_remove, domain_review, domain_rename, retag, collect_orphaned_domains, \
-                 name_report, fix_local_spellings, configure, origin_add, origin_update, \
+                 name_report, fix_local_spellings, finish_rename_questions, configure, \
+                 origin_add, origin_update, \
                  origin_status, origin_share, origin_withdraw, origin_changes, origin_discard, \
                  origin_resolve, provision, forget_domain or shutdown"
             )),
@@ -1001,7 +1039,7 @@ fn folds_on_the_way_in(req: &Value) -> bool {
 /// domain collide with the one an alias already points at. Nor is
 /// `forget_domain`: it names a domain that was just removed, and mapping that
 /// name could only land on a different, live domain.
-const DOMAIN_REFERENCE_COMMANDS: [&str; 16] = [
+const DOMAIN_REFERENCE_COMMANDS: [&str; 22] = [
     "sync",
     "file_stamps",
     "scaffold_manifest",
@@ -1018,6 +1056,12 @@ const DOMAIN_REFERENCE_COMMANDS: [&str; 16] = [
     "origin_discard",
     "origin_resolve",
     "provision",
+    "automation_lease_take",
+    "automation_lease_renew",
+    "automation_lease_release",
+    "automation_run_record",
+    "automation_share",
+    "automation_runs",
 ];
 
 /// `req` with its `domain` spelled as the local name, when it is a command

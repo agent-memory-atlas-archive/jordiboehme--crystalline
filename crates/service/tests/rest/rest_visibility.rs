@@ -431,6 +431,10 @@ async fn a_private_domain_is_absent_for_strangers_and_served_to_members() {
         ),
         ("/api/v1/domains/lab/tree", "/api/v1/domains/ghost/tree"),
         (
+            "/api/v1/domains/lab/automation",
+            "/api/v1/domains/ghost/automation",
+        ),
+        (
             "/api/v1/domains/lab/manifest",
             "/api/v1/domains/ghost/manifest",
         ),

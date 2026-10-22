@@ -1,0 +1,182 @@
+{
+  "name": "Crystalline capture",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Send text to Crystalline\n\nPOST JSON `{\"text\": \"...\", \"domain\": \"optional\"}` to this workflow's webhook. An agent writes it as one engram with `write_engram`. See docs/automation.md in the Crystalline repository.\n\n1. Create a Header Auth credential **Capture webhook key** (for example the header `X-Capture-Key` and a long random value) and pick it on **Text in**. Every caller sends that header.\n2. Create a Bearer Auth credential **Crystalline token** with the `cmt_` token of an agent account that may write the domain, and pick it on **Crystalline MCP**.\n3. Create an Anthropic credential and pick a model on **Claude**.\n4. Edit **Settings**: the server address and the default domain.",
+        "height": 400,
+        "width": 560
+      },
+      "id": "3c33dd37-b21e-5a64-aece-888c8b79e846",
+      "name": "About this workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -120,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "crystalline-capture",
+        "authentication": "headerAuth",
+        "responseMode": "lastNode",
+        "responseData": "firstEntryJson",
+        "options": {}
+      },
+      "id": "7abe2f9c-ef13-5c0b-99e2-7de9bb9947f3",
+      "name": "Text in",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        260
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Capture webhook key"
+        }
+      },
+      "webhookId": "0bb05f18-d171-5ea8-8d50-ae7075d22991"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Edit these values. The token is the credential \"Crystalline token\"\n// (Bearer Auth) on the MCP Client Tool.\nconst body = $input.first().json.body || {};\nif (typeof body.text !== 'string' || body.text.trim() === '') {\n  throw new Error('Send JSON with a text field.');\n}\nreturn [{\n  json: {\n    // The server's address as n8n reaches it, without a trailing slash.\n    url: 'https://crystalline.example.com',\n    // The domain new knowledge goes to, unless the request names one.\n    domain: typeof body.domain === 'string' && body.domain ? body.domain : 'inbox',\n    text: body.text,\n  },\n}];\n"
+      },
+      "id": "7309f59f-ce1f-5284-8d1b-e0c468ab42c8",
+      "name": "Settings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Learn this into the Crystalline domain {{ $json.domain }}.\n\nFirst call search_engrams with domains [\"{{ $json.domain }}\"] to see whether it is known already, and vocabulary for the tags in use. Then call write_engram once with domain \"{{ $json.domain }}\": a clear title, the tags in use that fit, a lead sentence and at least two bullets. Do not invent facts that are not in the text. When it is known already, write nothing and say which engram holds it. End with the title you wrote.\n\nThe text:\n\n{{ $json.text }}",
+        "options": {
+          "maxIterations": 10
+        }
+      },
+      "id": "1d8743f7-56fb-511f-9a35-03a75cf8287c",
+      "name": "Capture",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        480,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "options": {}
+      },
+      "id": "11b88435-4ea9-54b1-98d6-8b3f3c22698b",
+      "name": "Claude",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        420,
+        480
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Anthropic account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "endpointUrl": "={{ $('Settings').first().json.url }}/",
+        "serverTransport": "httpStreamable",
+        "authentication": "bearerAuth",
+        "include": "selected",
+        "options": {
+          "timeout": 120000
+        },
+        "includeTools": [
+          "search_engrams",
+          "vocabulary",
+          "write_engram"
+        ]
+      },
+      "id": "50f4ca0b-7d87-59af-a015-7c4d3ff173e3",
+      "name": "Crystalline MCP",
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1.4,
+      "position": [
+        700,
+        480
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "Crystalline token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Text in": {
+      "main": [
+        [
+          {
+            "node": "Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Settings": {
+      "main": [
+        [
+          {
+            "node": "Capture",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Capture",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Crystalline MCP": {
+      "ai_tool": [
+        [
+          {
+            "node": "Capture",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "active": false
+}

@@ -532,6 +532,48 @@ export async function renameDomain(
   };
 }
 
+/** What finishing a rename the MANIFEST made did to the links. */
+export interface ManifestRenameResult {
+  /** The name the MANIFEST declared before. */
+  from: string;
+  /** The name the MANIFEST declares now. */
+  to: string;
+  rewritten: RenameRewritten[];
+  leftBehind: RenameLeftBehind[];
+}
+
+/**
+ * Finish a rename the domain's MANIFEST made: respell the links that still
+ * use the old name. The route answers `{domain, from, to, rewritten,
+ * left_behind}`; the domain keeps its name on this machine.
+ */
+export async function finishManifestRename(
+  domain: string,
+): Promise<ManifestRenameResult> {
+  const report = asObject(
+    await api<unknown>(`/domains/${encodeSegment(domain)}/rename/finish`, {
+      method: "POST",
+    }),
+  );
+  return {
+    from: asString(report?.from) ?? domain,
+    to: asString(report?.to) ?? domain,
+    rewritten: asArray(report?.rewritten)
+      .map(readRenameRewritten)
+      .filter((row): row is RenameRewritten => row !== null),
+    leftBehind: asArray(report?.left_behind)
+      .map(readRenameLeftBehind)
+      .filter((row): row is RenameLeftBehind => row !== null),
+  };
+}
+
+/** Close the rename question and leave every link as it is. */
+export async function keepManifestRename(domain: string): Promise<void> {
+  await api<unknown>(`/domains/${encodeSegment(domain)}/rename/keep`, {
+    method: "POST",
+  });
+}
+
 /**
  * Where a rename's own report waits for the domain page it lands on to read
  * it once, keyed by the domain's new name.
@@ -1682,6 +1724,20 @@ export interface ArchiveReport {
   skipped: number;
   invalid: number;
   ignored: number;
+  /** How many distinct linked files were taken in as attachments. */
+  filesLinked: number;
+  /** Every link to a local file that was not taken, with its reason. */
+  notTaken: ArchiveNotTaken[];
+}
+
+/** One link a note makes to a file the import did not take in. */
+export interface ArchiveNotTaken {
+  /** The path of the note that links the file. */
+  note: string;
+  /** The link target as the note names it. */
+  target: string;
+  /** missing | outside | not_allowed | too_large | bad_name. */
+  reason: string;
 }
 
 /**
@@ -1720,6 +1776,13 @@ function readArchiveReport(report: ArchiveReportWire): ArchiveReport {
     skipped: report.skipped,
     invalid: report.invalid,
     ignored: report.ignored,
+    // A server from before linked files were taken carries neither field.
+    filesLinked: asCount(report.files_linked),
+    notTaken: (report.not_taken ?? []).map((item) => ({
+      note: item.note,
+      target: item.target,
+      reason: item.reason,
+    })),
   };
 }
 

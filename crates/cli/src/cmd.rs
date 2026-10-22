@@ -3415,6 +3415,7 @@ pub fn import(
     domain: &str,
     map: Option<&Path>,
     strip_prefix: Option<&str>,
+    missing_status: crystalline_core::import::MissingStatus,
     dry_run: bool,
     config_override: Option<&Path>,
     json: bool,
@@ -3448,6 +3449,7 @@ pub fn import(
         type_map,
         strip_prefix: strip_prefix.map(str::to_string),
         dry_run,
+        missing_status,
     };
     let report = crystalline_core::import::import_tree(&options)
         .map_err(|e| anyhow!("import failed: {e}"))?;
@@ -3466,6 +3468,34 @@ pub fn import(
     Ok(())
 }
 
+/// The links an import did not take, grouped by why, as the lines both
+/// imports print: none when every link was taken.
+pub(crate) fn not_taken_lines(not_taken: &[crystalline_core::linked::NotTaken]) -> Vec<String> {
+    use crystalline_core::linked::NotTakenReason as Reason;
+    let mut lines = Vec::new();
+    if not_taken.is_empty() {
+        return lines;
+    }
+    lines.push("Not taken:".to_string());
+    for (reason, label) in [
+        (Reason::Missing, "no such file"),
+        (Reason::Outside, "outside the source folder"),
+        (Reason::NotAllowed, "file type not allowed"),
+        (Reason::TooLarge, "file too large"),
+        (Reason::BadName, "no valid asset name"),
+    ] {
+        let group: Vec<_> = not_taken.iter().filter(|n| n.reason == reason).collect();
+        if group.is_empty() {
+            continue;
+        }
+        lines.push(format!("  {label}:"));
+        for n in group {
+            lines.push(format!("    {} -> {}", n.note, n.target));
+        }
+    }
+    lines
+}
+
 fn print_import_report(r: &crystalline_core::import::ImportReport, dry_run: bool) {
     use std::io::Write as _;
 
@@ -3482,6 +3512,12 @@ fn print_import_report(r: &crystalline_core::import::ImportReport, dry_run: bool
     .unwrap();
     writeln!(
         out,
+        "{} linked files taken into assets/, {} files no note links copied as they are",
+        r.files_linked, r.not_linked
+    )
+    .unwrap();
+    writeln!(
+        out,
         "type mapped: {}, temporal backfilled: {}, sentinels dropped: {}, prefixes stripped: {}, collisions: {}",
         r.type_mapped,
         r.temporal_backfilled,
@@ -3490,6 +3526,9 @@ fn print_import_report(r: &crystalline_core::import::ImportReport, dry_run: bool
         r.collisions
     )
     .unwrap();
+    for line in not_taken_lines(&r.not_taken) {
+        writeln!(out, "{line}").unwrap();
+    }
     for w in &r.warnings {
         writeln!(out, "  warning: {w}").unwrap();
     }

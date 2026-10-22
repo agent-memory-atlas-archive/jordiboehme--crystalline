@@ -31,8 +31,19 @@ import { asArray, asNumber, asObject, asString, asStrings } from "./json";
 export interface LinkTarget {
   /** The domain a `[[domain:Target]]` prefix named, or null for a bare one. */
   domain: string | null;
-  /** The target text: a title or a permalink, as it was written. */
+  /**
+   * The target text: a title or a permalink, as it was written. For a
+   * relative note link, the path it names, decoded and without its fragment.
+   */
   target: string;
+  /** Present for a relative Markdown link (`[p](../p-12.md)`), absent for a wikilink. */
+  form?: "relative";
+  /**
+   * The display text of a `[[target|alias]]` wikilink, read from the bracket
+   * text. The server keeps it out of the payload, since it never changes
+   * where a link points.
+   */
+  alias?: string;
 }
 
 /** One parsed reference out of the body: a prose wikilink or a relation. */
@@ -45,6 +56,11 @@ export interface EngramReference {
   target: LinkTarget;
   /** Whether the index found something at the other end. */
   resolved: boolean;
+  /**
+   * Where a resolved relative note link lands, which its path cannot say:
+   * the permalink of the engram at that path. Absent for a wikilink.
+   */
+  permalink?: string;
 }
 
 /** One observation bullet. */
@@ -238,7 +254,13 @@ export function engramDetailKey(
 function readTarget(value: unknown): LinkTarget | null {
   const record = asObject(value);
   const target = asString(record?.target);
-  return target === null ? null : { domain: asString(record?.domain), target };
+  if (target === null) {
+    return null;
+  }
+  const domain = asString(record?.domain);
+  return record?.form === "relative"
+    ? { domain, target, form: "relative" }
+    : { domain, target };
 }
 
 /** Read one reference, or null when it names nothing to point at. */
@@ -248,11 +270,13 @@ function readReference(value: unknown): EngramReference | null {
   if (target === null) {
     return null;
   }
+  const permalink = asString(record?.permalink);
   return {
     line: asNumber(record?.line),
     relType: asString(record?.rel_type),
     target,
     resolved: record?.resolved === true,
+    ...(permalink === null ? {} : { permalink }),
   };
 }
 

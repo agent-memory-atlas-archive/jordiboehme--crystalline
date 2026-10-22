@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::support::mcp_session::{ServedSession, chooses_lifecycle};
 use crystalline_core::config::{DomainEntry, GlobalConfig, ResponseFormat, ServiceConfig};
 use crystalline_index::{Store, TursoStore};
 use crystalline_service::Engine;
@@ -451,6 +452,7 @@ async fn a_guarded_split_of_a_live_engram_takes_the_live_checksum() {
                 identifier: "alpha".to_string(),
                 domain: Some("eng".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &crystalline_service::Scope::Unrestricted,
         )
@@ -522,6 +524,7 @@ async fn a_guarded_delete_of_a_live_engram_takes_the_live_checksum() {
                 identifier: "alpha".to_string(),
                 domain: Some("eng".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &crystalline_service::Scope::Unrestricted,
         )
@@ -1204,6 +1207,72 @@ async fn a_path_only_move_of_an_open_engram_keeps_the_rooms_typing() {
         .await
         .expect("the room stands");
     assert!(live.saving, "and raised no conflict");
+}
+
+/// A path-only move rebases the engram's own relative links while its room
+/// stays open. The room's next save meets the rebase as a change under it and
+/// merges it, so the file ends with both the typing and the rebased links.
+#[tokio::test]
+async fn a_path_only_move_under_an_open_room_keeps_the_typing_and_the_rebased_links() {
+    let (tmp, engine, _scratch) = engine_fixture(false).await;
+    let dir = tmp.path().join("eng");
+    std::fs::create_dir_all(dir.join("guides")).unwrap();
+    std::fs::write(
+        dir.join("guides/peer.md"),
+        "---\ntype: engram\ntitle: Peer\npermalink: peer\ntags:\n  - eng\nstatus: stable\nrecorded_at: 2026-01-01\n---\n\n# Peer\n\nThe peer.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("alpha.md"),
+        ALPHA.replace(
+            "A rule about alpha.\n",
+            "A rule about alpha.\n\nSee [the peer](guides/peer.md).\n",
+        ),
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+    let sessions = CollabSessions::new(engine.clone());
+    engine.set_collab_sessions(&sessions);
+    let joined = sessions.join("eng", "alpha", None).await.unwrap();
+    let doc = sync_client(&joined).await;
+    append_line(&joined, &doc, "typed before the move").await;
+
+    engine
+        .move_engram(
+            &crystalline_service::params::MoveParams {
+                identifier: "alpha".to_string(),
+                domain: "eng".to_string(),
+                destination: "guides/alpha.md".to_string(),
+                destination_domain: None,
+                permalink: Some("keep".to_string()),
+                update_links: None,
+            },
+            &crystalline_service::Scope::Unrestricted,
+        )
+        .await
+        .expect("a path-only move is not refused by the open room");
+    joined
+        .session
+        .tick_save(Instant::now() + Duration::from_secs(60))
+        .await;
+
+    let moved = std::fs::read_to_string(dir.join("guides/alpha.md")).unwrap();
+    assert!(
+        moved.contains("typed before the move") && moved.contains("See [the peer](peer.md)."),
+        "the typing and the rebased link both landed: {moved:?}"
+    );
+    assert!(!moved.contains("guides/peer.md"), "{moved:?}");
+    let live = sessions
+        .live_text("eng", "alpha", None)
+        .await
+        .expect("the room stands");
+    assert!(live.saving, "and raised no conflict");
+    assert!(
+        live.text.contains("See [the peer](peer.md).")
+            && live.text.contains("typed before the move"),
+        "the room holds what the file holds: {:?}",
+        live.text
+    );
 }
 
 /// **Task 41c.** A room's save that found the engram at its old path and
@@ -2706,7 +2775,8 @@ async fn an_agent_whose_state_was_taken_away_publishes_itself_again() {
 // Driven over the wire rather than through the engine, because the refusal is
 // the MCP layer's. The fixtures below are copied from `mcp_modern_era.rs` for
 // the reason the module header already gives - integration test crates share
-// no helpers.
+// no helpers beyond `tests/support`, which holds the server half
+// (`support::mcp_session`).
 
 /// The revision these rounds are served at.
 const ERA: &str = "2026-07-28";
@@ -2715,33 +2785,22 @@ const ERA: &str = "2026-07-28";
 struct Wire {
     write: tokio::io::WriteHalf<tokio::io::DuplexStream>,
     lines: tokio::io::Lines<tokio::io::BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
-    /// rmcp's init loop until the opener has been sent; the running service it
-    /// yields is kept alive for the rest of the conversation.
-    server: Option<
-        tokio::task::JoinHandle<
-            Result<
-                rmcp::service::RunningService<rmcp::RoleServer, McpServer>,
-                rmcp::service::ServerInitializeError,
-            >,
-        >,
-    >,
-    running: Option<rmcp::service::RunningService<rmcp::RoleServer, McpServer>>,
+    /// The server half, waited on once the first message that chooses the
+    /// lifecycle was answered (never a `server/discover` on its own; see
+    /// `support::mcp_session`) and kept alive for the rest of the conversation.
+    server: ServedSession<McpServer>,
 }
 
 impl Wire {
     /// A connection to a server over `engine`, not yet opened.
     fn to(engine: Arc<Engine>) -> Wire {
         let (client_io, server_io) = tokio::io::duplex(1 << 18);
-        let server =
-            tokio::spawn(
-                async move { rmcp::serve_server(McpServer::new(engine), server_io).await },
-            );
+        let server = ServedSession::spawn(McpServer::new(engine), server_io);
         let (read, write) = tokio::io::split(client_io);
         Wire {
             write,
             lines: tokio::io::BufReader::new(read).lines(),
-            server: Some(server),
-            running: None,
+            server,
         }
     }
 
@@ -2758,19 +2817,26 @@ impl Wire {
         }
     }
 
-    /// Send the session opener and read its answer, collecting the running
-    /// service the init loop hands back.
+    /// Send the session opener and read its answer.
     async fn open(&mut self, message: Value) -> Value {
-        self.send(message).await;
-        let task = self.server.take().expect("the opener is sent once");
-        self.running = Some(task.await.unwrap().expect("the server opened a session"));
-        self.recv().await.expect("the opener was answered")
+        self.exchange(message, "the opener was answered").await
     }
 
     /// Send a request on an open connection and read its answer.
     async fn call(&mut self, message: Value) -> Value {
+        self.exchange(message, "the request was answered").await
+    }
+
+    /// Send `message`, read its answer, and collect the running service the
+    /// start-up loop hands back once `message` chose the lifecycle.
+    async fn exchange(&mut self, message: Value, answered: &str) -> Value {
+        let chooses = !self.server.is_started() && chooses_lifecycle(&message);
         self.send(message).await;
-        self.recv().await.expect("the request was answered")
+        let answer = self.recv().await.expect(answered);
+        if chooses {
+            self.server.started().await;
+        }
+        answer
     }
 }
 

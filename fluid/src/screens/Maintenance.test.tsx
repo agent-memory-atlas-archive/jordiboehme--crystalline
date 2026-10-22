@@ -1518,3 +1518,82 @@ describe("the way to the maintenance screen", () => {
     ).toBeVisible();
   });
 });
+
+describe("the last maintenance runs", () => {
+  const LOOP = {
+    last_run: null,
+    running: null,
+    left_for_person: 0,
+    judgment_waiting: 0,
+    delivery: null,
+  };
+  const ago = (hours: number) =>
+    new Date(Date.now() - hours * 3600 * 1000).toISOString();
+  const ran = (judgment: number) => ({
+    reflect: LOOP,
+    evolve: {
+      ...LOOP,
+      judgment_waiting: judgment,
+      last_run: {
+        started_at: ago(5),
+        ended_at: ago(5),
+        runner: "n8n",
+        account: null,
+        outcome: "done",
+        done: 2,
+        left: 0,
+        judgment_waiting: judgment,
+        summary: "",
+        pr_url: null,
+      },
+    },
+  });
+
+  it("says when each domain was last maintained and counts judgment from the queue", async () => {
+    await open({
+      "/domains/eng/automation": () => ({ reflect: null, evolve: LOOP }),
+      "/domains/ops/automation": () => ran(0),
+    });
+    const list = await screen.findByRole("list", {
+      name: "Last maintenance runs",
+    });
+    const items = within(list).getAllByRole("listitem");
+    expect(items).toHaveLength(1);
+    // The one judgment finding of ops comes from the sweep already loaded.
+    expect(items[0]).toHaveTextContent(
+      "ops: Last maintained 5 hours ago by n8n: done. 1 finding waits for a person.",
+    );
+    // The last run only: no request that sweeps a domain again.
+    expect(requested()).toContain(
+      "/domains/ops/automation?loop=evolve&counts=false",
+    );
+  });
+
+  it("calls the count a lower bound when the page is partial, and leaves out a zero", async () => {
+    await open({
+      "/evolve": () => evolvePayload({ total: 50 }),
+      "/domains/eng/automation": () => ran(0),
+      "/domains/ops/automation": () => ran(0),
+    });
+    const list = await screen.findByRole("list", {
+      name: "Last maintenance runs",
+    });
+    const items = within(list).getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(items[1]).toHaveTextContent(
+      "ops: Last maintained 5 hours ago by n8n: done. At least 1 finding waits for a person.",
+    );
+    // eng has no judgment finding on this partial page: no claim of zero.
+    expect(items[0]).toHaveTextContent(
+      /^eng: Last maintained 5 hours ago by n8n: done\.$/,
+    );
+  });
+
+  it("shows nothing when no domain was ever maintained", async () => {
+    await open();
+    await section(/^Temporal/);
+    expect(
+      screen.queryByRole("list", { name: "Last maintenance runs" }),
+    ).toBeNull();
+  });
+});

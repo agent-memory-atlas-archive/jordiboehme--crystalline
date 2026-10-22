@@ -1156,12 +1156,15 @@ pub async fn scaffold_virtual_manifest(
 }
 
 /// Import engram files into a virtual domain: over the daemon when one owns the
-/// index, else against a directly opened store.
+/// index, else against a directly opened store. `complete` completes notes
+/// that lack a field a reader needs; a move of Crystalline's own engrams
+/// passes `false` so nothing it moves is changed.
 pub async fn domain_import(
     domain: &str,
     src: &Path,
     overwrite: bool,
     dry_run: bool,
+    complete: bool,
     db: Option<&Path>,
     config_path: Option<&Path>,
 ) -> anyhow::Result<Value> {
@@ -1170,6 +1173,7 @@ pub async fn domain_import(
         && let Some(data) = ctl_if_running(json!({
             "v": 1, "cmd": "domain_import", "domain": domain,
             "path": src.display().to_string(), "overwrite": overwrite, "dry_run": dry_run,
+            "complete": complete,
         }))
         .await?
     {
@@ -1180,7 +1184,7 @@ pub async fn domain_import(
     let engine = open_standalone_reporting(loaded, &db_path, false, db, config_path).await?;
     let domain = localize_standalone(&engine, domain).await;
     Ok(engine
-        .import_domain(&domain, src, overwrite, dry_run)
+        .import_domain_with(&domain, src, overwrite, dry_run, complete)
         .await?)
 }
 
@@ -1296,12 +1300,16 @@ pub async fn collect_orphaned_domains(
 }
 
 /// The domain name findings `crystalline doctor` shows
-/// ([`Engine::name_report`]), after, when `fix` is set, respelling every link
-/// that names a domain by a name only this machine uses
-/// ([`Engine::fix_local_spellings`]); the report then carries `fixed`, how
-/// many links changed. A fix that is refused (a read-only instance) keeps the
-/// report and carries `fix_error` instead. Over the daemon when one owns the
-/// index (the ctl commands `fix_local_spellings` and `name_report`), else
+/// ([`Engine::name_report`]), after, when `fix` is set, finishing every
+/// rename a MANIFEST made that nobody answered
+/// ([`Engine::finish_rename_questions`]) and then respelling every link that
+/// names a domain by a name only this machine uses
+/// ([`Engine::fix_local_spellings`]). The report then carries `fixed`, how
+/// many links the second changed, and `renames_finished`, the domains the
+/// first finished. A fix that is refused (a read-only instance) keeps the
+/// report and carries `fix_error` or `rename_fix_errors` instead. Over the
+/// daemon when one owns the index (the ctl commands
+/// `finish_rename_questions`, `fix_local_spellings` and `name_report`), else
 /// against one directly opened store.
 pub async fn name_report(
     fix: bool,
@@ -1310,6 +1318,14 @@ pub async fn name_report(
 ) -> anyhow::Result<Value> {
     use serde_json::json;
     if use_daemon(db, config_path) {
+        let renamed = if fix {
+            match ctl_if_running(json!({ "v": 1, "cmd": "finish_rename_questions" })).await {
+                Ok(answer) => answer.map(Ok),
+                Err(e) => Some(Err(format!("{e:#}"))),
+            }
+        } else {
+            None
+        };
         let fixed = if fix {
             match ctl_if_running(json!({ "v": 1, "cmd": "fix_local_spellings" })).await {
                 Ok(answer) => {
@@ -1324,12 +1340,23 @@ pub async fn name_report(
             && let Some(mut data) = ctl_if_running(json!({ "v": 1, "cmd": "name_report" })).await?
         {
             attach_fix_outcome(&mut data, fixed);
+            attach_rename_outcome(&mut data, renamed);
             return Ok(data);
         }
     }
     let loaded = overlay::load(config_path)?;
     let db_path = resolve_db(db)?;
     let engine = open_standalone_reporting(loaded, &db_path, false, db, config_path).await?;
+    let renamed = if fix {
+        Some(
+            engine
+                .finish_rename_questions()
+                .await
+                .map_err(|e| e.to_string()),
+        )
+    } else {
+        None
+    };
     let fixed = if fix {
         Some(
             engine
@@ -1342,7 +1369,44 @@ pub async fn name_report(
     };
     let mut report = engine.name_report().await?;
     attach_fix_outcome(&mut report, fixed);
+    attach_rename_outcome(&mut report, renamed);
     Ok(report)
+}
+
+/// Put what `--fix` did about MANIFEST renames into a name report:
+/// `renames_finished`, the domains finished, and `rename_fix_errors`, one
+/// `domain: reason` per domain that could not be, or the one reason nothing
+/// could be.
+fn attach_rename_outcome(report: &mut Value, renamed: Option<Result<Value, String>>) {
+    let Value::Object(map) = report else {
+        return;
+    };
+    let (finished, errors): (Vec<Value>, Vec<Value>) = match renamed {
+        None => return,
+        Some(Err(e)) => (Vec::new(), vec![Value::from(e)]),
+        Some(Ok(answer)) => (
+            answer["finished"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|report| report.get("domain").cloned())
+                .collect(),
+            answer["failed"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|failed| {
+                    Value::from(format!(
+                        "{}: {}",
+                        failed["domain"].as_str().unwrap_or_default(),
+                        failed["error"].as_str().unwrap_or_default()
+                    ))
+                })
+                .collect(),
+        ),
+    };
+    map.insert("renames_finished".to_string(), Value::from(finished));
+    map.insert("rename_fix_errors".to_string(), Value::from(errors));
 }
 
 /// Put what a `--fix` did into a name report: `fixed`, or `fix_error`.
@@ -3221,10 +3285,16 @@ mod tests {
     ///    sends - reaches `McpServer::discover` and comes back as a
     ///    `DiscoverResult` carrying our routing block and exactly the revisions
     ///    we advertise.
-    /// 3. The cost of a probe, pinned rather than argued: answering one arms
-    ///    `peer.require_request_metadata()`, which is one-way, so a client that
-    ///    ignores "do not fall back to `initialize`" is served the handshake and
-    ///    then refused `-32602` on its first real call.
+    /// 3. A probe costs nothing since rmcp 3.5.1 (#1248): answering one no
+    ///    longer arms the one-way metadata latch, so a client that probes and
+    ///    then falls back to `initialize` gets a whole legacy session, and its
+    ///    first real call without `_meta` is served. Up to rmcp 3.5.0 that call
+    ///    was refused `-32602`, which is what the dual-era residue in AGENTS.md
+    ///    described.
+    ///
+    /// Step 1 also pins that a bare probe no longer ends the session: rmcp
+    /// keeps waiting for either lifecycle, so a conforming probe on the same
+    /// connection is still answered, and only the end of input ends it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_bare_discover_probe_is_answered_by_rmcp_and_a_complete_one_returns_our_discover_result()
      {
@@ -3278,12 +3348,34 @@ mod tests {
                     && m.contains("io.modelcontextprotocol/clientCapabilities")),
             "and it names both missing keys: {answer}"
         );
-        drop(write);
+        // The session carries on after the refusal (rmcp 3.5.1, #1248): a
+        // conforming probe on the same connection is answered too.
+        let probe = complete_probe(
+            serde_json::json!(1),
+            crate::mcp::newest_served_protocol_version().as_str(),
+        );
+        write
+            .write_all(format!("{probe}\n").as_bytes())
+            .await
+            .unwrap();
+        write.flush().await.unwrap();
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(5), lines.next_line())
+            .await
+            .expect("the session is still open after the bare probe")
+            .unwrap()
+            .expect("a message rather than a closed pipe");
+        let v: Value = serde_json::from_str(&answer).unwrap();
+        assert_eq!(v["id"], serde_json::json!(1), "{answer}");
+        assert!(v["result"]["instructions"].is_string(), "{answer}");
+        // Only the end of input ends it, still on neither lifecycle.
+        write.shutdown().await.unwrap();
         assert!(
-            server.await.unwrap().is_err(),
-            "the bare probe still ends the session with ExpectedInitializeRequest \
-             after the error is sent; a future rmcp that carried on instead would \
-             be a lifecycle change worth noticing"
+            tokio::time::timeout(std::time::Duration::from_secs(5), server)
+                .await
+                .expect("the session ends with its input")
+                .unwrap()
+                .is_err(),
+            "a session that chose no lifecycle ends as an error"
         );
 
         // 2. The conforming probe: our handler runs.
@@ -3327,11 +3419,11 @@ mod tests {
             "and it advertises exactly what we serve: {answer}"
         );
 
-        // 3. What a probe costs, pinned rather than argued. Answering one arms
-        //    `peer.require_request_metadata()`, which is one-way. A client that
-        //    ignores the specification's "do not fall back to `initialize`" and
-        //    hands us a legacy handshake anyway is served it - `initialize` is
-        //    exempt - and then dies on its first real call.
+        // 3. What a probe costs: nothing since rmcp 3.5.1 (#1248). The
+        //    discover armed no latch, so a client that ignores the
+        //    specification's "do not fall back to `initialize`" and hands us a
+        //    legacy handshake anyway gets a whole legacy session, and its first
+        //    real call without `_meta` is served.
         write
             .write_all(
                 b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\
@@ -3346,8 +3438,7 @@ mod tests {
             .unwrap();
         write.flush().await.unwrap();
         // Both answers are in flight at once, so index them by id rather than
-        // by arrival: rmcp dispatches concurrently and the refusal is quicker
-        // than the handshake.
+        // by arrival: rmcp dispatches concurrently.
         let mut answers = std::collections::HashMap::new();
         for _ in 0..2 {
             let v: Value =
@@ -3361,18 +3452,11 @@ mod tests {
             "the legacy handshake still succeeds, at the revision rmcp negotiates \
              for one: {handshake}"
         );
-        let refused = &answers[&serde_json::json!(2)];
-        assert_eq!(
-            refused["error"]["code"],
-            serde_json::json!(-32602),
-            "{refused}"
-        );
-        assert_eq!(
-            refused["error"]["message"],
-            "request _meta is missing or has malformed required fields: \
-             io.modelcontextprotocol/protocolVersion, \
-             io.modelcontextprotocol/clientCapabilities",
-            "the latch is what refuses it, not our own guard: {refused}"
+        let listed = &answers[&serde_json::json!(2)];
+        assert!(listed["error"].is_null(), "not refused: {listed}");
+        assert!(
+            listed["result"]["tools"].is_array(),
+            "the legacy session serves a call without _meta: {listed}"
         );
 
         drop(write);

@@ -45,6 +45,9 @@ crystalline-identity = { workspace = true }
 crystalline-engine = { workspace = true }
 crystalline-rest = { workspace = true }
 crystalline-remote = { workspace = true }
+# The trigger webhooks (automation_trigger.rs) post through the client
+# crystalline-remote builds, so this is the same reqwest, not a second one.
+reqwest = { workspace = true }
 getrandom = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }

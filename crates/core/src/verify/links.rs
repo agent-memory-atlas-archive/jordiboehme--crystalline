@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 
 use crate::address::{self, CrystallineUrl, LinkResolver, LookupTable, Resolution};
-use crate::engram::{Engram, LinkTarget};
+use crate::engram::{Engram, LinkForm, LinkTarget};
 use crate::parse::{BodyLine, mask_inline_code};
 
 use super::scanner::{Domain, ScannedFile};
@@ -28,6 +28,7 @@ pub(crate) fn build_lookup(domains: &[Domain]) -> LookupTable {
         // whichever domains happened to parse.
         table.register_domain(&domain.name);
         for file in &domain.files {
+            table.insert_path(&domain.name, &rel_path_of(file));
             let Ok(engram) = &file.parsed else { continue };
             let permalink = effective_permalink(file, engram);
             table.insert(&domain.name, &permalink, &engram.frontmatter.title);
@@ -59,13 +60,68 @@ pub(crate) fn check(
     sink: &mut Sink,
 ) {
     check_duplicates(domain, sink);
+    // What a relative link can land on: the domain's files, by the path a link
+    // spells them with.
+    let paths: BTreeSet<String> = domain.files.iter().map(rel_path_of).collect();
 
     for (file, lines) in domain.files.iter().zip(file_lines) {
         let Ok(engram) = &file.parsed else { continue };
         let own_permalink = effective_permalink(file, engram);
         let own_title = engram.frontmatter.title.trim().to_lowercase();
+        let own_path = rel_path_of(file);
+        // A reference that binds by path: a relative link, or a bare wikilink
+        // spelled as one of the domain's files (`[[pumps/p-12.md]]`), which
+        // the index's path arm binds to that file the same way. A permalink
+        // never ends in `.md`, so such a spelling names nothing else.
+        let by_path = |t: &LinkTarget| {
+            t.form == LinkForm::Relative || (t.domain.is_none() && paths.contains(&t.target))
+        };
 
-        for link in &engram.links {
+        for (target, line) in engram
+            .links
+            .iter()
+            .map(|l| (&l.target, l.line))
+            .chain(engram.relations.iter().map(|r| (&r.target, r.line)))
+            .filter(|(t, _)| by_path(t))
+        {
+            check_relative(file, target, line, &own_path, &paths, sink);
+        }
+
+        // A wikilink spelled as a file path of a named domain in the scan set
+        // (`[[ops:pumps/p.md]]`) binds by that path there, as the index's
+        // path arm binds it; a permalink never ends in `.md`.
+        let by_named_path = |t: &LinkTarget| {
+            t.form == LinkForm::Wiki
+                && t.target.to_ascii_lowercase().ends_with(".md")
+                && t.domain
+                    .as_deref()
+                    .is_some_and(|d| domain_names.contains(d))
+        };
+        for (target, line) in engram
+            .links
+            .iter()
+            .map(|l| (&l.target, l.line))
+            .chain(engram.relations.iter().map(|r| (&r.target, r.line)))
+            .filter(|(t, _)| !by_path(t) && by_named_path(t))
+        {
+            let named = target.domain.as_deref().unwrap_or_default();
+            if !lookup.has_path(named, &target.target) {
+                sink.emit(
+                    &file.path,
+                    Some(line),
+                    "L001",
+                    Severity::Warning,
+                    format!("broken wikilink to `{named}:{}`", target.target),
+                    None,
+                );
+            }
+        }
+
+        for link in engram
+            .links
+            .iter()
+            .filter(|l| !by_path(&l.target) && !by_named_path(&l.target))
+        {
             check_target(
                 domain,
                 file,
@@ -78,7 +134,11 @@ pub(crate) fn check(
                 sink,
             );
         }
-        for rel in &engram.relations {
+        for rel in engram
+            .relations
+            .iter()
+            .filter(|r| !by_path(&r.target) && !by_named_path(&r.target))
+        {
             check_target(
                 domain,
                 file,
@@ -93,6 +153,46 @@ pub(crate) fn check(
         }
 
         check_crystalline_urls(file, lines, domain_names, lookup, sink);
+    }
+}
+
+/// A file's domain-relative path, forward-slashed: what a relative link to it
+/// resolves to.
+fn rel_path_of(file: &ScannedFile) -> String {
+    file.rel_path.to_string_lossy().replace('\\', "/")
+}
+
+/// A reference that binds by path is judged by the file it lands on: one of
+/// the domain's files is sound (the file itself is a self-link, `L004`),
+/// anything else is broken (`L001`), including a path that climbs out of the
+/// domain.
+fn check_relative(
+    file: &ScannedFile,
+    target: &LinkTarget,
+    line: usize,
+    own_path: &str,
+    paths: &BTreeSet<String>,
+    sink: &mut Sink,
+) {
+    let landed = target.stored_target(own_path);
+    if landed == own_path {
+        sink.emit(
+            &file.path,
+            Some(line),
+            "L004",
+            Severity::Warning,
+            format!("self-link to `{}`", target.target),
+            None,
+        );
+    } else if !paths.contains(&landed) {
+        sink.emit(
+            &file.path,
+            Some(line),
+            "L001",
+            Severity::Warning,
+            format!("broken link to `{}`", target.target),
+            None,
+        );
     }
 }
 

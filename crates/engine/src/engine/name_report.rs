@@ -29,7 +29,9 @@ impl Engine {
     ///   "adoption_pending": [{ "domain": "eng", "canonical": "platform",
     ///                          "canonical_seen": null, "reason": "..." }],
     ///   "local_spellings": [{ "domain": "ops", "path": "note.md", "spelling": "eng",
-    ///                         "canonical": "engineering", "count": 2 }]
+    ///                         "canonical": "engineering", "count": 2 }],
+    ///   "rename_pending": [{ "domain": "eng", "from": "eng", "to": "platform",
+    ///                        "seen_at": "2026-10-21T08:00:00Z" }]
     /// }
     /// ```
     ///
@@ -45,7 +47,10 @@ impl Engine {
     /// would respell in the domain's own text. In a domain that reviews
     /// changes the fix lands in the owner's draft; once it has, the entry
     /// carries `in_draft: true`, since the domain's text changes only when
-    /// that draft is accepted. Every list is sorted.
+    /// that draft is accepted. `rename_pending` lists every rename a
+    /// MANIFEST made that nobody has finished or kept yet
+    /// ([`Engine::rename_question`]); [`Engine::finish_rename_questions`]
+    /// finishes them. Every list is sorted.
     pub async fn name_report(&self) -> Result<Value> {
         let table = self.name_table_now().await;
         let entries = self.registered_domain_entries_now().await;
@@ -54,7 +59,18 @@ impl Engine {
         let mut shadowed = Vec::new();
         let mut team = Vec::new();
         let mut pending = Vec::new();
+        let mut rename_pending = Vec::new();
         for (name, entry) in &entries {
+            if let Some(question) = &entry.rename_question
+                && question.answered.is_none()
+            {
+                rename_pending.push(json!({
+                    "domain": name,
+                    "from": question.from,
+                    "to": question.to,
+                    "seen_at": question.seen_at,
+                }));
+            }
             let canonical = table.canonical(name).unwrap_or(name).to_string();
             if table.is_shadowed(name) {
                 shadowed.push(json!({
@@ -122,6 +138,7 @@ impl Engine {
         shadowed.sort_by(by_domain);
         team.sort_by(by_domain);
         pending.sort_by(by_domain);
+        rename_pending.sort_by(by_domain);
         Ok(json!({
             "shadowed": shadowed,
             "conflicts": conflicts,
@@ -129,6 +146,7 @@ impl Engine {
             "team_without_domain_name": team,
             "adoption_pending": pending,
             "local_spellings": local_spellings,
+            "rename_pending": rename_pending,
         }))
     }
 
@@ -243,10 +261,13 @@ impl Engine {
         table: &NameTable,
         busy: &HashSet<String>,
     ) -> Result<Vec<(String, String, BTreeMap<String, (String, usize)>, bool)>> {
+        // The old names a rename question holds (open, or answered keep) are
+        // a person's to respell, never doctor's.
+        let held = self.rename_held_spellings(table);
         let spellings: Vec<String> = table
             .spellings()
             .into_iter()
-            .filter(|(spelling, _)| table.normalize(spelling).is_some())
+            .filter(|(spelling, _)| table.normalize(spelling).is_some() && !held.contains(spelling))
             .map(|(spelling, _)| spelling)
             .collect();
         if spellings.is_empty() {
@@ -261,7 +282,7 @@ impl Engine {
             let Ok(Some((_, _, text))) = self.base_text(&domain, &path).await else {
                 continue;
             };
-            let counts = count_respellings(&text, table);
+            let counts = count_respellings(&text, table, &held);
             if !counts.is_empty() {
                 let in_draft = self.draft_holds_fix(&domain, &path, table, busy).await;
                 out.push((domain, path, counts, in_draft));
@@ -305,7 +326,9 @@ impl Engine {
             return false;
         };
         match view.text_at(&source, &desc).await {
-            Ok(Some(text)) => respell_local(&text, table).1 == 0,
+            Ok(Some(text)) => {
+                respell_local(&text, table, &self.rename_held_spellings(table)).1 == 0
+            }
             _ => false,
         }
     }
@@ -327,7 +350,8 @@ impl Engine {
         let Some(text) = view.text_at(&source, &desc).await? else {
             return Ok(0);
         };
-        let count = respell_local(&text, table).1;
+        let held = self.rename_held_spellings(table);
+        let count = respell_local(&text, table, &held).1;
         if count == 0 {
             return Ok(0);
         }
@@ -340,7 +364,7 @@ impl Engine {
             &actor,
             None,
             scope,
-            |current| Ok(respell_local(current, table).0),
+            |current| Ok(respell_local(current, table, &held).0),
         )
         .await?;
         Ok(count)
@@ -349,17 +373,27 @@ impl Engine {
 
 /// `text` with every domain spelling the table would rewrite replaced by its
 /// canonical name, and how many were.
-fn respell_local(text: &str, table: &NameTable) -> (String, usize) {
+fn respell_local(text: &str, table: &NameTable, held: &HashSet<String>) -> (String, usize) {
     crystalline_core::relink::respell_domains(text, &|domain: &str| {
+        if held.contains(domain) {
+            return None;
+        }
         table.normalize(domain).map(str::to_string)
     })
 }
 
 /// How many times each rewritable spelling occurs in `text`'s links, with
 /// its canonical name.
-fn count_respellings(text: &str, table: &NameTable) -> BTreeMap<String, (String, usize)> {
+fn count_respellings(
+    text: &str,
+    table: &NameTable,
+    held: &HashSet<String>,
+) -> BTreeMap<String, (String, usize)> {
     let counts: RefCell<BTreeMap<String, (String, usize)>> = RefCell::new(BTreeMap::new());
     crystalline_core::relink::respell_domains(text, &|domain: &str| {
+        if held.contains(domain) {
+            return None;
+        }
         let canonical = table.normalize(domain)?;
         counts
             .borrow_mut()

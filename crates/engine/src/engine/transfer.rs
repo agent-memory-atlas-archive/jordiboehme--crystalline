@@ -56,13 +56,24 @@ impl Engine {
         // exactly what the routing block reads for this virtual domain, so
         // refresh the cache the sync `routing_text` serves.
         self.refresh_routing_cache().await;
+        self.ask_rename_after_manifest_write(domain).await;
 
         Ok(json!({ "domain": domain, "manifest": "MANIFEST.md", "created": true }))
     }
 
-    /// Import already-well-formed engram `.md` files from `src` into a virtual
-    /// domain verbatim. Refuses a file target (that would desync the DB from its
-    /// files). Collisions on an existing path or permalink are skipped unless
+    /// Import engram `.md` files from `src` into a virtual domain. Refuses a
+    /// file target (that would desync the DB from its files). A note that
+    /// lacks what a reader requires is completed the way `crystalline import`
+    /// completes it ([`crystalline_core::import::complete_for_import`]); one
+    /// that needs nothing is stored byte for byte. The files the notes link
+    /// to are stored as attachments under `assets/` and the links rewritten
+    /// to them; `files_linked`, `not_linked` (other files no note links,
+    /// which are not imported) and `not_taken` report how that went. Files
+    /// under the source's `assets/` (an export carries the domain's own
+    /// attachments there) are stored as attachments at the same path,
+    /// counted in `attachments_written` and `attachments_skipped`; one the
+    /// attachment rules refuse is named in `warnings`.
+    /// Collisions on an existing path or permalink are skipped unless
     /// `overwrite`; `dry_run` reports without writing. Where the source's own
     /// MANIFEST declares `reflection: on`, nothing under `reflections/` is read
     /// as an engram: each such file is named in `warnings` instead.
@@ -72,6 +83,25 @@ impl Engine {
         src: &Path,
         overwrite: bool,
         dry_run: bool,
+    ) -> Result<Value> {
+        self.import_domain_with(domain, src, overwrite, dry_run, true)
+            .await
+    }
+
+    /// [`Engine::import_domain`], with completion switched by `complete`.
+    ///
+    /// Off, every note is stored byte for byte, as it was before imports
+    /// completed notes: that is a move of Crystalline's own engrams from one
+    /// store to another (the Claude Desktop state merge), not an import of
+    /// files from elsewhere, and a move must not change what it moves. Linked
+    /// files are taken either way.
+    pub async fn import_domain_with(
+        &self,
+        domain: &str,
+        src: &Path,
+        overwrite: bool,
+        dry_run: bool,
+        complete: bool,
     ) -> Result<Value> {
         if self.read_only {
             return Err(EngineError::ReadOnly);
@@ -98,6 +128,11 @@ impl Engine {
             ReflectionMode::declared(crystalline_core::reflection_at(src)),
         );
         let mut warnings: Vec<String> = Vec::new();
+        // A file under `assets/` is an attachment (an export carries the
+        // domain's own there) and is stored as one. Every other file is not
+        // imported as it is; a note can still take it in by linking it.
+        let mut assets: Vec<String> = Vec::new();
+        let mut others: Vec<String> = Vec::new();
         let files: Vec<(String, PathBuf)> = walk_classified(src, &layout)
             .into_iter()
             .filter_map(|(rel, abs, class)| {
@@ -105,7 +140,15 @@ impl Engine {
                     warnings.push(format!("{rel}: {REFLECTION_NOT_IMPORTED}"));
                     return None;
                 }
-                rel.to_lowercase().ends_with(".md").then_some((rel, abs))
+                if crystalline_core::is_under_assets(&rel) {
+                    assets.push(rel);
+                    None
+                } else if rel.to_lowercase().ends_with(".md") {
+                    Some((rel, abs))
+                } else {
+                    others.push(rel);
+                    None
+                }
             })
             .collect();
         // A MANIFEST in the batch that switches `read_only` on meets the owner
@@ -136,14 +179,28 @@ impl Engine {
         // What landed, announced once after the loop through the collapse rule.
         let mut announced: Vec<PathChange> = Vec::new();
 
+        // Phase 1: complete every note and settle which ones will be written,
+        // so only those take in the files they link to.
+        let now = chrono::Utc::now().fixed_offset();
+        let mut notes: Vec<crystalline_core::linked::LinkedNote> = Vec::new();
         for (rel, abs) in files {
-            let text = match std::fs::read_to_string(&abs) {
+            let source = match std::fs::read_to_string(&abs) {
                 Ok(t) => t,
                 Err(e) => {
                     warnings.push(format!("{rel}: could not read: {e}"));
                     continue;
                 }
             };
+            // A note that does not parse is kept as it is, so the parse
+            // below names the reason.
+            let completed = if complete {
+                crystalline_core::import::complete_for_import(&source, &rel, now)
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            };
+            let text = completed.unwrap_or(source);
             let engram = match parse_engram(&text) {
                 Ok(e) => e,
                 Err(e) => {
@@ -160,6 +217,98 @@ impl Engine {
                 skipped += 1;
                 continue;
             }
+            notes.push(crystalline_core::linked::LinkedNote { rel, text });
+        }
+
+        // Phase 2: take the files the notes link to. An attachment the
+        // domain already holds with the same bytes is reused, so importing
+        // the same source twice stores each file once.
+        let held: HashMap<String, String> = self
+            .attachment_list(domain)
+            .await?
+            .into_iter()
+            .map(|row| (row.path, row.sha256))
+            .collect();
+        let source = crystalline_core::linked::DirSource {
+            root: src.to_path_buf(),
+        };
+        // The source's own `assets/` files that will be stored, by path and
+        // sha256, each with the reason it is refused when it cannot be.
+        let mut incoming: HashMap<String, String> = HashMap::new();
+        let mut refused: Vec<(String, &'static str)> = Vec::new();
+        for rel in &assets {
+            let len = std::fs::metadata(src.join(rel)).map_or(0, |m| m.len());
+            if let Some(reason) = crystalline_core::attachment::asset_refusal(rel, len) {
+                refused.push((rel.clone(), reason));
+                continue;
+            }
+            match crystalline_core::linked::LinkedSource::sha256(&source, rel) {
+                Ok(sha) => {
+                    incoming.insert(rel.clone(), sha);
+                }
+                Err(e) => warnings.push(format!("{rel}: could not read: {e}")),
+            }
+        }
+        // A dest one of them claims holds its bytes once it is stored, unless
+        // the attachment already there is kept because `overwrite` is off.
+        let outcome =
+            crystalline_core::linked::take_linked_files(&mut notes, &source, &|dest| match (
+                held.get(dest),
+                incoming.get(dest),
+            ) {
+                (Some(kept), _) if !overwrite => Some(kept.clone()),
+                (kept, new) => new.or(kept).cloned(),
+            });
+        let not_linked = others
+            .iter()
+            .filter(|rel| !outcome.linked_sources.contains(*rel))
+            .count();
+
+        // Phase 3: store the attachments first, the source's own and the
+        // taken ones, so a failed write leaves no note that links a missing
+        // attachment; then the notes. An attachment already at a path is
+        // replaced only under `overwrite`, and the same bytes are not written
+        // again.
+        let mut attachments_written = 0usize;
+        let mut attachments_skipped = 0usize;
+        for (rel, reason) in refused {
+            warnings.push(format!("{rel}: {reason}"));
+            attachments_skipped += 1;
+        }
+        for rel in assets.iter().filter(|rel| incoming.contains_key(*rel)) {
+            let same = held.get(rel) == incoming.get(rel);
+            if same || (held.contains_key(rel) && !overwrite) {
+                attachments_skipped += 1;
+                continue;
+            }
+            if !dry_run {
+                let from = src.join(rel);
+                let bytes = std::fs::read(&from).map_err(|e| {
+                    EngineError::Invalid(format!("could not read {}: {e}", from.display()))
+                })?;
+                self.attachment_write(domain, rel, bytes).await?;
+            }
+            attachments_written += 1;
+        }
+        if !dry_run {
+            for taken in outcome.taken.iter().filter(|taken| !taken.reused) {
+                let from = src.join(&taken.source_rel);
+                let bytes = std::fs::read(&from).map_err(|e| {
+                    EngineError::Invalid(format!("could not read {}: {e}", from.display()))
+                })?;
+                self.attachment_write(domain, &taken.dest, bytes).await?;
+            }
+        }
+
+        for crystalline_core::linked::LinkedNote { rel, text } in notes {
+            let engram = match parse_engram(&text) {
+                Ok(e) => e,
+                Err(e) => {
+                    warnings.push(format!("{rel}: could not parse: {e}"));
+                    continue;
+                }
+            };
+            let record = EngramRecord::from_engram(&engram, &rel, virtual_stamp(&text));
             if dry_run {
                 changes.push(json!({ "path": rel, "permalink": record.permalink }));
                 written += 1;
@@ -203,6 +352,7 @@ impl Engine {
             .any(|change| is_manifest_path(&change.path))
         {
             self.refresh_routing_cache().await;
+            self.ask_rename_after_manifest_write(domain).await;
         }
         self.announce_paths(domain, announced, None);
         Ok(json!({
@@ -210,6 +360,11 @@ impl Engine {
             "dry_run": dry_run,
             "files_written": written,
             "files_skipped": skipped,
+            "files_linked": outcome.taken.len(),
+            "not_linked": not_linked,
+            "attachments_written": attachments_written,
+            "attachments_skipped": attachments_skipped,
+            "not_taken": outcome.not_taken,
             "collisions": collisions,
             "warnings": warnings,
             "files": changes,

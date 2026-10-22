@@ -147,6 +147,21 @@ pub const MIGRATIONS: &[Migration] = &[
         label: "domain host move",
         sql: SCHEMA_V25,
     },
+    Migration {
+        version: 26,
+        label: "wikilink display text",
+        sql: SCHEMA_V26,
+    },
+    Migration {
+        version: 27,
+        label: "automation lease and runs",
+        sql: SCHEMA_V27,
+    },
+    Migration {
+        version: 28,
+        label: "automation lease pull request and written paths",
+        sql: SCHEMA_V28,
+    },
 ];
 
 const SCHEMA_V1: &str = r#"
@@ -849,6 +864,65 @@ ALTER TABLE domain ADD COLUMN last_host_label TEXT;
 ALTER TABLE domain ADD COLUMN host_move TEXT;
 "#;
 
+// The display text of a `[[target|text]]` reference, beside `to_raw`, so the
+// sweep can quote a repair with the bracket text exactly as the file holds
+// it. NULL for a reference without one. Nullable, no default, no backfill:
+// the parse generation moved in the same release, so every engram is parsed
+// again and its rows are written with the column filled.
+const SCHEMA_V26: &str = r#"
+ALTER TABLE relation ADD COLUMN to_alias TEXT;
+ALTER TABLE link ADD COLUMN to_alias TEXT;
+"#;
+
+// The automation loops (reflect and evolve run on their own): one lease per
+// domain and loop, so only one runner works on a loop at a time, and the
+// newest runs of each loop. `unshared_at_start`, `due_at_start` and
+// `left_items` are JSON text. Times are TEXT ISO strings, compared lexically.
+// Neither table cascades from `domain`: `wipe()` and the empty-row drop clear
+// them by hand, as they do `domain_lock`.
+const SCHEMA_V27: &str = r#"
+CREATE TABLE automation_lease (
+    domain_id INTEGER NOT NULL REFERENCES domain(id),
+    loop_kind TEXT NOT NULL,
+    instance_id TEXT NOT NULL,
+    account TEXT,
+    runner TEXT NOT NULL,
+    token TEXT NOT NULL,
+    taken_at TEXT NOT NULL,
+    renewed_at TEXT NOT NULL,
+    unshared_at_start TEXT NOT NULL,
+    due_at_start TEXT NOT NULL,
+    PRIMARY KEY(domain_id, loop_kind)
+);
+
+CREATE TABLE automation_run (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain_id INTEGER NOT NULL REFERENCES domain(id),
+    loop_kind TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL,
+    runner TEXT NOT NULL,
+    account TEXT,
+    outcome TEXT NOT NULL,
+    done INTEGER NOT NULL,
+    "left" INTEGER NOT NULL,
+    judgment_waiting INTEGER NOT NULL,
+    summary TEXT NOT NULL,
+    pr_url TEXT,
+    left_items TEXT NOT NULL
+);
+CREATE INDEX idx_automation_run_loop ON automation_run(domain_id, loop_kind, id);
+"#;
+
+// What a run shared and wrote, kept with its lease: the pull request it
+// shared its changes in (null until it shares), and the paths its account
+// wrote over MCP while it held the lease, as JSON text. Both go with the
+// lease into the run record.
+const SCHEMA_V28: &str = r#"
+ALTER TABLE automation_lease ADD COLUMN pr_url TEXT;
+ALTER TABLE automation_lease ADD COLUMN written TEXT NOT NULL DEFAULT '[]';
+"#;
+
 const SCHEMA_V9: &str = r#"
 CREATE TABLE attachment (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -877,6 +951,7 @@ CREATE TABLE attachment_blob (
 /// and leads the list. `engram_meta_value` references `engram`, so it goes
 /// before it. `reflection` and `reflection_asset` reference `domain(id)` too,
 /// and so does `reflection_chunk`, which goes before `reflection`.
+/// `automation_lease` and `automation_run` reference `domain(id)` as well.
 pub const WIPE_TABLES: &[&str] = &[
     "observation_vector",
     "contradiction",
@@ -898,6 +973,8 @@ pub const WIPE_TABLES: &[&str] = &[
     "reflection",
     "reflection_asset",
     "domain_lock",
+    "automation_lease",
+    "automation_run",
     "domain_spelling",
     "domain",
 ];
@@ -2654,6 +2731,88 @@ mod tests {
         assert!(
             stdout.contains("1 passed"),
             "the child ran the test rather than filtering it out:\n{stdout}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_automation_migration_is_v27_and_its_tables_are_wiped_before_domain() {
+        let at_version = |v: i64| {
+            MIGRATIONS
+                .iter()
+                .position(|m| m.version == v)
+                .unwrap_or_else(|| panic!("no migration v{v}"))
+        };
+        assert_eq!(
+            MIGRATIONS[at_version(27)].label,
+            "automation lease and runs"
+        );
+        assert_eq!(at_version(27), at_version(26) + 1, "it follows v26");
+        let db = Builder::new_local(":memory:").build().await.unwrap();
+        let conn = db.connect().unwrap();
+        apply_migrations(&conn, MIGRATIONS).await.unwrap();
+        for table in ["automation_lease", "automation_run"] {
+            assert_eq!(
+                scalar(
+                    &conn,
+                    &format!(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='{table}'"
+                    ),
+                )
+                .await,
+                1,
+                "v27 creates {table}"
+            );
+        }
+        let at = |name: &str| {
+            WIPE_TABLES
+                .iter()
+                .position(|t| *t == name)
+                .unwrap_or_else(|| panic!("{name} is not in WIPE_TABLES"))
+        };
+        assert!(
+            at("automation_lease") < at("domain") && at("automation_run") < at("domain"),
+            "the lease and the runs go before their domain"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_lease_columns_migration_is_v28_and_a_lease_row_defaults_to_nothing_written() {
+        let at_version = |v: i64| {
+            MIGRATIONS
+                .iter()
+                .position(|m| m.version == v)
+                .unwrap_or_else(|| panic!("no migration v{v}"))
+        };
+        assert_eq!(
+            MIGRATIONS[at_version(28)].label,
+            "automation lease pull request and written paths"
+        );
+        assert_eq!(at_version(28), at_version(27) + 1, "it follows v27");
+        let db = Builder::new_local(":memory:").build().await.unwrap();
+        let conn = db.connect().unwrap();
+        apply_migrations(&conn, MIGRATIONS).await.unwrap();
+        conn.execute(
+            "INSERT INTO domain(id, name, path, kind) VALUES (1, 'd', '/tmp/d', 'file')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO automation_lease (domain_id, loop_kind, instance_id, runner, token, \
+             taken_at, renewed_at, unshared_at_start, due_at_start) \
+             VALUES (1, 'reflect', 'i', 'cli', 't', 'a', 'a', '[]', '[]')",
+            (),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            scalar(
+                &conn,
+                "SELECT COUNT(*) FROM automation_lease WHERE pr_url IS NULL AND written = '[]'"
+            )
+            .await,
+            1,
+            "v28 adds pr_url (null) and written (an empty list)"
         );
     }
 

@@ -144,6 +144,9 @@ describe("sanitizeAttachmentName", () => {
       "übersicht-plan.png",
     );
     expect(sanitizeAttachmentName("Σχέδιο2.png")).toBe("σχέδιο2.png");
+    // A combining mark belongs to its letter, as in the Rust twin: an upload
+    // and an import of the same file get the same name.
+    expect(sanitizeAttachmentName("हिंदी नोट.png")).toBe("हिंदी-नोट.png");
   });
 
   it("has nothing to keep from a name made only of symbols", () => {

@@ -132,6 +132,32 @@ export type ArchiveEntryReport = {
 };
 
 /**
+ * A link from an archived note to a local file that was not taken in as an attachment, and why.
+ */
+export type ArchiveNotTaken = {
+    /**
+     * The path of the note that links the file.
+     */
+    note: string;
+    /**
+     * Why the file was not taken.
+     */
+    reason: ArchiveNotTakenReason;
+    /**
+     * The link target as the note names it, decoded, without a fragment.
+     */
+    target: string;
+};
+
+/**
+ * Why a linked file was not taken: `missing` (no such entry in the
+ * archive), `outside` (the link leaves the archive), `not_allowed` (not an
+ * attachment type), `too_large` (past the attachment size limit) or
+ * `bad_name` (no usable attachment name could be made from it).
+ */
+export type ArchiveNotTakenReason = 'missing' | 'outside' | 'not_allowed' | 'too_large' | 'bad_name';
+
+/**
  * The per-entry report of a preview or an import, with the counters a confirmation dialog summarizes. The counters are tallied from the entries above them, so the two can never disagree.
  */
 export type ArchiveReport = {
@@ -152,9 +178,14 @@ export type ArchiveReport = {
      */
     entries: Array<ArchiveEntryReport>;
     /**
+     * How many distinct files the notes link to were taken in as
+     * attachments. Each is listed in `entries` at its `assets/` path.
+     */
+    files_linked: number;
+    /**
      * Entries an archive may carry but a domain never imports: a MANIFEST, a
      * generated OKF index or log, anything that is neither markdown nor an
-     * attachment of an allowed type.
+     * attachment of an allowed type that a note links.
      */
     ignored: number;
     /**
@@ -167,6 +198,11 @@ export type ArchiveReport = {
      * Preview only: entries that would be created.
      */
     new: number;
+    /**
+     * Every link to a local file that was not taken, once per note and
+     * target. The link is left as it was written.
+     */
+    not_taken: Array<ArchiveNotTaken>;
     /**
      * Import only: entries an existing path or permalink held back.
      */
@@ -254,6 +290,15 @@ export type AuthorizationView = {
      * The one fact that says where an authorization actually goes.
      */
     redirect_host: string;
+};
+
+/**
+ * What `GET /domains/{domain}/automation` answers. A loop the request did
+ * not ask for is `null`.
+ */
+export type AutomationResponse = {
+    evolve?: LoopState | null;
+    reflect?: LoopState | null;
 };
 
 /**
@@ -798,6 +843,105 @@ export type LogoutResponse = {
      * Always true.
      */
     ok: boolean;
+};
+
+/**
+ * What a loop's trigger webhook last did on a domain.
+ */
+export type LoopDelivery = {
+    /**
+     * Whether this instance has a webhook URL and a secret to sign with.
+     */
+    configured: boolean;
+    /**
+     * Why the last delivery failed; cleared by the next one that works.
+     */
+    last_error?: string | null;
+    /**
+     * When the receiver last took a webhook, RFC 3339.
+     */
+    last_sent?: string | null;
+};
+
+/**
+ * One recorded run of a loop.
+ */
+export type LoopRun = {
+    /**
+     * The account the run worked as; only for a caller who may run the loop.
+     */
+    account?: string | null;
+    /**
+     * Items done.
+     */
+    done: number;
+    /**
+     * When the run ended, RFC 3339.
+     */
+    ended_at: string;
+    /**
+     * Judgment findings waiting when the run ended (evolve).
+     */
+    judgment_waiting: number;
+    /**
+     * Items the run left for a person.
+     */
+    left: number;
+    /**
+     * `done`, `stopped_at_cap`, `failed`, `nothing_due` or `expired`.
+     */
+    outcome: string;
+    /**
+     * The pull request the run shared its changes in, when it shared; only
+     * for a caller who may run the loop.
+     */
+    pr_url?: string | null;
+    /**
+     * The runner's label.
+     */
+    runner: string;
+    /**
+     * When the run started, RFC 3339.
+     */
+    started_at: string;
+    /**
+     * A short summary the runner wrote; only for a caller who may run the
+     * loop.
+     */
+    summary?: string | null;
+};
+
+/**
+ * A runner holding the loop's lease right now.
+ */
+export type LoopRunning = {
+    /**
+     * The runner's label.
+     */
+    runner: string;
+    /**
+     * When the run took the lease, RFC 3339.
+     */
+    taken_at: string;
+};
+
+/**
+ * One loop on one domain.
+ */
+export type LoopState = {
+    delivery?: LoopDelivery | null;
+    /**
+     * Judgment findings waiting for a person (evolve only). `null` unless
+     * the caller may run the loop and asked for counts.
+     */
+    judgment_waiting?: number | null;
+    last_run?: LoopRun | null;
+    /**
+     * Items a finished run left for a person that have not changed since.
+     * `null` unless the caller may run the loop and asked for counts.
+     */
+    left_for_person?: number | null;
+    running?: LoopRunning | null;
 };
 
 /**
@@ -1728,6 +1872,13 @@ export type SaveManifestBody = {
      * The full MANIFEST markdown as the editor holds it.
      */
     markdown: string;
+    /**
+     * `"keep"` when the text changes `domain_name` and the links should
+     * keep their spelling ("Save without renaming"): the rename question
+     * is recorded as already answered, so no banner follows. Left out, a
+     * changed name is asked about after the next sync.
+     */
+    rename?: string | null;
 };
 
 /**
@@ -2715,7 +2866,7 @@ export type ListDomainsResponses = {
      *
      * A domain that reviews changes before they land carries `review: "overlay"` and, for a caller with an account, `my_drafts`: how many draft changes of theirs are waiting to be shared. Both are absent on a domain that takes changes directly, and `my_drafts` is absent rather than zero when there is no account to count for - a client reads presence, since null and 0 are different facts.
      *
-     * Every domain also carries `canonical_name` (the name its content carries), `aliases` (its former local names, still accepted as input), `name_origin` (`explicit` or `derived`, `null` for a legacy entry nothing has inferred yet), `shadowed` (whether another domain's local name already holds this one's canonical name - a bool, never naming the other domain) and `renaming` (whether a rename has this domain paused right now; always present, so every row keeps the same columns).
+     * Every domain also carries `canonical_name` (the name its content carries), `aliases` (its former local names, still accepted as input), `name_origin` (`explicit` or `derived`, `null` for a legacy entry nothing has inferred yet), `shadowed` (whether another domain's local name already holds this one's canonical name - a bool, never naming the other domain), `renaming` (whether a rename has this domain paused right now; always present, so every row keeps the same columns) and `rename_pending` (`{from, to, seen_at}` when a sync saw this domain's MANIFEST `domain_name` change and nobody has finished the rename or kept the links yet, `null` otherwise).
      *
      * For an instance admin, `mounted` lists the domains this machine offers from connected servers (`crystalline connect`): each one's local `name`, its `source`, the server's `source_url`, its `remote_name` there and the `web_url` of its page on that server (`null` unless the address is http or https). They are not served here.
      */
@@ -3007,6 +3158,51 @@ export type ListAttachmentsResponses = {
 };
 
 export type ListAttachmentsResponse = ListAttachmentsResponses[keyof ListAttachmentsResponses];
+
+export type ReadAutomationData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+    };
+    query?: {
+        /**
+         * Only this loop: `reflect` or `evolve`. Defaults to both.
+         */
+        loop?: string;
+        /**
+         * Whether to work out what waits for a person, which sweeps the
+         * domain. Defaults to true; a page that shows only the last run or the
+         * delivery sends false.
+         */
+        counts?: boolean;
+    };
+    url: '/api/v1/domains/{domain}/automation';
+};
+
+export type ReadAutomationErrors = {
+    /**
+     * `loop` is neither reflect nor evolve.
+     */
+    400: ProblemDetail;
+    /**
+     * No such domain, or none this caller may see.
+     */
+    404: ProblemDetail;
+};
+
+export type ReadAutomationError = ReadAutomationErrors[keyof ReadAutomationErrors];
+
+export type ReadAutomationResponses = {
+    /**
+     * The loops asked for on this domain.
+     */
+    200: AutomationResponse;
+};
+
+export type ReadAutomationResponse = ReadAutomationResponses[keyof ReadAutomationResponses];
 
 export type ListDomainChangesData = {
     body?: never;
@@ -4838,7 +5034,7 @@ export type GetReflectQueueError = GetReflectQueueErrors[keyof GetReflectQueueEr
 
 export type GetReflectQueueResponses = {
     /**
-     * ReflectQueue. `kind` is `feedback` (`what`: `new`, `changed`, `removed`), `update` (`source_changed`, `source_retired`, `source_missing`, `unreflected`, `off_structure`, `pact_changed`) or `review` (`thread`, with `thread`, the thread's id, and, when its opening comment is a conventional comment, `label` and `blocking`; a blocking thread comes first among the threads of its section). `sources`, an `unreflected` item's `folder` and `engrams`, and an `engram_attachment` item's `targets` are absent for a caller who cannot read engrams. The MCP `reflect` tool answers the same shape with `scope: { domains, kinds }` in place of `domain` and a `domain` member on each row; its `scope` may carry `unreadable`, the names of the domains whose queue could not be read, and `pending`, the names of the domains whose Reflection waits for engrams to leave `reflections/`. An update item's `what` may also be `asset_missing` (per section, with `assets`), `engram_attachment` (per section, with `targets`), `asset_unreferenced` (`path` empty, with `asset`) or `host_moved` (`path` empty, one per domain, after the domain moved to this instance on a shared database and this disk lacks files the previous host wrote: `only_elsewhere` is `{ previous_host, engrams, attachments, pages, files }`, counts only, `previous_host` null when unknown) or `source_unavailable` (one per page and domain that cannot be checked here, `section` null, with `source_domain`, `count`, `sections` and `note`). A source in `sources` may carry `domain`, the local name of another domain than the page's. Sources in a domain the caller may not open are never named. A feedback item and an update item then carry `hidden_sources`, their count, and `note`, one plain sentence whatever their state. A feedback item keeps its own `what`; for update items such sources are always on the section's `source_changed` item, aged by its page.
+     * ReflectQueue. `kind` is `feedback` (`what`: `new`, `changed`, `removed`), `update` (`source_changed`, `source_retired`, `source_missing`, `unreflected`, `off_structure`, `pact_changed`) or `review` (`thread`, with `thread`, the thread's id, and, when its opening comment is a conventional comment, `label` and `blocking`; a blocking thread comes first among the threads of its section). `sources`, an `unreflected` item's `folder` and `engrams`, and an `engram_attachment` item's `targets` are absent for a caller who cannot read engrams. The MCP `reflect` tool answers the same shape with `scope: { domains, kinds }` in place of `domain` and a `domain` member on each row; its `scope` may carry `unreadable`, the names of the domains whose queue could not be read, and `pending`, the names of the domains whose Reflection waits for engrams to leave `reflections/`. An update item's `what` may also be `asset_missing` (per section, with `assets`), `engram_attachment` (per section, with `targets`), `asset_unreferenced` (`path` empty, with `asset`) or `host_moved` (`path` empty, one per domain, after the domain moved to this instance on a shared database and this disk lacks files the previous host wrote: `only_elsewhere` is `{ previous_host, engrams, attachments, pages, files }`, counts only, `previous_host` null when unknown) or `source_unavailable` (one per page and domain that cannot be checked here, `section` null, with `source_domain`, `count`, `sections` and `note`). A source in `sources` may carry `domain`, the local name of another domain than the page's. Sources in a domain the caller may not open are never named. A feedback item and an update item then carry `hidden_sources`, their count, and `note`, one plain sentence whatever their state. A feedback item keeps its own `what`; for update items such sources are always on the section's `source_changed` item, aged by its page. An `off_structure` item carries `structure`, the pact's globs, and `hint` when none of them fits any page; a `pact_changed` item carries `diff` and `sections`, the ids of the changed parts of the pact.
      */
     200: {
         [key: string]: unknown;
@@ -5352,6 +5548,94 @@ export type RenameDomainResponses = {
 };
 
 export type RenameDomainResponse = RenameDomainResponses[keyof RenameDomainResponses];
+
+export type FinishManifestRenameData = {
+    body?: never;
+    path: {
+        /**
+         * The domain's current name.
+         */
+        domain: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/rename/finish';
+};
+
+export type FinishManifestRenameErrors = {
+    /**
+     * No identity, or an anonymous one.
+     */
+    401: ProblemDetail;
+    /**
+     * The caller may not rename the domain, the request did not echo its CSRF token, or this instance is read-only.
+     */
+    403: ProblemDetail;
+    /**
+     * No such domain, or none this caller may see.
+     */
+    404: ProblemDetail;
+    /**
+     * The domain has no rename waiting for an answer, another rename is running, or the new name reaches another domain here.
+     */
+    409: ProblemDetail;
+};
+
+export type FinishManifestRenameError = FinishManifestRenameErrors[keyof FinishManifestRenameErrors];
+
+export type FinishManifestRenameResponses = {
+    /**
+     * What was respelled, and what was left as it is.
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type FinishManifestRenameResponse = FinishManifestRenameResponses[keyof FinishManifestRenameResponses];
+
+export type KeepManifestRenameData = {
+    body?: never;
+    path: {
+        /**
+         * The domain's current name.
+         */
+        domain: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/rename/keep';
+};
+
+export type KeepManifestRenameErrors = {
+    /**
+     * No identity, or an anonymous one.
+     */
+    401: ProblemDetail;
+    /**
+     * The caller may not rename the domain, the request did not echo its CSRF token, or this instance is read-only.
+     */
+    403: ProblemDetail;
+    /**
+     * No such domain, or none this caller may see.
+     */
+    404: ProblemDetail;
+    /**
+     * The domain has no rename waiting for an answer.
+     */
+    409: ProblemDetail;
+};
+
+export type KeepManifestRenameError = KeepManifestRenameErrors[keyof KeepManifestRenameErrors];
+
+export type KeepManifestRenameResponses = {
+    /**
+     * The question, answered.
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type KeepManifestRenameResponse = KeepManifestRenameResponses[keyof KeepManifestRenameResponses];
 
 export type RetireEngramData = {
     body: RetireBody;
@@ -6103,6 +6387,10 @@ export type GetEvolveQueueData = {
          */
         min_priority?: number;
         /**
+         * Keep one class of finding: `mechanical` or `judgment`. Defaults to both.
+         */
+        class?: string;
+        /**
          * Page size. Defaults to 10, clamped by the engine to 100.
          */
         limit?: number;
@@ -6138,7 +6426,7 @@ export type GetEvolveQueueErrors = {
      */
     404: ProblemDetail;
     /**
-     * `families` or `rules` names something the catalog does not have.
+     * `families`, `rules` or `class` names something the catalog does not have.
      */
     422: ProblemDetail;
 };

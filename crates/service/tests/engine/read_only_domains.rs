@@ -107,6 +107,7 @@ async fn checksum(engine: &Engine, domain: &str, id: &str) -> String {
                 identifier: id.into(),
                 domain: Some(domain.into()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -339,6 +340,7 @@ async fn the_owner_switches_read_only_off_and_writes_land_again() {
                 &manifest_now.replace("read_only: on", "read_only: off"),
                 &sha256(&manifest_now),
                 &scope,
+                false,
             )
             .await
             .unwrap_err(),
@@ -673,6 +675,7 @@ async fn the_listing_browse_read_and_routing_say_read_only() {
         identifier: "alpha".into(),
         domain: Some(domain.into()),
         share_link: None,
+        include_images: false,
     };
     let locked = engine.read_engram(&read("archive"), &scope).await.unwrap();
     assert_eq!(locked["read_only"], true);

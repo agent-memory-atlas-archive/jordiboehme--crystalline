@@ -614,6 +614,7 @@ async fn a_manifest_save_announces_the_manifest() {
             &revised,
             &support::sha256_hex(current.as_bytes()),
             &Scope::Unrestricted,
+            false,
         )
         .await
         .unwrap();
@@ -647,6 +648,7 @@ async fn a_manifest_save_names_the_account_that_saved_it() {
                 account: "ada".into(),
                 admin: false,
             },
+            false,
         )
         .await
         .unwrap();
@@ -670,6 +672,7 @@ async fn a_manifest_create_announces_added() {
             &original,
             &support::sha256_hex(b""),
             &Scope::Unrestricted,
+            false,
         )
         .await
         .unwrap();
@@ -1094,6 +1097,7 @@ async fn a_virtual_domains_scaffold_import_and_manifest_save_announce() {
             &revised,
             &support::sha256_hex(current.as_bytes()),
             &Scope::Unrestricted,
+            false,
         )
         .await
         .unwrap();
@@ -1531,6 +1535,7 @@ async fn a_new_engram_binds_a_waiting_link_in_another_domain_and_announces_it_bo
                 identifier: "guide".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -1580,6 +1585,7 @@ async fn a_draft_write_binds_nothing_elsewhere_body(store: Arc<Mutex<dyn Store>>
                 identifier: "guide".to_string(),
                 domain: Some("oak".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -1600,6 +1606,7 @@ async fn guide_resolved(engine: &Engine) -> serde_json::Value {
                 identifier: "guide".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )
@@ -1676,6 +1683,7 @@ async fn a_save_that_retitles_binds_a_waiting_link_in_another_domain_body(
                 identifier: "runbook".to_string(),
                 domain: Some("oak".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )

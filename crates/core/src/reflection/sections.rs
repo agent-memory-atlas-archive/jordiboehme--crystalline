@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::emit::{EditError, SectionEdit, SectionOp, apply_section_op};
+use crate::emit::{EditError, SectionEdit, SectionOp, apply_section_op_at, resolve_section};
 use crate::headings::{HeadingSpan, heading_spans};
 
 /// The pseudo-section holding the text before the first `##`.
@@ -388,9 +388,31 @@ pub fn edit_section(
     content: &str,
 ) -> Result<SectionEdit, EditError> {
     let bare = without_id_lines(source);
-    let mut edit = apply_section_op(&bare, op, path, content)?;
+    let p = match resolve_section(&bare, path) {
+        Ok(p) => p,
+        // The heading wins; only a text that names no heading is tried as a
+        // section id (`a2000002` or `r:a2000002`).
+        Err(miss) => section_index_by_id(source, &bare, path).ok_or(miss)?,
+    };
+    let mut edit = apply_section_op_at(&bare, op, p, content);
     edit.text = reattach_ids(&edit.text, source);
     Ok(edit)
+}
+
+/// The heading index in `bare` (the page without its id lines) of the `##`
+/// section whose id is `text`, with or without the `r:` prefix.
+fn section_index_by_id(source: &str, bare: &str, text: &str) -> Option<usize> {
+    let wanted = text.trim();
+    let wanted = wanted.strip_prefix("r:").unwrap_or(wanted);
+    let nth = level_two(source)
+        .iter()
+        .position(|h| id_under(source, h).is_some_and(|(id, _)| id == wanted))?;
+    heading_spans(bare)
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| h.level == 2)
+        .nth(nth)
+        .map(|(i, _)| i)
 }
 
 /// `source` without the id line under any `##` heading.
@@ -787,5 +809,41 @@ mod tests {
             Ok("Other"),
             "an id wins over a heading and is never ambiguous"
         );
+    }
+
+    #[test]
+    fn a_reflection_section_is_found_by_its_id() {
+        for section in ["0b1c2d3e", "r:0b1c2d3e"] {
+            let edit = edit_section(
+                PAGE,
+                SectionOp::Replace {
+                    include_subsections: false,
+                },
+                section,
+                "Roll back by hand.",
+            )
+            .unwrap();
+            assert!(
+                edit.text
+                    .contains("## Rollback\n<!-- r:0b1c2d3e -->\n\nRoll back by hand.\n"),
+                "{section}: {}",
+                edit.text
+            );
+        }
+        // A heading whose text is the id wins over the id.
+        let page = "# P\n\n## 0b1c2d3e\n\nBy text.\n\n## Other\n<!-- r:0b1c2d3e -->\n\nBy id.\n";
+        let edit = edit_section(page, SectionOp::InsertAfter, "0b1c2d3e", "Added.").unwrap();
+        assert!(
+            edit.text.contains("## 0b1c2d3e\n\nAdded.\n\nBy text."),
+            "{}",
+            edit.text
+        );
+    }
+
+    #[test]
+    fn a_miss_lists_the_headings() {
+        let err = edit_section(PAGE, SectionOp::InsertAfter, "## Nowhere", "x").unwrap_err();
+        let EditError::SectionNotFound { headings, .. } = err;
+        assert_eq!(headings, ["# Deploying", "## Night deploys", "## Rollback"]);
     }
 }

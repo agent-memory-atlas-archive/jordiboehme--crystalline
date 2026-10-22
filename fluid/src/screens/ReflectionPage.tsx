@@ -25,7 +25,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { FolderInput, Layers, Trash2 } from "lucide-react";
+import { Download, FolderInput, Layers, Trash2 } from "lucide-react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 
 import { ApiProblem, problemDetail } from "../api/client";
@@ -82,6 +82,8 @@ import {
 } from "../paths";
 import { assetRefsIn } from "../editor/imageFormat";
 import { FOCUS_HEADING, useHeadingFocusRequest } from "../focusHeading";
+import { NO_COMMANDS, useRegisterCommands } from "../commands";
+import { saveBlob } from "../components/downloads";
 import { lazyChunk } from "../lazyChunk";
 import { discardPageDrafts } from "../reflectionPageDrafts";
 import { CHECKING_LOCK, useDomainWritable } from "../domainWritable";
@@ -100,6 +102,7 @@ import {
   hasOwnTitle,
   pageOffset,
   sectionTexts,
+  stripProvenance,
 } from "../reflectionText";
 
 /** What a tick on a page that moved underneath says. */
@@ -449,6 +452,33 @@ function PageBody({
       ?.scrollIntoView({ block: "start" });
   }, [doc.data, hash]);
 
+  // The page as received for this reader, minus the `reflection:` block
+  // (Crystalline's own provenance). Id lines and other keys stay as written.
+  const text = doc.data?.markdown;
+  const download = useCallback(() => {
+    if (text === undefined) {
+      return;
+    }
+    saveBlob(
+      new Blob([stripProvenance(text)], { type: "text/markdown" }),
+      path.split("/").at(-1) ?? path,
+    );
+  }, [text, path]);
+  const commands = useMemo(
+    () =>
+      text === undefined
+        ? NO_COMMANDS
+        : [
+            {
+              id: "download",
+              title: "Download this page as Markdown",
+              run: download,
+            },
+          ],
+    [text, download],
+  );
+  useRegisterCommands(commands);
+
   const missing = doc.error instanceof ApiProblem && doc.error.status === 404;
   // The server says the page is not there: its drafts on this device go,
   // but only when the page is really gone (the rule is written down in
@@ -558,6 +588,11 @@ function PageBody({
                   }
                 }}
               >
+                <ActionItem
+                  label="Download as Markdown"
+                  icon={Download}
+                  onSelect={download}
+                />
                 <PrintViewItem
                   onSelect={() => {
                     window.print();

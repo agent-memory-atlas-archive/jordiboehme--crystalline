@@ -3651,6 +3651,7 @@ async fn a_wrapped_bullet_is_embedded_and_scored_as_its_whole_text() {
                 identifier: "eighteen".to_string(),
                 domain: Some("notes".to_string()),
                 share_link: None,
+                include_images: false,
             },
             &Scope::Unrestricted,
         )

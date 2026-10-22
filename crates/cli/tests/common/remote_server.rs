@@ -46,6 +46,21 @@ impl CliServer {
     /// that tracks that GitHub repository, so a local domain tracking the
     /// same one is the same domain.
     pub fn start_full(extra: &[&str], tracked: &[(&str, &str)]) -> CliServer {
+        CliServer::start_inner(extra, tracked, None)
+    }
+
+    /// [`CliServer::start`] plus the team domain `brand`, subscribed from
+    /// `forge`'s repository `acme/brand` with GitHub collaboration on, so a
+    /// share opens a pull request on that forge.
+    pub fn start_team(forge: Arc<dyn crystalline_remote::provider::Provider>) -> CliServer {
+        CliServer::start_inner(&[], &[], Some(forge))
+    }
+
+    fn start_inner(
+        extra: &[&str],
+        tracked: &[(&str, &str)],
+        forge: Option<Arc<dyn crystalline_remote::provider::Provider>>,
+    ) -> CliServer {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("server-home");
         // SAFETY: one process per test under nextest, and this runs before
@@ -119,20 +134,43 @@ impl CliServer {
                 oauth: Some(false),
                 ..AuthConfig::default()
             });
+            if forge.is_some() {
+                cfg.github = Some(crystalline_core::config::GitHubConfig {
+                    enabled: Some(true),
+                    ..Default::default()
+                });
+            }
             let config_path = root.join("config.yaml");
             crystalline_core::config::save_yaml(&config_path, &cfg).unwrap();
             let store = crystalline_index::TursoStore::open_in_memory()
                 .await
                 .unwrap();
-            let engine = Arc::new(
-                crystalline_service::Engine::new(
-                    Arc::new(tokio::sync::Mutex::new(store)),
-                    cfg,
-                    None,
-                    Some(config_path),
-                )
-                .with_token_store_dir(root.join("tokens")),
-            );
+            let mut engine = crystalline_service::Engine::new(
+                Arc::new(tokio::sync::Mutex::new(store)),
+                cfg,
+                None,
+                Some(config_path),
+            )
+            .with_token_store_dir(root.join("tokens"));
+            if let Some(forge) = forge.clone() {
+                engine = engine
+                    .with_origin_provider(forge)
+                    .with_origins_dir(root.join("origins"));
+            }
+            let engine = Arc::new(engine);
+            if forge.is_some() {
+                let folder = root.join("brand");
+                engine
+                    .origin_add(
+                        "acme/brand",
+                        Some("brand"),
+                        None,
+                        None,
+                        Some(folder.to_str().unwrap()),
+                    )
+                    .await
+                    .unwrap();
+            }
             engine.sync(None).await.unwrap();
             let auth = Arc::new(AuthStore::open(&root.join("web-auth.db")).await.unwrap());
             auth.add_user("keeper", "keeper", None, Role::Editor, "pw12345678")

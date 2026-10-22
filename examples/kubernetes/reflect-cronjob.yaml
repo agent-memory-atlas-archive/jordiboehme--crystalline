@@ -1,0 +1,96 @@
+# The reflect loop every 5 minutes against the team server that is the
+# domain's Reflection home, in remote mode. Nothing due means the pod ends
+# within seconds. See docs/automation.md.
+#
+# Build the image from examples/kubernetes/Dockerfile and push it where the
+# cluster pulls from; replace the image below.
+#
+# The secret is created once, outside this file, for example:
+#
+#   kubectl create secret generic crystalline-runner \
+#     --from-literal=remote-token=cmt_... \
+#     --from-literal=anthropic-api-key=sk-ant-...
+#
+# remote-token is the cmt_ token of an agent account that may curate the
+# domain's Reflection. Use claude-code-oauth-token instead of
+# anthropic-api-key for a Claude subscription. Give the evolve runner its own
+# account when both loops work one domain.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: crystalline-reflect
+spec:
+  schedule: "*/5 * * * *"
+  # Never two runs at once; the lease would refuse the second one anyway.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # A failed run is not repeated at once; the next schedule tries again.
+      backoffLimit: 0
+      activeDeadlineSeconds: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          # A stopped run records itself and releases its lease in about 25 s.
+          terminationGracePeriodSeconds: 30
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+          containers:
+            - name: runner
+              image: registry.example.com/crystalline-runner:0.29.0
+              command: ["crystalline-loop", "reflect"]
+              args: ["--domain", "eng", "--runner", "k8s", "--max-items", "20"]
+              env:
+                # The team server's address as people reach it. A host name
+                # the server does not know (for example a cluster service
+                # name) must be in its CRYSTALLINE_SERVICE_ALLOWED_HOSTS.
+                - name: CRYSTALLINE_REMOTE_URL
+                  value: https://crystalline.example.com
+                - name: CRYSTALLINE_REMOTE_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: crystalline-runner
+                      key: remote-token
+                - name: ANTHROPIC_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: crystalline-runner
+                      key: anthropic-api-key
+                      optional: true
+                - name: CLAUDE_CODE_OAUTH_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: crystalline-runner
+                      key: claude-code-oauth-token
+                      optional: true
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  memory: 1Gi
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                - name: home
+                  mountPath: /home/nonroot
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: data
+              emptyDir: {}
+            - name: home
+              emptyDir: {}
+            - name: tmp
+              emptyDir: {}

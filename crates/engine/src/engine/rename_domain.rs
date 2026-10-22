@@ -3,6 +3,7 @@
 //! and writes the configuration last, so a crash after any step is finished
 //! by the next engine before it serves.
 
+use crystalline_core::config::RenameAnswer;
 use crystalline_core::manifest::domain_name_at;
 use crystalline_core::relink::BodyGate;
 
@@ -14,8 +15,8 @@ use crate::rename::{
 
 /// Frees the one-rename slot when the rename that took it ends, however it
 /// ends.
-struct RenameSlot<'a> {
-    slot: &'a std::sync::Mutex<Option<(String, String, bool)>>,
+pub(super) struct RenameSlot<'a> {
+    slot: &'a std::sync::Mutex<Option<(String, String, String)>>,
 }
 
 impl Drop for RenameSlot<'_> {
@@ -139,48 +140,7 @@ impl Engine {
         if !local_only {
             self.refuse_read_only_domain(old, scope).await?;
         }
-        // A rename moves this machine's state folders and writes its
-        // configuration under a journal in the state directory: only the
-        // process that holds that directory runs one, so no two processes
-        // move the same folders or run one journal at once.
-        if !self.holds_state_dir() {
-            return Err(EngineError::Conflict(
-                "another Crystalline process (the daemon) holds this machine's state directory, \
-                 which a rename needs; rename through it, or stop it with `crystalline ctl \
-                 shutdown` and rename again"
-                    .to_string(),
-            ));
-        }
-        // Nor while this machine's own index cannot be named: nothing could
-        // tell whether the engine opened it.
-        if let Some(crate::rename::MachineOwner::Unknown(reason)) = &self.machine_owner {
-            return Err(EngineError::Conflict(format!(
-                "this machine's own index and configuration cannot be named ({}), so renames \
-                 are off in this Crystalline. Nothing was renamed. Fix the configuration so it \
-                 loads, then restart the daemon or the MCP server",
-                if may_see_server_paths(scope) {
-                    reason.as_str()
-                } else {
-                    "its configuration does not load"
-                }
-            )));
-        }
-        // Not over an index `--db` or `--config` named instead of this
-        // machine's own: the steps would move this machine's state folders
-        // and write its configuration while its own index keeps the old
-        // name.
-        if let Some(why) = self.off_machine().await? {
-            return Err(EngineError::Conflict(format!(
-                "a rename moves this machine's state folders and writes its configuration, so \
-                 it runs only against this machine's own index and configuration, and {}. \
-                 Nothing was renamed. Rename in a Crystalline started without --db and --config",
-                if may_see_server_paths(scope) {
-                    why
-                } else {
-                    "this instance opened another index or configuration".to_string()
-                }
-            )));
-        }
+        self.refuse_rename_off_machine(scope).await?;
         let hidden = self.hidden_for(scope).await?;
         // Privacy alone, never `hidden_for`'s extra "an index row this
         // instance has no registration for" names: the still-running and
@@ -213,14 +173,23 @@ impl Engine {
             )));
         }
 
-        let _slot = self.take_rename_slot(old, new, local_only, &privacy_hidden)?;
+        let _slot = self.take_rename_slot(
+            old,
+            new,
+            finish_hint_for(old, new, local_only),
+            &privacy_hidden,
+        )?;
         let _admin = self.domain_admin().await;
         let _fence = self.fence_joins().await;
         let state_dir = self.journal_state_dir()?;
         if let Some(journal) = RenameJournal::load(&state_dir).map_err(io_error)? {
             // The same rename a crash stopped: finish it rather than refuse.
             // The pause starts where `finish_rename` needs it.
-            if journal.old == old && journal.new == new && journal.local_only == local_only {
+            if journal.old == old
+                && journal.new == new
+                && journal.local_only == local_only
+                && !journal.respell_only
+            {
                 // Finished only against the index it was started on: a
                 // command that opened another one (`--db`, `--config`)
                 // would move this machine's state and configuration while
@@ -237,7 +206,7 @@ impl Engine {
                         finish_elsewhere_hint(&journal)
                     )));
                 }
-                let _origins = self.lock_both_origins(old, new).await;
+                let _origins = self.lock_rename_origins(&journal).await;
                 // A resumed journal may already have carried the old name's
                 // privacy records over, so who could read it is no longer
                 // known: its events fail closed, to the machine owner only.
@@ -432,6 +401,7 @@ impl Engine {
             old: old.to_string(),
             new: new.to_string(),
             local_only,
+            respell_only: false,
             origin,
             old_spellings,
             relink_spellings,
@@ -567,18 +537,25 @@ impl Engine {
             );
             return Ok(None);
         }
+        // A respell nobody is asking for any more (kept, changed back, or
+        // moved on to another name) is dropped, not run: it moves nothing,
+        // so nothing is left half done.
+        if journal.respell_only && !self.respell_still_asked(&journal).await {
+            self.drop_respell_journal(&state_dir, &journal);
+            return Ok(None);
+        }
         // No caller to protect here - this runs before the daemon serves
         // anyone - so nothing is hidden and a refusal (there is no live
         // caller to read one) would carry the full detail regardless.
         let _slot = self.take_rename_slot(
             &journal.old,
             &journal.new,
-            journal.local_only,
+            finish_hint(&journal),
             &HashSet::new(),
         )?;
         let _admin = self.domain_admin().await;
         let _fence = self.fence_joins().await;
-        let _origins = self.lock_both_origins(&journal.old, &journal.new).await;
+        let _origins = self.lock_rename_origins(&journal).await;
         // No pause here: `finish_rename` pauses the domain before the first
         // step that moves it, after the MANIFEST and relink steps a full
         // rename may still owe.
@@ -619,11 +596,20 @@ impl Engine {
     async fn finish_leftover_rename_inner(&self) -> Option<Value> {
         match self.recover_rename_journal().await {
             Ok(Some(report)) => {
-                tracing::info!(
-                    "finished renaming domain '{}' to '{}', which an earlier run left half done",
-                    report["previous"].as_str().unwrap_or_default(),
-                    report["domain"].as_str().unwrap_or_default()
-                );
+                if let Some(to) = report.get("to").and_then(Value::as_str) {
+                    tracing::info!(
+                        "finished respelling the links of domain '{}' to '{to}', which an \
+                         earlier run left half done",
+                        report["domain"].as_str().unwrap_or_default(),
+                    );
+                } else {
+                    tracing::info!(
+                        "finished renaming domain '{}' to '{}', which an earlier run left half \
+                         done",
+                        report["previous"].as_str().unwrap_or_default(),
+                        report["domain"].as_str().unwrap_or_default()
+                    );
+                }
                 Some(report)
             }
             Ok(None) => None,
@@ -665,7 +651,7 @@ impl Engine {
 
     /// The index, configuration and state directory this engine runs
     /// against, as a journal it writes records them.
-    async fn rename_owner(&self, state_dir: &Path) -> Result<RenameOwner> {
+    pub(super) async fn rename_owner(&self, state_dir: &Path) -> Result<RenameOwner> {
         let info = {
             let store = self.store.lock().await;
             store.store_info().await?
@@ -700,7 +686,7 @@ impl Engine {
 
     /// `None` when `journal` belongs to the index, configuration and state
     /// directory this engine opened; otherwise why it does not.
-    async fn foreign_journal(
+    pub(super) async fn foreign_journal(
         &self,
         journal: &RenameJournal,
         state_dir: &Path,
@@ -871,8 +857,11 @@ impl Engine {
         if let Ok(dir) = self.journal_state_dir()
             && let Ok(Some(journal)) = RenameJournal::load(&dir)
         {
+            // A respell keeps the domain's name; its `new` is a spelling.
+            if !journal.respell_only {
+                names.push(journal.new);
+            }
             names.push(journal.old);
-            names.push(journal.new);
         }
         names
     }
@@ -889,7 +878,7 @@ impl Engine {
     /// captured before the first step (or nobody, for a journal resumed
     /// after the records may have moved), the new one under the ordinary
     /// per-session check, since its records were re-keyed, not destroyed.
-    async fn finish_rename(
+    pub(super) async fn finish_rename(
         &self,
         mut journal: RenameJournal,
         state_dir: &Path,
@@ -954,6 +943,9 @@ impl Engine {
         }
         self.names_frozen
             .store(false, std::sync::atomic::Ordering::SeqCst);
+        if journal.respell_only {
+            return self.finish_respell(journal, state_dir);
+        }
 
         // The table and the index learn the new name and keep the old
         // spellings as aliases; references the index row step unbound (the
@@ -1412,7 +1404,7 @@ impl Engine {
     }
 
     /// A domain's index id and its reflection rows.
-    async fn reflection_rows(
+    pub(super) async fn reflection_rows(
         &self,
         domain: &str,
     ) -> Result<(DomainId, Vec<crystalline_index::ReflectionRow>)> {
@@ -1560,7 +1552,10 @@ impl Engine {
     }
 
     /// Every registered domain `scope` may see and write, sorted.
-    async fn writable_domains(&self, scope: &crate::scope::Scope) -> Result<Vec<String>> {
+    pub(super) async fn writable_domains(
+        &self,
+        scope: &crate::scope::Scope,
+    ) -> Result<Vec<String>> {
         let hidden = self.hidden_for(scope).await?;
         let mut writable = Vec::new();
         for name in self.registered_domain_entries_now().await.keys() {
@@ -1746,6 +1741,13 @@ impl Engine {
                 }
             };
             entry.name_origin = Some(journal.origin);
+            // A rename by hand settles the question a MANIFEST rename left
+            // open: the person has named the domain on purpose.
+            if let Some(question) = entry.rename_question.as_mut()
+                && question.answered.is_none()
+            {
+                question.answered = Some(RenameAnswer::Finished);
+            }
             let mut aliases = entry.aliases.clone();
             aliases.extend(journal.old_spellings.iter().cloned());
             entry.aliases = distinct_without(aliases, new);
@@ -1761,6 +1763,7 @@ impl Engine {
             entry
         };
         self.discovered_domains.write().unwrap().remove(old);
+        self.forget_rename_nudges(old);
         // After both configurations hold the new name: a lookup that took the
         // stale mark persist set would have built from the old snapshot.
         self.mark_names_stale();
@@ -1815,6 +1818,23 @@ impl Engine {
         }
     }
 
+    /// The origin locks a journal's rename holds: both names for a rename
+    /// ([`Engine::lock_both_origins`]); the domain's own name alone for a
+    /// respell, which moves nothing, so its new name stays a spelling and
+    /// never gets a lock of its own.
+    pub(super) async fn lock_rename_origins(
+        &self,
+        journal: &RenameJournal,
+    ) -> Vec<tokio::sync::OwnedMutexGuard<()>> {
+        if journal.respell_only {
+            vec![self.origin_lock(&journal.old).lock_owned().await]
+        } else {
+            self.lock_both_origins(&journal.old, &journal.new)
+                .await
+                .into()
+        }
+    }
+
     /// Hold the origin lock of both names, `old` first, so no origin pull or
     /// share runs under either while the rename moves the domain.
     async fn lock_both_origins(
@@ -1834,27 +1854,28 @@ impl Engine {
     /// running names its two domains in the refusal only when neither is
     /// hidden from `hidden`, for the same reason the taken-name refusal
     /// above does not name a hidden holder.
-    fn take_rename_slot(
+    /// `hint` is how the rename is finished if it stops before it is done,
+    /// for the refusal another rename gets meanwhile.
+    pub(super) fn take_rename_slot(
         &self,
         old: &str,
         new: &str,
-        local_only: bool,
+        hint: String,
         hidden: &HashSet<String>,
     ) -> Result<RenameSlot<'_>> {
         let mut slot = self.rename_slot.lock().unwrap();
-        if let Some((running, to, local)) = slot.as_ref() {
+        if let Some((running, to, hint)) = slot.as_ref() {
             let message = if hidden.contains(running) || hidden.contains(to) {
                 "a rename is still running; try again once it is done".to_string()
             } else {
                 format!(
                     "the rename of '{running}' to '{to}' is still running; try again once it is \
-                     done. If it stops before it is done, {}",
-                    finish_hint_for(running, to, *local)
+                     done. If it stops before it is done, {hint}"
                 )
             };
             return Err(EngineError::Conflict(message));
         }
-        *slot = Some((old.to_string(), new.to_string(), local_only));
+        *slot = Some((old.to_string(), new.to_string(), hint));
         Ok(RenameSlot {
             slot: &self.rename_slot,
         })
@@ -1982,7 +2003,7 @@ impl Engine {
     }
 
     /// The refusal for a caller who may see the domain and does not own it.
-    fn rename_refusal(name: &str) -> EngineError {
+    pub(super) fn rename_refusal(name: &str) -> EngineError {
         EngineError::Forbidden(format!(
             "renaming domain '{name}' is for an instance admin, or for the owner of a private \
              domain; ask an admin to rename it"
@@ -2024,7 +2045,7 @@ fn renaming_conflict(name: String) -> EngineError {
     ))
 }
 
-fn io_error(e: std::io::Error) -> EngineError {
+pub(super) fn io_error(e: std::io::Error) -> EngineError {
     EngineError::Internal(e.to_string())
 }
 
@@ -2034,7 +2055,7 @@ fn io_error(e: std::io::Error) -> EngineError {
 /// private domain's own non-admin owner reaches a rename too - the same
 /// `require_domain_owner_refusing` gate that admits an admin admits them -
 /// and a refusal built for them carries none of the server's own layout.
-fn may_see_server_paths(scope: &crate::scope::Scope) -> bool {
+pub(super) fn may_see_server_paths(scope: &crate::scope::Scope) -> bool {
     matches!(
         scope,
         crate::scope::Scope::Unrestricted | crate::scope::Scope::User { admin: true, .. }
@@ -2043,23 +2064,37 @@ fn may_see_server_paths(scope: &crate::scope::Scope) -> bool {
 
 /// How to finish the rename `journal` records: the same rename sent again,
 /// or a daemon restart, which finishes it before serving.
-fn finish_hint(journal: &RenameJournal) -> String {
+pub(super) fn finish_hint(journal: &RenameJournal) -> String {
+    if journal.respell_only {
+        return RESPELL_HINT.to_string();
+    }
     finish_hint_for(&journal.old, &journal.new, journal.local_only)
 }
+
+/// How to finish the respell of a rename the MANIFEST made.
+pub(super) const RESPELL_HINT: &str = "run `crystalline doctor --fix` to finish it, or restart the daemon, \
+                            which finishes it before serving";
 
 /// How to finish a rename whose journal belongs to another index than the
 /// one this command opened: the same command, against the index it belongs
 /// to.
-fn finish_elsewhere_hint(journal: &RenameJournal) -> String {
+pub(super) fn finish_elsewhere_hint(journal: &RenameJournal) -> String {
+    let command = if journal.respell_only {
+        "crystalline doctor --fix".to_string()
+    } else {
+        format!(
+            "crystalline domain rename {} {}{}",
+            journal.old,
+            journal.new,
+            if journal.local_only { " --local" } else { "" }
+        )
+    };
     format!(
-        "run `crystalline domain rename {} {}{}` without --db and --config, or restart the \
-         daemon, which finishes it before serving. When it was recorded against another \
-         spelling of this machine's configuration or database, `crystalline doctor` says what \
-         to put back first, and `crystalline doctor --discard-rename` drops it, leaving the \
-         steps already done as they are",
-        journal.old,
-        journal.new,
-        if journal.local_only { " --local" } else { "" }
+        "run `{command}` without --db and --config, or restart the daemon, which finishes it \
+         before serving. When it was recorded against another spelling of this machine's \
+         configuration or database, `crystalline doctor` says what to put back first, and \
+         `crystalline doctor --discard-rename` drops it, leaving the steps already done as they \
+         are"
     )
 }
 
@@ -2074,7 +2109,7 @@ fn finish_hint_for(old: &str, new: &str, local_only: bool) -> String {
 }
 
 /// The caller a full rename's journal keeps: `None` for the machine owner.
-fn rename_caller(scope: &crate::scope::Scope) -> Option<RenameCaller> {
+pub(super) fn rename_caller(scope: &crate::scope::Scope) -> Option<RenameCaller> {
     match scope {
         crate::scope::Scope::User { account, admin } => Some(RenameCaller {
             account: account.clone(),
@@ -2103,7 +2138,12 @@ const SOURCES_NOT_REWRITTEN: &str = "its frontmatter cannot be rewritten key by 
 /// `spellings` respelled as `new`, and how many were, over the body `gate`
 /// names (`BodyGate::Lossless` for an engram, `BodyGate::Split` for a
 /// reflection page).
-fn respell_old(text: &str, spellings: &[String], new: &str, gate: BodyGate) -> (String, usize) {
+pub(super) fn respell_old(
+    text: &str,
+    spellings: &[String],
+    new: &str,
+    gate: BodyGate,
+) -> (String, usize) {
     crystalline_core::relink::respell_domains_with(text, gate, &|domain: &str| {
         spellings
             .iter()
@@ -2113,7 +2153,7 @@ fn respell_old(text: &str, spellings: &[String], new: &str, gate: BodyGate) -> (
 }
 
 /// `names` in their first order, each once, without `new`.
-fn distinct_without(names: Vec<String>, new: &str) -> Vec<String> {
+pub(super) fn distinct_without(names: Vec<String>, new: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for name in names {
         if name != new && !out.contains(&name) {

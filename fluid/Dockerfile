@@ -25,7 +25,7 @@ WORKDIR /app
 # package.json - which is what corepack reads to decide what to fetch. The
 # prompt it would otherwise raise before downloading has no answer in a build.
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-RUN npm install --global corepack@0.35.0 && corepack enable pnpm
+RUN npm install --global corepack@0.36.0 && corepack enable pnpm
 
 # The manifest, the lockfile and the workspace file (pnpm reads overrides
 # from it, and a frozen install fails if the lockfile records overrides the

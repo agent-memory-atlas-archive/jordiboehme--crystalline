@@ -59,12 +59,12 @@ function insideClosedBlock(state: EditorState, pos: number): boolean {
   return inside;
 }
 
-/** The sections the full list is drawn in, in the registry's order. */
+/** The sections the full list is drawn in. Diagram goes last: it is the longest. */
 const SECTIONS: Record<InsertAction["group"], CompletionSection> = {
   Callout: { name: "Callout", rank: 0 },
   Blocks: { name: "Blocks", rank: 1 },
-  Diagram: { name: "Diagram", rank: 2 },
-  Inline: { name: "Inline", rank: 3 },
+  Inline: { name: "Inline", rank: 2 },
+  Diagram: { name: "Diagram", rank: 3 },
 };
 
 /**

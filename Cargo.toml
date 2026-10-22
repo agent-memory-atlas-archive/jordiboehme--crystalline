@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.28.1"
+version = "0.29.0"
 authors = ["Jordi Böhme <jordi@boehme-lopez.de>"]
 edition = "2024"
 license = "MPL-2.0"
@@ -34,9 +34,9 @@ crystalline-rest = { path = "crates/rest" }
 crystalline-service = { path = "crates/service" }
 
 clap = { version = "4.6.7", features = ["derive"] }
-tokio = { version = "1.53.1", features = ["full"] }
-rmcp = "3.5.0"
-turso = "0.8.1"
+tokio = { version = "1.54.0", features = ["full"] }
+rmcp = "3.6.0"
+turso = "0.8.3"
 candle-core = "0.11.0"
 candle-nn = "0.11.0"
 candle-transformers = "0.11.0"
@@ -69,11 +69,14 @@ sqlx = { version = "0.9.0", default-features = false, features = [
 ] }
 pgvector = { version = "0.4.2", default-features = false, features = ["sqlx"] }
 notify = "8.2.0"
-interprocess = "2.4.4"
-sha2 = "0.11.0"
+interprocess = "2.4.6"
+sha2 = "0.11.1"
+# The webhook signature (`crystalline_core::automation::webhook_signature`):
+# HMAC-SHA256 over the same sha2 line.
+hmac = "0.13.0"
 chrono = "0.4.45"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+serde_json = "1.0.154"
 # The span-preserving JSONC editor install uses on harness files it shares
 # with the person (crates/core/src/jsonc_edit.rs). `cst` gives the concrete
 # syntax tree that keeps comments and formatting; `preserve_order` stays off,
@@ -110,11 +113,11 @@ time = { version = "0.3.55", default-features = false }
 # re-export of it, and pulling the trait crate keeps the middleware stack out
 # of the graph.
 tower-service = "0.3.3"
-libc = "0.2.189"
+libc = "0.2.191"
 serde_yaml_ng = "0.10.0"
-toml = "1.1.6"
+toml = "1.1.8"
 async-trait = "0.1.92"
-uuid = { version = "1.26.1", features = ["v4"] }
+uuid = { version = "1.28.0", features = ["v4"] }
 thiserror = "2.0.21"
 anyhow = "1.0.104"
 etcetera = "0.11.0"
@@ -126,7 +129,7 @@ walkdir = "2.5.0"
 # a separate walk of "the same" root already found).
 dunce = "1.0.5"
 globset = "0.4.20"
-schemars = "1.2.2"
+schemars = "1.2.3"
 futures = "0.3.34"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
@@ -170,7 +173,7 @@ getrandom = "0.4.3"
 # Default features drag aes, bzip2, lzma, ppmd, zstd and xz in; the archives
 # this reads and writes are deflate only, and flate2 is already in the graph
 # through crates/remote, so the lean deflate backend is the whole need.
-zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 # The Fluid web bundle, compiled into the binary (crates/service, behind the
 # `fluid-ui` feature). This crate has no default features, and all three named
@@ -181,7 +184,7 @@ zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2
 # `include-exclude` is what makes the `#[exclude = "*.map"]` attribute compile
 # at all (the derive rejects it otherwise, by name). `sha256_hash()`, the ETag
 # source, needs no feature.
-rust-embed = { version = "8.12", features = [
+rust-embed = { version = "8.13", features = [
     "interpolate-folder-path",
     "mime-guess",
     "include-exclude",
@@ -224,7 +227,7 @@ http = "1.5.0"
 # sqlx's Postgres driver; only `std` is needed here.
 whoami = { version = "2.1.3", default-features = false, features = ["std"] }
 
-insta = { version = "1.48.0", features = ["yaml"] }
+insta = { version = "1.49.0", features = ["yaml"] }
 assert_cmd = "2.2.2"
 # Dev-only, for the fake OpenID Connect provider the relying-party tests run
 # against (crates/service). `rust_crypto` rather than `aws_lc_rs`: every crate
@@ -242,7 +245,7 @@ tempfile = "3.27.0"
 # o200k_base tokenizer for the TOON vs JSON payload measurement test; pulls no
 # serde_json (verified against its crates.io dependency list), so it cannot
 # reintroduce the preserve_order feature into this workspace.
-tiktoken-rs = "0.12.0"
+tiktoken-rs = "0.12.1"
 
 # Dev and test builds carry line tables only: panics and backtraces keep
 # file:line, links across the 45 integration-test binaries stay fast and the

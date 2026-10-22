@@ -140,6 +140,31 @@ pub enum AssetPathError {
     DisallowedExtension,
 }
 
+/// Why an imported `assets/` file was refused: its path breaks the asset
+/// path rules. Named here so every import route reports it in one wording.
+pub const ASSET_PATH_REASON: &str = "path is not a valid assets path";
+/// Why an imported `assets/` file was refused: its type is not allowed.
+pub const ASSET_EXTENSION_REASON: &str = "extension is not an allowed attachment type";
+/// Why an imported `assets/` file was refused: it is past the size limit.
+pub const ASSET_SIZE_REASON: &str = "attachment exceeds the size limit";
+/// Why an imported `assets/` file was refused: it is markdown.
+pub const ASSET_MARKDOWN_REASON: &str = "assets entries must be attachments, not markdown";
+
+/// Why an imported file at `path` under `assets/`, `len` bytes long, cannot
+/// be stored as an attachment, in the words of the constants above, or
+/// `None` when it can.
+pub fn asset_refusal(path: &str, len: u64) -> Option<&'static str> {
+    match validate_asset_path(path) {
+        Ok(()) if len > MAX_ATTACHMENT_BYTES => Some(ASSET_SIZE_REASON),
+        Ok(()) => None,
+        Err(AssetPathError::DisallowedExtension) if path.to_lowercase().ends_with(".md") => {
+            Some(ASSET_MARKDOWN_REASON)
+        }
+        Err(AssetPathError::DisallowedExtension) => Some(ASSET_EXTENSION_REASON),
+        Err(_) => Some(ASSET_PATH_REASON),
+    }
+}
+
 /// Check a domain-relative attachment path against every rule.
 ///
 /// Asset paths are never slugified - a filename a human recognizes is the
@@ -209,6 +234,111 @@ pub fn validate_asset_path(path: &str) -> Result<(), AssetPathError> {
         return Err(AssetPathError::DisallowedExtension);
     }
     Ok(())
+}
+
+/// `assets/deck.pptx` as `assets/deck-2.pptx`: the name an attachment takes
+/// when the destination already holds a different file under its own.
+///
+/// The counter goes before the extension rather than after it, so the file
+/// keeps the extension its mime and its allowlist decision rest on, and the
+/// stem is shortened as far as it has to be for the result to pass
+/// [`validate_asset_path`]. A path already at the length ceiling would
+/// otherwise grow past it, and since this name is what the links are
+/// rewritten to, an invalid one would be a reference rewritten to a path no
+/// write can ever accept. `None` when no
+/// valid name can be built even with the stem gone, which leaves the
+/// attachment uncarried rather than renamed into nowhere.
+pub fn suffixed_asset_path(path: &str, attempt: usize) -> Option<String> {
+    let (dir, name) = match path.rsplit_once('/') {
+        Some((dir, name)) => (format!("{dir}/"), name),
+        None => (String::new(), path),
+    };
+    let (stem, extension) = match name.rsplit_once('.') {
+        Some((stem, extension)) => (stem, Some(extension)),
+        None => (name, None),
+    };
+    let mut keep = stem.len();
+    loop {
+        let candidate = match extension {
+            Some(extension) => format!("{dir}{}-{attempt}.{extension}", &stem[..keep]),
+            None => format!("{dir}{}-{attempt}", &stem[..keep]),
+        };
+        if validate_asset_path(&candidate).is_ok() {
+            return Some(candidate);
+        }
+        if keep == 0 {
+            return None;
+        }
+        // One character at a time, never one byte: a stem cut through a
+        // multi-byte character would not be a string at all.
+        keep -= 1;
+        while keep > 0 && !stem.is_char_boundary(keep) {
+            keep -= 1;
+        }
+    }
+}
+
+/// The longest stem or extension `clean_asset_segment` keeps, in bytes.
+const MAX_CLEAN_PART_BYTES: usize = 100;
+
+/// One part of a name (stem or extension) in the slug rule.
+fn slug_part(part: &str) -> String {
+    let mut safe = String::with_capacity(part.len());
+    let mut dashed = false;
+    for c in part.to_lowercase().chars() {
+        if c.is_alphabetic() || c.is_numeric() || c == '.' || c == '_' {
+            safe.push(c);
+            dashed = false;
+        } else if !dashed {
+            safe.push('-');
+            dashed = true;
+        } else {
+            continue;
+        }
+        // A literal `-` kept from the name also collapses with a neighbour.
+        if c == '-' {
+            dashed = true;
+        }
+    }
+    let mut kept = String::new();
+    for c in safe.chars() {
+        if kept.len() + c.len_utf8() > MAX_CLEAN_PART_BYTES {
+            break;
+        }
+        kept.push(c);
+    }
+    kept.trim_start_matches(['.', '-'])
+        .trim_end_matches(['.', '-'])
+        .to_string()
+}
+
+/// One file name as a segment `validate_asset_path` accepts: lowercase, every
+/// run of characters other than letters, digits, `.`, `_` and `-` turned into
+/// one `-`, leading dots and dashes and trailing dots and dashes dropped, the
+/// extension (after the last dot, never a leading one) lowercased, and the
+/// stem and the extension each capped at 100 bytes. `None` when nothing is
+/// left of the stem.
+///
+/// This is the Rust twin of `sanitizeAttachmentName` in
+/// `fluid/src/api/files.ts`, so a file named by an upload and by an import
+/// comes out the same; keep the two in step. The one difference: Fluid names
+/// a stem with nothing keepable `attachment`, this answers `None` and lets
+/// the caller choose.
+pub fn clean_asset_segment(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    let (stem, extension) = match trimmed.rfind('.') {
+        Some(dot) if dot > 0 => (&trimmed[..dot], slug_part(&trimmed[dot + 1..])),
+        _ => (trimmed, String::new()),
+    };
+    let stem = slug_part(stem);
+    if stem.is_empty() {
+        return None;
+    }
+    Some(if extension.is_empty() {
+        stem
+    } else {
+        format!("{stem}.{extension}")
+    })
 }
 
 /// The distinct `assets/` targets an Engram body references, in order of first
@@ -369,6 +499,82 @@ fn line_link_targets(line: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_suffixed_name_stays_a_valid_attachment_path() {
+        assert_eq!(
+            suffixed_asset_path("assets/shot.png", 2).unwrap(),
+            "assets/shot-2.png"
+        );
+        assert_eq!(
+            suffixed_asset_path("assets/notes/deck.pptx", 3).unwrap(),
+            "assets/notes/deck-3.pptx"
+        );
+
+        // At the 256 byte ceiling the stem gives way, never the extension:
+        // the name has to stay one a write will accept, because the engram's
+        // references are rewritten to it.
+        let at_cap = format!("assets/{}.png", "a".repeat(245));
+        assert_eq!(at_cap.len(), 256);
+        let suffixed = suffixed_asset_path(&at_cap, 2).unwrap();
+        assert_eq!(suffixed, format!("assets/{}-2.png", "a".repeat(243)));
+        assert!(validate_asset_path(&suffixed).is_ok());
+        let long_suffix = suffixed_asset_path(&at_cap, 100).unwrap();
+        assert!(validate_asset_path(&long_suffix).is_ok());
+
+        // A multi-byte stem is cut on character boundaries, not byte ones:
+        // 255 bytes of path with a two-byte stem character, where `-2` no
+        // longer fits and exactly one character has to go.
+        let wide = format!("assets/{}.png", "é".repeat(122));
+        assert_eq!(wide.len(), 255);
+        let cut = suffixed_asset_path(&wide, 2).unwrap();
+        assert!(validate_asset_path(&cut).is_ok());
+        assert_eq!(cut, format!("assets/{}-2.png", "é".repeat(121)));
+
+        // And a path with no room left at all is refused rather than
+        // rewritten into something no write would take.
+        let hopeless = format!("assets/{}/x.png", "d".repeat(246));
+        assert!(suffixed_asset_path(&hopeless, 2).is_none());
+    }
+
+    #[test]
+    fn clean_asset_segment_follows_the_slug_rule() {
+        let cases = [
+            ("Q3 report (final).PDF", Some("q3-report-final.pdf")),
+            ("page 3.png", Some("page-3.png")),
+            (".hidden.png", Some("hidden.png")),
+            ("100%.pdf", Some("100.pdf")),
+            ("###", None),
+            ("café.png", Some("café.png")),
+            // Combining marks are letters of their script, as in Fluid.
+            ("हिंदी नोट.png", Some("हिंदी-नोट.png")),
+        ];
+        for (input, want) in cases {
+            assert_eq!(clean_asset_segment(input).as_deref(), want, "{input}");
+        }
+    }
+
+    #[test]
+    fn clean_asset_segment_results_are_valid_asset_paths() {
+        for input in [
+            "Q3 report (final).PDF",
+            "page 3.png",
+            ".hidden.png",
+            "100%.pdf",
+            "café.png",
+            "R&D #1.png",
+            "a:b\\c.jpg",
+        ] {
+            let s = clean_asset_segment(input).unwrap();
+            assert_eq!(validate_asset_path(&format!("assets/x/{s}")), Ok(()), "{s}");
+        }
+    }
+
+    #[test]
+    fn clean_asset_segment_caps_the_stem_at_100_bytes() {
+        let s = clean_asset_segment(&format!("{}.png", "é".repeat(80))).unwrap();
+        assert_eq!(s, format!("{}.png", "é".repeat(50)));
+    }
 
     /// Every extension the specification allowlists, with the exact mime the
     /// server must serve it under.

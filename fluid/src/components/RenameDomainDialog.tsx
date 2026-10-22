@@ -68,11 +68,9 @@ import { useId, useState } from "react";
 import { useNavigate } from "react-router";
 
 import { problemDetail } from "../api/client";
-import { DOMAINS_QUERY_KEY } from "../api/domains";
-import type { DomainListing } from "../api/domains";
 import type { RenameReport } from "../api/admin";
-import { renameDomain, renameReportKey } from "../api/admin";
-import { engramsRoute } from "../paths";
+import { renameDomain } from "../api/admin";
+import { followRename, landOnRenamed } from "./followRename";
 import { BUTTON, FIELD } from "./primitives";
 
 export interface RenameDomainDialogProps {
@@ -95,43 +93,9 @@ export function RenameDomainDialog({
   const rename = useMutation({
     mutationFn: () => renameDomain(domain, name.trim(), localOnly),
     onSuccess: (report: RenameReport) => {
-      queryClient.setQueryData(
-        DOMAINS_QUERY_KEY,
-        (current: DomainListing | undefined) => {
-          if (current === undefined) {
-            return current;
-          }
-          return {
-            ...current,
-            domains: current.domains.map((entry) =>
-              entry.name === domain
-                ? {
-                    ...entry,
-                    name: report.domain,
-                    canonicalName: report.domain,
-                    aliases: report.aliases,
-                    renaming: false,
-                  }
-                : entry,
-            ),
-          };
-        },
-      );
-      // Set before navigating: whichever navigation actually lands the
-      // reader on this domain's page, the report is already waiting there.
-      // See the module doc above for why this is not `location.state`.
-      queryClient.setQueryData(renameReportKey(report.domain), report);
+      followRename(queryClient, domain, report);
       onClose();
-      // The engram view, not the domain's address: only the engram view
-      // shows the report, and the domain's address may open on the
-      // Reflection, which would leave the report waiting for a later visit.
-      void navigate(engramsRoute(report.domain), { replace: true });
-      // The full truth, in the background, for anything the patch above
-      // could not know (a shadow the new name now carries, say): by the
-      // time this resolves the reader is already on the right address, so
-      // neither this dialog nor the redirect has anything left to do with
-      // it.
-      void queryClient.invalidateQueries({ queryKey: DOMAINS_QUERY_KEY });
+      landOnRenamed(queryClient, navigate, report);
     },
     onError: (error: Error) => {
       // The server's own words, verbatim, the way every refusal on this app
