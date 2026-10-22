@@ -1210,7 +1210,7 @@ impl SectionOp {
 /// The index (into the document's headings) of the heading a `section` text
 /// names, or the miss with the headings that exist. Whole text as one heading
 /// first, then a path split on ` > `.
-pub fn resolve_section(source: &str, path: &str) -> Result<usize, EditError> {
+pub(crate) fn resolve_section(source: &str, path: &str) -> Result<usize, EditError> {
     let headings = heading_spans(source);
     resolve_path(&headings, path).ok_or_else(|| not_found(&headings, path))
 }
@@ -1230,7 +1230,12 @@ pub fn apply_section_op(
 
 /// [`apply_section_op`] on the heading at index `p` (from [`resolve_section`],
 /// or found by other means, such as a reflection section's id).
-pub fn apply_section_op_at(source: &str, op: SectionOp, p: usize, content: &str) -> SectionEdit {
+pub(crate) fn apply_section_op_at(
+    source: &str,
+    op: SectionOp,
+    p: usize,
+    content: &str,
+) -> SectionEdit {
     let headings = heading_spans(source);
     match op {
         SectionOp::Replace {

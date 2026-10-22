@@ -9234,3 +9234,25 @@ async fn write_reflection_finds_a_section_by_id_and_keeps_a_body_with_its_headin
     .unwrap_err();
     assert!(miss.contains("## One") && miss.contains("## Two"), "{miss}");
 }
+
+/// `write_reflection` says in one sentence what `insert_after_section` does
+/// with content that opens with a heading, as `edit_engram` does (spec D3).
+#[tokio::test]
+async fn the_write_reflection_description_names_placed_after_section() {
+    let h = Harness::new(&["eng"]).await;
+    let (client, _server) = h.connect().await;
+    let tools = client.peer().list_tools(Default::default()).await.unwrap();
+    let description = tools
+        .tools
+        .iter()
+        .find(|t| t.name == "write_reflection")
+        .and_then(|t| t.description.as_deref())
+        .unwrap_or("");
+    assert!(
+        description.contains(
+            "unless the content opens with a heading of the section's own level or a higher one: \
+             then it goes after the whole section and the receipt says placed_after_section"
+        ),
+        "{description}"
+    );
+}
