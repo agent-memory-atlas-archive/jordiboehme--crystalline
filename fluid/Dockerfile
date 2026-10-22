@@ -25,7 +25,16 @@ WORKDIR /app
 # package.json - which is what corepack reads to decide what to fetch. The
 # prompt it would otherwise raise before downloading has no answer in a build.
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-RUN npm install --global corepack@0.36.0 && corepack enable pnpm
+#
+# Both registry fetches retry (5 tries, waiting 5, 10, 20 and 40 s): one slow
+# npm answer failed the v0.29.0 release. The pinned pnpm is fetched after the
+# COPY below, because only then is the packageManager field in sight.
+RUN for wait in 5 10 20 40 stop; do \
+      npm install --global corepack@0.36.0 && break; \
+      [ "$wait" != stop ] || { echo "::error::npm install corepack failed after 5 tries"; exit 1; }; \
+      sleep "$wait"; \
+    done \
+    && corepack enable pnpm
 
 # The manifest, the lockfile and the workspace file (pnpm reads overrides
 # from it, and a frozen install fails if the lockfile records overrides the
@@ -33,7 +42,12 @@ RUN npm install --global corepack@0.36.0 && corepack enable pnpm
 # is rebuilt only when the dependencies actually change and not on every
 # edit to a source file.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN for wait in 5 10 20 40 stop; do \
+      pnpm --version && break; \
+      [ "$wait" != stop ] || { echo "::error::pnpm download through corepack failed after 5 tries"; exit 1; }; \
+      sleep "$wait"; \
+    done \
+    && pnpm install --frozen-lockfile
 
 COPY . .
 RUN pnpm build
