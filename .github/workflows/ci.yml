@@ -477,11 +477,12 @@ jobs:
       # version is as pinned as npm gets here, so that finding is ignored on
       # this step and on the other corepack steps (fluid-smoke, fluid-audit,
       # build.yml fluid-dist, release.yml sbom).
+      # Registry fetches retry (scripts/ci/retry.sh) so one slow answer cannot fail a release.
       - name: Enable corepack
         run: | # zizmor: ignore[adhoc-packages]
-          npm install --global corepack@0.36.0
+          "$GITHUB_WORKSPACE"/scripts/ci/retry.sh 5 npm install --global corepack@0.36.0
           corepack enable pnpm
-          pnpm --version
+          "$GITHUB_WORKSPACE"/scripts/ci/retry.sh 5 pnpm --version
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -615,10 +616,12 @@ jobs:
           node-version: '26'
 
       # Pinned corepack; the fluid job explains the zizmor ignore.
+      # Registry fetches retry (scripts/ci/retry.sh) so one slow answer cannot fail a release.
       - name: Enable corepack
         run: | # zizmor: ignore[adhoc-packages]
-          npm install --global corepack@0.36.0
+          "$GITHUB_WORKSPACE"/scripts/ci/retry.sh 5 npm install --global corepack@0.36.0
           corepack enable pnpm
+          "$GITHUB_WORKSPACE"/scripts/ci/retry.sh 5 pnpm --version
         working-directory: fluid
 
       - name: Install dependencies
@@ -881,11 +884,12 @@ jobs:
           node-version: '26'
 
       # Pinned corepack; the fluid job explains the zizmor ignore.
+      # Registry fetches retry (scripts/ci/retry.sh) so one slow answer cannot fail a release.
       - name: Enable corepack
         run: | # zizmor: ignore[adhoc-packages]
-          npm install --global corepack@0.36.0
+          "$GITHUB_WORKSPACE"/scripts/ci/retry.sh 5 npm install --global corepack@0.36.0
           corepack enable pnpm
-          pnpm --version
+          "$GITHUB_WORKSPACE"/scripts/ci/retry.sh 5 pnpm --version
 
       # A pull request fails on an advisory. On a push to main the step may
       # fail without failing the job (continue-on-error), because a new

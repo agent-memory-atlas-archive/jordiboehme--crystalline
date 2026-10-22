@@ -346,12 +346,13 @@ jobs:
           git diff --exit-code Cargo.lock
 
       # Pinned corepack; ci.yml's fluid job explains the zizmor ignore.
+      # Registry fetches retry (scripts/ci/retry.sh) so one slow answer cannot fail a release.
       - name: Enable corepack
         working-directory: fluid
         run: | # zizmor: ignore[adhoc-packages]
-          npm install --global corepack@0.36.0
+          "$GITHUB_WORKSPACE"/scripts/ci/retry.sh 5 npm install --global corepack@0.36.0
           corepack enable pnpm
-          pnpm --version
+          "$GITHUB_WORKSPACE"/scripts/ci/retry.sh 5 pnpm --version
 
       # The store, not the lockfile alone, carries the license data, hence
       # the install. The file goes to ../sbom, never under fluid/dist: the
