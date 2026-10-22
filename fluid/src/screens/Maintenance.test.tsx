@@ -1549,18 +1549,23 @@ describe("the last maintenance runs", () => {
     },
   });
 
-  it("says when each domain was last maintained and what waits for judgment", async () => {
+  it("says when each domain was last maintained and counts judgment from the queue", async () => {
     await open({
-      "/domains/eng/automation": () => ran(4),
-      "/domains/ops/automation": () => ({ reflect: LOOP, evolve: LOOP }),
+      "/domains/eng/automation": () => ({ reflect: null, evolve: LOOP }),
+      "/domains/ops/automation": () => ran(0),
     });
     const list = await screen.findByRole("list", {
       name: "Last maintenance runs",
     });
     const items = within(list).getAllByRole("listitem");
     expect(items).toHaveLength(1);
+    // The one judgment finding of ops comes from the sweep already loaded.
     expect(items[0]).toHaveTextContent(
-      "eng: Last maintained 5 hours ago by n8n: done. 4 findings wait for a person.",
+      "ops: Last maintained 5 hours ago by n8n: done. 1 finding waits for a person.",
+    );
+    // The last run only: no request that sweeps a domain again.
+    expect(requested()).toContain(
+      "/domains/ops/automation?loop=evolve&counts=false",
     );
   });
 

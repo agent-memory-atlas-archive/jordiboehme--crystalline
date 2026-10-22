@@ -98,7 +98,7 @@ pub const TIMESTAMP_HEADER: &str = "X-Crystalline-Timestamp";
 pub const SIGNATURE_HEADER: &str = "X-Crystalline-Signature";
 
 /// The error recorded while a URL is set but no secret is.
-const NO_SECRET: &str = "no webhook secret is set on this instance, so nothing is sent";
+const NO_SECRET: &str = crystalline_engine::engine::WEBHOOK_NO_SECRET;
 
 /// Send the trigger webhooks until `shutdown` turns true. Spawned by the
 /// daemon; it does no work before its first window, so the start never

@@ -25,6 +25,9 @@ const NOT_HOSTED_HERE: &str = "not hosted here";
 /// The refusal of a take while another run holds a fresh lease.
 const ALREADY_RUNNING: &str = "already running";
 
+/// The error a webhook URL without a secret shows: nothing is sent.
+pub const WEBHOOK_NO_SECRET: &str = "no webhook secret is set on this instance, so nothing is sent";
+
 /// The longest runner label a lease keeps.
 const RUNNER_MAX_BYTES: usize = 128;
 
@@ -161,21 +164,62 @@ impl Engine {
         Ok(json!({ "loop": lp, "domains": out }))
     }
 
-    /// What a person may see of both loops on `domain`: `{reflect, evolve}`,
-    /// each the entry [`Engine::automation_status`] gives (`last_run`,
-    /// `running`, `left_for_person`, `counts`, `delivery`). The right is to
-    /// read the domain: a domain the caller may not see is refused as an
-    /// unknown one. A caller who may not run a loop gets its last run and
-    /// delivery, with nothing counted.
-    pub async fn automation_overview(&self, domain: &str, scope: &Scope) -> Result<Value> {
+    /// What a person may see of the loops on `domain`: `{reflect?, evolve?}`
+    /// (just `only` when it names one), each the entry
+    /// [`Engine::automation_status`] gives, cut to the caller's share. The
+    /// right to see any of it is the right to read the domain: a domain the
+    /// caller may not see is refused as an unknown one.
+    ///
+    /// - Everyone who reads: `last_run` without its `account`, `summary` and
+    ///   `pr_url`, and `running` without its `account`.
+    /// - A caller who may run the loop (curate the Reflection, write the
+    ///   knowledge) also gets `summary`, `pr_url` and `account`, and, when
+    ///   `counts` is true, `counts` and `left_for_person`. Both are `null`
+    ///   for everyone else and with `counts` false, which skips the due
+    ///   work (a sweep of the domain) altogether.
+    /// - Only a domain manager or an instance admin gets `delivery`, which
+    ///   can name the receiver's host and how this instance is set up.
+    pub async fn automation_overview(
+        &self,
+        domain: &str,
+        scope: &Scope,
+        only: Option<Loop>,
+        counts: bool,
+    ) -> Result<Value> {
         self.require_domain(domain, scope).await?;
+        let manager = !matches!(scope, Scope::Anonymous)
+            && self.domain_right(scope, domain).await? >= crate::scope::DomainRight::Manage;
         let mut out = serde_json::Map::new();
         for lp in [Loop::Reflect, Loop::Evolve] {
-            let counted = self.require_loop_right(lp, domain, scope).await.is_ok();
-            out.insert(
-                lp.as_str().to_string(),
-                self.loop_status(lp, domain, scope, counted).await?,
-            );
+            if only.is_some_and(|only| only != lp) {
+                continue;
+            }
+            let may_run = match self.require_loop_right(lp, domain, scope).await {
+                Ok(()) => true,
+                Err(EngineError::Forbidden(_) | EngineError::DomainReadOnly(_)) => false,
+                Err(e) => return Err(e),
+            };
+            let counted = may_run && counts;
+            let mut entry = self.loop_status(lp, domain, scope, counted).await?;
+            if let Some(obj) = entry.as_object_mut() {
+                if !may_run {
+                    for key in ["last_run", "running"] {
+                        if let Some(inner) = obj.get_mut(key).and_then(Value::as_object_mut) {
+                            for secret in ["account", "summary", "pr_url"] {
+                                inner.remove(secret);
+                            }
+                        }
+                    }
+                }
+                if !counted {
+                    obj.insert("left_for_person".to_string(), Value::Null);
+                    obj.insert("counts".to_string(), Value::Null);
+                }
+                if !manager {
+                    obj.insert("delivery".to_string(), Value::Null);
+                }
+            }
+            out.insert(lp.as_str().to_string(), entry);
         }
         Ok(Value::Object(out))
     }
@@ -1101,7 +1145,11 @@ impl Engine {
 
     /// What the trigger webhook of `lp` last did on `domain`.
     pub fn automation_delivery(&self, domain: &str, lp: Loop) -> Delivery {
-        let configured = self.webhook_target().is_some_and(|t| t.secret.is_some());
+        let target = self.webhook_target();
+        let configured = target.as_ref().is_some_and(|t| t.secret.is_some());
+        // A URL without a secret never sends, and says so from the settings,
+        // so the state shows after a restart and before the trigger looks.
+        let no_secret = target.as_ref().is_some_and(|t| t.secret.is_none());
         let record = self
             .automation_deliveries
             .lock()
@@ -1111,7 +1159,9 @@ impl Engine {
             .unwrap_or_default();
         Delivery {
             last_sent: record.last_sent,
-            last_error: record.last_error,
+            last_error: record
+                .last_error
+                .or_else(|| no_secret.then(|| WEBHOOK_NO_SECRET.to_string())),
             configured,
         }
     }

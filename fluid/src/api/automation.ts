@@ -20,33 +20,75 @@ export type {
   LoopState,
 } from "./model";
 
-/** The cache key of one domain's automation state. */
-export function automationKey(domain: string) {
-  return ["automation", domain] as const;
+/** What a read asks for. */
+export interface AutomationAsk {
+  /** Only this loop; both when absent. */
+  loop?: "reflect" | "evolve";
+  /**
+   * Whether the server works out what waits for a person, which sweeps the
+   * domain. Defaults to true; a screen that needs only the last run or the
+   * delivery sends false.
+   */
+  counts?: boolean;
 }
 
-/** Both loops on `domain`, as this caller may see them. */
+/** The cache key of one domain's automation state, for what was asked. */
+export function automationKey(domain: string, ask: AutomationAsk = {}) {
+  return [
+    "automation",
+    domain,
+    ask.loop ?? "both",
+    ask.counts ?? true,
+  ] as const;
+}
+
+/** The loops asked for on `domain`, as this caller may see them. */
 export async function fetchAutomation(
   domain: string,
+  ask: AutomationAsk = {},
 ): Promise<AutomationResponse> {
+  const query = new URLSearchParams();
+  if (ask.loop !== undefined) {
+    query.set("loop", ask.loop);
+  }
+  if (ask.counts === false) {
+    query.set("counts", "false");
+  }
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
   return api<AutomationResponse>(
-    `/domains/${encodeSegment(domain)}/automation`,
+    `/domains/${encodeSegment(domain)}/automation${suffix}`,
   );
 }
 
-/** The read, shared by the screens that show it. */
-export function automationQuery(domain: string, enabled = true) {
+/**
+ * The read, shared by the screens that show it. Fresh for a minute and not
+ * refetched on a window focus: it can sweep the domain.
+ */
+export function automationQuery(
+  domain: string,
+  ask: AutomationAsk = {},
+  enabled = true,
+) {
   return queryOptions({
-    queryKey: automationKey(domain),
-    queryFn: () => fetchAutomation(domain),
+    queryKey: automationKey(domain, ask),
+    queryFn: () => fetchAutomation(domain, ask),
     retry: false,
+    staleTime: AUTOMATION_STALE_MS,
+    refetchOnWindowFocus: false,
     enabled,
   });
 }
 
+/** How long an answer is fresh. */
+export const AUTOMATION_STALE_MS = 60_000;
+
 /** The automation state of `domain`; `data` is undefined when there is none to show. */
-export function useAutomation(domain: string, enabled = true) {
-  return useQuery(automationQuery(domain, enabled));
+export function useAutomation(
+  domain: string,
+  ask: AutomationAsk = {},
+  enabled = true,
+) {
+  return useQuery(automationQuery(domain, ask, enabled));
 }
 
 /** How a run's outcome reads after the runner's name. */
@@ -94,5 +136,5 @@ export function deliverySentence(
   if (!delivery.configured) {
     return "No webhook URL is set on this instance.";
   }
-  return "Nothing has been sent yet.";
+  return "Nothing has been sent since this instance started.";
 }

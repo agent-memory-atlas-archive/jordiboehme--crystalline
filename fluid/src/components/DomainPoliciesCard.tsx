@@ -121,7 +121,7 @@ function triggerLine(
   if (loop === undefined || automation === undefined) {
     return null;
   }
-  const delivery = automation[loop].delivery;
+  const delivery = automation[loop]?.delivery;
   return deliverySentence(
     delivery,
     delivery?.last_sent != null
@@ -176,7 +176,8 @@ export function DomainPoliciesCard({
   const triggerOn = TRIGGERS.some(([key]) =>
     policies.some((row) => row.key === key && row.effective === "webhook"),
   );
-  const automation = useAutomation(domain, triggerOn).data;
+  // The delivery only: no sweep of the domain.
+  const automation = useAutomation(domain, { counts: false }, triggerOn).data;
   const [problem, setProblem] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<Record<string, string>>({});
   // The pending switch that needs a confirmation (direct sharing, read_only
@@ -278,6 +279,7 @@ export function DomainPoliciesCard({
               ? (ASKS[row.key]?.value ?? row.effective)
               : row.effective;
           const lockedOut = locked && row.key !== "read_only";
+          const deliveryLine = triggerLine(row.key, automation);
           // The exact reason "Rename domain" is disabled for on the page
           // itself: read-only first, since that holds whatever a rename
           // is doing, then a rename already in flight. The read-only span
@@ -432,9 +434,9 @@ export function DomainPoliciesCard({
                       />
                     </>
                   )}
-                  {triggerLine(row.key, automation) !== null && (
+                  {deliveryLine !== null && (
                     <p className="text-caption mt-1 text-muted">
-                      {triggerLine(row.key, automation)}
+                      {deliveryLine}
                     </p>
                   )}
                   {(notice[row.key] ?? "") !== "" && (

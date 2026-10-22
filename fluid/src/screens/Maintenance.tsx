@@ -282,7 +282,10 @@ export default function Maintenance() {
       )}
 
       {queue && (
-        <LastRuns domains={domain === EVERY_DOMAIN ? domains : [domain]} />
+        <LastRuns
+          domains={domain === EVERY_DOMAIN ? domains : [domain]}
+          findings={findings}
+        />
       )}
 
       {guidance !== null && (
@@ -374,14 +377,23 @@ export default function Maintenance() {
  * caller gets no answer for, is left out, and so is the whole list when no
  * domain has a run. Counts only: the server never sends the items a run left.
  */
-function LastRuns({ domains }: { domains: string[] }) {
+function LastRuns({
+  domains,
+  findings,
+}: {
+  domains: string[];
+  findings: EvolveFinding[];
+}) {
   const answers = useQueries({
-    queries: domains.map((name) => automationQuery(name)),
+    // The last run only: what waits for judgment is counted from the queue
+    // this page already loaded, so no request sweeps a domain again.
+    queries: domains.map((name) =>
+      automationQuery(name, { loop: "evolve", counts: false }),
+    ),
   });
   const rows = domains.flatMap((name, index) => {
-    const evolve = answers[index]?.data?.evolve;
-    const run = evolve?.last_run ?? null;
-    if (evolve === undefined || run === null) {
+    const run = answers[index]?.data?.evolve?.last_run ?? null;
+    if (run === null) {
       return [];
     }
     const sentence = lastRunSentence(
@@ -389,9 +401,12 @@ function LastRuns({ domains }: { domains: string[] }) {
       run,
       relativeTime(run.ended_at, new Date()),
     );
+    const judgment = findings.filter(
+      (f) => f.domain === name && f.class === "judgment",
+    ).length;
     const waiting =
-      evolve.judgment_waiting > 0
-        ? ` ${plural(evolve.judgment_waiting, "finding waits", "findings wait")} for a person.`
+      judgment > 0
+        ? ` ${plural(judgment, "finding waits", "findings wait")} for a person.`
         : "";
     return [{ name, text: `${sentence}${waiting}` }];
   });

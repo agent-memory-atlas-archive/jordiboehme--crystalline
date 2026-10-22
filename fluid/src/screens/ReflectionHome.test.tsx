@@ -1282,6 +1282,39 @@ describe("the last reflect run", () => {
     expect(
       within(card).getByRole("link", { name: "3 waiting for a person" }),
     ).toHaveAttribute("href", "/d/eng/reflection/review");
+    // Only the reflect loop is asked for.
+    expect(apiMock.mock.calls.map((call) => call[0])).toContain(
+      "/domains/eng/automation?loop=reflect",
+    );
+  });
+
+  it("links nothing when the caller got no count", async () => {
+    asEditor({
+      "/domains/eng/automation": () => ({
+        reflect: {
+          ...LOOP,
+          left_for_person: null,
+          last_run: {
+            started_at: ago(2),
+            ended_at: ago(2),
+            runner: "n8n",
+            outcome: "done",
+            done: 4,
+            left: 3,
+          },
+        },
+        evolve: null,
+      }),
+    });
+    renderApp("/d/eng/reflection");
+    const card = await within(await screen.findByRole("main")).findByRole(
+      "region",
+      { name: "Review" },
+    );
+    expect(
+      await within(card).findByText("Last reflected 2 hours ago by n8n: done."),
+    ).toBeVisible();
+    expect(within(card).queryByText(/waiting for a person/)).toBeNull();
   });
 
   it("says nothing when the loop never ran", async () => {

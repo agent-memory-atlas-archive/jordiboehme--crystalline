@@ -293,17 +293,12 @@ export type AuthorizationView = {
 };
 
 /**
- * What `GET /domains/{domain}/automation` answers.
+ * What `GET /domains/{domain}/automation` answers. A loop the request did
+ * not ask for is `null`.
  */
 export type AutomationResponse = {
-    /**
-     * The evolve loop.
-     */
-    evolve: LoopState;
-    /**
-     * The reflect loop.
-     */
-    reflect: LoopState;
+    evolve?: LoopState | null;
+    reflect?: LoopState | null;
 };
 
 /**
@@ -873,7 +868,7 @@ export type LoopDelivery = {
  */
 export type LoopRun = {
     /**
-     * The account the run worked as, when it had one.
+     * The account the run worked as; only for a caller who may run the loop.
      */
     account?: string | null;
     /**
@@ -897,7 +892,8 @@ export type LoopRun = {
      */
     outcome: string;
     /**
-     * The pull request the run shared its changes in, when it shared.
+     * The pull request the run shared its changes in, when it shared; only
+     * for a caller who may run the loop.
      */
     pr_url?: string | null;
     /**
@@ -909,9 +905,10 @@ export type LoopRun = {
      */
     started_at: string;
     /**
-     * A short summary the runner wrote.
+     * A short summary the runner wrote; only for a caller who may run the
+     * loop.
      */
-    summary: string;
+    summary?: string | null;
 };
 
 /**
@@ -934,16 +931,16 @@ export type LoopRunning = {
 export type LoopState = {
     delivery?: LoopDelivery | null;
     /**
-     * Judgment findings waiting for a person (evolve); zero for reflect and
-     * for a caller who may not run the loop.
+     * Judgment findings waiting for a person (evolve only). `null` unless
+     * the caller may run the loop and asked for counts.
      */
-    judgment_waiting: number;
+    judgment_waiting?: number | null;
     last_run?: LoopRun | null;
     /**
      * Items a finished run left for a person that have not changed since.
-     * Zero when the caller may not run the loop.
+     * `null` unless the caller may run the loop and asked for counts.
      */
-    left_for_person: number;
+    left_for_person?: number | null;
     running?: LoopRunning | null;
 };
 
@@ -3170,11 +3167,26 @@ export type ReadAutomationData = {
          */
         domain: string;
     };
-    query?: never;
+    query?: {
+        /**
+         * Only this loop: `reflect` or `evolve`. Defaults to both.
+         */
+        loop?: string;
+        /**
+         * Whether to work out what waits for a person, which sweeps the
+         * domain. Defaults to true; a page that shows only the last run or the
+         * delivery sends false.
+         */
+        counts?: boolean;
+    };
     url: '/api/v1/domains/{domain}/automation';
 };
 
 export type ReadAutomationErrors = {
+    /**
+     * `loop` is neither reflect nor evolve.
+     */
+    400: ProblemDetail;
     /**
      * No such domain, or none this caller may see.
      */
@@ -3185,7 +3197,7 @@ export type ReadAutomationError = ReadAutomationErrors[keyof ReadAutomationError
 
 export type ReadAutomationResponses = {
     /**
-     * Both loops on this domain.
+     * The loops asked for on this domain.
      */
     200: AutomationResponse;
 };

@@ -10,12 +10,13 @@
 
 use axum::Json;
 use axum::extract::State;
+use crystalline_core::automation::Loop;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
 use super::auth::Identity;
-use super::{ApiError, ApiPath, ProblemDetail, RestState};
+use super::{ApiError, ApiPath, ApiQuery, ProblemDetail, RestState};
 
 /// One recorded run of a loop.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -29,7 +30,7 @@ pub struct LoopRun {
     /// The runner's label.
     #[schema(example = "n8n")]
     pub runner: String,
-    /// The account the run worked as, when it had one.
+    /// The account the run worked as; only for a caller who may run the loop.
     #[schema(example = "robot")]
     pub account: Option<String>,
     /// `done`, `stopped_at_cap`, `failed`, `nothing_due` or `expired`.
@@ -44,9 +45,11 @@ pub struct LoopRun {
     /// Judgment findings waiting when the run ended (evolve).
     #[schema(example = 2)]
     pub judgment_waiting: u64,
-    /// A short summary the runner wrote.
-    pub summary: String,
-    /// The pull request the run shared its changes in, when it shared.
+    /// A short summary the runner wrote; only for a caller who may run the
+    /// loop.
+    pub summary: Option<String>,
+    /// The pull request the run shared its changes in, when it shared; only
+    /// for a caller who may run the loop.
     pub pr_url: Option<String>,
 }
 
@@ -78,48 +81,65 @@ pub struct LoopState {
     /// The runner working now; `null` when none is.
     pub running: Option<LoopRunning>,
     /// Items a finished run left for a person that have not changed since.
-    /// Zero when the caller may not run the loop.
+    /// `null` unless the caller may run the loop and asked for counts.
     #[schema(example = 3)]
-    pub left_for_person: u64,
-    /// Judgment findings waiting for a person (evolve); zero for reflect and
-    /// for a caller who may not run the loop.
+    pub left_for_person: Option<u64>,
+    /// Judgment findings waiting for a person (evolve only). `null` unless
+    /// the caller may run the loop and asked for counts.
     #[schema(example = 2)]
-    pub judgment_waiting: u64,
+    pub judgment_waiting: Option<u64>,
     /// The trigger webhook; `null` unless the MANIFEST turns the loop's
-    /// trigger on.
+    /// trigger on and the caller manages the domain or administers the
+    /// instance.
     pub delivery: Option<LoopDelivery>,
 }
 
-/// What `GET /domains/{domain}/automation` answers.
+/// What `GET /domains/{domain}/automation` answers. A loop the request did
+/// not ask for is `null`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AutomationResponse {
     /// The reflect loop.
-    pub reflect: LoopState,
+    pub reflect: Option<LoopState>,
     /// The evolve loop.
-    pub evolve: LoopState,
+    pub evolve: Option<LoopState>,
 }
 
-fn field<T: serde::de::DeserializeOwned>(entry: &Value, key: &str) -> Option<T> {
-    entry
-        .get(key)
-        .filter(|v| !v.is_null())
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
+/// The query string of `GET /domains/{domain}/automation`.
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct AutomationQuery {
+    /// Only this loop: `reflect` or `evolve`. Defaults to both.
+    #[serde(default, rename = "loop")]
+    #[param(example = "reflect")]
+    loop_: Option<String>,
+    /// Whether to work out what waits for a person, which sweeps the
+    /// domain. Defaults to true; a page that shows only the last run or the
+    /// delivery sends false.
+    #[serde(default)]
+    #[param(example = false)]
+    counts: Option<bool>,
 }
 
-fn state(entry: &Value) -> LoopState {
-    LoopState {
-        last_run: field(entry, "last_run"),
-        running: field(entry, "running"),
-        left_for_person: entry
-            .get("left_for_person")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        judgment_waiting: entry
-            .pointer("/counts/judgment")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        delivery: field(entry, "delivery"),
+fn parse<T: serde::de::DeserializeOwned>(entry: &Value, key: &str) -> Result<Option<T>, ApiError> {
+    match entry.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|e| {
+            ApiError::internal(format!("the automation state's {key} is unreadable: {e}"))
+        }),
     }
+}
+
+fn state(entry: &Value) -> Result<Option<LoopState>, ApiError> {
+    if entry.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(LoopState {
+        last_run: parse(entry, "last_run")?,
+        running: parse(entry, "running")?,
+        left_for_person: parse(entry, "left_for_person")?,
+        judgment_waiting: entry.pointer("/counts/judgment").and_then(Value::as_u64),
+        delivery: parse(entry, "delivery")?,
+    }))
 }
 
 /// `GET /domains/{domain}/automation`
@@ -129,16 +149,27 @@ fn state(entry: &Value) -> LoopState {
     tag = "domains",
     operation_id = "read_automation",
     summary = "When the reflect and evolve loops last ran on this domain.",
-    description = "For each loop: the last recorded run (counts and a short \
-                   summary, never the items it left), the runner working now, \
-                   how many items wait for a person and, where the MANIFEST \
-                   turns the loop's webhook trigger on, whether the last \
-                   webhook was taken. Reading needs only the right to read \
-                   the domain. A caller who may not run a loop sees its last \
-                   run and delivery with nothing counted.",
-    params(("domain" = String, Path, description = "The domain.")),
+    description = "Reading needs the right to read the domain, and each \
+                   caller sees its own share. Every reader gets the last run \
+                   (when, which runner, the outcome and the counts) and the \
+                   runner working now. A caller who may run the loop also \
+                   gets the run's summary, pull request and account, and, \
+                   with `counts` on, how many items wait for a person. Only a \
+                   domain manager or an instance admin gets `delivery`, the \
+                   state of the loop's webhook trigger where the MANIFEST \
+                   turns it on. Never the items a run left.",
+    params(
+        ("domain" = String, Path, description = "The domain."),
+        AutomationQuery,
+    ),
     responses(
-        (status = 200, description = "Both loops on this domain.", body = AutomationResponse),
+        (status = 200, description = "The loops asked for on this domain.", body = AutomationResponse),
+        (
+            status = 400,
+            description = "`loop` is neither reflect nor evolve.",
+            body = ProblemDetail,
+            content_type = "application/problem+json",
+        ),
         (
             status = 404,
             description = "No such domain, or none this caller may see.",
@@ -151,13 +182,29 @@ pub async fn read(
     State(state_): State<RestState>,
     identity: Identity,
     ApiPath(domain): ApiPath<String>,
+    ApiQuery(query): ApiQuery<AutomationQuery>,
 ) -> Result<Json<AutomationResponse>, ApiError> {
+    let only = match query.loop_.as_deref() {
+        None => None,
+        Some("reflect") => Some(Loop::Reflect),
+        Some("evolve") => Some(Loop::Evolve),
+        Some(other) => {
+            return Err(ApiError::bad_request(format!(
+                "loop must be reflect or evolve, not '{other}'"
+            )));
+        }
+    };
     let overview = state_
         .engine
-        .automation_overview(&domain, &identity.scope())
+        .automation_overview(
+            &domain,
+            &identity.scope(),
+            only,
+            query.counts.unwrap_or(true),
+        )
         .await?;
     Ok(Json(AutomationResponse {
-        reflect: state(&overview["reflect"]),
-        evolve: state(&overview["evolve"]),
+        reflect: state(&overview["reflect"])?,
+        evolve: state(&overview["evolve"])?,
     }))
 }

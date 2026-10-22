@@ -830,6 +830,25 @@ describe("the trigger webhook under its row", () => {
     ).toBeVisible();
   });
 
+  it("says nothing for a caller the server sent no delivery", async () => {
+    serve({
+      "/domains/eng/manifest": webhookOn,
+      "/domains/eng/automation": () => ({ reflect: LOOP, evolve: LOOP }),
+    });
+    renderApp("/d/eng/settings");
+    await policiesCard();
+    await waitFor(() => {
+      expect(
+        apiMock.mock.calls.some(
+          ([path]) => path === "/domains/eng/automation?counts=false",
+        ),
+      ).toBe(true);
+    });
+    expect(
+      screen.queryByText(/Last sent|Last delivery failed|No webhook URL/),
+    ).toBeNull();
+  });
+
   it("asks and says nothing while no trigger is on", async () => {
     serve();
     renderApp("/d/eng/settings");

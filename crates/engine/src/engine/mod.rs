@@ -7135,7 +7135,7 @@ mod asset_home;
 mod automation;
 pub use asset_home::{ASSET_EXISTS, MOVE_ONTO_A_FILE};
 pub(crate) use asset_home::{AssetHome, ReplaceRule, WrittenAsset};
-pub use automation::{Delivery, WebhookTarget};
+pub use automation::{Delivery, WEBHOOK_NO_SECRET, WebhookTarget};
 mod attachments;
 mod close_folders;
 pub use close_folders::FolderProbe;

@@ -35,6 +35,11 @@ fn manifest(extra: &str) -> String {
 /// `eng` with the evolve webhook trigger on and a webhook URL without a
 /// secret, and a viewer `ada`.
 async fn serve() -> Fixture {
+    serve_with(false).await
+}
+
+/// `anonymous` serves a caller who carries nothing as a viewer.
+async fn serve_with(anonymous: bool) -> Fixture {
     let state = crate::support::ScratchStateDir::acquire();
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_path_buf();
@@ -45,12 +50,54 @@ async fn serve() -> Fixture {
         manifest("evolve_trigger: webhook\n"),
     )
     .unwrap();
+    // A mechanical finding (V103: a summary the full text never mentions) and
+    // a judgment one (V006: a human capture nobody reviewed).
+    let yesterday = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
+    let note = |title: &str, permalink: &str, by: Option<&str>, body: &str| {
+        let generated = by
+            .map(|by| format!("generated: {{ by: \"{by}\", at: {yesterday}T09:12:00+00:00 }}\n"))
+            .unwrap_or_default();
+        format!(
+            "---\ntype: engram\ntitle: {title}\npermalink: {permalink}\ntags:\n  - reference\nstatus: stable\nrecorded_at: {yesterday}\n{generated}---\n\n# {title}\n\n{body}\n"
+        )
+    };
+    for (file, text) in [
+        (
+            "summary-doc.md",
+            note(
+                "Summary doc",
+                "summary-doc",
+                None,
+                "The distilled version of the migration write-up.\n\n- summarizes [[Full text doc]]\n- [context] written after the migration closed",
+            ),
+        ),
+        (
+            "full-text-doc.md",
+            note(
+                "Full text doc",
+                "full-text-doc",
+                None,
+                "The full migration write-up with the shard tables.\n\n- [context] the source the summary was cut from\n- [lesson] keep the tables out of the summary",
+            ),
+        ),
+        (
+            "capture.md",
+            note(
+                "Incident capture",
+                "capture",
+                Some("human:jordi"),
+                "Written straight after the incident call.\n\n- relates_to [[Full text doc]]\n- [context] nobody has read it back",
+            ),
+        ),
+    ] {
+        std::fs::write(dir.join(file), text).unwrap();
+    }
     let mut cfg = GlobalConfig {
         domains_root: Some(root.join("domains-root")),
         auth: Some(AuthConfig {
             trusted_header: None,
             proxy_headers: None,
-            anonymous: Some(false),
+            anonymous: Some(anonymous),
             mcp: None,
             oauth: None,
             max_users: None,
@@ -86,6 +133,9 @@ async fn serve() -> Fixture {
     auth.add_user("ada", "Ada", None, Role::Viewer, "s3cret")
         .await
         .unwrap();
+    auth.add_user("root", "Root", None, Role::Admin, "s3cret")
+        .await
+        .unwrap();
     let router = http_router(
         engine.clone(),
         Arc::new(AtomicUsize::new(0)),
@@ -119,9 +169,13 @@ fn client() -> reqwest::Client {
 }
 
 async fn login(addr: std::net::SocketAddr) -> String {
+    login_as(addr, "ada").await
+}
+
+async fn login_as(addr: std::net::SocketAddr, name: &str) -> String {
     let resp = client()
         .post(format!("http://{addr}/api/v1/auth/login"))
-        .json(&serde_json::json!({ "name": "ada", "password": "s3cret" }))
+        .json(&serde_json::json!({ "name": name, "password": "s3cret" }))
         .send()
         .await
         .unwrap();
@@ -138,7 +192,18 @@ async fn login(addr: std::net::SocketAddr) -> String {
 }
 
 async fn read(addr: std::net::SocketAddr, cookie: Option<&str>, domain: &str) -> (u16, Value) {
-    let mut req = client().get(format!("http://{addr}/api/v1/domains/{domain}/automation"));
+    read_query(addr, cookie, domain, "").await
+}
+
+async fn read_query(
+    addr: std::net::SocketAddr,
+    cookie: Option<&str>,
+    domain: &str,
+    query: &str,
+) -> (u16, Value) {
+    let mut req = client().get(format!(
+        "http://{addr}/api/v1/domains/{domain}/automation{query}"
+    ));
     if let Some(cookie) = cookie {
         req = req.header("cookie", format!("fluid_session={cookie}"));
     }
@@ -147,26 +212,11 @@ async fn read(addr: std::net::SocketAddr, cookie: Option<&str>, domain: &str) ->
     (status, resp.json().await.unwrap_or(Value::Null))
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_loop_that_never_ran_has_no_last_run() {
-    let fx = serve().await;
-    let cookie = login(fx.addr).await;
-    let (status, body) = read(fx.addr, Some(&cookie), "eng").await;
-    assert_eq!(status, 200, "{body}");
-    for lp in ["reflect", "evolve"] {
-        assert!(body[lp]["last_run"].is_null(), "{lp}: {body}");
-        assert!(body[lp]["running"].is_null(), "{lp}: {body}");
-        assert_eq!(body[lp]["left_for_person"], 0, "{lp}: {body}");
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_recorded_run_shows_counts_and_never_the_items() {
-    let fx = serve().await;
+async fn record_done(fx: &Fixture, lp: Loop, summary: &str) {
     let owner = Scope::Unrestricted;
     let token = fx
         .engine
-        .automation_lease_take(Loop::Evolve, "eng", "n8n", &owner)
+        .automation_lease_take(lp, "eng", "n8n", &owner)
         .await
         .unwrap()["token"]
         .as_str()
@@ -174,19 +224,37 @@ async fn a_recorded_run_shows_counts_and_never_the_items() {
         .to_string();
     fx.engine
         .automation_run_record(
-            Loop::Evolve,
+            lp,
             "eng",
             &token,
             &RunReport {
                 started_at: String::new(),
                 outcome: RunOutcome::Done,
                 done: 2,
-                summary: "fixed two".to_string(),
+                summary: summary.to_string(),
             },
             &owner,
         )
         .await
         .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_loop_that_never_ran_has_no_last_run() {
+    let fx = serve().await;
+    let cookie = login_as(fx.addr, "root").await;
+    let (status, body) = read(fx.addr, Some(&cookie), "eng").await;
+    assert_eq!(status, 200, "{body}");
+    for lp in ["reflect", "evolve"] {
+        assert!(body[lp]["last_run"].is_null(), "{lp}: {body}");
+        assert!(body[lp]["running"].is_null(), "{lp}: {body}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_viewer_sees_the_run_without_its_text_and_nothing_counted() {
+    let fx = serve().await;
+    record_done(&fx, Loop::Evolve, "fixed two").await;
     let cookie = login(fx.addr).await;
     let (status, body) = read(fx.addr, Some(&cookie), "eng").await;
     assert_eq!(status, 200, "{body}");
@@ -194,37 +262,120 @@ async fn a_recorded_run_shows_counts_and_never_the_items() {
     assert_eq!(run["runner"], "n8n", "{body}");
     assert_eq!(run["outcome"], "done", "{body}");
     assert_eq!(run["done"], 2, "{body}");
-    assert_eq!(run["summary"], "fixed two", "{body}");
-    assert!(run.get("left_items").is_none(), "{body}");
+    for hidden in ["summary", "pr_url", "account", "left_items"] {
+        assert!(
+            run.get(hidden).is_none_or(Value::is_null),
+            "{hidden}: {body}"
+        );
+    }
+    assert!(body["evolve"]["left_for_person"].is_null(), "{body}");
+    assert!(body["evolve"]["judgment_waiting"].is_null(), "{body}");
+    assert!(body["evolve"]["delivery"].is_null(), "{body}");
     assert!(body["reflect"]["last_run"].is_null(), "{body}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_delivery_shows_where_the_manifest_turns_the_trigger_on() {
+async fn a_caller_who_may_run_the_loop_gets_the_text_and_the_counts() {
+    let fx = serve().await;
+    record_done(&fx, Loop::Evolve, "fixed two").await;
+    let cookie = login_as(fx.addr, "root").await;
+    let (status, body) = read(fx.addr, Some(&cookie), "eng").await;
+    assert_eq!(status, 200, "{body}");
+    let evolve = &body["evolve"];
+    assert_eq!(evolve["last_run"]["summary"], "fixed two", "{body}");
+    assert!(evolve["last_run"].get("left_items").is_none(), "{body}");
+    // The mechanical finding the run did not fix is left for a person.
+    assert_eq!(evolve["left_for_person"], 1, "{body}");
+    assert!(evolve["judgment_waiting"].as_u64().unwrap() > 0, "{body}");
+
+    // Without counts the sweep is skipped and the fields say so.
+    let (_, light) = read_query(fx.addr, Some(&cookie), "eng", "?counts=false&loop=evolve").await;
+    assert!(light["evolve"]["left_for_person"].is_null(), "{light}");
+    assert!(light["evolve"]["judgment_waiting"].is_null(), "{light}");
+    assert_eq!(
+        light["evolve"]["last_run"]["summary"], "fixed two",
+        "{light}"
+    );
+    assert!(
+        light["reflect"].is_null(),
+        "only the loop asked for: {light}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_held_lease_shows_as_running() {
+    let fx = serve().await;
+    fx.engine
+        .automation_lease_take(Loop::Evolve, "eng", "k8s", &Scope::Unrestricted)
+        .await
+        .unwrap();
+    let cookie = login(fx.addr).await;
+    let (_, body) = read(fx.addr, Some(&cookie), "eng").await;
+    assert_eq!(body["evolve"]["running"]["runner"], "k8s", "{body}");
+    assert!(body["evolve"]["running"].get("account").is_none(), "{body}");
+    assert!(body["reflect"]["running"].is_null(), "{body}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn only_a_manager_or_admin_sees_the_delivery() {
     let fx = serve().await;
     fx.engine.record_delivery(
         "eng",
         Loop::Evolve,
-        Err("the webhook secret is not set".to_string()),
+        Err("the receiver refused it".to_string()),
     );
-    let cookie = login(fx.addr).await;
-    let (_, body) = read(fx.addr, Some(&cookie), "eng").await;
+    let viewer = login(fx.addr).await;
+    let (_, body) = read(fx.addr, Some(&viewer), "eng").await;
+    assert!(body["evolve"]["delivery"].is_null(), "viewer: {body}");
+
+    let admin = login_as(fx.addr, "root").await;
+    let (_, body) = read(fx.addr, Some(&admin), "eng").await;
     assert!(body["reflect"]["delivery"].is_null(), "off: {body}");
     let delivery = &body["evolve"]["delivery"];
     assert_eq!(delivery["configured"], false, "{body}");
-    assert_eq!(
-        delivery["last_error"], "the webhook secret is not set",
-        "{body}"
-    );
+    assert_eq!(delivery["last_error"], "the receiver refused it", "{body}");
     assert!(delivery["last_sent"].is_null(), "{body}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_caller_without_a_session_or_an_unknown_domain_gets_the_same_refusal() {
+async fn a_url_without_a_secret_says_so_before_anything_was_tried() {
+    let fx = serve().await;
+    let admin = login_as(fx.addr, "root").await;
+    let (_, body) = read(fx.addr, Some(&admin), "eng").await;
+    let delivery = &body["evolve"]["delivery"];
+    assert_eq!(delivery["configured"], false, "{body}");
+    assert_eq!(
+        delivery["last_error"],
+        crystalline_service::engine::WEBHOOK_NO_SECRET,
+        "{body}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_anonymous_visitor_of_a_public_domain_gets_the_reader_share() {
+    let fx = serve_with(true).await;
+    record_done(&fx, Loop::Evolve, "fixed two").await;
+    let (status, body) = read(fx.addr, None, "eng").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["evolve"]["last_run"]["outcome"], "done", "{body}");
+    assert!(
+        body["evolve"]["last_run"]
+            .get("summary")
+            .is_none_or(Value::is_null),
+        "{body}"
+    );
+    assert!(body["evolve"]["delivery"].is_null(), "{body}");
+    assert!(body["evolve"]["left_for_person"].is_null(), "{body}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unknown_domain_a_missing_session_and_a_bad_loop_are_refused() {
     let fx = serve().await;
     let cookie = login(fx.addr).await;
     let (unknown, _) = read(fx.addr, Some(&cookie), "nope").await;
     assert_eq!(unknown, 404);
     let (anonymous, _) = read(fx.addr, None, "eng").await;
     assert_eq!(anonymous, 401);
+    let (bad, _) = read_query(fx.addr, Some(&cookie), "eng", "?loop=sing").await;
+    assert_eq!(bad, 400);
 }

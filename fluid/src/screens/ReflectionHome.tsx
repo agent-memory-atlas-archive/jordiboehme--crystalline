@@ -129,7 +129,7 @@ function OnHome({
     queryFn: () => fetchReflectionTree(domain),
   });
   const summary = useReflectionHomeSummary(domain).data ?? null;
-  const reflect = useAutomation(domain).data?.reflect;
+  const reflect = useAutomation(domain, { loop: "reflect" }).data?.reflect;
   return (
     <>
       <SearchSection domain={domain} />
@@ -245,7 +245,7 @@ function ReviewCard({
   domain: string;
   threads: number;
   summary: ReflectionHomeSummary | null;
-  reflect: LoopState | undefined;
+  reflect: LoopState | null | undefined;
 }): ReactElement {
   const run = reflect?.last_run ?? null;
   return (
@@ -281,7 +281,7 @@ function ReviewCard({
             run,
             relativeTime(run.ended_at, new Date()),
           )}
-          {reflect !== undefined && reflect.left_for_person > 0 && (
+          {reflect?.left_for_person != null && reflect.left_for_person > 0 && (
             <>
               {" "}
               <Link to={reflectionReviewRoute(domain)} className={LINK}>

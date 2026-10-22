@@ -1678,7 +1678,7 @@
           "domains"
         ],
         "summary": "When the reflect and evolve loops last ran on this domain.",
-        "description": "For each loop: the last recorded run (counts and a short summary, never the items it left), the runner working now, how many items wait for a person and, where the MANIFEST turns the loop's webhook trigger on, whether the last webhook was taken. Reading needs only the right to read the domain. A caller who may not run a loop sees its last run and delivery with nothing counted.",
+        "description": "Reading needs the right to read the domain, and each caller sees its own share. Every reader gets the last run (when, which runner, the outcome and the counts) and the runner working now. A caller who may run the loop also gets the run's summary, pull request and account, and, with `counts` on, how many items wait for a person. Only a domain manager or an instance admin gets `delivery`, the state of the loop's webhook trigger where the MANIFEST turns it on. Never the items a run left.",
         "operationId": "read_automation",
         "parameters": [
           {
@@ -1689,15 +1689,45 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "loop",
+            "in": "query",
+            "description": "Only this loop: `reflect` or `evolve`. Defaults to both.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "reflect"
+          },
+          {
+            "name": "counts",
+            "in": "query",
+            "description": "Whether to work out what waits for a person, which sweeps the\ndomain. Defaults to true; a page that shows only the last run or the\ndelivery sends false.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "example": false
           }
         ],
         "responses": {
           "200": {
-            "description": "Both loops on this domain.",
+            "description": "The loops asked for on this domain.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AutomationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`loop` is neither reflect nor evolve.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
                 }
               }
             }
@@ -11677,19 +11707,29 @@
       },
       "AutomationResponse": {
         "type": "object",
-        "description": "What `GET /domains/{domain}/automation` answers.",
-        "required": [
-          "reflect",
-          "evolve"
-        ],
+        "description": "What `GET /domains/{domain}/automation` answers. A loop the request did\nnot ask for is `null`.",
         "properties": {
           "evolve": {
-            "$ref": "#/components/schemas/LoopState",
-            "description": "The evolve loop."
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LoopState",
+                "description": "The evolve loop."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "reflect": {
-            "$ref": "#/components/schemas/LoopState",
-            "description": "The reflect loop."
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LoopState",
+                "description": "The reflect loop."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -12537,8 +12577,7 @@
           "outcome",
           "done",
           "left",
-          "judgment_waiting",
-          "summary"
+          "judgment_waiting"
         ],
         "properties": {
           "account": {
@@ -12546,7 +12585,7 @@
               "string",
               "null"
             ],
-            "description": "The account the run worked as, when it had one.",
+            "description": "The account the run worked as; only for a caller who may run the loop.",
             "example": "robot"
           },
           "done": {
@@ -12585,7 +12624,7 @@
               "string",
               "null"
             ],
-            "description": "The pull request the run shared its changes in, when it shared."
+            "description": "The pull request the run shared its changes in, when it shared; only\nfor a caller who may run the loop."
           },
           "runner": {
             "type": "string",
@@ -12598,8 +12637,11 @@
             "example": "2026-10-21T09:00:00+00:00"
           },
           "summary": {
-            "type": "string",
-            "description": "A short summary the runner wrote."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A short summary the runner wrote; only for a caller who may run the\nloop."
           }
         }
       },
@@ -12624,16 +12666,12 @@
       "LoopState": {
         "type": "object",
         "description": "One loop on one domain.",
-        "required": [
-          "left_for_person",
-          "judgment_waiting"
-        ],
         "properties": {
           "delivery": {
             "oneOf": [
               {
                 "$ref": "#/components/schemas/LoopDelivery",
-                "description": "The trigger webhook; `null` unless the MANIFEST turns the loop's\ntrigger on."
+                "description": "The trigger webhook; `null` unless the MANIFEST turns the loop's\ntrigger on and the caller manages the domain or administers the\ninstance."
               },
               {
                 "type": "null"
@@ -12641,9 +12679,12 @@
             ]
           },
           "judgment_waiting": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64",
-            "description": "Judgment findings waiting for a person (evolve); zero for reflect and\nfor a caller who may not run the loop.",
+            "description": "Judgment findings waiting for a person (evolve only). `null` unless\nthe caller may run the loop and asked for counts.",
             "example": 2,
             "minimum": 0
           },
@@ -12659,9 +12700,12 @@
             ]
           },
           "left_for_person": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64",
-            "description": "Items a finished run left for a person that have not changed since.\nZero when the caller may not run the loop.",
+            "description": "Items a finished run left for a person that have not changed since.\n`null` unless the caller may run the loop and asked for counts.",
             "example": 3,
             "minimum": 0
           },
