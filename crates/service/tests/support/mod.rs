@@ -175,6 +175,7 @@ pub const MOUNTED_OPERATIONS: &[&str] = &[
     "GET /api/v1/context",
     "GET /api/v1/activity",
     "GET /api/v1/graph",
+    "GET /api/v1/domains/{domain}/automation",
     "GET /api/v1/evolve",
     "POST /api/v1/domains/{domain}/evolve/ack",
     "DELETE /api/v1/domains/{domain}/evolve/ack",

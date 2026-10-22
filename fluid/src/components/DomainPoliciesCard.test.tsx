@@ -767,3 +767,78 @@ describe("the domain policies card", () => {
     ).toBeVisible();
   });
 });
+
+describe("the trigger webhook under its row", () => {
+  const LOOP = {
+    last_run: null,
+    running: null,
+    left_for_person: 0,
+    judgment_waiting: 0,
+    delivery: null,
+  };
+  const webhookOn = () =>
+    manifestWith({
+      evolve_trigger: { declared: "webhook", effective: "webhook" },
+    });
+  const serveDelivery = (delivery: Record<string, unknown>) =>
+    serve({
+      "/domains/eng/manifest": webhookOn,
+      "/domains/eng/automation": () => ({
+        reflect: LOOP,
+        evolve: { ...LOOP, delivery },
+      }),
+    });
+
+  it("says no webhook URL is set when nothing is configured and nothing failed", async () => {
+    serveDelivery({ configured: false, last_sent: null, last_error: null });
+    renderApp("/d/eng/settings");
+    const card = await policiesCard();
+    const row = within(card).getByRole("group", { name: /^evolve_trigger/ });
+    expect(
+      await within(row).findByText("No webhook URL is set on this instance."),
+    ).toBeVisible();
+  });
+
+  it("says when the last webhook was taken", async () => {
+    serveDelivery({
+      configured: true,
+      last_sent: new Date(Date.now() - 3 * 3600 * 1000).toISOString(),
+      last_error: null,
+    });
+    renderApp("/d/eng/settings");
+    const card = await policiesCard();
+    const row = within(card).getByRole("group", { name: /^evolve_trigger/ });
+    expect(
+      await within(row).findByText("Last sent 3 hours ago."),
+    ).toBeVisible();
+  });
+
+  it("shows a failure even when the instance is not configured", async () => {
+    serveDelivery({
+      configured: false,
+      last_sent: null,
+      last_error:
+        "no webhook secret is set on this instance, so nothing is sent",
+    });
+    renderApp("/d/eng/settings");
+    const card = await policiesCard();
+    const row = within(card).getByRole("group", { name: /^evolve_trigger/ });
+    expect(
+      await within(row).findByText(
+        "Last delivery failed: no webhook secret is set on this instance, so nothing is sent.",
+      ),
+    ).toBeVisible();
+  });
+
+  it("asks and says nothing while no trigger is on", async () => {
+    serve();
+    renderApp("/d/eng/settings");
+    await policiesCard();
+    expect(
+      apiMock.mock.calls.some(([path]) => path === "/domains/eng/automation"),
+    ).toBe(false);
+    expect(
+      screen.queryByText(/Last sent|Last delivery failed|No webhook URL/),
+    ).toBeNull();
+  });
+});

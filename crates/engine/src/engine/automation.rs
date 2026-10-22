@@ -156,9 +156,28 @@ impl Engine {
         };
         let mut out = Vec::with_capacity(named.len());
         for domain in &named {
-            out.push(self.loop_status(lp, domain, scope).await?);
+            out.push(self.loop_status(lp, domain, scope, true).await?);
         }
         Ok(json!({ "loop": lp, "domains": out }))
+    }
+
+    /// What a person may see of both loops on `domain`: `{reflect, evolve}`,
+    /// each the entry [`Engine::automation_status`] gives (`last_run`,
+    /// `running`, `left_for_person`, `counts`, `delivery`). The right is to
+    /// read the domain: a domain the caller may not see is refused as an
+    /// unknown one. A caller who may not run a loop gets its last run and
+    /// delivery, with nothing counted.
+    pub async fn automation_overview(&self, domain: &str, scope: &Scope) -> Result<Value> {
+        self.require_domain(domain, scope).await?;
+        let mut out = serde_json::Map::new();
+        for lp in [Loop::Reflect, Loop::Evolve] {
+            let counted = self.require_loop_right(lp, domain, scope).await.is_ok();
+            out.insert(
+                lp.as_str().to_string(),
+                self.loop_status(lp, domain, scope, counted).await?,
+            );
+        }
+        Ok(Value::Object(out))
     }
 
     /// Take the lease of `lp` on `domain` for `runner`: `{token,
@@ -824,7 +843,18 @@ impl Engine {
     }
 
     /// One domain's entry in [`Engine::automation_status`].
-    async fn loop_status(&self, lp: Loop, domain: &str, scope: &Scope) -> Result<Value> {
+    ///
+    /// `counted` is whether the caller may run the loop: only then are the
+    /// due items worked out (they need the right to curate the Reflection or
+    /// to write the knowledge). Without it the entry still shows the lease,
+    /// the last run and the delivery, and counts nothing.
+    async fn loop_status(
+        &self,
+        lp: Loop,
+        domain: &str,
+        scope: &Scope,
+        counted: bool,
+    ) -> Result<Value> {
         let runs_on = self.loop_runs(lp, domain, scope).await;
         let id = {
             let store = self.store.lock().await;
@@ -847,7 +877,7 @@ impl Engine {
         let (_, stale_before) = self.automation_window();
         let running = lease.filter(|lease| lease.renewed_at.as_str() >= stale_before.as_str());
         let due = match (&runs_on, id) {
-            (Runs::Here, Some(id)) => Some(self.loop_due(lp, domain, id, scope).await?),
+            (Runs::Here, Some(id)) if counted => Some(self.loop_due(lp, domain, id, scope).await?),
             _ => None,
         };
         let counts = match lp {

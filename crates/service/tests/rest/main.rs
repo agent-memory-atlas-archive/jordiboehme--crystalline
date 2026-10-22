@@ -20,6 +20,7 @@ mod nginx_body_cap;
 mod no_cors;
 mod openapi_snapshot;
 mod rest_api;
+mod rest_automation;
 mod rest_evolve;
 mod rest_files;
 mod rest_mcp_tokens;

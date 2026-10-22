@@ -293,6 +293,20 @@ export type AuthorizationView = {
 };
 
 /**
+ * What `GET /domains/{domain}/automation` answers.
+ */
+export type AutomationResponse = {
+    /**
+     * The evolve loop.
+     */
+    evolve: LoopState;
+    /**
+     * The reflect loop.
+     */
+    reflect: LoopState;
+};
+
+/**
  * What happened to the engram: the four things the sync engine counts.
  */
 export type ChangeKind = 'added' | 'modified' | 'deleted' | 'moved';
@@ -834,6 +848,103 @@ export type LogoutResponse = {
      * Always true.
      */
     ok: boolean;
+};
+
+/**
+ * What a loop's trigger webhook last did on a domain.
+ */
+export type LoopDelivery = {
+    /**
+     * Whether this instance has a webhook URL and a secret to sign with.
+     */
+    configured: boolean;
+    /**
+     * Why the last delivery failed; cleared by the next one that works.
+     */
+    last_error?: string | null;
+    /**
+     * When the receiver last took a webhook, RFC 3339.
+     */
+    last_sent?: string | null;
+};
+
+/**
+ * One recorded run of a loop.
+ */
+export type LoopRun = {
+    /**
+     * The account the run worked as, when it had one.
+     */
+    account?: string | null;
+    /**
+     * Items done.
+     */
+    done: number;
+    /**
+     * When the run ended, RFC 3339.
+     */
+    ended_at: string;
+    /**
+     * Judgment findings waiting when the run ended (evolve).
+     */
+    judgment_waiting: number;
+    /**
+     * Items the run left for a person.
+     */
+    left: number;
+    /**
+     * `done`, `stopped_at_cap`, `failed`, `nothing_due` or `expired`.
+     */
+    outcome: string;
+    /**
+     * The pull request the run shared its changes in, when it shared.
+     */
+    pr_url?: string | null;
+    /**
+     * The runner's label.
+     */
+    runner: string;
+    /**
+     * When the run started, RFC 3339.
+     */
+    started_at: string;
+    /**
+     * A short summary the runner wrote.
+     */
+    summary: string;
+};
+
+/**
+ * A runner holding the loop's lease right now.
+ */
+export type LoopRunning = {
+    /**
+     * The runner's label.
+     */
+    runner: string;
+    /**
+     * When the run took the lease, RFC 3339.
+     */
+    taken_at: string;
+};
+
+/**
+ * One loop on one domain.
+ */
+export type LoopState = {
+    delivery?: LoopDelivery | null;
+    /**
+     * Judgment findings waiting for a person (evolve); zero for reflect and
+     * for a caller who may not run the loop.
+     */
+    judgment_waiting: number;
+    last_run?: LoopRun | null;
+    /**
+     * Items a finished run left for a person that have not changed since.
+     * Zero when the caller may not run the loop.
+     */
+    left_for_person: number;
+    running?: LoopRunning | null;
 };
 
 /**
@@ -3050,6 +3161,36 @@ export type ListAttachmentsResponses = {
 };
 
 export type ListAttachmentsResponse = ListAttachmentsResponses[keyof ListAttachmentsResponses];
+
+export type ReadAutomationData = {
+    body?: never;
+    path: {
+        /**
+         * The domain.
+         */
+        domain: string;
+    };
+    query?: never;
+    url: '/api/v1/domains/{domain}/automation';
+};
+
+export type ReadAutomationErrors = {
+    /**
+     * No such domain, or none this caller may see.
+     */
+    404: ProblemDetail;
+};
+
+export type ReadAutomationError = ReadAutomationErrors[keyof ReadAutomationErrors];
+
+export type ReadAutomationResponses = {
+    /**
+     * Both loops on this domain.
+     */
+    200: AutomationResponse;
+};
+
+export type ReadAutomationResponse = ReadAutomationResponses[keyof ReadAutomationResponses];
 
 export type ListDomainChangesData = {
     body?: never;

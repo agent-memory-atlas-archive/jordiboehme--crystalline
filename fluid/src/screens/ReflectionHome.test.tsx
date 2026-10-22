@@ -1237,3 +1237,64 @@ describe("the mode switch in the top bar", () => {
     ).toBeNull();
   });
 });
+
+describe("the last reflect run", () => {
+  const LOOP = {
+    last_run: null,
+    running: null,
+    left_for_person: 0,
+    judgment_waiting: 0,
+    delivery: null,
+  };
+  const ago = (hours: number) =>
+    new Date(Date.now() - hours * 3600 * 1000).toISOString();
+
+  it("says when it last ran and links what waits for a person", async () => {
+    asEditor({
+      "/domains/eng/automation": () => ({
+        reflect: {
+          ...LOOP,
+          left_for_person: 3,
+          last_run: {
+            started_at: ago(2),
+            ended_at: ago(2),
+            runner: "n8n",
+            account: null,
+            outcome: "done",
+            done: 4,
+            left: 3,
+            judgment_waiting: 0,
+            summary: "",
+            pr_url: null,
+          },
+        },
+        evolve: LOOP,
+      }),
+    });
+    renderApp("/d/eng/reflection");
+    const card = await within(await screen.findByRole("main")).findByRole(
+      "region",
+      { name: "Review" },
+    );
+    expect(
+      await within(card).findByText("Last reflected 2 hours ago by n8n: done."),
+    ).toBeVisible();
+    expect(
+      within(card).getByRole("link", { name: "3 waiting for a person" }),
+    ).toHaveAttribute("href", "/d/eng/reflection/review");
+  });
+
+  it("says nothing when the loop never ran", async () => {
+    asEditor({
+      "/domains/eng/automation": () => ({ reflect: LOOP, evolve: LOOP }),
+    });
+    renderApp("/d/eng/reflection");
+    const card = await within(await screen.findByRole("main")).findByRole(
+      "region",
+      { name: "Review" },
+    );
+    await within(card).findByText(/waits? for|Nothing waits/);
+    expect(within(card).queryByText(/Last reflected/)).toBeNull();
+    expect(within(card).queryByText(/waiting for a person/)).toBeNull();
+  });
+});

@@ -43,6 +43,8 @@ import type { ReactElement } from "react";
 import { useRef, useState } from "react";
 
 import { syncStatusKey } from "../api/admin";
+import { deliverySentence, useAutomation } from "../api/automation";
+import type { AutomationResponse } from "../api/automation";
 import { problemDetail } from "../api/client";
 import {
   domainTreeKey,
@@ -59,6 +61,7 @@ import {
   reflectionStatusKey,
 } from "../api/reflectionDomains";
 import { useAuth } from "../auth/AuthContext";
+import { relativeTime } from "../format";
 import { policiesLocked } from "../domainWritable";
 import {
   DestructiveAction,
@@ -103,6 +106,30 @@ const ASKS: Record<
   },
 };
 
+/** The trigger rows, and which loop's delivery each one shows. */
+const TRIGGERS = [
+  ["reflect_trigger", "reflect"],
+  ["evolve_trigger", "evolve"],
+] as const;
+
+/** What a trigger row says about its webhook, or null when it says nothing. */
+function triggerLine(
+  key: string,
+  automation: AutomationResponse | undefined,
+): string | null {
+  const loop = TRIGGERS.find(([row]) => row === key)?.[1];
+  if (loop === undefined || automation === undefined) {
+    return null;
+  }
+  const delivery = automation[loop].delivery;
+  return deliverySentence(
+    delivery,
+    delivery?.last_sent != null
+      ? relativeTime(delivery.last_sent, new Date())
+      : null,
+  );
+}
+
 const DRAFT_LINE =
   "Saved to your draft. The domain's policy changes when the draft is shared and lands.";
 
@@ -144,6 +171,12 @@ export function DomainPoliciesCard({
     capabilities.canAdminister ||
     (user !== null && owner !== null && sameAccount(owner, user.name));
   const locked = policiesLocked(policies);
+  // Asked only while a trigger is on: the server has no delivery to show for
+  // a loop whose trigger is off.
+  const triggerOn = TRIGGERS.some(([key]) =>
+    policies.some((row) => row.key === key && row.effective === "webhook"),
+  );
+  const automation = useAutomation(domain, triggerOn).data;
   const [problem, setProblem] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<Record<string, string>>({});
   // The pending switch that needs a confirmation (direct sharing, read_only
@@ -398,6 +431,11 @@ export function DomainPoliciesCard({
                         }}
                       />
                     </>
+                  )}
+                  {triggerLine(row.key, automation) !== null && (
+                    <p className="text-caption mt-1 text-muted">
+                      {triggerLine(row.key, automation)}
+                    </p>
                   )}
                   {(notice[row.key] ?? "") !== "" && (
                     <p

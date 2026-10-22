@@ -1672,6 +1672,49 @@
         }
       }
     },
+    "/api/v1/domains/{domain}/automation": {
+      "get": {
+        "tags": [
+          "domains"
+        ],
+        "summary": "When the reflect and evolve loops last ran on this domain.",
+        "description": "For each loop: the last recorded run (counts and a short summary, never the items it left), the runner working now, how many items wait for a person and, where the MANIFEST turns the loop's webhook trigger on, whether the last webhook was taken. Reading needs only the right to read the domain. A caller who may not run a loop sees its last run and delivery with nothing counted.",
+        "operationId": "read_automation",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Both loops on this domain.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such domain, or none this caller may see.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/domains/{domain}/changes": {
       "get": {
         "tags": [
@@ -11632,6 +11675,24 @@
           }
         }
       },
+      "AutomationResponse": {
+        "type": "object",
+        "description": "What `GET /domains/{domain}/automation` answers.",
+        "required": [
+          "reflect",
+          "evolve"
+        ],
+        "properties": {
+          "evolve": {
+            "$ref": "#/components/schemas/LoopState",
+            "description": "The evolve loop."
+          },
+          "reflect": {
+            "$ref": "#/components/schemas/LoopState",
+            "description": "The reflect loop."
+          }
+        }
+      },
       "ChangeKind": {
         "type": "string",
         "description": "What happened to the engram: the four things the sync engine counts.",
@@ -12436,6 +12497,184 @@
           "ok": {
             "type": "boolean",
             "description": "Always true."
+          }
+        }
+      },
+      "LoopDelivery": {
+        "type": "object",
+        "description": "What a loop's trigger webhook last did on a domain.",
+        "required": [
+          "configured"
+        ],
+        "properties": {
+          "configured": {
+            "type": "boolean",
+            "description": "Whether this instance has a webhook URL and a secret to sign with."
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last delivery failed; cleared by the next one that works."
+          },
+          "last_sent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the receiver last took a webhook, RFC 3339."
+          }
+        }
+      },
+      "LoopRun": {
+        "type": "object",
+        "description": "One recorded run of a loop.",
+        "required": [
+          "started_at",
+          "ended_at",
+          "runner",
+          "outcome",
+          "done",
+          "left",
+          "judgment_waiting",
+          "summary"
+        ],
+        "properties": {
+          "account": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The account the run worked as, when it had one.",
+            "example": "robot"
+          },
+          "done": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Items done.",
+            "example": 4,
+            "minimum": 0
+          },
+          "ended_at": {
+            "type": "string",
+            "description": "When the run ended, RFC 3339.",
+            "example": "2026-10-21T09:04:00+00:00"
+          },
+          "judgment_waiting": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Judgment findings waiting when the run ended (evolve).",
+            "example": 2,
+            "minimum": 0
+          },
+          "left": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Items the run left for a person.",
+            "example": 3,
+            "minimum": 0
+          },
+          "outcome": {
+            "type": "string",
+            "description": "`done`, `stopped_at_cap`, `failed`, `nothing_due` or `expired`.",
+            "example": "done"
+          },
+          "pr_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The pull request the run shared its changes in, when it shared."
+          },
+          "runner": {
+            "type": "string",
+            "description": "The runner's label.",
+            "example": "n8n"
+          },
+          "started_at": {
+            "type": "string",
+            "description": "When the run started, RFC 3339.",
+            "example": "2026-10-21T09:00:00+00:00"
+          },
+          "summary": {
+            "type": "string",
+            "description": "A short summary the runner wrote."
+          }
+        }
+      },
+      "LoopRunning": {
+        "type": "object",
+        "description": "A runner holding the loop's lease right now.",
+        "required": [
+          "runner",
+          "taken_at"
+        ],
+        "properties": {
+          "runner": {
+            "type": "string",
+            "description": "The runner's label."
+          },
+          "taken_at": {
+            "type": "string",
+            "description": "When the run took the lease, RFC 3339."
+          }
+        }
+      },
+      "LoopState": {
+        "type": "object",
+        "description": "One loop on one domain.",
+        "required": [
+          "left_for_person",
+          "judgment_waiting"
+        ],
+        "properties": {
+          "delivery": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LoopDelivery",
+                "description": "The trigger webhook; `null` unless the MANIFEST turns the loop's\ntrigger on."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "judgment_waiting": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Judgment findings waiting for a person (evolve); zero for reflect and\nfor a caller who may not run the loop.",
+            "example": 2,
+            "minimum": 0
+          },
+          "last_run": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LoopRun",
+                "description": "The last recorded run; `null` when the loop never ran here."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "left_for_person": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Items a finished run left for a person that have not changed since.\nZero when the caller may not run the loop.",
+            "example": 3,
+            "minimum": 0
+          },
+          "running": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LoopRunning",
+                "description": "The runner working now; `null` when none is."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },

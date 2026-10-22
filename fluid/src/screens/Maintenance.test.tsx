@@ -1518,3 +1518,57 @@ describe("the way to the maintenance screen", () => {
     ).toBeVisible();
   });
 });
+
+describe("the last maintenance runs", () => {
+  const LOOP = {
+    last_run: null,
+    running: null,
+    left_for_person: 0,
+    judgment_waiting: 0,
+    delivery: null,
+  };
+  const ago = (hours: number) =>
+    new Date(Date.now() - hours * 3600 * 1000).toISOString();
+  const ran = (judgment: number) => ({
+    reflect: LOOP,
+    evolve: {
+      ...LOOP,
+      judgment_waiting: judgment,
+      last_run: {
+        started_at: ago(5),
+        ended_at: ago(5),
+        runner: "n8n",
+        account: null,
+        outcome: "done",
+        done: 2,
+        left: 0,
+        judgment_waiting: judgment,
+        summary: "",
+        pr_url: null,
+      },
+    },
+  });
+
+  it("says when each domain was last maintained and what waits for judgment", async () => {
+    await open({
+      "/domains/eng/automation": () => ran(4),
+      "/domains/ops/automation": () => ({ reflect: LOOP, evolve: LOOP }),
+    });
+    const list = await screen.findByRole("list", {
+      name: "Last maintenance runs",
+    });
+    const items = within(list).getAllByRole("listitem");
+    expect(items).toHaveLength(1);
+    expect(items[0]).toHaveTextContent(
+      "eng: Last maintained 5 hours ago by n8n: done. 4 findings wait for a person.",
+    );
+  });
+
+  it("shows nothing when no domain was ever maintained", async () => {
+    await open();
+    await section(/^Temporal/);
+    expect(
+      screen.queryByRole("list", { name: "Last maintenance runs" }),
+    ).toBeNull();
+  });
+});

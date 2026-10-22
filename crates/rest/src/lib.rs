@@ -27,6 +27,7 @@ pub mod collab {
 
 mod archive;
 mod auth;
+mod automation;
 mod schemas;
 use crystalline_identity::auth_store;
 mod discovery;
@@ -159,6 +160,7 @@ use crate::scope::{DomainAccess, DomainRight};
         members::set_member,
         members::remove_member,
         members::set_owner,
+        automation::read,
         kept::list,
         kept::read,
         kept::remove,
@@ -347,6 +349,11 @@ use crate::scope::{DomainAccess, DomainRight};
         reflections::OpenThreadBody,
         reflections::ThreadStepBody,
         reflections::ReflectionAssetsResponse,
+        automation::AutomationResponse,
+        automation::LoopState,
+        automation::LoopRun,
+        automation::LoopDelivery,
+        automation::LoopRunning,
         kept::KeptTextEntry,
         kept::KeptTextsResponse,
         kept::KeptTextResponse,
@@ -792,6 +799,8 @@ fn routes(state: RestState) -> Router {
             put(members::set_member).delete(members::remove_member),
         )
         .route("/domains/{domain}/owner", put(members::set_owner))
+        // When the loops last ran, for the pages that show it; read rights.
+        .route("/domains/{domain}/automation", get(automation::read))
         // The texts the server kept when a room could not save. Rights are
         // decided per entry in the engine; see [`kept`].
         .route("/domains/{domain}/kept", get(kept::list))
