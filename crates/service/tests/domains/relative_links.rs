@@ -191,3 +191,44 @@ async fn a_wikilink_spelled_as_a_path_reports_its_permalink() {
     assert_eq!(links[2]["resolved"], false, "{v}");
     assert!(links[2].get("permalink").is_none(), "{v}");
 }
+
+/// A link back to a folder's `index.md` or `log.md` names one of the files
+/// Crystalline keeps in every folder, never an engram: the read lists no link
+/// and the sweep raises no V102 for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_link_to_a_folders_index_or_log_is_no_broken_link() {
+    let (tmp, engine) = fixture().await;
+    std::fs::write(
+        tmp.path().join("plant/pumps/home.md"),
+        note(
+            "Home",
+            "kit/home",
+            "Back to [the folder](index.md), [the top](../index.md) and [the log](../log.md).\n\nPart of [the overview](../overview.md).",
+        ),
+    )
+    .unwrap();
+    engine.sync(None).await.unwrap();
+
+    let v = read(&engine, "kit/home").await;
+    let links = v["links"].as_array().unwrap();
+    assert_eq!(links.len(), 1, "{v}");
+    assert_eq!(links[0]["target"]["target"], "../overview.md", "{v}");
+
+    let v = engine
+        .evolve_detect(
+            &EvolveParams {
+                today: Some(TODAY.to_string()),
+                ..EvolveParams::default()
+            },
+            &Scope::Unrestricted,
+        )
+        .await
+        .unwrap();
+    let broken: Vec<&Value> = v["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["rule"] == "V102" && r["permalink"] == "kit/home")
+        .collect();
+    assert!(broken.is_empty(), "{broken:?}");
+}

@@ -40,7 +40,9 @@ use crate::yaml::YamlValue;
 ///   stopped reading as observations and relations (0.28.0).
 /// - 3: relative Markdown links to another engram's file (`[p](../p-12.md)`)
 ///   are links, and `- rel_type [text](path.md)` is a relation (0.29.0).
-pub const PARSE_GENERATION: u32 = 3;
+/// - 4: a relative link to a folder's `index.md` or `log.md` is not a link to
+///   an engram (0.29.0).
+pub const PARSE_GENERATION: u32 = 4;
 
 /// An error encountered while parsing an Engram.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -580,8 +582,9 @@ fn push_prose_link(
 /// whose path ends in `.md` in any case. Each comes with the byte offset of the
 /// `[` that opens its text, and its path read the way a reflection link is
 /// read: angle brackets or bare, backslash escapes removed, percent-decoded,
-/// without the `#fragment` and the title. A link inside inline code and an
-/// image are not links to a note.
+/// without the `#fragment` and the title. A link inside inline code, an
+/// image and a link to a folder's `index.md` or `log.md` are not links to a
+/// note.
 fn relative_note_links(line: &str) -> Vec<(usize, String)> {
     use crate::reflection::links::{code_spans, read_destination};
 
@@ -602,11 +605,22 @@ fn relative_note_links(line: &str) -> Vec<(usize, String)> {
         cursor = dest.close;
         if let Some(start) = note_link_start(line, close_text, &dest.path)
             && !in_code(close_text)
+            && !names_a_reserved_file(&dest.path)
         {
             out.push((start, dest.path));
         }
     }
     out
+}
+
+/// Whether a relative link's path ends in a folder's `index.md` or `log.md`,
+/// in any letter case: the files Crystalline keeps beside the engrams, never
+/// an engram. A link to one is sound, like a link to a web page, and no
+/// engram's link.
+fn names_a_reserved_file(path: &str) -> bool {
+    path.rsplit('/')
+        .next()
+        .is_some_and(|name| crate::index::is_reserved_file(&name.to_ascii_lowercase()))
 }
 
 /// The byte offset of the `[` that opens a link to another engram's file,
@@ -1216,7 +1230,19 @@ mod tests {
 
     #[test]
     fn the_parse_generation_moved_for_relative_links() {
-        assert_eq!(PARSE_GENERATION, 3);
+        assert_eq!(PARSE_GENERATION, 4);
+    }
+
+    /// `index.md` and `log.md` are the files Crystalline keeps in every
+    /// folder, never engrams: a link back to one is sound and no edge.
+    #[test]
+    fn a_relative_link_to_a_folders_index_or_log_is_no_link() {
+        let body = "Back to [the folder](index.md), [up](../INDEX.md), [log](log.md) \
+                    and [p](p.md).\n- part_of [Index](index.md)\n";
+        let (_, relations, links, _) = scan_body(body, 1);
+        assert!(relations.is_empty(), "{relations:?}");
+        let targets: Vec<&str> = links.iter().map(|l| l.target.target.as_str()).collect();
+        assert_eq!(targets, vec!["p.md"]);
     }
 
     #[test]

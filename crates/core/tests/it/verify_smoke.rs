@@ -1219,6 +1219,34 @@ fn a_relative_link_is_checked_against_the_files_of_the_domain() {
     );
 }
 
+/// A link back to a folder's `index.md` or `log.md`, the files Crystalline
+/// keeps in every folder, is sound: no L001, whether the file is there yet or
+/// not.
+#[test]
+fn a_relative_link_to_a_folders_index_or_log_is_not_broken() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().join("plant");
+    write(
+        &root,
+        "MANIFEST.md",
+        "---\ntype: manifest\ntitle: MANIFEST\npermalink: manifest\ntags:\n- manifest\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n## Scope\n\n- Scope text here for the domain\n\n## When to Use\n\n- When testing\n",
+    );
+    write(&root, "guides/index.md", "# guides\n");
+    write(
+        &root,
+        "guides/a.md",
+        "---\ntype: engram\ntitle: A\npermalink: guides/a\ntags:\n- plant\nstatus: current\nrecorded_at: 2026-01-01\ntimestamp: 2026-01-01T00:00:00+00:00\n---\n\n# A\n\nBack to [the folder](index.md), [the top](../index.md) and [the log](log.md).\n\nA second paragraph of prose, so the body clears the minimum line count.\n",
+    );
+    let report = verify::verify_paths([root.as_path()], &VerifyOptions::default()).unwrap();
+    let links: Vec<(&str, &str)> = report
+        .issues
+        .iter()
+        .filter(|i| i.rule.starts_with('L'))
+        .map(|i| (i.rule, i.message.as_str()))
+        .collect();
+    assert!(links.is_empty(), "{:#?}", report.issues);
+}
+
 /// A wikilink spelled as a file path, `[[pumps/p-12.md]]`, binds by that
 /// path in the index, so verify judges it by the files of the domain too: a
 /// path that is there is sound, a path that is not is broken.

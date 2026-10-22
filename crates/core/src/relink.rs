@@ -480,6 +480,35 @@ pub fn rebase_relative_links(source: &str, from: &str, to: &str) -> (String, usi
     })
 }
 
+pub use crate::reflection::links::{NoteLinkTo, WholeLinks};
+
+/// Rewrite the relative links to another engram's file in `source` through
+/// `map`, which is handed each decoded target as written (no `#fragment`, no
+/// title) and answers a new destination, a wikilink address that replaces
+/// the whole link, or `None` to keep it. A move into another domain needs
+/// the address: a relative path never reaches into another domain, so a link
+/// that crosses has to name the domain. The link text stays as the
+/// wikilink's display text. Same body walk as [`rebase_relative_links`].
+pub fn readdress_relative_links(
+    source: &str,
+    map: &dyn Fn(&str) -> Option<NoteLinkTo>,
+) -> WholeLinks {
+    crate::reflection::links::map_note_links_whole(source, map)
+}
+
+/// Rewrite every bare wikilink whose target text `map` answers, so it names
+/// the answer instead (`[[pumps/b.md]]` to `[[ops:pumps/b]]`); the display
+/// text after a `|` stays as written. A prefixed wikilink and one inside
+/// code are never handed to `map`.
+pub fn readdress_path_wikilinks(
+    source: &str,
+    map: &dyn Fn(&str) -> Option<String>,
+) -> (String, usize) {
+    rewrite_body_lines(source, BodyGate::Lossless, &|line| {
+        through(LinkDialect::Addressed, line, |l| path_wikilink_line(l, map))
+    })
+}
+
 /// Rewrite every bare wikilink spelled as the domain-relative file path `from`
 /// (`[[pumps/b.md]]`) so it names `to`. The index binds such a link by path,
 /// and the path is read from the domain root, so it needs no respelling from
@@ -488,14 +517,16 @@ pub fn rebase_relative_links(source: &str, from: &str, to: &str) -> (String, usi
 pub fn respell_path_wikilinks(source: &str, from: &str, to: &str) -> (String, usize) {
     rewrite_body_lines(source, BodyGate::Lossless, &|line| {
         through(LinkDialect::Addressed, line, |l| {
-            path_wikilink_line(l, from, to)
+            path_wikilink_line(l, &|target| (target == from).then(|| to.to_string()))
         })
     })
 }
 
-/// One body line under [`respell_path_wikilinks`]: the wikilinks found the
-/// way [`relink_line`] finds them, over the line with inline code masked.
-fn path_wikilink_line(line: &str, from: &str, to: &str) -> (String, usize) {
+/// One body line under [`respell_path_wikilinks`] and
+/// [`readdress_path_wikilinks`]: the wikilinks found the way [`relink_line`]
+/// finds them, over the line with inline code masked, and every bare one
+/// whose target `map` answers renamed.
+fn path_wikilink_line(line: &str, map: &dyn Fn(&str) -> Option<String>) -> (String, usize) {
     let original: Vec<char> = line.chars().collect();
     let masked: Vec<char> = if line.contains('`') {
         mask_inline_code(line).chars().collect()
@@ -513,9 +544,11 @@ fn path_wikilink_line(line: &str, from: &str, to: &str) -> (String, usize) {
             let end = target_end(&masked, i + 2, close);
             let inner: String = masked[i + 2..end].iter().collect();
             let target = LinkTarget::parse(&inner);
-            if target.domain.is_none() && target.target == from {
+            if target.domain.is_none()
+                && let Some(to) = map(&target.target)
+            {
                 out.push_str("[[");
-                out.push_str(to);
+                out.push_str(&to);
                 out.extend(&original[end..close]);
                 out.push_str("]]");
                 count += 1;
@@ -647,6 +680,60 @@ mod tests {
         assert_eq!(n, 2, "{out}");
         assert!(
             out.contains("[a](a.md) [peer](pumps/peer.md) [me](b.md)"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn relative_links_that_cross_into_another_domain_become_prefixed_wikilinks() {
+        let source = format!(
+            "{ENGRAM_HEAD}- part_of [Overview](../overview.md)\n\n\
+             See [B](b.md), [me](a.md#top), [frag](b.md#part), [titled](b.md \"T\"), \
+             [](b.md), ![pic](b.md), `[B](b.md)`, [odd [[x]]](b.md) and [left](c.md).\n"
+        );
+        let map = |target: &str| match target {
+            "b.md" => Some(NoteLinkTo::Wikilink("dom:guides/b".to_string())),
+            "../overview.md" => Some(NoteLinkTo::Wikilink("dom:overview".to_string())),
+            "a.md" => Some(NoteLinkTo::Target("x.md".to_string())),
+            _ => None,
+        };
+        let out = readdress_relative_links(&source, &map);
+        assert_eq!(out.changed, 6, "{}", out.text);
+        assert!(
+            out.text.contains("- part_of [[dom:overview|Overview]]\n"),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text.contains(
+                "See [[dom:guides/b|B]], [me](x.md#top), [[dom:guides/b|frag]], \
+                 [[dom:guides/b|titled]], [[dom:guides/b]], ![pic](b.md), `[B](b.md)`, \
+                 [odd [[x]]](b.md) and [left](c.md)."
+            ),
+            "{}",
+            out.text
+        );
+        assert_eq!(
+            out.dropped,
+            vec![
+                "[frag](b.md#part)".to_string(),
+                "[titled](b.md \"T\")".to_string()
+            ]
+        );
+        assert_eq!(out.unwritable, vec!["[odd [[x]]](b.md)".to_string()]);
+        assert!(out.text.starts_with(ENGRAM_HEAD));
+    }
+
+    #[test]
+    fn a_bare_path_wikilink_can_be_given_a_domain() {
+        let source =
+            format!("{ENGRAM_HEAD}[[guides/b.md]] [[guides/b.md|B]] [[dom:guides/b.md]] [[B]]\n");
+        let (out, n) = readdress_path_wikilinks(&source, &|target| {
+            (target == "guides/b.md").then(|| "dom:guides/b".to_string())
+        });
+        assert_eq!(n, 2, "{out}");
+        assert!(
+            out.ends_with("[[dom:guides/b]] [[dom:guides/b|B]] [[dom:guides/b.md]] [[B]]\n"),
             "{out}"
         );
     }

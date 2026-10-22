@@ -44,6 +44,13 @@ pub(crate) fn resolve(from_file: &str, target: &str) -> Option<String> {
     Some(parts.join("/"))
 }
 
+/// The domain-relative path a relative link `target` in the engram at the
+/// domain-relative `from_file` lands on, or `None` when it climbs out of the
+/// domain or lands on its root.
+pub fn resolve_in_domain(from_file: &str, target: &str) -> Option<String> {
+    resolve(from_file, target).filter(|path| !path.is_empty())
+}
+
 /// The relative path from the reflection at `from_file` to `target`.
 pub fn relative_to(from_file: &str, target: &str) -> String {
     let from: Vec<&str> = folder_of(from_file)
@@ -267,6 +274,125 @@ pub(crate) fn map_note_links(
     map: &dyn Fn(&str) -> Option<String>,
 ) -> (String, usize) {
     map_body(source, BodyGate::Lossless, Targets::Notes, map)
+}
+
+/// What [`map_note_links_whole`] puts in place of one link to another
+/// engram's file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoteLinkTo {
+    /// The destination only: the text, the `#fragment` and the title stay.
+    Target(String),
+    /// The whole link, as the wikilink `[[address|text]]`.
+    Wikilink(String),
+}
+
+/// What [`map_note_links_whole`] did.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct WholeLinks {
+    /// The rewritten source.
+    pub text: String,
+    /// How many links changed.
+    pub changed: usize,
+    /// Links written as a wikilink, as they were written before, whose
+    /// `#fragment` or title a wikilink cannot carry.
+    pub dropped: Vec<String>,
+    /// Links that should have become a wikilink, left as written because
+    /// their text cannot sit inside `[[...]]` (it holds `[[` or `]]`).
+    pub unwritable: Vec<String>,
+}
+
+/// [`map_note_links`] that may also replace a whole link: `map` is handed
+/// each decoded target and answers a new destination, a wikilink address, or
+/// `None` to keep the link. A wikilink keeps the link text as its display
+/// text; a `#fragment` and a title cannot follow it and are named in
+/// [`WholeLinks::dropped`].
+pub fn map_note_links_whole(source: &str, map: &dyn Fn(&str) -> Option<NoteLinkTo>) -> WholeLinks {
+    use std::cell::RefCell;
+    let dropped: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    let unwritable: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    let (text, changed) = rewrite_body_lines(source, BodyGate::Lossless, &|line| {
+        if !LinkDialect::Relative.may_hold(line) {
+            return (line.to_string(), 0);
+        }
+        whole_line(line, map, &dropped, &unwritable)
+    });
+    WholeLinks {
+        text,
+        changed,
+        dropped: dropped.into_inner(),
+        unwritable: unwritable.into_inner(),
+    }
+}
+
+/// One line of [`map_note_links_whole`].
+fn whole_line(
+    line: &str,
+    map: &dyn Fn(&str) -> Option<NoteLinkTo>,
+    dropped: &std::cell::RefCell<Vec<String>>,
+    unwritable: &std::cell::RefCell<Vec<String>>,
+) -> (String, usize) {
+    let spans = code_spans(line);
+    let in_code = |at: usize| spans.iter().any(|(s, e)| (*s..*e).contains(&at));
+    let mut out = String::with_capacity(line.len());
+    let mut changed = 0;
+    let mut cursor = 0;
+    while let Some(found) = line[cursor..].find("](") {
+        let close_text = cursor + found;
+        let open = close_text + 2;
+        let Some(dest) = read_destination(line, open) else {
+            out.push_str(&line[cursor..open]);
+            cursor = open;
+            continue;
+        };
+        let start = crate::parse::note_link_start(line, close_text, &dest.path)
+            .filter(|start| *start >= cursor && !in_code(close_text));
+        let replacement = start.and_then(|_| map(&dest.path));
+        match (replacement, start) {
+            (Some(NoteLinkTo::Target(mut target)), _) => {
+                out.push_str(&line[cursor..open]);
+                if let Some(f) = dest.fragment {
+                    target.push('#');
+                    target.push_str(f);
+                }
+                out.push_str(&escape_link_url(&target));
+                out.push_str(dest.rest);
+                changed += 1;
+            }
+            (Some(NoteLinkTo::Wikilink(address)), Some(start)) => {
+                let text = &line[start + 1..close_text];
+                let written = &line[start..=dest.close];
+                if text.contains("[[") || text.contains("]]") {
+                    unwritable.borrow_mut().push(written.to_string());
+                    out.push_str(&line[cursor..open]);
+                    out.push_str(&line[open..dest.close]);
+                } else {
+                    if dest.fragment.is_some() || !dest.rest.trim().is_empty() {
+                        dropped.borrow_mut().push(written.to_string());
+                    }
+                    out.push_str(&line[cursor..start]);
+                    out.push_str("[[");
+                    out.push_str(&address);
+                    if !text.trim().is_empty() {
+                        out.push('|');
+                        out.push_str(text);
+                    }
+                    out.push_str("]]");
+                    changed += 1;
+                    // Past the closing parenthesis, which the wikilink
+                    // replaced.
+                    cursor = dest.close + 1;
+                    continue;
+                }
+            }
+            _ => {
+                out.push_str(&line[cursor..open]);
+                out.push_str(&line[open..dest.close]);
+            }
+        }
+        cursor = dest.close;
+    }
+    out.push_str(&line[cursor..]);
+    (out, changed)
 }
 
 fn map_body(

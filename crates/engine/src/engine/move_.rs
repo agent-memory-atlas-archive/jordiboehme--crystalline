@@ -12,17 +12,66 @@ pub(super) struct Relinked {
     pub(super) live: bool,
 }
 
-/// An engram file that moved inside its domain. A relative Markdown link
-/// names a file, not an address, so the links to it follow the file whether
-/// or not its permalink changed.
+/// An engram file that moved. A relative Markdown link names a file, not an
+/// address, so the links to it follow the file whether or not its permalink
+/// changed: inside the domain by a new relative path, and into another
+/// domain (`across`) by its new address, since a relative path never reaches
+/// into another domain.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Relocation<'a> {
-    /// The domain it moved inside.
+    /// The domain it moved from.
     pub(super) domain_id: DomainId,
     /// Its domain-relative path before the move.
     pub(super) from: &'a str,
     /// Its domain-relative path after it.
     pub(super) to: &'a str,
+    /// For a move into another domain, the `domain:permalink` address the
+    /// source domain's links to it name afterwards.
+    pub(super) across: Option<&'a str>,
+}
+
+/// How a move into another domain rewrites the moved engram's own links that
+/// bind by path, worked out from the source domain before the move.
+#[derive(Debug, Default)]
+struct CrossLinks {
+    /// Each relative link target, as written, and what replaces it.
+    relative: HashMap<String, crystalline_core::relink::NoteLinkTo>,
+    /// Each bare wikilink spelled as a source file's path, and its address.
+    paths: HashMap<String, String>,
+    /// The links left as written that would land on an engram in the
+    /// destination, as they were written.
+    stranded: Vec<String>,
+}
+
+/// The `links_failed` reason for the links of the moved engram a move into
+/// another domain could not give an address, or gave one without its
+/// `#fragment` or title.
+fn cross_link_reason(
+    stranded: &[String],
+    unwritable: &[String],
+    dropped: &[String],
+) -> Option<String> {
+    let mut parts = Vec::new();
+    if !stranded.is_empty() {
+        parts.push(format!(
+            "these links leave the domain they were written in and now land on another engram, \
+             so fix them by hand: {}",
+            stranded.join(", ")
+        ));
+    }
+    if !unwritable.is_empty() {
+        parts.push(format!(
+            "these links could not be written as a wikilink and were left as they were: {}",
+            unwritable.join(", ")
+        ));
+    }
+    if !dropped.is_empty() {
+        parts.push(format!(
+            "these links now name the engram by its address and lost their #fragment or title: {}",
+            dropped.join(", ")
+        ));
+    }
+    (!parts.is_empty()).then(|| parts.join("; "))
 }
 
 /// Name one linking page or engram a move could not rewrite, in the shape
@@ -379,10 +428,14 @@ impl Engine {
         // Gather the referencing engrams before the move, while every bound
         // reference's `to_id` still points at the source row.
         let update_links = p.update_links.unwrap_or(true);
-        let relocation = (relocated && update_links).then_some(Relocation {
+        // A move into another domain: the source domain's links that bind by
+        // path name the engram's new address instead.
+        let across = format!("{dest_domain}:{new_permalink}");
+        let relocation = ((relocated || cross) && update_links).then_some(Relocation {
             domain_id: src.domain_id,
             from: &src.path,
             to: &dest_rel,
+            across: cross.then_some(across.as_str()),
         });
         let linkers = if (readdressed || relocated) && update_links {
             self.move_linkers(&src, &hidden).await?
@@ -518,17 +571,35 @@ impl Engine {
         // A move writes the engram anew, so it lands as LF whatever line
         // endings it was read with, a plain rename included.
         let original = crystalline_core::to_lf(&original).into_owned();
+        // Every linking engram a rewrite could not finish, and the moved
+        // engram itself when its own links could not all follow it, as the
+        // receipt's `links_failed` names them.
+        let mut failed: Vec<Value> = Vec::new();
+        let cross_links = if cross && update_links {
+            Some(
+                self.cross_links(&p.domain, &src.path, &dest_domain, &dest_rel, &original)
+                    .await?,
+            )
+        } else {
+            None
+        };
         // The text the engram lands with, when the move has to change it: the
         // permalink line, and its own references to itself. `None` is the
         // plain rename, which carries the bytes across untouched.
-        let moved_text = Self::readdressed_text(
+        let (moved_text, own_notes) = Self::readdressed_text(
             &original,
             &dest_rel,
             &new_permalink,
             (readdressed && update_links).then_some(&spec),
-            relocation.as_ref().filter(|_| !defer_rebase),
+            relocation
+                .as_ref()
+                .filter(|moved| !defer_rebase && moved.across.is_none()),
+            cross_links.as_ref(),
             &self.actor(client),
         )?;
+        if let Some(reason) = own_notes {
+            failed.push(json!({ "domain": dest_domain, "path": dest_rel, "reason": reason }));
+        }
 
         // What the move carries besides the engram: the attachments it
         // references or claims. Filled in the cross-domain branch and acted on
@@ -836,10 +907,10 @@ impl Engine {
                     path = dest_rel.as_str(),
                     "the move could not rebase the moved engram's own relative links: {e}"
                 );
+                note_link_failure(&mut failed, &p.domain, &dest_rel, &e);
             }
         }
         let mut rewritten: Vec<Value> = Vec::new();
-        let mut failed: Vec<Value> = Vec::new();
         let mut references = 0usize;
         for linker in &linkers {
             if let Some(e) = paused.get(&linker.domain) {
@@ -851,10 +922,25 @@ impl Engine {
                 note_link_failure(&mut failed, &linker.domain, &linker.path, e);
                 continue;
             }
-            match self
-                .relink_engram(linker, &spec, relocation.as_ref(), &linker_actor, &hidden)
-                .await
-            {
+            let mut notes = None;
+            let relinked = self
+                .relink_engram_noting(
+                    linker,
+                    &spec,
+                    relocation.as_ref(),
+                    &linker_actor,
+                    &hidden,
+                    &mut notes,
+                )
+                .await;
+            if let Some(reason) = notes {
+                failed.push(json!({
+                    "domain": linker.domain,
+                    "path": linker.path,
+                    "reason": reason,
+                }));
+            }
+            match relinked {
                 Ok(Some(relinked)) => {
                     references += relinked.references;
                     // The path rides along so a headless run's share can
@@ -1054,7 +1140,11 @@ impl Engine {
     /// address survive the next sync. When `relink` is given, the engram's
     /// references to itself, which follow it like everybody else's. And, when
     /// `relocation` is given, its relative links, rebased onto its new folder
-    /// so each lands on the file it landed on before. Any change touches
+    /// so each lands on the file it landed on before. When `cross` is given
+    /// (a move into another domain), its links that bind by path, which
+    /// would be read in the destination, name what they reached in the
+    /// source instead (see [`Engine::cross_links`]); the second value is the
+    /// `links_failed` reason for the ones that could not. Any change touches
     /// `generated` with the mover; `recorded_at` is never touched, because the
     /// knowledge was not recorded again.
     fn readdressed_text(
@@ -1063,8 +1153,9 @@ impl Engine {
         new_permalink: &str,
         relink: Option<&Relink<'_>>,
         relocation: Option<&Relocation<'_>>,
+        cross: Option<&CrossLinks>,
         mover: &str,
-    ) -> Result<Option<String>> {
+    ) -> Result<(Option<String>, Option<String>)> {
         let engram = parse_engram(original).map_err(|e| {
             EngineError::Invalid(format!(
                 "the engram does not parse ({e}); fix it before moving it"
@@ -1089,7 +1180,116 @@ impl Engine {
             // only one naming the engram itself has to follow it.
             text = crystalline_core::relink::respell_path_wikilinks(&text, moved.from, moved.to).0;
         }
-        Ok((text != original).then(|| touch_generated(&text, mover, None, now_offset())))
+        let mut notes = None;
+        if let Some(cross) = cross {
+            let whole = crystalline_core::relink::readdress_relative_links(&text, &|target| {
+                cross.relative.get(target).cloned()
+            });
+            text = crystalline_core::relink::readdress_path_wikilinks(&whole.text, &|target| {
+                cross.paths.get(target).cloned()
+            })
+            .0;
+            notes = cross_link_reason(&cross.stranded, &whole.unwritable, &whole.dropped);
+        }
+        let text = (text != original).then(|| touch_generated(&text, mover, None, now_offset()));
+        Ok((text, notes))
+    }
+
+    /// What a move of the engram at `src_path` in `src_domain` to `dest_rel`
+    /// in `dest_domain` does with its own links that bind by path, read from
+    /// `text`. Once it lands, those would be read in the destination, where
+    /// the same path may be another engram. So each relative link that
+    /// reaches into the source domain names it: `[[src:permalink|text]]`
+    /// where an engram stands at the path, `[[src:path.md|text]]` where none
+    /// does (it stays unresolved, as it was). A link to the engram itself is
+    /// rebased to follow it, a link to a folder's `index.md` or `log.md` stays
+    /// (every folder has its own), and a link that climbs out of the source
+    /// domain stays as written, named in `stranded` when it would land on an
+    /// engram in the destination. A bare wikilink spelled as a source
+    /// engram's path gets the source's prefix the same way.
+    async fn cross_links(
+        &self,
+        src_domain: &str,
+        src_path: &str,
+        dest_domain: &str,
+        dest_rel: &str,
+        text: &str,
+    ) -> Result<CrossLinks> {
+        use crystalline_core::relink::NoteLinkTo;
+        let mut out = CrossLinks::default();
+        let Ok(engram) = parse_engram(text) else {
+            return Ok(out);
+        };
+        let targets: Vec<&LinkTarget> = engram
+            .links
+            .iter()
+            .map(|l| &l.target)
+            .chain(engram.relations.iter().map(|r| &r.target))
+            .collect();
+        for target in targets {
+            match target.form {
+                LinkForm::Relative => {
+                    if out.relative.contains_key(&target.target)
+                        || out.stranded.iter().any(|s| s == &target.target)
+                    {
+                        continue;
+                    }
+                    let landed = crystalline_core::reflection::links::resolve_in_domain(
+                        src_path,
+                        &target.target,
+                    );
+                    let to = match landed {
+                        Some(path) if path == src_path => Some(NoteLinkTo::Target(
+                            crystalline_core::reflection::relative_to(dest_rel, dest_rel),
+                        )),
+                        Some(path) if crystalline_core::is_reserved_path(&path) => None,
+                        Some(path) => Some(NoteLinkTo::Wikilink(
+                            match self.descriptor_at(src_domain, &path).await? {
+                                Some(found) => format!("{src_domain}:{}", found.permalink),
+                                None => format!("{src_domain}:{path}"),
+                            },
+                        )),
+                        None => {
+                            let there = crystalline_core::reflection::links::resolve_in_domain(
+                                dest_rel,
+                                &target.target,
+                            );
+                            if let Some(there) = there
+                                && self.descriptor_at(dest_domain, &there).await?.is_some()
+                            {
+                                out.stranded.push(target.target.clone());
+                            }
+                            None
+                        }
+                    };
+                    if let Some(to) = to {
+                        out.relative.insert(target.target.clone(), to);
+                    }
+                }
+                LinkForm::Wiki => {
+                    if target.domain.is_some()
+                        || !target.target.to_ascii_lowercase().ends_with(".md")
+                        || out.paths.contains_key(&target.target)
+                    {
+                        continue;
+                    }
+                    // Its own path follows it, and is read in the
+                    // destination from there on.
+                    if target.target == src_path {
+                        out.paths
+                            .insert(target.target.clone(), dest_rel.to_string());
+                        continue;
+                    }
+                    if let Some(found) = self.descriptor_at(src_domain, &target.target).await? {
+                        out.paths.insert(
+                            target.target.clone(),
+                            format!("{src_domain}:{}", found.permalink),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Refuse a move onto a permalink another engram in the destination domain
@@ -1265,6 +1465,24 @@ impl Engine {
         actor: &str,
         hidden: &HashSet<String>,
     ) -> Result<Option<Relinked>> {
+        let mut notes = None;
+        self.relink_engram_noting(linker, spec, relocation, actor, hidden, &mut notes)
+            .await
+    }
+
+    /// [`Engine::relink_engram`], and in `notes` the `links_failed` reason
+    /// for the links to the moved engram it could not follow it with (a move
+    /// into another domain gives a relative link an address, which a link
+    /// text holding `[[` or `]]` cannot carry).
+    pub(super) async fn relink_engram_noting(
+        &self,
+        linker: &MoveLinker,
+        spec: &Relink<'_>,
+        relocation: Option<&Relocation<'_>>,
+        actor: &str,
+        hidden: &HashSet<String>,
+        notes: &mut Option<String>,
+    ) -> Result<Option<Relinked>> {
         // The live arm. The room is keyed on the linker's permalink, which
         // the index knows; asked before any lock is taken, and only when a
         // room over one of this domain's engrams is open at all.
@@ -1278,7 +1496,7 @@ impl Engine {
                     break;
                 };
                 let Some((edited, references)) = self
-                    .relinked_text(&live.text, linker, spec, relocation, actor, hidden)
+                    .relinked_text(&live.text, linker, spec, relocation, actor, hidden, notes)
                     .await
                 else {
                     // The room holds no such reference. When it saves, that
@@ -1340,7 +1558,7 @@ impl Engine {
                     source,
                 })?;
                 let Some((replaced, count)) = self
-                    .relinked_text(&text, linker, spec, relocation, actor, hidden)
+                    .relinked_text(&text, linker, spec, relocation, actor, hidden, notes)
                     .await
                 else {
                     return Ok(None);
@@ -1366,7 +1584,7 @@ impl Engine {
                     // pass below, as an edit compares them.
                     let expected = sha256_hex(stored.as_bytes());
                     let Some((replaced, count)) = self
-                        .relinked_text(&stored, linker, spec, relocation, actor, hidden)
+                        .relinked_text(&stored, linker, spec, relocation, actor, hidden, notes)
                         .await
                     else {
                         return Ok(None);
@@ -1446,6 +1664,7 @@ impl Engine {
     /// none did. A relative link, and a bare wikilink spelled as the file's
     /// path, follow the file (`relocation`), and only in the domain it moved
     /// inside, which is the only one either can reach it from.
+    #[allow(clippy::too_many_arguments)]
     async fn relinked_text(
         &self,
         text: &str,
@@ -1454,12 +1673,33 @@ impl Engine {
         relocation: Option<&Relocation<'_>>,
         actor: &str,
         hidden: &HashSet<String>,
+        notes: &mut Option<String>,
     ) -> Option<(String, usize)> {
         // Rewritten as LF, the whole file, like every write.
         let text = crystalline_core::to_lf(text);
         let (mut relinked, mut count) =
             crystalline_core::relink::relink(&text, &linker.domain, &linker.domain, spec);
-        if let Some(moved) = relocation.filter(|moved| moved.domain_id == linker.domain_id) {
+        let moved_here = relocation.filter(|moved| moved.domain_id == linker.domain_id);
+        if let Some(moved) = moved_here
+            && let Some(address) = moved.across
+        {
+            // The engram left for another domain: a relative path cannot
+            // follow it there, so the links to it name its address.
+            use crystalline_core::relink::NoteLinkTo;
+            let whole = crystalline_core::relink::readdress_relative_links(&relinked, &|target| {
+                (crystalline_core::reflection::links::resolve_in_domain(&linker.path, target)
+                    .as_deref()
+                    == Some(moved.from))
+                .then(|| NoteLinkTo::Wikilink(address.to_string()))
+            });
+            let (readdressed, path_count) =
+                crystalline_core::relink::readdress_path_wikilinks(&whole.text, &|target| {
+                    (target == moved.from).then(|| address.to_string())
+                });
+            *notes = cross_link_reason(&[], &whole.unwritable, &whole.dropped);
+            relinked = readdressed;
+            count += whole.changed + path_count;
+        } else if let Some(moved) = moved_here {
             // The moved engram itself, when its rebase was deferred to here:
             // its links are rebased rather than respelled.
             let (respelled, respelled_count) = if linker.path == moved.to {

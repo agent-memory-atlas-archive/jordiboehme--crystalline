@@ -1368,3 +1368,97 @@ async fn moving_an_engram_rebases_its_own_relative_links() {
         "{b}"
     );
 }
+
+/// A relative path never reaches into another domain, so a move into one
+/// must not leave the moved engram's relative links to be read there: a
+/// same-path file in the destination would take them over. Each link into
+/// the source domain becomes a prefixed wikilink with its text (by permalink
+/// where an engram stands there, by path where none does, so it stays
+/// unresolved as it was), and a link to the engram itself follows it. A link
+/// that climbs out of the source domain but would land on an engram in the
+/// destination is named in `links_failed`. The source domain's relative
+/// links to the moved engram name its new address the same way.
+#[tokio::test]
+async fn a_cross_domain_move_turns_relative_links_into_addresses() {
+    let f = Fixture::new().await;
+    seed(
+        f.notes(),
+        "guides/a.md",
+        &engram(
+            "Ay",
+            "guides/a",
+            "- part_of [Bee](b.md)\n\nSee [B](b.md), [me](a.md), [gone](c.md), \
+             [up](index.md) and [out](../../out.md).",
+        ),
+    );
+    seed(
+        f.notes(),
+        "guides/b.md",
+        &engram("Bee", "guides/b", "Back to [A](a.md) and [[guides/a.md]]."),
+    );
+    // The decoys: the same paths seen from the destination, other engrams.
+    seed(
+        f.ops(),
+        "x/y/b.md",
+        &engram("Other B", "x/y/other-b", "Not the one."),
+    );
+    seed(
+        f.ops(),
+        "x/y/c.md",
+        &engram("Other C", "x/y/other-c", "Not the one either."),
+    );
+    seed(f.ops(), "out.md", &engram("Out", "out", "Outside."));
+    f.sync().await;
+
+    let receipt = f
+        .mv("guides/a", "notes", "x/y/a.md", Some("ops"), None)
+        .await
+        .unwrap();
+    assert_eq!(receipt["links_rewritten"], 1, "{receipt}");
+    assert_eq!(receipt["references_rewritten"], 2, "{receipt}");
+    let failed = receipt["links_failed"].as_array().expect("links_failed");
+    assert_eq!(failed.len(), 1, "{receipt}");
+    assert_eq!(failed[0]["domain"], "ops", "{receipt}");
+    assert_eq!(failed[0]["path"], "x/y/a.md", "{receipt}");
+    assert!(
+        failed[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("../../out.md"),
+        "{receipt}"
+    );
+
+    let a = read(f.ops(), "x/y/a.md");
+    assert!(
+        a.contains(
+            "- part_of [[notes:guides/b|Bee]]\n\nSee [[notes:guides/b|B]], [me](a.md), \
+             [[notes:guides/c.md|gone]], [up](index.md) and [out](../../out.md)."
+        ),
+        "{a}"
+    );
+    let b = read(f.notes(), "guides/b.md");
+    assert!(
+        b.contains("Back to [[ops:x/y/a|A]] and [[ops:x/y/a]]."),
+        "{b}"
+    );
+
+    let a = read_receipt(&f, "ops", "x/y/a").await;
+    let bound = edges(&a);
+    assert!(bound.contains(&("guides/b".to_string(), true, None)), "{a}");
+    assert!(
+        bound.contains(&("guides/c.md".to_string(), false, None)),
+        "{a}"
+    );
+    assert!(
+        !bound
+            .iter()
+            .any(|(_, _, p)| matches!(p.as_deref(), Some("x/y/other-b" | "x/y/other-c"))),
+        "no link binds to a decoy: {a}"
+    );
+    let b = read_receipt(&f, "notes", "guides/b").await;
+    assert_eq!(
+        edges(&b),
+        vec![("x/y/a".to_string(), true, None)],
+        "one target, read once per line: {b}"
+    );
+}
