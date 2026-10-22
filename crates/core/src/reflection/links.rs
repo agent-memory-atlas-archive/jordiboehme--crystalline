@@ -301,7 +301,7 @@ pub struct WholeLinks {
     pub unwritable: Vec<String>,
 }
 
-/// [`map_note_links`] that may also replace a whole link: `map` is handed
+/// `map_note_links` that may also replace a whole link: `map` is handed
 /// each decoded target and answers a new destination, a wikilink address, or
 /// `None` to keep the link. A wikilink keeps the link text as its display
 /// text; a `#fragment` and a title cannot follow it and are named in
