@@ -1,9 +1,25 @@
 # The Markdown Crystalline understands
 
-Engrams and reflections are plain Markdown. Crystalline adds a few small elements on top: callouts, status labels, math, task items, footnotes, colour swatches and diagrams. Each one reads sensibly as raw text, so nothing is lost in a plain editor or on GitHub. This page lists every element with its raw form, when it fits and how it reads without Crystalline. Agents get the same sheet in the `crystalline-presentation` skill.
+Engrams and reflections are plain Markdown. Crystalline adds a few small elements on top: links between engrams, callouts, status labels, math, task items, footnotes, colour swatches and diagrams. Each one reads sensibly as raw text, so nothing is lost in a plain editor or on GitHub. This page lists every element with its raw form, when it fits and how it reads without Crystalline. Agents get the same sheet in the `crystalline-presentation` skill.
 
 > [!NOTE]
 > An element earns its place when it does a job prose cannot. A page with no callout and no diagram is often the right page.
+
+## Links between engrams
+
+Three ways to link an engram, and all three are edges in the graph, listed in `read_engram`'s links and counted for orphans:
+
+```markdown
+See [[Retry Queue Architecture]] and [[payments:Retry Queue Architecture]].
+See [[retry-queue|the retry queue]] for the details.
+See [the pump](../pumps/p-12.md) and [its limits](../pumps/p-12.md#limits).
+```
+
+- `[[target]]` finds the engram by title or permalink in the same domain; `[[domain:target]]` reaches another domain.
+- `[[target|text]]` links to target and shows text. The part before the first `|` is the target. A move or a rename keeps the text.
+- A relative Markdown link to a `.md` file in the same domain, with or without a `#` anchor, finds the engram by its path. When the engram moves inside its domain, the links to it and its own relative links are respelled, so they keep working. A move into another domain leaves them as they were.
+
+The same forms work in a relation bullet: `- part_of [Overview](../overview.md)` is a typed relation. A link that finds no engram is reported like a broken wikilink. Links in code spans and code blocks are never read as links.
 
 ## Callouts
 

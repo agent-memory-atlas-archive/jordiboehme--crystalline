@@ -218,15 +218,9 @@ A domain export (the archive download in Fluid or `crystalline domain export`) a
 
 ## A scheduled run
 
-A daily headless agent on the home instance can work the queue. The examples below are plain text to adapt to your setup. They pass `--allowedTools "mcp__crystalline"`, because a headless run has nobody to approve a tool call: without it every crystalline tool call is refused and the run does nothing.
+`crystalline reflect run` works the queue with a headless agent: it checks whether anything is due, takes the lease, runs Claude Code with the shipped prompt, shares what changed in the engrams as a pull request, records the run and releases the lease. With nothing due it ends at once and starts no agent. `claude` must be on the `PATH` of the run.
 
-Cron, daily at 06:30, as the account that runs the daemon:
-
-```bash
-30 6 * * * cd /srv/kb && /usr/local/bin/claude -p "Call the crystalline reflect tool for the domain eng and work the queue: feedback items first, then update items, then answer review threads in plain words. Stop when the queue is empty or after 20 items." --allowedTools "mcp__crystalline" >> /var/log/crystalline-reflect.log 2>&1
-```
-
-With systemd, use two files. `/etc/systemd/system/crystalline-reflect.service`:
+On a team server, run it in remote mode against the home (`CRYSTALLINE_REMOTE_URL` and `CRYSTALLINE_REMOTE_TOKEN`) with the `cmt_` token of an agent account that may curate the Reflection. A run in local mode acts as the machine owner, so it cannot tell its own writes from the edits people make in Fluid during the run, and the daemon's socket under the service user is out of reach of other accounts anyway. With systemd, use two files. `/etc/systemd/system/crystalline-reflect.service`:
 
 ```ini
 [Unit]
@@ -234,12 +228,20 @@ Description=Work the Reflection queue of eng
 
 [Service]
 Type=oneshot
-User=crystalline
-WorkingDirectory=/srv/kb
-ExecStart=/usr/local/bin/claude -p "Call the crystalline reflect tool for the domain eng and work the queue: feedback items first, then update items, then answer review threads in plain words. Stop when the queue is empty or after 20 items." --allowedTools "mcp__crystalline"
+DynamicUser=yes
+StateDirectory=crystalline-reflect
+Environment=HOME=%S/crystalline-reflect
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=CRYSTALLINE_REMOTE_URL=https://crystalline.example.com
+LoadCredential=remote-token:/etc/crystalline/reflect-runner-token
+Environment=CRYSTALLINE_REMOTE_TOKEN_FILE=%d/remote-token
+# Holds ANTHROPIC_API_KEY=... (or CLAUDE_CODE_OAUTH_TOKEN=...); keep it readable by root only
+EnvironmentFile=/etc/crystalline/reflect-runner.env
+ExecStart=/usr/local/bin/crystalline reflect run --domain eng --max-items 20 --runner timer
+SuccessExitStatus=1
 ```
 
-`/etc/systemd/system/crystalline-reflect.timer`:
+`SuccessExitStatus=1` because `run` exits 1 when nothing is due. `/etc/systemd/system/crystalline-reflect.timer`:
 
 ```ini
 [Unit]
@@ -255,4 +257,11 @@ WantedBy=timers.target
 
 Enable the timer with `systemctl enable --now crystalline-reflect.timer`.
 
-The agent needs the crystalline MCP server registered for that account (`crystalline install`). When the instance asks agents to authenticate, it also needs an account with curate access, through an MCP token in the harness config of that account. `crystalline install` does not set up the scheduled run in this release.
+On a machine only you use, a run against your own daemon is fine. Cron, daily at 06:30, with the folder Claude Code is installed in on the `PATH`:
+
+```bash
+PATH=/usr/local/bin:/usr/bin:/bin:/home/you/.local/bin
+30 6 * * * crystalline reflect run --domain eng --max-items 20 >> /home/you/crystalline-reflect.log 2>&1
+```
+
+For answers within a minute, `crystalline reflect watch` runs as soon as something is due. A headless run asks people in a thread and leaves what needs a yes for a person; the Reflection home shows "Last reflected" and how many items wait for a person. [Run the loops on their own](automation.md) has the details, the n8n, Kubernetes and GitHub Actions examples and the webhook that starts a runner when work is due. `crystalline install` does not set up the scheduled run.

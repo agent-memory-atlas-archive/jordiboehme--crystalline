@@ -1,0 +1,91 @@
+# One replica that watches the reflect loop on the team server and runs as
+# soon as something is due: answers within about a minute instead of within
+# 5 minutes. Use it instead of reflect-cronjob.yaml, not beside it. See
+# docs/automation.md.
+#
+# Build the image from examples/kubernetes/Dockerfile and push it where the
+# cluster pulls from; replace the image below. The secret is the one
+# reflect-cronjob.yaml describes:
+#
+#   kubectl create secret generic crystalline-runner \
+#     --from-literal=remote-token=cmt_... \
+#     --from-literal=anthropic-api-key=sk-ant-...
+#
+# `watch` checks the status every --interval seconds (default 60) and runs
+# when something is due. On SIGTERM it stops a run in progress, records it
+# and releases the lease, so a rollout never leaves a lease behind.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crystalline-reflect-watch
+spec:
+  # One replica: a second one would only wait for the lease.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: crystalline-reflect-watch
+  template:
+    metadata:
+      labels:
+        app: crystalline-reflect-watch
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      containers:
+        - name: runner
+          image: registry.example.com/crystalline-runner:0.29.0
+          command: ["crystalline", "reflect", "watch"]
+          args: ["--domain", "eng", "--runner", "k8s", "--interval", "60", "--max-items", "20"]
+          env:
+            # A host name the server does not know (for example a cluster
+            # service name) must be in its CRYSTALLINE_SERVICE_ALLOWED_HOSTS.
+            - name: CRYSTALLINE_REMOTE_URL
+              value: https://crystalline.example.com
+            - name: CRYSTALLINE_REMOTE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: crystalline-runner
+                  key: remote-token
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: crystalline-runner
+                  key: anthropic-api-key
+                  optional: true
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: crystalline-runner
+                  key: claude-code-oauth-token
+                  optional: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: home
+              mountPath: /home/nonroot
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: home
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
