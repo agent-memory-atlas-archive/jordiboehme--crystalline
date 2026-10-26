@@ -43,7 +43,10 @@ use crate::yaml::YamlValue;
 /// - 4: a relative link to a folder's `index.md` or `log.md` is not a link to
 ///   an engram (0.29.0).
 /// - 5: nor is a wikilink spelled as the path of one (0.29.0).
-pub const PARSE_GENERATION: u32 = 5;
+/// - 6: the type of a relation written with a relative link is lowercase
+///   (`part_of`) or a quoted phrase, so `- See [Three](three.md)` is prose
+///   (0.29.1).
+pub const PARSE_GENERATION: u32 = 6;
 
 /// An error encountered while parsing an Engram.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -975,8 +978,26 @@ fn relative_relation(content: &str) -> Option<(String, LinkTarget)> {
     let (_, path) = relative_note_links(content)
         .into_iter()
         .find(|(start, _)| *start == open)?;
-    let rel_type = relation_type(&content[..open])?;
+    let rel_type = relative_relation_type(&content[..open])?;
     Some((rel_type, LinkTarget::relative(&path)))
+}
+
+/// The type of a relation written with a relative link: a quoted phrase, or
+/// a token that starts with a lowercase letter and holds only lowercase
+/// letters, digits, `_` and `-`, the way `part_of` is written. Narrower than
+/// [`relation_type`] because a converted document is full of bullets like
+/// `- See [Three](chapter-3.md)`, where the word before the link is prose,
+/// not a type. The wikilink form keeps the free token: engrams written
+/// before the relative form existed depend on it.
+fn relative_relation_type(before: &str) -> Option<String> {
+    let trimmed = before.trim();
+    if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
+        return Some(trimmed[1..trimmed.len() - 1].to_string());
+    }
+    let mut chars = trimmed.chars();
+    let first = chars.next()?;
+    let rest_ok = chars.all(|c| c.is_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+    (first.is_lowercase() && rest_ok).then(|| trimmed.to_string())
 }
 
 /// The relation type written before a relation's target: a quoted phrase, or a
@@ -1253,7 +1274,7 @@ mod tests {
 
     #[test]
     fn the_parse_generation_moved_for_relative_links() {
-        assert_eq!(PARSE_GENERATION, 5);
+        assert_eq!(PARSE_GENERATION, 6);
     }
 
     /// `index.md` and `log.md` are the files Crystalline keeps in every
@@ -1340,6 +1361,48 @@ mod tests {
         let (_, relations, links, _) = scan_body("- part_of [[Overview]]\n", 1);
         assert_eq!(relations[0].target.form, LinkForm::Wiki);
         assert!(links.is_empty());
+    }
+
+    /// A converted document's `- See [Three](chapter-3.md)` is prose, not a
+    /// relation of type `See`: the relative form takes a lowercase type or a
+    /// quoted phrase. The wikilink form keeps its free type.
+    #[test]
+    fn a_relative_relation_takes_a_lowercase_type_or_a_quoted_phrase() {
+        let (_, relations, links, _) = scan_body("- See [Three](chapter-3.md#chapter-3)\n", 1);
+        assert!(relations.is_empty(), "{relations:?}");
+        assert_eq!(links.len(), 1, "{links:?}");
+        assert_eq!(links[0].target.target, "chapter-3.md");
+        assert_eq!(links[0].target.form, LinkForm::Relative);
+
+        for (body, rel_type) in [
+            ("- part_of [Doc](../doc.md)\n", "part_of"),
+            ("- follows [Prev](prev.md)\n", "follows"),
+            ("- \"relates to\" [X](x.md)\n", "relates to"),
+            ("- v2-of [X](x.md)\n", "v2-of"),
+        ] {
+            let (_, relations, links, _) = scan_body(body, 1);
+            assert_eq!(relations.len(), 1, "{body:?}: {relations:?}");
+            assert_eq!(relations[0].rel_type, rel_type);
+            assert!(links.is_empty(), "{body:?}: {links:?}");
+        }
+
+        for body in [
+            "- Part_of [Doc](doc.md)\n",
+            "- partOf [Doc](doc.md)\n",
+            "- 2nd [Doc](doc.md)\n",
+            "- _x [Doc](doc.md)\n",
+            "- see: [Doc](doc.md)\n",
+            "- \"open [Doc](doc.md)\n",
+        ] {
+            let (_, relations, links, _) = scan_body(body, 1);
+            assert!(relations.is_empty(), "{body:?}: {relations:?}");
+            assert_eq!(links.len(), 1, "{body:?} keeps its prose link");
+        }
+
+        // The wikilink form reads any token, as it always did.
+        let (_, relations, _, _) = scan_body("- See [[Three]]\n", 1);
+        assert_eq!(relations.len(), 1, "{relations:?}");
+        assert_eq!(relations[0].rel_type, "See");
     }
 
     #[test]
