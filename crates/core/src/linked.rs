@@ -574,15 +574,16 @@ fn reference_definition(line: &str) -> Option<(usize, usize, &str)> {
 }
 
 /// Whether `rest`, what follows a reference definition's target, is nothing
-/// or one title: `"..."`, `'...'` or `(...)`, after at least one space or
-/// tab, with nothing but spaces and tabs after it. Only ASCII spaces and tabs
-/// separate here, as only they end the target (`ends_destination`).
+/// or one title: `"..."`, `'...'` or `(...)`, after at least one ASCII
+/// whitespace character, with nothing but ASCII whitespace after it. Only
+/// ASCII whitespace separates here, as only ASCII ends the target
+/// (`ends_destination`); the `\r` of a CRLF line is part of it.
 fn only_a_title(rest: &str) -> bool {
-    let trimmed = rest.trim_matches([' ', '\t']);
+    let trimmed = rest.trim_matches(|c: char| c.is_ascii_whitespace());
     if trimmed.is_empty() {
         return true;
     }
-    if !rest.starts_with([' ', '\t']) {
+    if !rest.starts_with(|c: char| c.is_ascii_whitespace()) {
         return false;
     }
     let close = match trimmed.chars().next() {
@@ -641,6 +642,14 @@ mod tests {
             Some((5, 12, "a\u{a0}b.md"))
         );
         assert_eq!(reference_definition("[d]: a.md\t'T'"), Some((5, 9, "a.md")));
+        // A CRLF line keeps its `\r` here, and it ends the line, not the
+        // definition.
+        assert_eq!(reference_definition("[d]: x.png\r"), Some((5, 10, "x.png")));
+        assert_eq!(
+            reference_definition("[d]: x.png 'T'\r"),
+            Some((5, 10, "x.png"))
+        );
+        assert_eq!(reference_definition("[d]: x.png \u{3000}"), None);
         // Unicode space before the target is no separator either: it opens
         // the target.
         assert_eq!(
