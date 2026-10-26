@@ -201,6 +201,72 @@ parity!(
     a_wikilink_spelled_as_a_path_binds_to_that_file
 );
 
+/// A file name with a non-ASCII letter binds whether the link spells it
+/// percent-encoded (`b%C3%A4r.md`, the UTF-8 bytes) or raw (`bär.md`): both
+/// decode to the same path. The match is byte exact, with no Unicode
+/// normalization, so the decomposed spelling (`a` plus U+0308) of a name
+/// stored composed names another file and stays unresolved.
+async fn a_non_ascii_file_name_binds_encoded_or_raw(store: &dyn Store) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(
+        root,
+        "notes/b\u{e4}r.md",
+        &engram("B\u{e4}r", "baer", "The bear.\n"),
+    );
+    write(
+        root,
+        "a.md",
+        &engram(
+            "A",
+            "a",
+            "- part_of [B\u{e4}r](notes/b%C3%A4r.md)\n\n\
+             See [raw](notes/b\u{e4}r.md#top) and [lower](notes/b%c3%a4r.md).\n\n\
+             Not [decomposed](notes/ba\u{308}r.md).\n",
+        ),
+    );
+    let report = sync_domain(store, "d", root).await.unwrap();
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+
+    let a = store.lookup_id("d", "a").await.unwrap().unwrap();
+    let outbound = store.outbound_refs(a, None).await.unwrap();
+    let rows: Vec<(&str, bool)> = outbound
+        .iter()
+        .map(|o| (o.to_target.as_str(), o.resolved))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("notes/b\u{e4}r.md", true),
+            ("notes/b\u{e4}r.md", true),
+            ("notes/ba\u{308}r.md", false),
+        ],
+        "the relation and the line's one prose link resolve, the decomposed one does not"
+    );
+    let bear = store.lookup_id("d", "baer").await.unwrap().unwrap();
+    let slice = store.neighbors(&[a], 1, None).await.unwrap();
+    assert!(
+        slice.edges.iter().any(|e| e.from == a
+            && e.to == bear
+            && e.kind == EdgeKind::Relation
+            && e.rel_type == "part_of"),
+        "{:?}",
+        slice.edges
+    );
+    assert!(
+        slice
+            .edges
+            .iter()
+            .any(|e| e.from == a && e.to == bear && e.kind == EdgeKind::Link),
+        "{:?}",
+        slice.edges
+    );
+}
+parity!(
+    a_non_ascii_file_name_binds_encoded_or_raw_on_both_backends,
+    a_non_ascii_file_name_binds_encoded_or_raw
+);
+
 /// The repo's fixture domains, synced once each: (name, links, unresolved
 /// links, relations, unresolved relations).
 async fn fixture_counts() -> Vec<(String, i64, i64, i64, i64)> {
