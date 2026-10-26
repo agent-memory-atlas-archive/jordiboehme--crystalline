@@ -72,7 +72,7 @@ A run acts as an account. For a runner job or n8n that is an agent account with 
 
 `status` without `--domain` shows only the domains the account may run the loop on.
 
-A loop runs on one instance per domain. Reflect runs on the domain's Reflection home (see [One home, one backup](reflection.md#one-home-one-backup)). Evolve runs on the instance that holds the domain's host lock, or on the only instance for a plain local domain. Every other instance shows `runs on <name>` and is never due, and `run` refuses there. So five teammates with the same team domain never start five runs.
+A loop runs on one instance per domain. Reflect runs on the domain's Reflection home (see [One home, one backup](reflection.md#one-home-one-backup)). Evolve depends on the setup. When instances share one Postgres database, evolve runs on the instance that holds the domain's host lock. Every other instance shows `runs on <name>` and is never due, and `run` refuses there. Without a shared database the host lock lives in each instance's own database, so instances cannot see each other's. Then every instance with its own copy of the domain may run evolve. On a team domain, schedule the evolve runner on one instance only, for example a runner instance that joins from the GitHub origin (see [Loop runners](deployment.md#loop-runners)).
 
 Give the reflect runner and the evolve runner separate accounts when both work one domain at the same time. Crystalline cannot tell which run made an MCP write, so it notes the write in every lease the account holds on that domain, and each pull request would carry the other run's writes.
 
@@ -199,7 +199,7 @@ Where the webhook goes is the instance's choice, never the MANIFEST's, since a M
 
 The three settings are for the operator only: `crystalline config set` or the environment, never an agent through `configure`. A URL without a secret never sends, and status says so: nothing unsigned leaves the instance.
 
-Only the instance that may run the loop sends: the Reflection home for reflect, the host lock holder for evolve. Nothing is sent while the lease is held.
+Only the instance that may run the loop sends: the Reflection home for reflect, for evolve the host lock holder on a shared database and any instance with its own copy of the domain otherwise. Nothing is sent while the lease is held.
 
 When it sends:
 
