@@ -6,10 +6,12 @@
 //! tests refuse to run without it: the default is the user's real model
 //! cache, where a running daemon prunes models its setting does not name
 //! (possibly mid-test) and 220 MB would land unasked. Run them
-//! single-threaded so they do not race on the first-download file lock:
+//! single-threaded so they do not race on the first-download file lock, and
+//! with the Xet client's telemetry off, which the binary's `main` does for
+//! every other download (`keep_xet_telemetry_off`):
 //!
 //! ```text
-//! CRYSTALLINE_MODELS_DIR=/path/to/scratch/models \
+//! HF_XET_TELEMETRY_ENABLED=false CRYSTALLINE_MODELS_DIR=/path/to/scratch/models \
 //!   cargo test -p crystalline-index --test it -- embed_model:: --ignored --nocapture --test-threads=1
 //! ```
 

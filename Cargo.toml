@@ -50,6 +50,12 @@ candle-metal-kernels = "0.11.0"
 # system proxy store (measured at about 90 us per build on an Apple laptop, so
 # it is a cost on paper rather than in practice).
 hf-hub = { version = "1.0.0", default-features = false, features = ["rustls-tls"] }
+# hf-hub's own Xet client, named directly only so a test can resolve its
+# configuration the way hf-hub does (`XetConfig::new()`) and pin that the
+# transfer telemetry hf-xet 1.7.0 turned on by default stays off
+# (crates/index/tests/xet_telemetry.rs). Default features, as hf-hub takes it,
+# so this adds nothing to the graph.
+hf-xet = "1.7.0"
 # Pure-Rust regex backend (fancy-regex) instead of the onig C library, and no
 # esaxx C++ trainer or progress bar; keeps musl static builds clean. Only the
 # JSON tokenizer load and encode paths are used.

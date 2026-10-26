@@ -106,6 +106,36 @@ pub use vocab::{TagCluster, tag_clusters, tag_clusters_with_aliases};
 #[cfg(feature = "postgres")]
 pub use postgres::{PostgresStore, ScratchSchema};
 
+/// The environment variable the Xet client (hf-xet, under hf-hub's model
+/// download) reads to decide whether it reports transfer telemetry, and the
+/// value that turns the reports off.
+///
+/// hf-xet 1.7.0 sends, by default, a summary of every upload and download to
+/// the Xet storage server, with the access token. hf-hub builds its Xet session
+/// from `XetConfig::new()`, which reads this variable each time a session is
+/// built, and offers no way to hand it a configuration of its own, so the
+/// environment is the only switch there is.
+pub const XET_TELEMETRY_ENV: (&str, &str) = ("HF_XET_TELEMETRY_ENABLED", "false");
+
+/// Turns the Xet client's download telemetry off for this process and every
+/// process it starts, whatever the variable held before.
+///
+/// Set unconditionally: an explicit `HF_XET_TELEMETRY_ENABLED=true` in the
+/// user's environment is overwritten, because Crystalline never sends these
+/// reports. The binary calls it first thing in `main`.
+///
+/// # Safety
+///
+/// It writes the process environment, so no other thread may read or write the
+/// environment at the same time: call it while the process is still
+/// single-threaded, before any runtime or thread starts.
+pub unsafe fn keep_xet_telemetry_off() {
+    let (name, value) = XET_TELEMETRY_ENV;
+    // SAFETY: the caller guarantees that no other thread touches the
+    // environment while this runs (the contract above).
+    unsafe { std::env::set_var(name, value) };
+}
+
 /// Encode bytes as lowercase hexadecimal into a pre-sized string. The shared
 /// SHA-256 formatter for the whole crate: chunk fingerprints, file checksums and
 /// the service crate's content hashing all route through it so the digest text is
