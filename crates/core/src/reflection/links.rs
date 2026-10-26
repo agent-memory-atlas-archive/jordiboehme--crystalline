@@ -163,6 +163,16 @@ fn unescape_backslashes(path: &str) -> String {
     out
 }
 
+/// Whether `c` ends a bare link destination (one not in angle brackets): an
+/// ASCII space or an ASCII control character, as CommonMark reads it. Any
+/// other space, an ideographic U+3000 or a no-break U+00A0, is part of the
+/// path, so a file named with one is linked by its whole name. Every reader
+/// of a destination asks here, so the parser, the move rewrites and the
+/// attachment scan cut a target at the same place.
+pub fn ends_destination(c: char) -> bool {
+    c == ' ' || c.is_ascii_control()
+}
+
 /// The destination that starts at `open` (just after `](`), or `None` when
 /// none closes on this line. The `#` fragment is split off the raw target
 /// first, then backslash escapes are removed and the rest is percent-decoded,
@@ -177,7 +187,7 @@ pub(crate) fn read_destination(line: &str, open: usize) -> Option<Destination<'_
         let close = closing_paren(line, open)?;
         let inside = &line[open..close];
         // A title after the target (`[a](b.md "Title")`) is kept as written.
-        let target_len = inside.find(char::is_whitespace).unwrap_or(inside.len());
+        let target_len = inside.find(ends_destination).unwrap_or(inside.len());
         let (target, rest) = inside.split_at(target_len);
         (target, rest, close)
     };
@@ -479,6 +489,20 @@ mod tests {
         );
         // A backslash before a letter is not an escape.
         assert_eq!(read("](a\\b.png)").0, "a\\b.png");
+    }
+
+    /// CommonMark ends a bare destination at an ASCII space or an ASCII
+    /// control character only, so a file name with an ideographic space
+    /// (U+3000) or a no-break space (U+00A0) is read whole.
+    #[test]
+    fn a_bare_destination_ends_only_at_an_ascii_space_or_control() {
+        assert_eq!(
+            read("](../\u{65e5}\u{672c}\u{3000}\u{5831}\u{544a}.md)").0,
+            "../\u{65e5}\u{672c}\u{3000}\u{5831}\u{544a}.md"
+        );
+        assert_eq!(read("](a\u{a0}b.md \"T\")").0, "a\u{a0}b.md");
+        assert_eq!(read("](a.md\t\"T\")").0, "a.md");
+        assert_eq!(read("](<a\u{3000}b c.md>)").0, "a\u{3000}b c.md");
     }
 
     #[test]

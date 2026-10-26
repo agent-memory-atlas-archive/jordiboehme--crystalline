@@ -19,7 +19,7 @@ See [the pump](../pumps/p-12.md) and [its limits](../pumps/p-12.md#limits).
 - `[[target|text]]` links to target and shows text. The part before the first `|` is the target. A move or a rename keeps the text.
 - A relative Markdown link to a `.md` file in the same domain, with or without a `#` anchor, finds the engram by its path. When the engram moves inside its domain, the links to it and its own relative links are respelled, so they keep working. A relative path never reaches into another domain, so a move into another domain turns them into wikilinks with the domain, `[[ops:pumps/p-12|the pump]]`, and the move's `links_failed` names a link it could not turn.
 
-The same forms work in a relation bullet: `- part_of [Overview](../overview.md)` is a typed relation. A link that finds no engram is reported like a broken wikilink. A link to a folder's `index.md` or `log.md` is a link to that file, not to an engram, and is never reported as broken. Links in code spans and code blocks are never read as links.
+The same forms work in a relation bullet: `- part_of [Overview](../overview.md)` is a typed relation. With a relative link the type is written in lowercase, like `part_of`, or as a quoted phrase, like `"is part of"`, so a bullet such as `- See [Chapter 3](chapter-3.md)` stays a plain link. A link that finds no engram is reported like a broken wikilink. A link to a folder's `index.md` or `log.md` is a link to that file, not to an engram, and is never reported as broken. Links in code spans and code blocks are never read as links.
 
 ## Callouts
 

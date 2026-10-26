@@ -43,7 +43,17 @@ use crate::yaml::YamlValue;
 /// - 4: a relative link to a folder's `index.md` or `log.md` is not a link to
 ///   an engram (0.29.0).
 /// - 5: nor is a wikilink spelled as the path of one (0.29.0).
-pub const PARSE_GENERATION: u32 = 5;
+/// - 6: the type of a relation written with a relative link is lowercase
+///   (`part_of`) or a quoted phrase, so `- See [Three](three.md)` is prose
+///   (0.29.1).
+/// - 7: a bullet that opens with a footnote reference (`- [^1] text`) is no
+///   observation (0.29.1).
+/// - 8: a bare link destination ends only at an ASCII space or control
+///   character, so a U+3000 in a linked file name is part of the path
+///   (0.29.1).
+/// - 9: a `[[...]]` inside an inline link's destination is part of that
+///   path, not a wikilink (0.29.1).
+pub const PARSE_GENERATION: u32 = 9;
 
 /// An error encountered while parsing an Engram.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -516,14 +526,9 @@ fn scan_body(
         }
 
         // Wikilinks anywhere on the line, excluding a relation target and
-        // deduplicated per line. Nothing to find on a line without "[[", and
-        // masking is only needed when a backtick could hide one.
+        // deduplicated per line. Nothing to find on a line without "[[".
         if line.contains("[[") {
-            let masked: Cow<'_, str> = if line.contains('`') {
-                Cow::Owned(mask_inline_code(line))
-            } else {
-                Cow::Borrowed(line)
-            };
+            let masked = mask_for_wikilinks(line);
             let mut seen: Vec<LinkTarget> = Vec::new();
             for target in find_wikilinks(&masked)
                 .iter()
@@ -708,13 +713,10 @@ pub(crate) fn continues_bullet(line: &str) -> bool {
         || is_thematic_break(trimmed))
 }
 
-/// Whether the line's last `[[` (outside inline code) has no `]]` after it.
+/// Whether the line's last `[[` (outside inline code and link destinations)
+/// has no `]]` after it.
 fn ends_inside_link(line: &str) -> bool {
-    let masked: Cow<'_, str> = if line.contains('`') {
-        Cow::Owned(mask_inline_code(line))
-    } else {
-        Cow::Borrowed(line)
-    };
+    let masked = mask_for_wikilinks(line);
     match masked.rfind("[[") {
         Some(open) => !masked[open + 2..].contains("]]"),
         None => false,
@@ -884,13 +886,15 @@ fn top_level_bullet(line: &str) -> Option<&str> {
 /// The leading `[category]` of a bullet's content and the text after it, or
 /// `None` when the content does not start with one. A bracket directly
 /// followed by `(` is a markdown inline link and one directly followed by `[`
-/// a reference link, so neither is a category. The one place that decides it:
-/// the parser and the tag rewriter both ask here.
+/// a reference link, so neither is a category, and a bracket that opens with
+/// `^` is a footnote reference (`- [^1] text`), as it is to
+/// `crate::linked`'s reference definitions. The one place that decides it:
+/// the parser, the tag rewriter and the Markdown lint all ask here.
 pub(crate) fn split_category(content: &str) -> Option<(&str, &str)> {
     let rest = content.strip_prefix('[')?;
     let close = rest.find(']')?;
     let category = &rest[..close];
-    if category.is_empty() || category.contains('[') {
+    if category.is_empty() || category.contains('[') || category.starts_with('^') {
         return None;
     }
     // A GFM task box, open, done or not applicable, is not a category.
@@ -959,6 +963,14 @@ pub(crate) fn parse_relation(content: &str) -> Option<(String, LinkTarget)> {
 
 fn wiki_relation(content: &str) -> Option<(String, LinkTarget)> {
     let open = content.find("[[")?;
+    // A `[[` in a link destination (`- rel[Doc](a[[x]]b.md)`) is part of a
+    // path, as the prose scan and the move rewrites read it.
+    if content.contains("](") {
+        let at = content[..open].chars().count();
+        if mask_for_wikilinks(content).chars().nth(at) != Some('[') {
+            return None;
+        }
+    }
     let after = &content[open + 2..];
     let close = after.find("]]")?;
     let inner = &after[..close];
@@ -975,8 +987,26 @@ fn relative_relation(content: &str) -> Option<(String, LinkTarget)> {
     let (_, path) = relative_note_links(content)
         .into_iter()
         .find(|(start, _)| *start == open)?;
-    let rel_type = relation_type(&content[..open])?;
+    let rel_type = relative_relation_type(&content[..open])?;
     Some((rel_type, LinkTarget::relative(&path)))
+}
+
+/// The type of a relation written with a relative link: a quoted phrase, or
+/// a token that starts with a lowercase letter and holds only lowercase
+/// letters, digits, `_` and `-`, the way `part_of` is written. Narrower than
+/// [`relation_type`] because a converted document is full of bullets like
+/// `- See [Three](chapter-3.md)`, where the word before the link is prose,
+/// not a type. The wikilink form keeps the free token: engrams written
+/// before the relative form existed depend on it.
+fn relative_relation_type(before: &str) -> Option<String> {
+    let trimmed = before.trim();
+    if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
+        return Some(trimmed[1..trimmed.len() - 1].to_string());
+    }
+    let mut chars = trimmed.chars();
+    let first = chars.next()?;
+    let rest_ok = chars.all(|c| c.is_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+    (first.is_lowercase() && rest_ok).then(|| trimmed.to_string())
 }
 
 /// The relation type written before a relation's target: a quoted phrase, or a
@@ -1047,9 +1077,9 @@ pub(crate) fn mask_inline_code(line: &str) -> String {
 }
 
 /// The inside of every `[[...]]` of an engram body, as written, one list per
-/// body line and in order, outside fenced code and inline code: what the
-/// parser reads as wikilinks, before it trims them. A repair that quotes a
-/// reference reads its text from here.
+/// body line and in order, outside fenced code, inline code and link
+/// destinations: what the parser reads as wikilinks, before it trims them. A
+/// repair that quotes a reference reads its text from here.
 pub fn wikilinks_by_line(body: &str) -> Vec<Vec<String>> {
     body_lines(body, 1)
         .into_iter()
@@ -1057,13 +1087,71 @@ pub fn wikilinks_by_line(body: &str) -> Vec<Vec<String>> {
             if line.in_fence || !line.text.contains("[[") {
                 return Vec::new();
             }
-            if line.text.contains('`') {
-                find_wikilinks(&mask_inline_code(line.text))
-            } else {
-                find_wikilinks(line.text)
-            }
+            find_wikilinks(&mask_for_wikilinks(line.text))
         })
         .collect()
+}
+
+/// A line as every wikilink scan reads it: inline code masked
+/// ([`mask_inline_code`]) and then the destination of every inline link
+/// ([`mask_link_destinations`]). A `[[x]]` in either is no wikilink, so
+/// `[Doc](a[[x]]b.md)` links a file and never the engram `x`. Each mask runs
+/// only when the line can hold what it hides, and both keep the line's char
+/// count, the alignment the move rewrites in `crate::relink` depend on.
+pub(crate) fn mask_for_wikilinks(line: &str) -> Cow<'_, str> {
+    let code: Cow<'_, str> = if line.contains('`') {
+        Cow::Owned(mask_inline_code(line))
+    } else {
+        Cow::Borrowed(line)
+    };
+    if !code.contains("](") {
+        return code;
+    }
+    match mask_link_destinations(&code) {
+        Cow::Owned(masked) => Cow::Owned(masked),
+        Cow::Borrowed(_) => code,
+    }
+}
+
+/// `line` with the inside of every inline link destination, between `](`
+/// and its `)`, replaced by spaces, one per char so the char count stays.
+/// The link text is kept: `[odd [[x]]](b.md)` still holds a wikilink. The
+/// destinations are found the way [`relative_note_links`] finds them, a `](`
+/// that closes a link text and opens a destination that closes on the line,
+/// but every one counts, not only a link to a note. Call it on a line with
+/// inline code already masked, so a `](` inside code opens nothing.
+pub(crate) fn mask_link_destinations(line: &str) -> Cow<'_, str> {
+    use crate::reflection::links::read_destination;
+
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut cursor = 0;
+    while let Some(found) = line[cursor..].find("](") {
+        let close_text = cursor + found;
+        let open = close_text + 2;
+        cursor = open;
+        if link_text_start(line, close_text).is_none() {
+            continue;
+        }
+        let Some(dest) = read_destination(line, open) else {
+            continue;
+        };
+        ranges.push((open, dest.close));
+        cursor = dest.close;
+    }
+    if ranges.is_empty() {
+        return Cow::Borrowed(line);
+    }
+    let masked = line
+        .char_indices()
+        .map(|(at, c)| {
+            if ranges.iter().any(|(s, e)| (*s..*e).contains(&at)) {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+    Cow::Owned(masked)
 }
 
 fn find_wikilinks(masked: &str) -> Vec<String> {
@@ -1182,6 +1270,41 @@ mod tests {
         assert_eq!(links[0].line, 1);
     }
 
+    /// A `[[...]]` inside an inline link's destination is part of that
+    /// path, not a wikilink. The link text is still read.
+    #[test]
+    fn a_wikilink_inside_a_link_destination_is_no_link() {
+        let (_, relations, links, _) = scan_body("- part_of [Doc](a[[x]]b.md)\n", 1);
+        assert_eq!(relations.len(), 1, "{relations:?}");
+        assert_eq!(relations[0].target.target, "a[[x]]b.md");
+        assert_eq!(relations[0].target.form, LinkForm::Relative);
+        assert!(links.is_empty(), "{links:?}");
+
+        // Nor does such a `[[` make a wikilink relation to `x` of the text
+        // before it: the bullet relates to the file.
+        let (_, relations, links, _) = scan_body("- rel[Doc](a[[x]]b.md)\n", 1);
+        assert_eq!(relations.len(), 1, "{relations:?}");
+        assert_eq!(relations[0].target.target, "a[[x]]b.md");
+        assert_eq!(relations[0].target.form, LinkForm::Relative);
+        assert!(links.is_empty(), "{links:?}");
+
+        let body = "See [t](https://x.test/[[x]]), ![i](p[[x]].png), \
+                    [r](<a [[x]].md> \"[[x]]\"), [odd [[y]]](b.md) and [[z]].\n";
+        let (_, _, links, _) = scan_body(body, 1);
+        let targets: Vec<&str> = links.iter().map(|l| l.target.target.as_str()).collect();
+        assert_eq!(targets, ["y", "z", "a [[x]].md", "b.md"]);
+
+        // Multibyte text in a masked destination keeps the char alignment.
+        let (_, _, links, _) = scan_body("[\u{65e5}](\u{65e5}\u{672c}[[x]].md) [[\u{8a9e}]]\n", 1);
+        let targets: Vec<&str> = links.iter().map(|l| l.target.target.as_str()).collect();
+        assert_eq!(targets, ["\u{8a9e}", "\u{65e5}\u{672c}[[x]].md"]);
+
+        assert_eq!(
+            wikilinks_by_line("[a](a[[x]]b.md) [[y]] `[c](d` [[w]] )\n"),
+            vec![vec!["y".to_string(), "w".to_string()], vec![]]
+        );
+    }
+
     #[test]
     fn scan_body_returns_no_links_when_line_has_no_wikilink_markers() {
         let body = "just `code` here, nothing to link";
@@ -1210,6 +1333,21 @@ mod tests {
         }
         // A real category still parses.
         assert_eq!(observations_of("- [fact] ship it\n")[0].category, "fact");
+    }
+
+    /// A converted document's footnotes often sit in a list: `[^1]` opens a
+    /// footnote reference, never a category, as it never opens a reference
+    /// definition (`linked.rs`).
+    #[test]
+    fn a_footnote_reference_is_not_a_category() {
+        for line in ["- [^1] the source\n", "- [^note] more\n", "- [^] x\n"] {
+            let (observations, relations, _, _) = scan_body(line, 1);
+            assert!(observations.is_empty(), "{line:?} read as an observation");
+            assert!(relations.is_empty(), "{line:?} read as a relation");
+            assert_eq!(split_category(&line[2..]), None, "{line:?}");
+        }
+        // A caret later in the bracket is still a category.
+        assert_eq!(observations_of("- [a^b] x\n")[0].category, "a^b");
     }
 
     #[test]
@@ -1253,7 +1391,7 @@ mod tests {
 
     #[test]
     fn the_parse_generation_moved_for_relative_links() {
-        assert_eq!(PARSE_GENERATION, 5);
+        assert_eq!(PARSE_GENERATION, 9);
     }
 
     /// `index.md` and `log.md` are the files Crystalline keeps in every
@@ -1316,6 +1454,20 @@ mod tests {
     }
 
     #[test]
+    fn a_unicode_space_in_a_relative_link_is_part_of_the_path() {
+        let body = "- part_of [Doc](../\u{65e5}\u{672c}\u{3000}\u{5831}\u{544a}.md)\n\
+                    See [B](b\u{a0}c.md \"B\").\n";
+        let (_, relations, links, _) = scan_body(body, 1);
+        assert_eq!(relations.len(), 1, "{relations:?}");
+        assert_eq!(
+            relations[0].target.target,
+            "../\u{65e5}\u{672c}\u{3000}\u{5831}\u{544a}.md"
+        );
+        assert_eq!(links.len(), 1, "{links:?}");
+        assert_eq!(links[0].target.target, "b\u{a0}c.md");
+    }
+
+    #[test]
     fn a_relation_bullet_takes_a_relative_link() {
         let (_, relations, links, _) = scan_body("- part_of [Overview](../overview.md)\n", 1);
         assert_eq!(relations.len(), 1, "{relations:?}");
@@ -1340,6 +1492,48 @@ mod tests {
         let (_, relations, links, _) = scan_body("- part_of [[Overview]]\n", 1);
         assert_eq!(relations[0].target.form, LinkForm::Wiki);
         assert!(links.is_empty());
+    }
+
+    /// A converted document's `- See [Three](chapter-3.md)` is prose, not a
+    /// relation of type `See`: the relative form takes a lowercase type or a
+    /// quoted phrase. The wikilink form keeps its free type.
+    #[test]
+    fn a_relative_relation_takes_a_lowercase_type_or_a_quoted_phrase() {
+        let (_, relations, links, _) = scan_body("- See [Three](chapter-3.md#chapter-3)\n", 1);
+        assert!(relations.is_empty(), "{relations:?}");
+        assert_eq!(links.len(), 1, "{links:?}");
+        assert_eq!(links[0].target.target, "chapter-3.md");
+        assert_eq!(links[0].target.form, LinkForm::Relative);
+
+        for (body, rel_type) in [
+            ("- part_of [Doc](../doc.md)\n", "part_of"),
+            ("- follows [Prev](prev.md)\n", "follows"),
+            ("- \"relates to\" [X](x.md)\n", "relates to"),
+            ("- v2-of [X](x.md)\n", "v2-of"),
+        ] {
+            let (_, relations, links, _) = scan_body(body, 1);
+            assert_eq!(relations.len(), 1, "{body:?}: {relations:?}");
+            assert_eq!(relations[0].rel_type, rel_type);
+            assert!(links.is_empty(), "{body:?}: {links:?}");
+        }
+
+        for body in [
+            "- Part_of [Doc](doc.md)\n",
+            "- partOf [Doc](doc.md)\n",
+            "- 2nd [Doc](doc.md)\n",
+            "- _x [Doc](doc.md)\n",
+            "- see: [Doc](doc.md)\n",
+            "- \"open [Doc](doc.md)\n",
+        ] {
+            let (_, relations, links, _) = scan_body(body, 1);
+            assert!(relations.is_empty(), "{body:?}: {relations:?}");
+            assert_eq!(links.len(), 1, "{body:?} keeps its prose link");
+        }
+
+        // The wikilink form reads any token, as it always did.
+        let (_, relations, _, _) = scan_body("- See [[Three]]\n", 1);
+        assert_eq!(relations.len(), 1, "{relations:?}");
+        assert_eq!(relations[0].rel_type, "See");
     }
 
     #[test]

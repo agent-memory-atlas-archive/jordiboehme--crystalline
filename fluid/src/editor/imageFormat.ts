@@ -355,6 +355,12 @@ function fenceMarker(line: string): { char: string; count: number } | null {
   return count < 3 ? null : { char: first, count };
 }
 
+/** What ends a bare link destination: an ASCII space or control character. */
+// eslint-disable-next-line no-control-regex
+const DESTINATION_END = /[\x00-\x20\x7f]/;
+// eslint-disable-next-line no-control-regex
+const DESTINATION_START = /^[\x00-\x20\x7f]+/;
+
 /**
  * Every `](…)` destination on one line, in order, duplicates included.
  *
@@ -369,8 +375,11 @@ function fenceMarker(line: string): { char: string; count: number } | null {
  *   (`assets/a(1).png`) is part of the target rather than the end of it;
  * - a line whose `](` never closes stops the scan of that line, exactly where
  *   the core's `break` does;
- * - the destination is trimmed and cut at the first whitespace, so a title
- *   clause (`(assets/a.png "Q3")`) is dropped rather than swallowed.
+ * - the destination is trimmed and cut at the first ASCII space or ASCII
+ *   control character, so a title clause (`(assets/a.png "Q3")`) is dropped
+ *   rather than swallowed, while a U+3000 or U+00A0 in a file name stays in
+ *   it (`ends_destination` in `crates/core/src/reflection/links.rs`). JS
+ *   `\s` and `trim()` take every Unicode space, so neither is used here.
  *
  * Whether the label was an image is not a question the core asks - it counts
  * both forms - but this side draws pictures for one and links for the other,
@@ -406,8 +415,9 @@ function lineRefs(line: string): RawRef[] {
     }
     index = end + 1;
     const inside = line.slice(open, end);
-    const leading = inside.length - inside.trimStart().length;
-    const token = inside.trim().split(/\s/)[0] ?? "";
+    const leading =
+      inside.length - inside.replace(DESTINATION_START, "").length;
+    const token = inside.slice(leading).split(DESTINATION_END)[0] ?? "";
     // The label's own opening bracket, through any brackets nested in it.
     let bracket = -1;
     let nesting = 1;

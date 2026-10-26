@@ -22,6 +22,7 @@ local-embeddings = [
     "dep:candle-transformers",
     "dep:tokenizers",
     "dep:hf-hub",
+    "dep:hf-xet",
     # Apple Silicon only (the target table below): the Metal device list,
     # read before candle opens a device so a Mac without one never panics.
     "dep:candle-metal-kernels",
@@ -57,6 +58,9 @@ candle-nn = { workspace = true, optional = true }
 candle-transformers = { workspace = true, optional = true }
 tokenizers = { workspace = true, optional = true }
 hf-hub = { workspace = true, optional = true }
+# Read by tests/xet_telemetry.rs only, which resolves the Xet configuration
+# the way hf-hub does; see the workspace entry.
+hf-xet = { workspace = true, optional = true }
 
 # PostgreSQL backend, gated by `postgres`. The runtime query API only, so no
 # live database is needed at build time and the trait object stays object-safe.

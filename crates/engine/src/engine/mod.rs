@@ -9227,12 +9227,17 @@ fn rewrite_line_asset_refs(line: &str, renames: &BTreeMap<String, String>) -> St
         idx = end + 1;
         let inside = &line[open..end];
         // The destination is the first token; a title clause may follow it.
-        let Some(target) = inside.split_whitespace().next() else {
+        // Only an ASCII space or control character ends it, as core's
+        // reference scanner reads it, so a U+3000 in a name stays in it.
+        let ends = crystalline_core::reflection::links::ends_destination;
+        let leading = inside.len() - inside.trim_start_matches(ends).len();
+        let target = inside[leading..].split(ends).next().unwrap_or("");
+        if target.is_empty() {
             continue;
-        };
+        }
         // Where that token starts in the line, so the rewrite lands on the
         // path itself rather than on the whitespace in front of it.
-        let start = open + (inside.len() - inside.trim_start().len());
+        let start = open + leading;
         let dot = if target.starts_with("./") { 2 } else { 0 };
         let path_end = target[dot..]
             .find('#')
@@ -9246,6 +9251,33 @@ fn rewrite_line_asset_refs(line: &str, renames: &BTreeMap<String, String>) -> St
     }
     out.push_str(&line[copied..]);
     out
+}
+
+#[cfg(test)]
+mod asset_ref_tests {
+    use super::*;
+
+    /// A carried attachment whose name holds a U+3000 or a U+00A0 is one
+    /// destination, so the rewrite replaces the whole path and keeps the
+    /// title, the same cut core's reference scanner makes.
+    #[test]
+    fn a_unicode_space_in_an_asset_name_is_rewritten_whole() {
+        let renames = BTreeMap::from([
+            (
+                "assets/a\u{3000}b.png".to_string(),
+                "assets/a\u{3000}b-2.png".to_string(),
+            ),
+            (
+                "assets/c\u{a0}d.pdf".to_string(),
+                "assets/c\u{a0}d-2.pdf".to_string(),
+            ),
+        ]);
+        let body = "![x](./assets/a\u{3000}b.png#right) [d](assets/c\u{a0}d.pdf \"T\")\n";
+        assert_eq!(
+            rewrite_asset_refs(body, &renames),
+            "![x](./assets/a\u{3000}b-2.png#right) [d](assets/c\u{a0}d-2.pdf \"T\")\n"
+        );
+    }
 }
 
 /// A file's modification instant in the spelling the sync walker records, so a

@@ -1987,6 +1987,11 @@ impl std::fmt::Display for ExitWith {
 impl std::error::Error for ExitWith {}
 
 fn main() -> std::process::ExitCode {
+    // SAFETY: the first thing the process does, before clap, the tracing
+    // subscriber, any tokio runtime or any other thread starts, so nothing
+    // else can read or write the environment while it is written. The daemon,
+    // the MCP bridge and headless runs are this same binary and pass here too.
+    unsafe { crystalline_index::keep_xet_telemetry_off() };
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) if e.is::<PrintedRefusal>() => std::process::ExitCode::from(1),

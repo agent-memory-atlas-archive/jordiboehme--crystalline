@@ -33,8 +33,9 @@ import { CODE_CONTEXTS, inCompletableProse } from "./prose";
 //
 // A task box is never a category: `[x]`, `[X]` and `[~]` (and `[ ]`, which
 // the first character class already refuses) are a task line, as the core
-// reads them.
-export const OBSERVATION_LINE = /^- \[(?![ xX~]\])([^\]\s][^\]]*)\]\s/;
+// reads them. A bracket that opens with `^` is a footnote reference
+// (`- [^1] text`), never a category, as `split_category` (parse.rs) reads it.
+export const OBSERVATION_LINE = /^- \[(?![ xX~]\])([^\]\s^][^\]]*)\]\s/;
 export const RELATION_LINE = /^- ("[^"]*"|[^\s"[]+)\s*\[\[/;
 const TRAILING_TAG = /#[\w-]+/g;
 

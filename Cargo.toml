@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.29.0"
+version = "0.29.1"
 authors = ["Jordi Böhme <jordi@boehme-lopez.de>"]
 edition = "2024"
 license = "MPL-2.0"
@@ -35,7 +35,7 @@ crystalline-service = { path = "crates/service" }
 
 clap = { version = "4.6.7", features = ["derive"] }
 tokio = { version = "1.54.0", features = ["full"] }
-rmcp = "3.6.0"
+rmcp = "3.7.0"
 turso = "0.8.3"
 candle-core = "0.11.0"
 candle-nn = "0.11.0"
@@ -50,6 +50,12 @@ candle-metal-kernels = "0.11.0"
 # system proxy store (measured at about 90 us per build on an Apple laptop, so
 # it is a cost on paper rather than in practice).
 hf-hub = { version = "1.0.0", default-features = false, features = ["rustls-tls"] }
+# hf-hub's own Xet client, named directly only so a test can resolve its
+# configuration the way hf-hub does (`XetConfig::new()`) and pin that the
+# transfer telemetry hf-xet 1.7.0 turned on by default stays off
+# (crates/index/tests/xet_telemetry.rs). Default features, as hf-hub takes it,
+# so this adds nothing to the graph.
+hf-xet = "1.7.0"
 # Pure-Rust regex backend (fancy-regex) instead of the onig C library, and no
 # esaxx C++ trainer or progress bar; keeps musl static builds clean. Only the
 # JSON tokenizer load and encode paths are used.
@@ -68,8 +74,8 @@ sqlx = { version = "0.9.0", default-features = false, features = [
     "json",
 ] }
 pgvector = { version = "0.4.2", default-features = false, features = ["sqlx"] }
-notify = "8.2.0"
-interprocess = "2.4.6"
+notify = "8.2.1"
+interprocess = "2.4.7"
 sha2 = "0.11.1"
 # The webhook signature (`crystalline_core::automation::webhook_signature`):
 # HMAC-SHA256 over the same sha2 line.
@@ -92,7 +98,7 @@ axum = { version = "0.8.9", features = ["ws"] }
 # unconditional. Wire format pinned in crates/service/tests/collab/collab_wire.rs.
 yrs = { version = "0.28.0", features = ["sync"] }
 # Text diffing for collaborative merge conflict surfacing (crates/engine).
-similar = "3.2.0"
+similar = "3.2.1"
 # Cheaply cloned byte buffers for the collab broadcast fan-out; also the shape
 # axum's WebSocket binary frames take, so a frame crosses the seam without a
 # copy. Already in the graph through axum and tokio.
@@ -117,7 +123,7 @@ libc = "0.2.191"
 serde_yaml_ng = "0.10.0"
 toml = "1.1.8"
 async-trait = "0.1.92"
-uuid = { version = "1.28.0", features = ["v4"] }
+uuid = { version = "1.29.0", features = ["v4"] }
 thiserror = "2.0.21"
 anyhow = "1.0.104"
 etcetera = "0.11.0"

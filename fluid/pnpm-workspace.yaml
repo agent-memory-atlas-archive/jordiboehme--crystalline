@@ -6,29 +6,15 @@
 # (dependabot/dependabot-core#15904), so Dependabot alerts for Fluid would go
 # silent. `ignore` turns that switch off, and with it the second document.
 pmOnFail: ignore
-minimumReleaseAgeExclude:
-  - "@codemirror/search@6.7.2"
-  - "@typescript-eslint/eslint-plugin@8.70.0"
-  - "@typescript-eslint/parser@8.70.0"
-  - "@typescript-eslint/project-service@8.70.0"
-  - "@typescript-eslint/scope-manager@8.70.0"
-  - "@typescript-eslint/tsconfig-utils@8.70.0"
-  - "@typescript-eslint/type-utils@8.70.0"
-  - "@typescript-eslint/types@8.70.0"
-  - "@typescript-eslint/typescript-estree@8.70.0"
-  - "@typescript-eslint/utils@8.70.0"
-  - "@typescript-eslint/visitor-keys@8.70.0"
-  - typescript-eslint@8.70.0
 overrides:
   js-yaml: ^4.3.2
   "lodash-es@<4.18.0": ^4.18.1
-  "nanoid@<3.3.18": ^3.3.18
-  # GHSA-p98j-92pf-mc4p: mermaid 12.0.0 allows dompurify ^3.4.12, keep it at the fixed release
-  "dompurify@<3.4.16": ^3.4.16
+  # GHSA-cg2g-xh64-v4q7, GHSA-mrv2-3pqr-j5jr, GHSA-c6gr-qvv4-5v3f: mermaid allows an older dompurify, keep it at the fixed release
+  "dompurify@<3.4.17": ^3.4.17
   # GHSA-238p-pmpm-9mq7: mermaid 12.2 allows katex ^0.18.0, keep it at the fixed release.
   # One copy for the whole app: mermaid and micromark-extension-math use the
-  # KaTeX the reader sets math with (0.19.0).
-  "katex@<0.19.0": ^0.19.0
+  # KaTeX the reader sets math with (0.19.1).
+  "katex@<0.19.1": ^0.19.1
   # @tailwindcss/node 4.3.3 pins lightningcss 1.32.0, which does not know the
   # ::highlight() pseudo-element and warns on every build; 1.33.0 (the one
   # vite already uses) reads it. One copy for both.

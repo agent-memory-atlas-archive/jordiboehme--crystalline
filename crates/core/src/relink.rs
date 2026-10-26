@@ -39,7 +39,7 @@
 
 use crate::address::SCHEME;
 use crate::engram::LinkTarget;
-use crate::parse::{body_lines, mask_inline_code, parse_engram_lossless};
+use crate::parse::{body_lines, mask_inline_code, mask_link_destinations, parse_engram_lossless};
 
 /// The address change a set of references has to follow.
 #[derive(Debug, Clone, Copy)]
@@ -223,6 +223,7 @@ fn relink_line(line: &str, read_in: &str, written_in: &str, spec: &Relink<'_>) -
     } else {
         original.clone()
     };
+    let wiki = wikilink_mask(line, &masked);
     let url_old: Vec<char> = format!("{SCHEME}{}/{}", spec.from_domain, spec.from_permalink)
         .chars()
         .collect();
@@ -236,12 +237,12 @@ fn relink_line(line: &str, read_in: &str, written_in: &str, spec: &Relink<'_>) -
         // `find_wikilinks` reads, over the same masked text. An opening pair
         // with no closing one anywhere on the rest of the line is no wikilink,
         // and neither is anything after it, but a URL still can be.
-        if masked[i] == '['
-            && masked.get(i + 1) == Some(&'[')
-            && let Some(close) = find_close(&masked, i + 2)
+        if wiki[i] == '['
+            && wiki.get(i + 1) == Some(&'[')
+            && let Some(close) = find_close(&wiki, i + 2)
         {
-            let end = target_end(&masked, i + 2, close);
-            let inner: String = masked[i + 2..end].iter().collect();
+            let end = target_end(&wiki, i + 2, close);
+            let inner: String = wiki[i + 2..end].iter().collect();
             if let Some(new_inner) = relink_wikilink(&inner, read_in, written_in, spec) {
                 out.push_str("[[");
                 out.push_str(&new_inner);
@@ -273,6 +274,22 @@ fn relink_line(line: &str, read_in: &str, written_in: &str, spec: &Relink<'_>) -
         i += 1;
     }
     (out, count)
+}
+
+/// The chars a line's wikilinks are looked for in: `code_masked` (the line
+/// with inline code masked) with every inline link destination masked too,
+/// as the parser's `mask_for_wikilinks` reads it, so a move never rewrites a
+/// `[[...]]` the parser reads as part of a path. Both masks keep the line's
+/// char count, so an index into one is an index into the other and into the
+/// original. A URL is still looked for in `code_masked`: a
+/// `crystalline://` address in a destination is a reference that follows.
+fn wikilink_mask(line: &str, code_masked: &[char]) -> Vec<char> {
+    if line.contains("](") {
+        let code: String = code_masked.iter().collect();
+        mask_link_destinations(&code).chars().collect()
+    } else {
+        code_masked.to_vec()
+    }
 }
 
 /// The index of the first `]]` at or after `from`.
@@ -358,18 +375,19 @@ fn respell_line(line: &str, respell: &dyn Fn(&str) -> Option<String>) -> (String
     } else {
         original.clone()
     };
+    let wiki = wikilink_mask(line, &masked);
     let scheme: Vec<char> = SCHEME.chars().collect();
     let mut out = String::with_capacity(line.len());
     let mut count = 0usize;
     let mut i = 0usize;
     let n = masked.len();
     while i < n {
-        if masked[i] == '['
-            && masked.get(i + 1) == Some(&'[')
-            && let Some(close) = find_close(&masked, i + 2)
+        if wiki[i] == '['
+            && wiki.get(i + 1) == Some(&'[')
+            && let Some(close) = find_close(&wiki, i + 2)
         {
-            let end = target_end(&masked, i + 2, close);
-            let inner: String = masked[i + 2..end].iter().collect();
+            let end = target_end(&wiki, i + 2, close);
+            let inner: String = wiki[i + 2..end].iter().collect();
             let raw_inner: String = original[i + 2..end].iter().collect();
             if let Some(new_inner) = respell_wikilink(&inner, &raw_inner, respell) {
                 out.push_str("[[");
@@ -553,11 +571,12 @@ fn path_wikilink_line(
     map: &dyn Fn(Option<&str>, &str) -> Option<String>,
 ) -> (String, usize) {
     let original: Vec<char> = line.chars().collect();
-    let masked: Vec<char> = if line.contains('`') {
+    let code: Vec<char> = if line.contains('`') {
         mask_inline_code(line).chars().collect()
     } else {
         original.clone()
     };
+    let masked = wikilink_mask(line, &code);
     let mut out = String::with_capacity(line.len());
     let mut count = 0usize;
     let mut i = 0usize;
@@ -681,6 +700,47 @@ mod tests {
         assert!(out.contains("See [p](../archive/p.md#top), ![p](../pumps/p.md), `[p](../pumps/p.md)` and [q](../pumps/q.md)."), "{out}");
         assert!(out.contains("```\n[p](../pumps/p.md)\n```"), "{out}");
         assert!(out.starts_with(ENGRAM_HEAD), "{out}");
+    }
+
+    /// A file name with an ideographic space (U+3000) or a no-break space
+    /// (U+00A0) is one destination, so a move rewrites the whole link and
+    /// what it writes is read back whole.
+    #[test]
+    fn a_link_to_a_file_name_with_a_unicode_space_follows_a_move() {
+        let from = "pumps/\u{65e5}\u{672c}\u{3000}\u{5831}\u{544a}.md";
+        let to = "archive/new\u{a0}name.md";
+        let source = format!(
+            "{ENGRAM_HEAD}- part_of [R](../pumps/\u{65e5}\u{672c}\u{3000}\u{5831}\u{544a}.md)\n\n\
+             See [r](../pumps/%E6%97%A5%E6%9C%AC%E3%80%80%E5%A0%B1%E5%91%8A.md#top \"R\").\n"
+        );
+        let (out, n) = respell_relative_links(&source, "deep/a.md", from, to);
+        assert_eq!(n, 2, "{out}");
+        assert!(
+            out.contains("- part_of [R](../archive/new\u{a0}name.md)\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("See [r](../archive/new\u{a0}name.md#top \"R\")."),
+            "{out}"
+        );
+        let parsed = parse_engram_lossless(&out).expect("parses");
+        assert_eq!(
+            parsed.engram.relations[0].target.target,
+            "../archive/new\u{a0}name.md"
+        );
+        // And back, from the written form.
+        let (back, n) = respell_relative_links(&out, "deep/a.md", to, from);
+        assert_eq!(n, 2, "{back}");
+        assert!(
+            back.contains("- part_of [R](../pumps/\u{65e5}\u{672c}\u{3000}\u{5831}\u{544a}.md)\n"),
+            "{back}"
+        );
+
+        // The moved engram's own links are rebased whole too.
+        let own = format!("{ENGRAM_HEAD}[a](../x\u{3000}y.md)\n");
+        let (out, n) = rebase_relative_links(&own, "pumps/b.md", "archive/old/b.md");
+        assert_eq!(n, 1, "{out}");
+        assert!(out.ends_with("[a](../../x\u{3000}y.md)\n"), "{out}");
     }
 
     #[test]
@@ -807,6 +867,48 @@ mod tests {
         assert!(out.contains("crystalline://eng/projects/velog/alpha#setup"));
         assert!(out.contains("crystalline://eng/projects/velog/alpha."));
         assert!(out.starts_with("---\ntitle: Linker\n"), "frontmatter kept");
+    }
+
+    /// A `[[...]]` inside an inline link's destination is part of the path,
+    /// as the parser reads it, so a move never rewrites it. A URL in a
+    /// destination is still an address and follows.
+    #[test]
+    fn a_wikilink_inside_a_link_destination_is_never_rewritten() {
+        let source = doc("- part_of [Doc](a[[velog/alpha]]b.md)\n\
+             See [t](https://x.test/[[velog/alpha]]) and [[velog/alpha]].\n\
+             [odd [[velog/alpha]]](b.md) and [u](crystalline://eng/velog/alpha).\n");
+        let (out, n) = relink(&source, "eng", "eng", &SAME);
+        assert_eq!(n, 3, "{out}");
+        assert!(
+            out.contains("- part_of [Doc](a[[velog/alpha]]b.md)\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("See [t](https://x.test/[[velog/alpha]]) and [[projects/velog/alpha]]."),
+            "{out}"
+        );
+        assert!(
+            out.contains("[odd [[projects/velog/alpha]]](b.md) and [u](crystalline://eng/projects/velog/alpha)."),
+            "{out}"
+        );
+
+        let (out, n) = respell_domains(
+            &spell_doc("[d](a[[old:x]].md) [[old:x]] [u](crystalline://old/x)\n"),
+            &old_to_new,
+        );
+        assert_eq!(n, 2, "{out}");
+        assert!(
+            out.ends_with("[d](a[[old:x]].md) [[new:x]] [u](crystalline://new/x)\n"),
+            "{out}"
+        );
+
+        let source = format!("{ENGRAM_HEAD}[d](a[[pumps/b.md]].md) [[pumps/b.md]]\n");
+        let (out, n) = respell_path_wikilinks(&source, "pumps/b.md", "archive/b.md");
+        assert_eq!(n, 1, "{out}");
+        assert!(
+            out.ends_with("[d](a[[pumps/b.md]].md) [[archive/b.md]]\n"),
+            "{out}"
+        );
     }
 
     #[test]

@@ -11,9 +11,11 @@
 //!
 //! Run it on the release profile: an unoptimized candle takes many minutes
 //! over the 270-token parity batch, the release build about twenty seconds.
+//! The Xet client's telemetry is turned off in the command, as the binary's
+//! `main` does for every other download (`keep_xet_telemetry_off`).
 //!
 //! ```text
-//! CRYSTALLINE_TEST_NLI=1 CRYSTALLINE_MODELS_DIR=/path/to/scratch/models \
+//! HF_XET_TELEMETRY_ENABLED=false CRYSTALLINE_TEST_NLI=1 CRYSTALLINE_MODELS_DIR=/path/to/scratch/models \
 //!   cargo nextest run --cargo-profile release -p crystalline-index --test it --no-capture -E 'test(/^nli_model::/)' -j 1
 //! ```
 
