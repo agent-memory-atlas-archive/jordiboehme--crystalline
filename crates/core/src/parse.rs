@@ -51,7 +51,9 @@ use crate::yaml::YamlValue;
 /// - 8: a bare link destination ends only at an ASCII space or control
 ///   character, so a U+3000 in a linked file name is part of the path
 ///   (0.29.1).
-pub const PARSE_GENERATION: u32 = 8;
+/// - 9: a `[[...]]` inside an inline link's destination is part of that
+///   path, not a wikilink (0.29.1).
+pub const PARSE_GENERATION: u32 = 9;
 
 /// An error encountered while parsing an Engram.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -524,14 +526,9 @@ fn scan_body(
         }
 
         // Wikilinks anywhere on the line, excluding a relation target and
-        // deduplicated per line. Nothing to find on a line without "[[", and
-        // masking is only needed when a backtick could hide one.
+        // deduplicated per line. Nothing to find on a line without "[[".
         if line.contains("[[") {
-            let masked: Cow<'_, str> = if line.contains('`') {
-                Cow::Owned(mask_inline_code(line))
-            } else {
-                Cow::Borrowed(line)
-            };
+            let masked = mask_for_wikilinks(line);
             let mut seen: Vec<LinkTarget> = Vec::new();
             for target in find_wikilinks(&masked)
                 .iter()
@@ -716,13 +713,10 @@ pub(crate) fn continues_bullet(line: &str) -> bool {
         || is_thematic_break(trimmed))
 }
 
-/// Whether the line's last `[[` (outside inline code) has no `]]` after it.
+/// Whether the line's last `[[` (outside inline code and link destinations)
+/// has no `]]` after it.
 fn ends_inside_link(line: &str) -> bool {
-    let masked: Cow<'_, str> = if line.contains('`') {
-        Cow::Owned(mask_inline_code(line))
-    } else {
-        Cow::Borrowed(line)
-    };
+    let masked = mask_for_wikilinks(line);
     match masked.rfind("[[") {
         Some(open) => !masked[open + 2..].contains("]]"),
         None => false,
@@ -969,6 +963,14 @@ pub(crate) fn parse_relation(content: &str) -> Option<(String, LinkTarget)> {
 
 fn wiki_relation(content: &str) -> Option<(String, LinkTarget)> {
     let open = content.find("[[")?;
+    // A `[[` in a link destination (`- rel[Doc](a[[x]]b.md)`) is part of a
+    // path, as the prose scan and the move rewrites read it.
+    if content.contains("](") {
+        let at = content[..open].chars().count();
+        if mask_for_wikilinks(content).chars().nth(at) != Some('[') {
+            return None;
+        }
+    }
     let after = &content[open + 2..];
     let close = after.find("]]")?;
     let inner = &after[..close];
@@ -1075,9 +1077,9 @@ pub(crate) fn mask_inline_code(line: &str) -> String {
 }
 
 /// The inside of every `[[...]]` of an engram body, as written, one list per
-/// body line and in order, outside fenced code and inline code: what the
-/// parser reads as wikilinks, before it trims them. A repair that quotes a
-/// reference reads its text from here.
+/// body line and in order, outside fenced code, inline code and link
+/// destinations: what the parser reads as wikilinks, before it trims them. A
+/// repair that quotes a reference reads its text from here.
 pub fn wikilinks_by_line(body: &str) -> Vec<Vec<String>> {
     body_lines(body, 1)
         .into_iter()
@@ -1085,13 +1087,71 @@ pub fn wikilinks_by_line(body: &str) -> Vec<Vec<String>> {
             if line.in_fence || !line.text.contains("[[") {
                 return Vec::new();
             }
-            if line.text.contains('`') {
-                find_wikilinks(&mask_inline_code(line.text))
-            } else {
-                find_wikilinks(line.text)
-            }
+            find_wikilinks(&mask_for_wikilinks(line.text))
         })
         .collect()
+}
+
+/// A line as every wikilink scan reads it: inline code masked
+/// ([`mask_inline_code`]) and then the destination of every inline link
+/// ([`mask_link_destinations`]). A `[[x]]` in either is no wikilink, so
+/// `[Doc](a[[x]]b.md)` links a file and never the engram `x`. Each mask runs
+/// only when the line can hold what it hides, and both keep the line's char
+/// count, the alignment the move rewrites in `crate::relink` depend on.
+pub(crate) fn mask_for_wikilinks(line: &str) -> Cow<'_, str> {
+    let code: Cow<'_, str> = if line.contains('`') {
+        Cow::Owned(mask_inline_code(line))
+    } else {
+        Cow::Borrowed(line)
+    };
+    if !code.contains("](") {
+        return code;
+    }
+    match mask_link_destinations(&code) {
+        Cow::Owned(masked) => Cow::Owned(masked),
+        Cow::Borrowed(_) => code,
+    }
+}
+
+/// `line` with the inside of every inline link destination, between `](`
+/// and its `)`, replaced by spaces, one per char so the char count stays.
+/// The link text is kept: `[odd [[x]]](b.md)` still holds a wikilink. The
+/// destinations are found the way [`relative_note_links`] finds them, a `](`
+/// that closes a link text and opens a destination that closes on the line,
+/// but every one counts, not only a link to a note. Call it on a line with
+/// inline code already masked, so a `](` inside code opens nothing.
+pub(crate) fn mask_link_destinations(line: &str) -> Cow<'_, str> {
+    use crate::reflection::links::read_destination;
+
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut cursor = 0;
+    while let Some(found) = line[cursor..].find("](") {
+        let close_text = cursor + found;
+        let open = close_text + 2;
+        cursor = open;
+        if link_text_start(line, close_text).is_none() {
+            continue;
+        }
+        let Some(dest) = read_destination(line, open) else {
+            continue;
+        };
+        ranges.push((open, dest.close));
+        cursor = dest.close;
+    }
+    if ranges.is_empty() {
+        return Cow::Borrowed(line);
+    }
+    let masked = line
+        .char_indices()
+        .map(|(at, c)| {
+            if ranges.iter().any(|(s, e)| (*s..*e).contains(&at)) {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+    Cow::Owned(masked)
 }
 
 fn find_wikilinks(masked: &str) -> Vec<String> {
@@ -1210,6 +1270,41 @@ mod tests {
         assert_eq!(links[0].line, 1);
     }
 
+    /// A `[[...]]` inside an inline link's destination is part of that
+    /// path, not a wikilink. The link text is still read.
+    #[test]
+    fn a_wikilink_inside_a_link_destination_is_no_link() {
+        let (_, relations, links, _) = scan_body("- part_of [Doc](a[[x]]b.md)\n", 1);
+        assert_eq!(relations.len(), 1, "{relations:?}");
+        assert_eq!(relations[0].target.target, "a[[x]]b.md");
+        assert_eq!(relations[0].target.form, LinkForm::Relative);
+        assert!(links.is_empty(), "{links:?}");
+
+        // Nor does such a `[[` make a wikilink relation to `x` of the text
+        // before it: the bullet relates to the file.
+        let (_, relations, links, _) = scan_body("- rel[Doc](a[[x]]b.md)\n", 1);
+        assert_eq!(relations.len(), 1, "{relations:?}");
+        assert_eq!(relations[0].target.target, "a[[x]]b.md");
+        assert_eq!(relations[0].target.form, LinkForm::Relative);
+        assert!(links.is_empty(), "{links:?}");
+
+        let body = "See [t](https://x.test/[[x]]), ![i](p[[x]].png), \
+                    [r](<a [[x]].md> \"[[x]]\"), [odd [[y]]](b.md) and [[z]].\n";
+        let (_, _, links, _) = scan_body(body, 1);
+        let targets: Vec<&str> = links.iter().map(|l| l.target.target.as_str()).collect();
+        assert_eq!(targets, ["y", "z", "a [[x]].md", "b.md"]);
+
+        // Multibyte text in a masked destination keeps the char alignment.
+        let (_, _, links, _) = scan_body("[\u{65e5}](\u{65e5}\u{672c}[[x]].md) [[\u{8a9e}]]\n", 1);
+        let targets: Vec<&str> = links.iter().map(|l| l.target.target.as_str()).collect();
+        assert_eq!(targets, ["\u{8a9e}", "\u{65e5}\u{672c}[[x]].md"]);
+
+        assert_eq!(
+            wikilinks_by_line("[a](a[[x]]b.md) [[y]] `[c](d` [[w]] )\n"),
+            vec![vec!["y".to_string(), "w".to_string()], vec![]]
+        );
+    }
+
     #[test]
     fn scan_body_returns_no_links_when_line_has_no_wikilink_markers() {
         let body = "just `code` here, nothing to link";
@@ -1296,7 +1391,7 @@ mod tests {
 
     #[test]
     fn the_parse_generation_moved_for_relative_links() {
-        assert_eq!(PARSE_GENERATION, 8);
+        assert_eq!(PARSE_GENERATION, 9);
     }
 
     /// `index.md` and `log.md` are the files Crystalline keeps in every
