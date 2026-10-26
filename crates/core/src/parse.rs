@@ -46,7 +46,9 @@ use crate::yaml::YamlValue;
 /// - 6: the type of a relation written with a relative link is lowercase
 ///   (`part_of`) or a quoted phrase, so `- See [Three](three.md)` is prose
 ///   (0.29.1).
-pub const PARSE_GENERATION: u32 = 6;
+/// - 7: a bullet that opens with a footnote reference (`- [^1] text`) is no
+///   observation (0.29.1).
+pub const PARSE_GENERATION: u32 = 7;
 
 /// An error encountered while parsing an Engram.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -887,13 +889,15 @@ fn top_level_bullet(line: &str) -> Option<&str> {
 /// The leading `[category]` of a bullet's content and the text after it, or
 /// `None` when the content does not start with one. A bracket directly
 /// followed by `(` is a markdown inline link and one directly followed by `[`
-/// a reference link, so neither is a category. The one place that decides it:
-/// the parser and the tag rewriter both ask here.
+/// a reference link, so neither is a category, and a bracket that opens with
+/// `^` is a footnote reference (`- [^1] text`), as it is to
+/// `crate::linked`'s reference definitions. The one place that decides it:
+/// the parser, the tag rewriter and the Markdown lint all ask here.
 pub(crate) fn split_category(content: &str) -> Option<(&str, &str)> {
     let rest = content.strip_prefix('[')?;
     let close = rest.find(']')?;
     let category = &rest[..close];
-    if category.is_empty() || category.contains('[') {
+    if category.is_empty() || category.contains('[') || category.starts_with('^') {
         return None;
     }
     // A GFM task box, open, done or not applicable, is not a category.
@@ -1233,6 +1237,21 @@ mod tests {
         assert_eq!(observations_of("- [fact] ship it\n")[0].category, "fact");
     }
 
+    /// A converted document's footnotes often sit in a list: `[^1]` opens a
+    /// footnote reference, never a category, as it never opens a reference
+    /// definition (`linked.rs`).
+    #[test]
+    fn a_footnote_reference_is_not_a_category() {
+        for line in ["- [^1] the source\n", "- [^note] more\n", "- [^] x\n"] {
+            let (observations, relations, _, _) = scan_body(line, 1);
+            assert!(observations.is_empty(), "{line:?} read as an observation");
+            assert!(relations.is_empty(), "{line:?} read as a relation");
+            assert_eq!(split_category(&line[2..]), None, "{line:?}");
+        }
+        // A caret later in the bracket is still a category.
+        assert_eq!(observations_of("- [a^b] x\n")[0].category, "a^b");
+    }
+
     #[test]
     fn a_directive_or_task_box_is_never_a_relation_type() {
         for body in [
@@ -1274,7 +1293,7 @@ mod tests {
 
     #[test]
     fn the_parse_generation_moved_for_relative_links() {
-        assert_eq!(PARSE_GENERATION, 6);
+        assert_eq!(PARSE_GENERATION, 7);
     }
 
     /// `index.md` and `log.md` are the files Crystalline keeps in every

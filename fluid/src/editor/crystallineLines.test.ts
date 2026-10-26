@@ -183,4 +183,10 @@ describe("task lines", () => {
     expect(OBSERVATION_LINE.test("- [fact] x ")).toBe(true);
     expect(OBSERVATION_LINE.test("- [xy] x ")).toBe(true);
   });
+
+  it("never reads a footnote reference as an observation category", () => {
+    expect(OBSERVATION_LINE.test("- [^1] the source")).toBe(false);
+    expect(OBSERVATION_LINE.test("- [^note] more")).toBe(false);
+    expect(OBSERVATION_LINE.exec("- [a^b] x")?.[1]).toBe("a^b");
+  });
 });
