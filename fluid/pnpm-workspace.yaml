@@ -23,8 +23,8 @@ overrides:
   js-yaml: ^4.3.2
   "lodash-es@<4.18.0": ^4.18.1
   "nanoid@<3.3.18": ^3.3.18
-  # GHSA-p98j-92pf-mc4p: mermaid 12.0.0 allows dompurify ^3.4.12, keep it at the fixed release
-  "dompurify@<3.4.16": ^3.4.16
+  # GHSA-cg2g-xh64-v4q7, GHSA-mrv2-3pqr-j5jr, GHSA-c6gr-qvv4-5v3f: mermaid allows an older dompurify, keep it at the fixed release
+  "dompurify@<3.4.17": ^3.4.17
   # GHSA-238p-pmpm-9mq7: mermaid 12.2 allows katex ^0.18.0, keep it at the fixed release.
   # One copy for the whole app: mermaid and micromark-extension-math use the
   # KaTeX the reader sets math with (0.19.0).
