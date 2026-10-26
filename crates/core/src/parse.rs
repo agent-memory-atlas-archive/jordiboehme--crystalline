@@ -48,7 +48,10 @@ use crate::yaml::YamlValue;
 ///   (0.29.1).
 /// - 7: a bullet that opens with a footnote reference (`- [^1] text`) is no
 ///   observation (0.29.1).
-pub const PARSE_GENERATION: u32 = 7;
+/// - 8: a bare link destination ends only at an ASCII space or control
+///   character, so a U+3000 in a linked file name is part of the path
+///   (0.29.1).
+pub const PARSE_GENERATION: u32 = 8;
 
 /// An error encountered while parsing an Engram.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -1293,7 +1296,7 @@ mod tests {
 
     #[test]
     fn the_parse_generation_moved_for_relative_links() {
-        assert_eq!(PARSE_GENERATION, 7);
+        assert_eq!(PARSE_GENERATION, 8);
     }
 
     /// `index.md` and `log.md` are the files Crystalline keeps in every
@@ -1353,6 +1356,20 @@ mod tests {
             "one per line and target"
         );
         assert!(links.iter().all(|l| l.target.form == LinkForm::Relative));
+    }
+
+    #[test]
+    fn a_unicode_space_in_a_relative_link_is_part_of_the_path() {
+        let body = "- part_of [Doc](../\u{65e5}\u{672c}\u{3000}\u{5831}\u{544a}.md)\n\
+                    See [B](b\u{a0}c.md \"B\").\n";
+        let (_, relations, links, _) = scan_body(body, 1);
+        assert_eq!(relations.len(), 1, "{relations:?}");
+        assert_eq!(
+            relations[0].target.target,
+            "../\u{65e5}\u{672c}\u{3000}\u{5831}\u{544a}.md"
+        );
+        assert_eq!(links.len(), 1, "{links:?}");
+        assert_eq!(links[0].target.target, "b\u{a0}c.md");
     }
 
     #[test]

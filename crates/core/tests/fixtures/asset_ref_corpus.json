@@ -15,5 +15,7 @@
   { "name": "utf8 sequence decodes", "body": "![s](assets/caf%C3%A9.png)", "refs": ["assets/café.png"] },
   { "name": "invalid utf8 stays raw", "body": "![s](assets/bad%FFname.png)", "refs": ["assets/bad%FFname.png"] },
   { "name": "non-asset link ignored", "body": "[doc](docs/readme.md) ![i](https://example.com/a.png)", "refs": [] },
-  { "name": "destination without an opening bracket counts", "body": "stray](assets/x/loose.png)", "refs": ["assets/x/loose.png"] }
+  { "name": "destination without an opening bracket counts", "body": "stray](assets/x/loose.png)", "refs": ["assets/x/loose.png"] },
+  { "name": "unicode spaces stay in the target", "body": "![s](assets/a\u3000b.png) [d](assets/c\u00a0d.pdf \"T\")", "refs": ["assets/a\u3000b.png", "assets/c\u00a0d.pdf"] },
+  { "name": "a tab ends the target", "body": "![s](assets/t.png\t\"T\")", "refs": ["assets/t.png"] }
 ]

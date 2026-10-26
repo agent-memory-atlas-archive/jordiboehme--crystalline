@@ -683,6 +683,47 @@ mod tests {
         assert!(out.starts_with(ENGRAM_HEAD), "{out}");
     }
 
+    /// A file name with an ideographic space (U+3000) or a no-break space
+    /// (U+00A0) is one destination, so a move rewrites the whole link and
+    /// what it writes is read back whole.
+    #[test]
+    fn a_link_to_a_file_name_with_a_unicode_space_follows_a_move() {
+        let from = "pumps/\u{65e5}\u{672c}\u{3000}\u{5831}\u{544a}.md";
+        let to = "archive/new\u{a0}name.md";
+        let source = format!(
+            "{ENGRAM_HEAD}- part_of [R](../pumps/\u{65e5}\u{672c}\u{3000}\u{5831}\u{544a}.md)\n\n\
+             See [r](../pumps/%E6%97%A5%E6%9C%AC%E3%80%80%E5%A0%B1%E5%91%8A.md#top \"R\").\n"
+        );
+        let (out, n) = respell_relative_links(&source, "deep/a.md", from, to);
+        assert_eq!(n, 2, "{out}");
+        assert!(
+            out.contains("- part_of [R](../archive/new\u{a0}name.md)\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("See [r](../archive/new\u{a0}name.md#top \"R\")."),
+            "{out}"
+        );
+        let parsed = parse_engram_lossless(&out).expect("parses");
+        assert_eq!(
+            parsed.engram.relations[0].target.target,
+            "../archive/new\u{a0}name.md"
+        );
+        // And back, from the written form.
+        let (back, n) = respell_relative_links(&out, "deep/a.md", to, from);
+        assert_eq!(n, 2, "{back}");
+        assert!(
+            back.contains("- part_of [R](../pumps/\u{65e5}\u{672c}\u{3000}\u{5831}\u{544a}.md)\n"),
+            "{back}"
+        );
+
+        // The moved engram's own links are rebased whole too.
+        let own = format!("{ENGRAM_HEAD}[a](../x\u{3000}y.md)\n");
+        let (out, n) = rebase_relative_links(&own, "pumps/b.md", "archive/old/b.md");
+        assert_eq!(n, 1, "{out}");
+        assert!(out.ends_with("[a](../../x\u{3000}y.md)\n"), "{out}");
+    }
+
     #[test]
     fn a_moved_engrams_own_relative_links_are_rebased() {
         let source = format!(

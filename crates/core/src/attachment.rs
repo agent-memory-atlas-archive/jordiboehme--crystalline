@@ -475,8 +475,13 @@ fn line_link_targets(line: &str) -> Vec<String> {
         }
         let Some(end) = end else { break };
         idx = end + 1;
-        let inside = line[open..end].trim();
-        let target = inside.split_whitespace().next().unwrap_or("");
+        // Only an ASCII space or control character ends the target
+        // (`ends_destination`), so a U+3000 in a file name stays in it.
+        let inside = line[open..end].trim_matches(crate::reflection::links::ends_destination);
+        let target = inside
+            .split(crate::reflection::links::ends_destination)
+            .next()
+            .unwrap_or("");
         // The whole target decodes before anything is read off it, the order
         // Fluid's scanner uses: an encoded `%23` becomes a real `#` and then
         // opens the formatting fragment, an encoded prefix becomes `assets/`.
@@ -776,6 +781,21 @@ Again: ![d](assets/flow.png)\n\
             find_asset_refs(body),
             vec!["assets/a.png".to_string(), "assets/deck.pdf".to_string()]
         );
+    }
+
+    /// Only an ASCII space or control character ends a target, so an
+    /// attachment whose name holds a U+3000 or U+00A0 (which
+    /// [`validate_asset_path`] accepts) is referenced by its whole name.
+    #[test]
+    fn a_unicode_space_in_a_target_is_part_of_it() {
+        assert_eq!(
+            find_asset_refs("![x](assets/a\u{3000}b.png) [d](assets/c\u{a0}d.pdf \"T\")"),
+            vec![
+                "assets/a\u{3000}b.png".to_string(),
+                "assets/c\u{a0}d.pdf".to_string()
+            ]
+        );
+        assert_eq!(validate_asset_path("assets/a\u{3000}b.png"), Ok(()));
     }
 
     #[test]

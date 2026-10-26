@@ -54,7 +54,9 @@ use crate::attachment::{
     suffixed_asset_path, validate_asset_path,
 };
 use crate::index::escape_link_url;
-use crate::reflection::links::{code_spans, decode_target, read_destination, resolve};
+use crate::reflection::links::{
+    code_spans, decode_target, ends_destination, read_destination, resolve,
+};
 use crate::relink::{BodyGate, rewrite_body_lines};
 
 /// The most names a file is offered before it is given up, the same ceiling
@@ -556,13 +558,13 @@ fn reference_definition(line: &str) -> Option<(usize, usize, &str)> {
         return None;
     }
     let after = rest[label_end + 1..].strip_prefix(':')?;
-    let start = line.len() - after.trim_start().len();
+    let start = line.len() - after.trim_start_matches([' ', '\t']).len();
     let tail = &line[start..];
     let (end, target) = if let Some(inner) = tail.strip_prefix('<') {
         let gt = inner.find('>')?;
         (start + gt + 2, &inner[..gt])
     } else {
-        let len = tail.find(char::is_whitespace).unwrap_or(tail.len());
+        let len = tail.find(ends_destination).unwrap_or(tail.len());
         if len == 0 {
             return None;
         }
@@ -572,14 +574,15 @@ fn reference_definition(line: &str) -> Option<(usize, usize, &str)> {
 }
 
 /// Whether `rest`, what follows a reference definition's target, is nothing
-/// or one title: `"..."`, `'...'` or `(...)`, after at least one space, with
-/// nothing but spaces after it.
+/// or one title: `"..."`, `'...'` or `(...)`, after at least one space or
+/// tab, with nothing but spaces and tabs after it. Only ASCII spaces and tabs
+/// separate here, as only they end the target (`ends_destination`).
 fn only_a_title(rest: &str) -> bool {
-    let trimmed = rest.trim();
+    let trimmed = rest.trim_matches([' ', '\t']);
     if trimmed.is_empty() {
         return true;
     }
-    if !rest.starts_with(char::is_whitespace) {
+    if !rest.starts_with([' ', '\t']) {
         return false;
     }
     let close = match trimmed.chars().next() {
@@ -621,6 +624,28 @@ mod tests {
         assert_eq!(
             reference_definition("[d]: x.png (T)  "),
             Some((5, 10, "x.png"))
+        );
+    }
+
+    /// The target of a definition ends at an ASCII space or control
+    /// character, as an inline destination does: a U+3000 or U+00A0 inside
+    /// a file name is part of it.
+    #[test]
+    fn a_definition_target_ends_only_at_an_ascii_space_or_control() {
+        assert_eq!(
+            reference_definition("[d]: a\u{3000}b.md"),
+            Some((5, 13, "a\u{3000}b.md"))
+        );
+        assert_eq!(
+            reference_definition("[d]: a\u{a0}b.md \"T\""),
+            Some((5, 12, "a\u{a0}b.md"))
+        );
+        assert_eq!(reference_definition("[d]: a.md\t'T'"), Some((5, 9, "a.md")));
+        // Unicode space before the target is no separator either: it opens
+        // the target.
+        assert_eq!(
+            reference_definition("[d]:\u{3000}a.md"),
+            Some((4, 11, "\u{3000}a.md"))
         );
     }
 
