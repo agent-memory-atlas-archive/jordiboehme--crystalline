@@ -776,10 +776,14 @@ pub struct ReflectParams {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigureParams {
     /// A domain to see and change instead of the instance. configure then
-    /// answers how that domain behaves: its MANIFEST policy keys (sharing,
-    /// generated_indexes, domain_name, read_only, reflection; reflection_home
-    /// is filled in when Reflection is switched on), what each MANIFEST
-    /// section does and its .crystalline.yaml rule overrides. set and unset then address that
+    /// answers how that domain behaves: its MANIFEST policy keys (sharing:
+    /// proposal or direct; generated_indexes: local or shared; domain_name:
+    /// the name links use; read_only: off or on; reflection: off or on;
+    /// reflect_trigger and evolve_trigger: off or webhook, to have the
+    /// instance send a signed webhook when reflect or evolve work is due;
+    /// reflection_home is filled in when Reflection is switched on, never
+    /// set), what each MANIFEST section does and its .crystalline.yaml rule
+    /// overrides. set and unset then address that
     /// domain: a policy key, `rules.<rule id>` (a verify rule's severity) or
     /// token_budget. Omit it for the instance settings.
     #[serde(default)]
@@ -1161,6 +1165,24 @@ impl SaveParams {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The `domain` parameter of `configure` is what an agent reads to learn
+    /// which policy keys it may set. Every `policy_registry` key must be named
+    /// there, so a key that joins the registry cannot go unannounced.
+    #[test]
+    fn configure_domain_description_names_every_policy_key() {
+        let schema = serde_json::to_value(schemars::schema_for!(ConfigureParams)).unwrap();
+        let description = schema["properties"]["domain"]["description"]
+            .as_str()
+            .expect("the domain parameter has a description");
+        for spec in crystalline_core::policy_registry() {
+            assert!(
+                description.contains(spec.key),
+                "configure's `domain` description does not name the policy key `{}`",
+                spec.key
+            );
+        }
+    }
 
     /// The list and map params switched to bare `Vec`/`BTreeMap` for a plain
     /// schema type must still accept an explicit `null` (which the CLI and some
